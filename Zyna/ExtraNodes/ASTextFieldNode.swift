@@ -1,9 +1,15 @@
 //
-//  ASTextFieldNode.swift
-//  Zyna
+//  Based on the original Objective-C implementation in AsyncDisplayKit,
+//  Copyright (c) 2014–present, Facebook, Inc.
 //
-//  Created by Dmitry Markovskiy on 22.04.2025.
-//  Based on https:// github.com/pocketlabs/ASTextFieldNode
+//  SPDX-License-Identifier: BSD-3-Clause
+//
+//  Swift adaptation by Dmitry Markovsky, 2025
+//
+//  With thanks to Pocket Labs for their open-source Objective-C version
+//  that inspired this Swift implementation:
+//  https://github.com/pocketlabs/ASTextFieldNode
+//
 
 import AsyncDisplayKit
 import UIKit

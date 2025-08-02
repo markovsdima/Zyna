@@ -1,8 +1,6 @@
 //
-//  GradientButtonWrapper.swift
-//  Zyna
-//
-//  Created by Dmitry Markovskiy on 21.04.2025.
+// Copyright 2025 Dmitry Markovsky
+// SPDX-License-Identifier: AGPL-3.0-only
 //
 
 import AsyncDisplayKit

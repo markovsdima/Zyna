@@ -1,8 +1,6 @@
 //
-//  ParticlePatternView.swift
-//  Zyna
-//
-//  Created by Dmitry Markovskiy on 01.08.2025.
+// Copyright 2025 Dmitry Markovsky
+// SPDX-License-Identifier: AGPL-3.0-only
 //
 
 import SwiftUI
