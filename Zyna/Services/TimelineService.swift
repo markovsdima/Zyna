@@ -15,6 +15,7 @@ final class TimelineService {
 
     let messagesSubject = CurrentValueSubject<[ChatMessage], Never>([])
     let isPaginatingSubject = CurrentValueSubject<Bool, Never>(false)
+    let rawTimelineItemsSubject = PassthroughSubject<[TimelineItem], Never>()
 
     private let room: Room
     private var timeline: Timeline?
@@ -29,6 +30,9 @@ final class TimelineService {
 
     func startListening() async {
         do {
+            // Subscribe room for full sliding sync delivery (live events)
+            try? MatrixClientService.shared.roomListService?.subscribeToRooms(roomIds: [room.id()])
+
             let timeline = try await room.timeline()
             self.timeline = timeline
 
@@ -46,8 +50,44 @@ final class TimelineService {
     // MARK: - Apply Diffs
 
     private func applyDiffs(_ diffs: [TimelineDiff]) {
+        var allItems: [TimelineItem] = []
+        var liveItems: [TimelineItem] = []
+
         for diff in diffs {
+            let change = diff.change()
+
+            switch change {
+            case .append:
+                if let items = diff.append() {
+                    allItems.append(contentsOf: items)
+                    liveItems.append(contentsOf: items)
+                }
+            case .pushBack:
+                if let item = diff.pushBack() {
+                    allItems.append(item)
+                    liveItems.append(item)
+                }
+            case .pushFront:
+                if let item = diff.pushFront() { allItems.append(item) }
+            case .insert:
+                if let update = diff.insert() { allItems.append(update.item) }
+            case .set:
+                if let update = diff.set() { allItems.append(update.item) }
+            case .reset:
+                if let items = diff.reset() { allItems.append(contentsOf: items) }
+            default:
+                break
+            }
+
             applySingleDiff(diff)
+        }
+
+        // Only check LIVE events for call invites (not pagination history)
+        checkForCallInvite(liveItems)
+
+        // Publish raw items for call signaling (deduplication happens in CallSignalingService)
+        if !allItems.isEmpty {
+            rawTimelineItemsSubject.send(allItems)
         }
 
         let messages = timelineItems.compactMap { Self.mapTimelineItem($0) }
@@ -114,6 +154,9 @@ final class TimelineService {
     private static func mapTimelineItem(_ item: TimelineItem) -> ChatMessage? {
         guard let event = item.asEvent() else { return nil }
 
+        // Filter out wrapped call signaling messages
+        if isCallSignalingMessage(event) { return nil }
+
         let timestamp = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
 
         let senderName: String?
@@ -176,6 +219,13 @@ final class TimelineService {
         }
     }
 
+    private static func isCallSignalingMessage(_ event: EventTimelineItem) -> Bool {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let message) = msgContent.kind,
+              case .text(let text) = message.msgType else { return false }
+        return text.body.hasPrefix(CallSignalingService.signalingPrefix)
+    }
+
     // MARK: - Pagination
 
     func paginateBackwards() async {
@@ -202,6 +252,74 @@ final class TimelineService {
             timelineLog("Message sent")
         } catch {
             timelineLog("Send failed: \(error)")
+        }
+    }
+
+    /// Send call signaling data through the timeline's encrypted send pipeline.
+    func sendCallSignaling(_ text: String) async {
+        guard let timeline else { return }
+        do {
+            _ = try await timeline.send(msg: messageEventContentFromMarkdown(md: text))
+        } catch {
+            timelineLog("Call signaling send failed: \(error)")
+        }
+    }
+
+    // MARK: - Incoming Call Detection
+
+    private func checkForCallInvite(_ items: [TimelineItem]) {
+        for item in items {
+            guard let event = item.asEvent(),
+                  !event.isOwn,
+                  case .callInvite = event.content else { continue }
+
+            // Ignore old invites (e.g. from history pagination)
+            let eventTime = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
+            guard abs(eventTime.timeIntervalSinceNow) < 60 else { continue }
+
+            // Don't trigger if already in a call
+            guard !CallService.shared.state.isActive else { continue }
+
+            // Extract callId and SDP from raw event JSON
+            let debugInfo = event.lazyProvider.debugInfo()
+            guard let json = debugInfo.originalJson,
+                  let data = json.data(using: .utf8),
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let content = dict["content"] as? [String: Any],
+                  let callId = content["call_id"] as? String else {
+                timelineLog("Call invite detected but failed to extract callId")
+                continue
+            }
+
+            // Extract SDP offer directly — can't rely on signaling receiving it later
+            let offerSDP: String? = {
+                if let offer = content["offer"] as? [String: Any],
+                   let sdp = offer["sdp"] as? String {
+                    return sdp
+                }
+                return nil
+            }()
+
+            let callerName: String? = {
+                if case .ready(let name, _, _) = event.senderProfile { return name }
+                return nil
+            }()
+
+            timelineLog("Incoming call invite detected: callId=\(callId) from \(callerName ?? event.sender), sdp=\(offerSDP?.count ?? 0) bytes")
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                CallService.shared.handleIncomingCall(
+                    room: self.room,
+                    callId: callId,
+                    callerName: callerName,
+                    offerSDP: offerSDP,
+                    timelineService: self
+                )
+            }
+
+            // Only handle the first invite
+            break
         }
     }
 

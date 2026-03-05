@@ -9,6 +9,7 @@ import Combine
 final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
     var onBack: (() -> Void)?
+    var onCallTapped: (() -> Void)?
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -59,10 +60,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             target: self,
             action: #selector(backTapped)
         )
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "phone.fill"),
+            style: .plain,
+            target: self,
+            action: #selector(callTapped)
+        )
     }
 
     @objc private func backTapped() {
         onBack?()
+    }
+
+    @objc private func callTapped() {
+        onCallTapped?()
     }
 
     // MARK: - Bindings

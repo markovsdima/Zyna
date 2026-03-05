@@ -21,7 +21,7 @@ final class ChatViewModel {
 
     // MARK: - Private
 
-    private let timelineService: TimelineService
+    let timelineService: TimelineService
     private var cancellables = Set<AnyCancellable>()
 
     init(room: Room) {
