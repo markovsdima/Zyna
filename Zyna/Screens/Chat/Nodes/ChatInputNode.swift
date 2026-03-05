@@ -23,15 +23,17 @@ final class ChatInputNode: ASDisplayNode {
     private func setupNodes() {
         separatorNode.style.height = ASDimension(unit: .points, value: 0.5)
         separatorNode.backgroundColor = .separator
-        
-        textInputNode.textView.font = .systemFont(ofSize: 16)
+
+        textInputNode.typingAttributes = [
+            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16)
+        ]
         textInputNode.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         textInputNode.style.flexGrow = 1
         textInputNode.style.flexShrink = 1
         textInputNode.style.minHeight = ASDimension(unit: .points, value: 36)
         textInputNode.style.maxHeight = ASDimension(unit: .points, value: 120)
         textInputNode.scrollEnabled = true
-        
+
         textInputNode.backgroundColor = .secondarySystemBackground
         
         attachButtonNode.setImage(
