@@ -35,6 +35,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.delegate = self
         node.tableNode.view.separatorStyle = .none
         node.tableNode.view.keyboardDismissMode = .interactive
+        node.tableNode.view.contentInsetAdjustmentBehavior = .never
 
         setupNavigationBar()
         bindViewModel()
@@ -91,7 +92,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
         let message = viewModel.messages[indexPath.row]
         return {
-            TextMessageCellNode(message: message)
+            switch message.content {
+            case .image:
+                return ImageMessageCellNode(message: message)
+            default:
+                return TextMessageCellNode(message: message)
+            }
         }
     }
 

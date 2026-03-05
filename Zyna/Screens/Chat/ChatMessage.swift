@@ -4,12 +4,13 @@
 //
 
 import Foundation
+import MatrixRustSDK
 
 // MARK: - Message Content
 
 enum ChatMessageContent {
     case text(body: String)
-    case image(width: UInt64?, height: UInt64?, caption: String?)
+    case image(source: MediaSource, width: UInt64?, height: UInt64?, caption: String?)
     case notice(body: String)
     case emote(body: String)
     case unsupported(typeName: String)

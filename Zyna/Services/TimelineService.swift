@@ -166,7 +166,7 @@ final class TimelineService {
         case .text(let content):
             return .text(body: content.body)
         case .image(let content):
-            return .image(width: content.info?.width, height: content.info?.height, caption: nil)
+            return .image(source: content.source, width: content.info?.width, height: content.info?.height, caption: content.caption)
         case .notice(let content):
             return .notice(body: content.body)
         case .emote(let content):

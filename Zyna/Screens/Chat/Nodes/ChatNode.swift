@@ -12,6 +12,7 @@ final class ChatNode: ASDisplayNode {
     override init() {
         super.init()
         automaticallyManagesSubnodes = true
+        automaticallyRelayoutOnSafeAreaChanges = true
         tableNode.inverted = true
     }
 
@@ -19,12 +20,14 @@ final class ChatNode: ASDisplayNode {
         let tableSpec = ASWrapperLayoutSpec(layoutElement: tableNode)
         tableSpec.style.flexGrow = 1
 
-        let stack = ASStackLayoutSpec.vertical()
-        stack.children = [tableSpec, inputNode]
-
-        return ASInsetLayoutSpec(
+        let inputWithSafeArea = ASInsetLayoutSpec(
             insets: UIEdgeInsets(top: 0, left: 0, bottom: safeAreaInsets.bottom, right: 0),
-            child: stack
+            child: inputNode
         )
+
+        let stack = ASStackLayoutSpec.vertical()
+        stack.children = [tableSpec, inputWithSafeArea]
+
+        return stack
     }
 }
