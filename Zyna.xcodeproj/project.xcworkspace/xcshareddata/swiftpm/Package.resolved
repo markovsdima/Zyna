@@ -1,5 +1,5 @@
 {
-  "originHash" : "9700f11cceebd15d17203facb68e3c4b13e7775aa2a5c410c6e0b34067ce96e9",
+  "originHash" : "36ee814ede9b1ffc26382d56dc364f4cecc6bcbe53c540d885952aff173f10f2",
   "pins" : [
     {
       "identity" : "grdb.swift",
@@ -11,30 +11,21 @@
       }
     },
     {
+      "identity" : "keychainaccess",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kishikawakatsumi/KeychainAccess",
+      "state" : {
+        "revision" : "84e546727d66f1adc5439debad16270d0fdd04e7",
+        "version" : "4.2.2"
+      }
+    },
+    {
       "identity" : "matrix-rust-components-swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/matrix-org/matrix-rust-components-swift",
       "state" : {
         "revision" : "25f075020019e3086605007658a87d183ab0e837",
         "version" : "25.7.2"
-      }
-    },
-    {
-      "identity" : "rxflow",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/RxSwiftCommunity/RxFlow.git",
-      "state" : {
-        "revision" : "6961e6057859d13976190bc85c8d8d9648ba2aab",
-        "version" : "2.13.1"
-      }
-    },
-    {
-      "identity" : "rxswift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/ReactiveX/RxSwift.git",
-      "state" : {
-        "revision" : "5dd1907d64f0d36f158f61a466bab75067224893",
-        "version" : "6.9.0"
       }
     },
     {
