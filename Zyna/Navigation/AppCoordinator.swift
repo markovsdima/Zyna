@@ -7,10 +7,7 @@ import AsyncDisplayKit
 
 final class AppCoordinator {
 
-    let navigationController: ASDKNavigationController = {
-        let nav = ASDKNavigationController()
-        return nav
-    }()
+    weak var window: UIWindow?
 
     func start() {
         showAuth()
@@ -25,7 +22,7 @@ final class AppCoordinator {
         }
         let authView = AuthView(viewModel: viewModel)
         let vc = authView.wrapped()
-        navigationController.setViewControllers([vc], animated: true)
+        window?.rootViewController = vc
     }
 
     private func showMain() {
@@ -33,6 +30,6 @@ final class AppCoordinator {
         mainCoordinator.start()
 
         guard let tabBar = mainCoordinator.tabBarController as? UIViewController else { return }
-        navigationController.setViewControllers([tabBar], animated: true)
+        window?.rootViewController = tabBar
     }
 }
