@@ -4,13 +4,12 @@
 //
 
 import AsyncDisplayKit
+import SwiftUI
 
 final class AppCoordinator {
 
-    let navigationController: ASDKNavigationController = {
-        let nav = ASDKNavigationController()
-        return nav
-    }()
+    weak var window: UIWindow?
+    private var mainCoordinator: MainCoordinator?
 
     func start() {
         showAuth()
@@ -21,18 +20,33 @@ final class AppCoordinator {
     private func showAuth() {
         let viewModel = AuthViewModel()
         viewModel.onAuthenticated = { [weak self] in
-            self?.showMain()
+            self?.showVerificationIfNeeded()
         }
         let authView = AuthView(viewModel: viewModel)
         let vc = authView.wrapped()
-        navigationController.setViewControllers([vc], animated: true)
+        window?.rootViewController = vc
+    }
+
+    private func showVerificationIfNeeded() {
+        let service = SessionVerificationService()
+        if service.isVerified {
+            showMain()
+            return
+        }
+
+        let viewModel = SessionVerificationViewModel()
+        viewModel.onVerified = { [weak self] in self?.showMain() }
+        viewModel.onSkipped = { [weak self] in self?.showMain() }
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        window?.rootViewController = vc
     }
 
     private func showMain() {
-        let mainCoordinator = MainCoordinator()
-        mainCoordinator.start()
+        let coordinator = MainCoordinator()
+        coordinator.start()
+        self.mainCoordinator = coordinator
 
-        guard let tabBar = mainCoordinator.tabBarController as? UIViewController else { return }
-        navigationController.setViewControllers([tabBar], animated: true)
+        guard let tabBar = coordinator.tabBarController as? UIViewController else { return }
+        window?.rootViewController = tabBar
     }
 }

@@ -14,6 +14,7 @@ struct RoomSummary: Identifiable {
     let displayName: String
     let avatarURL: String?
     let lastMessage: String?
+    let lastMessageTimestamp: Date?
     let unreadCount: UInt64
     let isEncrypted: Bool
 }
@@ -34,6 +35,10 @@ final class ZynaRoomListService: NSObject {
     private var serviceStateHandle: TaskHandle?
     private var rooms: [Room] = []
     private var isListening = false
+
+    func room(for id: String) -> Room? {
+        rooms.first { $0.id() == id }
+    }
     private var cancellables = Set<AnyCancellable>()
 
     override init() {
@@ -110,34 +115,7 @@ final class ZynaRoomListService: NSObject {
 
     private func applyUpdates(_ updates: [RoomListEntriesUpdate]) {
         for update in updates {
-            switch update {
-            case .reset(let values):
-                rooms = values
-            case .append(let values):
-                rooms.append(contentsOf: values)
-            case .pushBack(let value):
-                rooms.append(value)
-            case .pushFront(let value):
-                rooms.insert(value, at: 0)
-            case .insert(let index, let value):
-                rooms.insert(value, at: Int(index))
-            case .set(let index, let value):
-                if Int(index) < rooms.count {
-                    rooms[Int(index)] = value
-                }
-            case .remove(let index):
-                if Int(index) < rooms.count {
-                    rooms.remove(at: Int(index))
-                }
-            case .popBack:
-                if !rooms.isEmpty { rooms.removeLast() }
-            case .popFront:
-                if !rooms.isEmpty { rooms.removeFirst() }
-            case .truncate(let length):
-                rooms = Array(rooms.prefix(Int(length)))
-            case .clear:
-                rooms = []
-            }
+            applySingleUpdate(update)
         }
 
         let currentRooms = rooms
@@ -147,11 +125,15 @@ final class ZynaRoomListService: NSObject {
             var summaries: [RoomSummary] = []
             for room in currentRooms {
                 guard let info = try? await room.roomInfo() else { continue }
+
+                let (lastMessage, lastTimestamp) = Self.extractLastMessage(from: await room.latestEvent())
+
                 summaries.append(RoomSummary(
                     id: room.id(),
                     displayName: room.displayName() ?? "Unknown",
                     avatarURL: room.avatarUrl(),
-                    lastMessage: nil,  // TODO: extract from timeline
+                    lastMessage: lastMessage,
+                    lastMessageTimestamp: lastTimestamp,
                     unreadCount: info.notificationCount,
                     isEncrypted: room.encryptionState() != .notEncrypted
                 ))
@@ -162,6 +144,78 @@ final class ZynaRoomListService: NSObject {
             }
 
             roomsLog("Rooms updated: \(summaries.count) rooms")
+        }
+    }
+
+    // swiftlint:disable:next cyclomatic_complexity
+    private func applySingleUpdate(_ update: RoomListEntriesUpdate) {
+        switch update {
+        case .reset(let values):
+            rooms = values
+        case .append(let values):
+            rooms.append(contentsOf: values)
+        case .pushBack(let value):
+            rooms.append(value)
+        case .pushFront(let value):
+            rooms.insert(value, at: 0)
+        case .insert(let index, let value):
+            rooms.insert(value, at: Int(index))
+        case .set(let index, let value):
+            if Int(index) < rooms.count {
+                rooms[Int(index)] = value
+            }
+        case .remove(let index):
+            if Int(index) < rooms.count {
+                rooms.remove(at: Int(index))
+            }
+        case .popBack:
+            if !rooms.isEmpty { rooms.removeLast() }
+        case .popFront:
+            if !rooms.isEmpty { rooms.removeFirst() }
+        case .truncate(let length):
+            rooms = Array(rooms.prefix(Int(length)))
+        case .clear:
+            rooms = []
+        }
+    }
+
+    // MARK: - Last Message Extraction
+
+    private static func extractLastMessage(from event: EventTimelineItem?) -> (String?, Date?) {
+        guard let event else { return (nil, nil) }
+
+        let timestamp = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
+
+        guard case .msgLike(let content) = event.content else { return (nil, nil) }
+
+        let text: String
+        switch content.kind {
+        case .message(let message):
+            text = textForMessageType(message.msgType)
+        case .sticker:
+            text = "Sticker"
+        case .poll(let question, _, _, _, _, _, _):
+            text = "Poll: \(question)"
+        case .redacted:
+            text = "Message deleted"
+        case .unableToDecrypt:
+            text = "Encrypted message"
+        }
+
+        return (text, timestamp)
+    }
+
+    private static func textForMessageType(_ msgType: MessageType) -> String {
+        switch msgType {
+        case .text(let content): return content.body
+        case .emote(let content): return content.body
+        case .notice(let content): return content.body
+        case .image: return "Photo"
+        case .video: return "Video"
+        case .audio: return "Audio"
+        case .file: return "File"
+        case .location: return "Location"
+        default: return "Message"
         }
     }
 }

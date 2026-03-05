@@ -4,21 +4,23 @@
 //
 
 import AsyncDisplayKit
+import MatrixRustSDK
 
 final class ChatsCoordinator {
 
     let navigationController = ASDKNavigationController()
 
     func start() {
-        let vc = ChatsListViewController()
-        vc.onChatSelected = { [weak self] chatId in
-            self?.showChat(chatId)
+        let vc = RoomsViewController()
+        vc.onChatSelected = { [weak self] room in
+            self?.showChat(room)
         }
         navigationController.setViewControllers([vc], animated: false)
     }
 
-    private func showChat(_ chatId: String) {
-        let vc = ChatViewController(chatId: chatId)
+    private func showChat(_ room: Room) {
+        let viewModel = ChatViewModel(room: room)
+        let vc = ChatViewController(viewModel: viewModel)
         vc.onBack = { [weak self] in
             self?.navigationController.popViewController(animated: true)
         }
