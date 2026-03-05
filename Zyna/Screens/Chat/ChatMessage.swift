@@ -8,12 +8,29 @@ import MatrixRustSDK
 
 // MARK: - Message Content
 
-enum ChatMessageContent {
+enum ChatMessageContent: Equatable {
     case text(body: String)
     case image(source: MediaSource, width: UInt64?, height: UInt64?, caption: String?)
     case notice(body: String)
     case emote(body: String)
     case unsupported(typeName: String)
+
+    static func == (lhs: ChatMessageContent, rhs: ChatMessageContent) -> Bool {
+        switch (lhs, rhs) {
+        case (.text(let a), .text(let b)):
+            return a == b
+        case (.image(let s1, let w1, let h1, let c1), .image(let s2, let w2, let h2, let c2)):
+            return s1.url() == s2.url() && w1 == w2 && h1 == h2 && c1 == c2
+        case (.notice(let a), .notice(let b)):
+            return a == b
+        case (.emote(let a), .emote(let b)):
+            return a == b
+        case (.unsupported(let a), .unsupported(let b)):
+            return a == b
+        default:
+            return false
+        }
+    }
 }
 
 // MARK: - Chat Message
@@ -29,5 +46,21 @@ struct ChatMessage: Identifiable, Equatable {
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         lhs.id == rhs.id
+            && lhs.eventId == rhs.eventId
+            && lhs.senderId == rhs.senderId
+            && lhs.senderDisplayName == rhs.senderDisplayName
+            && lhs.isOutgoing == rhs.isOutgoing
+            && lhs.timestamp == rhs.timestamp
+            && lhs.content == rhs.content
     }
+}
+
+// MARK: - Table Diff Types
+
+/// Table-ready diff with IndexPaths computed for the inverted table.
+enum ChatTableDiff {
+    case insertRows([IndexPath])
+    case deleteRows([IndexPath])
+    case reloadRows([IndexPath])
+    case reloadData
 }

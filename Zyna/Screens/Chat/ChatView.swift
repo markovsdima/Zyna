@@ -79,13 +79,34 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - Bindings
 
     private func bindViewModel() {
-        viewModel.$messages
-            .dropFirst()
+        viewModel.tableDiffsSubject
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.node.tableNode.reloadData()
+            .sink { [weak self] diffs in
+                self?.applyTableDiffs(diffs)
             }
             .store(in: &cancellables)
+    }
+
+    private func applyTableDiffs(_ diffs: [ChatTableDiff]) {
+        if diffs.contains(where: { if case .reloadData = $0 { return true }; return false }) {
+            node.tableNode.reloadData()
+            return
+        }
+
+        node.tableNode.performBatch(animated: false, updates: {
+            for diff in diffs {
+                switch diff {
+                case .insertRows(let indexPaths):
+                    node.tableNode.insertRows(at: indexPaths, with: .none)
+                case .deleteRows(let indexPaths):
+                    node.tableNode.deleteRows(at: indexPaths, with: .none)
+                case .reloadRows(let indexPaths):
+                    node.tableNode.reloadRows(at: indexPaths, with: .none)
+                case .reloadData:
+                    break
+                }
+            }
+        }, completion: nil)
     }
 
     private func bindInput() {
