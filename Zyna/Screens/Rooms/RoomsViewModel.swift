@@ -5,14 +5,15 @@
 
 import Combine
 import UIKit
+import MatrixRustSDK
 
 final class RoomsViewModel {
 
     @Published private(set) var chats: [RoomModel] = []
 
-    var onChatSelected: ((String) -> Void)?
+    var onChatSelected: ((Room) -> Void)?
 
-    private let roomListService = ZynaRoomListService()
+    let roomListService = ZynaRoomListService()
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -27,7 +28,9 @@ final class RoomsViewModel {
 
     func selectChat(at index: Int) {
         guard index < chats.count else { return }
-        onChatSelected?(chats[index].id)
+        let roomId = chats[index].id
+        guard let room = roomListService.room(for: roomId) else { return }
+        onChatSelected?(room)
     }
 
     func deleteChat(at index: Int) {

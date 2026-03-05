@@ -8,6 +8,7 @@ import AsyncDisplayKit
 final class AppCoordinator {
 
     weak var window: UIWindow?
+    private var mainCoordinator: MainCoordinator?
 
     func start() {
         showAuth()
@@ -26,10 +27,11 @@ final class AppCoordinator {
     }
 
     private func showMain() {
-        let mainCoordinator = MainCoordinator()
-        mainCoordinator.start()
+        let coordinator = MainCoordinator()
+        coordinator.start()
+        self.mainCoordinator = coordinator
 
-        guard let tabBar = mainCoordinator.tabBarController as? UIViewController else { return }
+        guard let tabBar = coordinator.tabBarController as? UIViewController else { return }
         window?.rootViewController = tabBar
     }
 }

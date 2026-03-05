@@ -36,13 +36,36 @@ extension RoomModel {
             id: room.id,
             name: room.displayName,
             lastMessage: room.lastMessage ?? "",
-            timestamp: "",
+            timestamp: room.lastMessageTimestamp.map { Self.formatTimestamp($0) } ?? "",
             avatarURL: room.avatarURL.flatMap { Self.mxcToHTTPS($0) },
             avatarColor: Self.avatarColors[abs(room.id.hashValue) % Self.avatarColors.count],
             isOnline: false,
             unreadCount: Int(room.unreadCount),
             avatarInitials: String(initials.prefix(2))
         )
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f
+    }()
+
+    private static func formatTimestamp(_ date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            return timeFormatter.string(from: date)
+        } else if calendar.isDateInYesterday(date) {
+            return "Yesterday"
+        } else {
+            return dateFormatter.string(from: date)
+        }
     }
 
     /// Converts `mxc://server_name/media_id` to Matrix media thumbnail URL.

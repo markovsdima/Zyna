@@ -4,37 +4,53 @@
 //
 
 import AsyncDisplayKit
+import Combine
 
-final class ChatViewController: ASDKViewController<ASTableNode>, ASTableDataSource {
+final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
     var onBack: (() -> Void)?
 
-    private var chats: [Message] = []
-    private let chatId: String
+    private let viewModel: ChatViewModel
+    private var cancellables = Set<AnyCancellable>()
 
-    init(chatId: String) {
-        self.chatId = chatId
-        super.init(node: ASTableNode())
+    // MARK: - Init
 
-        setupUI()
-        setupNavigationBar()
-        loadMessages()
+    init(viewModel: ChatViewModel) {
+        self.viewModel = viewModel
+        super.init(node: ChatNode())
+        title = viewModel.roomName
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private func setupUI() {
-        node.view.separatorStyle = .none
-        node.inverted = true
-        node.dataSource = self
-        title = "Chat \(chatId)"
+    // MARK: - Lifecycle
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        node.tableNode.dataSource = self
+        node.tableNode.delegate = self
+        node.tableNode.view.separatorStyle = .none
+        node.tableNode.view.keyboardDismissMode = .interactive
+
+        setupNavigationBar()
+        bindViewModel()
+        bindInput()
     }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if isMovingFromParent {
+            viewModel.cleanup()
+        }
+    }
+
+    // MARK: - Navigation
 
     private func setupNavigationBar() {
         navigationItem.hidesBackButton = true
-
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "chevron.left"),
             style: .plain,
@@ -47,26 +63,54 @@ final class ChatViewController: ASDKViewController<ASTableNode>, ASTableDataSour
         onBack?()
     }
 
-    private func loadMessages() {
+    // MARK: - Bindings
 
-        // TODO: Message loading
+    private func bindViewModel() {
+        viewModel.$messages
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.node.tableNode.reloadData()
+            }
+            .store(in: &cancellables)
+    }
 
-        chats = [
-            Message(sentByMe: true, text: "Привет, как дела?"),
-            Message(sentByMe: false, text: "Отлично!")
-        ].reversed()
+    private func bindInput() {
+        node.inputNode.onSend = { [weak self] text in
+            self?.viewModel.sendMessage(text)
+        }
     }
 
     // MARK: - ASTableDataSource
 
     func tableNode(_ tableNode: ASTableNode, numberOfRowsInSection section: Int) -> Int {
-        return chats.count
+        viewModel.messages.count
     }
 
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
-        let chat = chats[indexPath.row]
+        let message = viewModel.messages[indexPath.row]
         return {
-            ChatCellNode(message: chat, screenWidth: ScreenConstants.width)
+            TextMessageCellNode(message: message)
         }
+    }
+
+    // MARK: - ASTableDelegate — Batch Fetching (Pagination)
+
+    func shouldBatchFetch(for tableNode: ASTableNode) -> Bool {
+        !viewModel.isPaginating
+    }
+
+    func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
+        viewModel.loadOlderMessages()
+
+        viewModel.$isPaginating
+            .dropFirst()
+            .filter { !$0 }
+            .first()
+            .receive(on: DispatchQueue.main)
+            .sink { _ in
+                context.completeBatchFetching(true)
+            }
+            .store(in: &cancellables)
     }
 }

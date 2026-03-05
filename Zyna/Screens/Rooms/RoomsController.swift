@@ -5,6 +5,7 @@
 
 import AsyncDisplayKit
 import Combine
+import MatrixRustSDK
 
 // MARK: - Chats List Controller
 class ChatsListViewController: ASDKViewController<ASDisplayNode> {
@@ -13,7 +14,7 @@ class ChatsListViewController: ASDKViewController<ASDisplayNode> {
     private let tableNode = ASTableNode()
     private var cancellables = Set<AnyCancellable>()
 
-    var onChatSelected: ((String) -> Void)? {
+    var onChatSelected: ((Room) -> Void)? {
         get { viewModel.onChatSelected }
         set { viewModel.onChatSelected = newValue }
     }
