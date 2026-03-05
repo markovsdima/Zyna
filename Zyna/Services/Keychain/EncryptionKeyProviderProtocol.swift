@@ -4,8 +4,7 @@
 //
 
 import Foundation
-import MatrixRustSDK
 
-final class MatrixManager: ObservableObject {
-    
+protocol EncryptionKeyProviderProtocol {
+    func generateKey() -> Data
 }

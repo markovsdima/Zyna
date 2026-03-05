@@ -4,14 +4,13 @@
 //
 
 import SwiftUI
-import RxFlow
-import RxRelay
 
 struct AuthView: View {
     @ObservedObject var viewModel: AuthViewModel
     
     @State private var username: String = ""
     @State private var password: String = ""
+    @State private var homeserver: String = "matrix.org"
     @State private var showPassword = false
     
     var body: some View {
@@ -39,16 +38,28 @@ struct AuthView: View {
                 logoView()
                 Spacer()
                 
+                homeserverInput()
                 loginInput()
                 passwordInput()
-                
+
+                if let error = viewModel.errorMessage {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundColor(.red)
+                        .padding(.horizontal)
+                }
+
                 Spacer().frame(height: 50)
                 signInButton()
             }
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(!viewModel.isLoading)
         }
         .preferredColorScheme(.light)
+        .onAppear {
+            viewModel.tryRestoreSession()
+        }
     }
     
     // MARK: - View Components
@@ -65,6 +76,28 @@ struct AuthView: View {
         }
     }
     
+    @ViewBuilder private func homeserverInput() -> some View {
+        ZStack(alignment: .leading) {
+            if homeserver.isEmpty {
+                Text("Homeserver")
+                    .foregroundColor(.white.opacity(0.5))
+                    .padding(.horizontal)
+            }
+            TextField("", text: $homeserver)
+                .font(.system(size: 18))
+                .padding()
+                .foregroundStyle(.white)
+                .background(Color.black.opacity(0.05))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                )
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
+        }.padding(.horizontal)
+    }
+
     @ViewBuilder private func loginInput() -> some View {
         ZStack(alignment: .leading) {
             if username.isEmpty {
@@ -84,14 +117,16 @@ struct AuthView: View {
                 )
                 .autocapitalization(.none)
                 .disableAutocorrection(true)
+                .keyboardType(.asciiCapable)
         }.padding(.horizontal)
     }
-    
+
     @ViewBuilder private func passwordInput() -> some View {
         ZStack(alignment: .trailing) {
             Group {
                 if showPassword {
                     TextField("", text: $password)
+                        .keyboardType(.asciiCapable)
                 } else {
                     SecureField("", text: $password)
                 }
@@ -131,16 +166,24 @@ struct AuthView: View {
     
     private func signInButton() -> some View {
         Button(action: {
-            viewModel.proceedToMainFlow()
+            viewModel.login(username: username, password: password, homeserver: homeserver)
         }) {
-            Text("Sign In")
-                .font(.headline)
-                .foregroundColor(.white)
-                .padding()
-                .frame(maxWidth: .infinity)
-                .background(.black, in: RoundedRectangle(cornerRadius: 10))
-                .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 5)
+            Group {
+                if viewModel.isLoading {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text("Sign In")
+                        .font(.headline)
+                }
+            }
+            .foregroundColor(.white)
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(.black, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 5)
         }
+        .disabled(viewModel.isLoading)
         .padding(.horizontal)
     }
 }
