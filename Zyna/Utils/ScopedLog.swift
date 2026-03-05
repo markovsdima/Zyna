@@ -33,6 +33,7 @@ struct LogScope: OptionSet {
     static let media       = LogScope(rawValue: bit(6))
     static let crypto      = LogScope(rawValue: bit(7))
     static let ui          = LogScope(rawValue: bit(8))
+    static let call        = LogScope(rawValue: bit(9))
 
     // MARK: - Presets
 
@@ -45,7 +46,8 @@ struct LogScope: OptionSet {
         .navigation,
         .media,
         .crypto,
-        .ui
+        .ui,
+        .call
     ]
 
     static let none: LogScope = []
@@ -55,6 +57,7 @@ struct LogScope: OptionSet {
 
 fileprivate enum Dmitry {
     static let base: LogScope = .all
+    static let calls: LogScope = [.call, .timeline]
 }
 
 // MARK: - Global Log Configuration
@@ -69,7 +72,7 @@ enum LogConfig {
     /// - [.messageSend, .calls]
     /// - .all.subtracting(.network)
     /// - .all.subtracting([.network, .calls])
-    static var enabled: LogScope = Dmitry.base
+    static var enabled: LogScope = Dmitry.calls
 
     static func enableAll() { enabled = .all }
     static func disableAll() { enabled = .none }
@@ -132,6 +135,7 @@ private extension LogScope {
         if contains(.media)      { names.append("media") }
         if contains(.crypto)     { names.append("crypto") }
         if contains(.ui)         { names.append("ui") }
+        if contains(.call)       { names.append("call") }
         return names.isEmpty ? "NONE" : names.joined(separator: "|")
     }
 }

@@ -9,6 +9,7 @@ import Combine
 final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
     var onBack: (() -> Void)?
+    var onCallTapped: (() -> Void)?
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -35,6 +36,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.delegate = self
         node.tableNode.view.separatorStyle = .none
         node.tableNode.view.keyboardDismissMode = .interactive
+        node.tableNode.view.contentInsetAdjustmentBehavior = .never
 
         setupNavigationBar()
         bindViewModel()
@@ -58,10 +60,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             target: self,
             action: #selector(backTapped)
         )
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "phone.fill"),
+            style: .plain,
+            target: self,
+            action: #selector(callTapped)
+        )
     }
 
     @objc private func backTapped() {
         onBack?()
+    }
+
+    @objc private func callTapped() {
+        onCallTapped?()
     }
 
     // MARK: - Bindings
@@ -91,7 +103,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
         let message = viewModel.messages[indexPath.row]
         return {
-            TextMessageCellNode(message: message)
+            switch message.content {
+            case .image:
+                return ImageMessageCellNode(message: message)
+            default:
+                return TextMessageCellNode(message: message)
+            }
         }
     }
 

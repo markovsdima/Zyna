@@ -16,6 +16,7 @@
 		322E77762DB083AE003921EC /* AsyncDisplayKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; };
 		322E77772DB083AE003921EC /* AsyncDisplayKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		326865392E17643900A407FD /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 326865382E17643900A407FD /* GRDB */; };
+		32ED2F0E2F59FA7E0080ED2A /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 32ED2F0D2F59FA7E0080ED2A /* WebRTC */; };
 		32F7D3022E3D59B3009282C3 /* MatrixRustSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3012E3D59B3009282C3 /* MatrixRustSDK */; };
 		32F7D31A2E3EE41A009282C3 /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
 /* End PBXBuildFile section */
@@ -80,6 +81,7 @@
 				322E76DF2DADAA8B003921EC /* PINOperation.xcframework in Frameworks */,
 				32F7D31A2E3EE41A009282C3 /* KeychainAccess in Frameworks */,
 				326865392E17643900A407FD /* GRDB in Frameworks */,
+				32ED2F0E2F59FA7E0080ED2A /* WebRTC in Frameworks */,
 				322E76E22DADAA97003921EC /* PINRemoteImage.xcframework in Frameworks */,
 				32F7D3022E3D59B3009282C3 /* MatrixRustSDK in Frameworks */,
 			);
@@ -150,6 +152,7 @@
 				326865382E17643900A407FD /* GRDB */,
 				32F7D3012E3D59B3009282C3 /* MatrixRustSDK */,
 				32F7D3192E3EE41A009282C3 /* KeychainAccess */,
+				32ED2F0D2F59FA7E0080ED2A /* WebRTC */,
 			);
 			productName = Zyna;
 			productReference = 324E19562DAD578A00CB5769 /* Zyna.app */;
@@ -185,6 +188,7 @@
 				32F7D2FC2E3D35AC009282C3 /* XCRemoteSwiftPackageReference "SwiftLintPlugins" */,
 				32F7D3002E3D59B3009282C3 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */,
 				32F7D3182E3EE41A009282C3 /* XCRemoteSwiftPackageReference "KeychainAccess" */,
+				32ED2F0C2F59FA7E0080ED2A /* XCRemoteSwiftPackageReference "WebRTC" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 324E19572DAD578A00CB5769 /* Products */;
@@ -444,6 +448,14 @@
 				version = 7.5.0;
 			};
 		};
+		32ED2F0C2F59FA7E0080ED2A /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC/";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 138.0.0;
+			};
+		};
 		32F7D2FC2E3D35AC009282C3 /* XCRemoteSwiftPackageReference "SwiftLintPlugins" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/SimplyDanny/SwiftLintPlugins";
@@ -475,6 +487,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 326865372E17643900A407FD /* XCRemoteSwiftPackageReference "GRDB.swift" */;
 			productName = GRDB;
+		};
+		32ED2F0D2F59FA7E0080ED2A /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 32ED2F0C2F59FA7E0080ED2A /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
 		};
 		32F7D2FE2E3D3EDD009282C3 /* SwiftLintBuildToolPlugin */ = {
 			isa = XCSwiftPackageProductDependency;
