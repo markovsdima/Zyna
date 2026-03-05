@@ -7,8 +7,7 @@ import AsyncDisplayKit
 import Combine
 import MatrixRustSDK
 
-// MARK: - Chats List Controller
-class ChatsListViewController: ASDKViewController<ASDisplayNode> {
+class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
     private let viewModel = RoomsViewModel()
     private let tableNode = ASTableNode()
@@ -81,7 +80,8 @@ class ChatsListViewController: ASDKViewController<ASDisplayNode> {
 }
 
 // MARK: - Table Node Data Source & Delegate
-extension ChatsListViewController: ASTableDataSource, ASTableDelegate {
+
+extension RoomsViewController: ASTableDataSource, ASTableDelegate {
 
     func numberOfSections(in tableNode: ASTableNode) -> Int {
         return 1
@@ -104,7 +104,7 @@ extension ChatsListViewController: ASTableDataSource, ASTableDelegate {
     }
 }
 
-extension ChatsListViewController {
+extension RoomsViewController {
     func tableNode(_ tableNode: ASTableNode, canEditRowAt indexPath: IndexPath) -> Bool {
         return true
     }

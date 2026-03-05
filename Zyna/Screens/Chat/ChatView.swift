@@ -19,6 +19,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         self.viewModel = viewModel
         super.init(node: ChatNode())
         title = viewModel.roomName
+        hidesBottomBarWhenPushed = true
     }
 
     required init?(coder: NSCoder) {

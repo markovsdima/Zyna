@@ -91,7 +91,7 @@ final class TextMessageCellNode: ASCellNode {
 
         // Sender name
         if showSenderName, let name = message.senderDisplayName {
-            let colorIndex = abs(message.senderId.hashValue) % Self.senderColors.count
+            let colorIndex = Self.stableHash(message.senderId) % Self.senderColors.count
             senderNameNode.attributedText = NSAttributedString(
                 string: name,
                 attributes: [
@@ -160,5 +160,16 @@ final class TextMessageCellNode: ASCellNode {
             : [bubbleWithName, spacer]
 
         return ASInsetLayoutSpec(insets: Self.cellInsets, child: hStack)
+    }
+
+    // MARK: - Helpers
+
+    /// djb2 hash — stable across app launches, unlike `hashValue`.
+    private static func stableHash(_ string: String) -> Int {
+        var hash: UInt64 = 5381
+        for byte in string.utf8 {
+            hash = hash &* 33 &+ UInt64(byte)
+        }
+        return Int(hash % UInt64(Int.max))
     }
 }

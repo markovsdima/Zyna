@@ -4,6 +4,7 @@
 //
 
 import AsyncDisplayKit
+import SwiftUI
 
 final class AppCoordinator {
 
@@ -19,10 +20,24 @@ final class AppCoordinator {
     private func showAuth() {
         let viewModel = AuthViewModel()
         viewModel.onAuthenticated = { [weak self] in
-            self?.showMain()
+            self?.showVerificationIfNeeded()
         }
         let authView = AuthView(viewModel: viewModel)
         let vc = authView.wrapped()
+        window?.rootViewController = vc
+    }
+
+    private func showVerificationIfNeeded() {
+        let service = SessionVerificationService()
+        if service.isVerified {
+            showMain()
+            return
+        }
+
+        let viewModel = SessionVerificationViewModel()
+        viewModel.onVerified = { [weak self] in self?.showMain() }
+        viewModel.onSkipped = { [weak self] in self?.showMain() }
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
         window?.rootViewController = vc
     }
 

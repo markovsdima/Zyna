@@ -38,7 +38,7 @@ extension RoomModel {
             lastMessage: room.lastMessage ?? "",
             timestamp: room.lastMessageTimestamp.map { Self.formatTimestamp($0) } ?? "",
             avatarURL: room.avatarURL.flatMap { Self.mxcToHTTPS($0) },
-            avatarColor: Self.avatarColors[abs(room.id.hashValue) % Self.avatarColors.count],
+            avatarColor: Self.avatarColors[Self.stableHash(room.id) % Self.avatarColors.count],
             isOnline: false,
             unreadCount: Int(room.unreadCount),
             avatarInitials: String(initials.prefix(2))
@@ -46,15 +46,15 @@ extension RoomModel {
     }
 
     private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm"
-        return f
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
     }()
 
     private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMM d"
-        return f
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter
     }()
 
     private static func formatTimestamp(_ date: Date) -> String {
@@ -66,6 +66,15 @@ extension RoomModel {
         } else {
             return dateFormatter.string(from: date)
         }
+    }
+
+    /// djb2 hash — stable across app launches, unlike `hashValue`.
+    private static func stableHash(_ string: String) -> Int {
+        var hash: UInt64 = 5381
+        for byte in string.utf8 {
+            hash = hash &* 33 &+ UInt64(byte)
+        }
+        return Int(hash % UInt64(Int.max))
     }
 
     /// Converts `mxc://server_name/media_id` to Matrix media thumbnail URL.

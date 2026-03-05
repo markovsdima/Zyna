@@ -11,7 +11,7 @@ final class ChatsCoordinator {
     let navigationController = ASDKNavigationController()
 
     func start() {
-        let vc = ChatsListViewController()
+        let vc = RoomsViewController()
         vc.onChatSelected = { [weak self] room in
             self?.showChat(room)
         }
