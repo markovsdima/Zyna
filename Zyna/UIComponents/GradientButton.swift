@@ -23,9 +23,4 @@ final class GradientButton: BaseNode {
             background: gradient
         )
     }
-    
-    override func layout() {
-        super.layout()
-        gradient.frame = self.bounds
-    }
 }

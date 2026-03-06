@@ -13,6 +13,7 @@ final class ChatInputNode: ASDisplayNode {
     private let separatorNode = ASDisplayNode()
     
     var onSend: ((String) -> Void)?
+    var onSizeChanged: (() -> Void)?
     
     override init() {
         super.init()
@@ -23,15 +24,17 @@ final class ChatInputNode: ASDisplayNode {
     private func setupNodes() {
         separatorNode.style.height = ASDimension(unit: .points, value: 0.5)
         separatorNode.backgroundColor = .separator
-        
-        textInputNode.textView.font = .systemFont(ofSize: 16)
+
+        textInputNode.typingAttributes = [
+            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16)
+        ]
         textInputNode.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         textInputNode.style.flexGrow = 1
         textInputNode.style.flexShrink = 1
         textInputNode.style.minHeight = ASDimension(unit: .points, value: 36)
         textInputNode.style.maxHeight = ASDimension(unit: .points, value: 120)
         textInputNode.scrollEnabled = true
-        
+
         textInputNode.backgroundColor = .secondarySystemBackground
         
         attachButtonNode.setImage(
@@ -124,6 +127,7 @@ final class ChatInputNode: ASDisplayNode {
         onSend?(text)
         textInputNode.textView.text = ""
         setNeedsLayout()
+        onSizeChanged?()
     }
 }
 
@@ -131,7 +135,7 @@ final class ChatInputNode: ASDisplayNode {
 
 extension ChatInputNode: ASEditableTextNodeDelegate {
     func editableTextNodeDidUpdateText(_ editableTextNode: ASEditableTextNode) {
-        // Текст изменился — пересчитать layout (высота поля)
         setNeedsLayout()
+        onSizeChanged?()
     }
 }

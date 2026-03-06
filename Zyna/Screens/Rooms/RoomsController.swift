@@ -33,7 +33,6 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         tableNode.delegate = self
         tableNode.dataSource = self
         tableNode.backgroundColor = UIColor.systemBackground
-        node.addSubnode(tableNode)
         node.backgroundColor = UIColor.systemBackground
 
         node.layoutSpecBlock = { [weak self] _, constrainedSize in

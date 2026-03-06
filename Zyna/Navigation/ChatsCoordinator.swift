@@ -43,6 +43,7 @@ final class ChatsCoordinator {
             self?.startCall(in: room, timelineService: viewModel.timelineService)
         }
         navigationController.pushViewController(vc, animated: true)
+        navigationController.enableFullScreenPopGesture()
     }
 
     // MARK: - Calls

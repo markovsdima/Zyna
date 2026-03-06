@@ -13,14 +13,15 @@ private let timelineLog = ScopedLog(.timeline)
 
 final class TimelineService {
 
-    let messagesSubject = CurrentValueSubject<[ChatMessage], Never>([])
     let isPaginatingSubject = CurrentValueSubject<Bool, Never>(false)
     let rawTimelineItemsSubject = PassthroughSubject<[TimelineItem], Never>()
+
+    /// Raw SDK diffs forwarded to the coalescer.
+    var onDiffs: (([TimelineDiff]) -> Void)?
 
     private let room: Room
     private var timeline: Timeline?
     private var listenerHandle: TaskHandle?
-    private var timelineItems: [TimelineItem] = []
 
     init(room: Room) {
         self.room = room
@@ -37,7 +38,7 @@ final class TimelineService {
             self.timeline = timeline
 
             let listener = ZynaTimelineListener { [weak self] diffs in
-                self?.applyDiffs(diffs)
+                self?.handleDiffs(diffs)
             }
             self.listenerHandle = await timeline.addListener(listener: listener)
 
@@ -47,16 +48,14 @@ final class TimelineService {
         }
     }
 
-    // MARK: - Apply Diffs
+    // MARK: - Handle Diffs
 
-    private func applyDiffs(_ diffs: [TimelineDiff]) {
+    private func handleDiffs(_ diffs: [TimelineDiff]) {
         var allItems: [TimelineItem] = []
         var liveItems: [TimelineItem] = []
 
         for diff in diffs {
-            let change = diff.change()
-
-            switch change {
+            switch diff.change() {
             case .append:
                 if let items = diff.append() {
                     allItems.append(contentsOf: items)
@@ -78,8 +77,6 @@ final class TimelineService {
             default:
                 break
             }
-
-            applySingleDiff(diff)
         }
 
         // Only check LIVE events for call invites (not pagination history)
@@ -90,68 +87,15 @@ final class TimelineService {
             rawTimelineItemsSubject.send(allItems)
         }
 
-        let messages = timelineItems.compactMap { Self.mapTimelineItem($0) }
+        // Forward raw diffs to the coalescer
+        onDiffs?(diffs)
 
-        DispatchQueue.main.async { [weak self] in
-            self?.messagesSubject.send(messages)
-        }
-
-        timelineLog("Timeline updated: \(messages.count) messages")
-    }
-
-    // swiftlint:disable:next cyclomatic_complexity
-    private func applySingleDiff(_ diff: TimelineDiff) {
-        switch diff.change() {
-        case .append:
-            if let items = diff.append() {
-                timelineItems.append(contentsOf: items)
-            }
-        case .pushBack:
-            if let item = diff.pushBack() {
-                timelineItems.append(item)
-            }
-        case .pushFront:
-            if let item = diff.pushFront() {
-                timelineItems.insert(item, at: 0)
-            }
-        case .insert:
-            if let update = diff.insert() {
-                timelineItems.insert(update.item, at: Int(update.index))
-            }
-        case .set:
-            if let update = diff.set() {
-                let idx = Int(update.index)
-                if idx < timelineItems.count {
-                    timelineItems[idx] = update.item
-                }
-            }
-        case .remove:
-            if let index = diff.remove() {
-                let idx = Int(index)
-                if idx < timelineItems.count {
-                    timelineItems.remove(at: idx)
-                }
-            }
-        case .popBack:
-            if !timelineItems.isEmpty { timelineItems.removeLast() }
-        case .popFront:
-            if !timelineItems.isEmpty { timelineItems.removeFirst() }
-        case .reset:
-            if let items = diff.reset() {
-                timelineItems = items
-            }
-        case .truncate:
-            if let length = diff.truncate() {
-                timelineItems = Array(timelineItems.prefix(Int(length)))
-            }
-        case .clear:
-            timelineItems = []
-        }
+        timelineLog("Timeline diffs forwarded: \(diffs.count) diffs")
     }
 
     // MARK: - Map SDK Item -> ChatMessage
 
-    private static func mapTimelineItem(_ item: TimelineItem) -> ChatMessage? {
+    static func mapTimelineItem(_ item: TimelineItem) -> ChatMessage? {
         guard let event = item.asEvent() else { return nil }
 
         // Filter out wrapped call signaling messages

@@ -38,9 +38,12 @@ class ButtonNode: ASButtonNode {
 
     private func setupHighlight() {
         highlightLayer.backgroundColor = UIColor.white.withAlphaComponent(0.3).cgColor
-        highlightLayer.frame = CGRect(x: 0, y: 0, width: 200, height: 44)
         highlightLayer.isHidden = true
-        self.layer.addSublayer(highlightLayer)
+    }
+
+    override func didLoad() {
+        super.didLoad()
+        layer.addSublayer(highlightLayer)
     }
 
     private func setupEventHandlers() {

@@ -9,10 +9,13 @@ import MatrixRustSDK
 
 final class ChatViewModel {
 
-    // MARK: - Published State
+    // MARK: - State
 
-    @Published private(set) var messages: [ChatMessage] = []
+    private(set) var messages: [ChatMessage] = []
     @Published private(set) var isPaginating: Bool = false
+
+    /// Called on the main queue when the table needs updating.
+    var onTableUpdate: ((TableUpdate) -> Void)?
 
     let roomName: String
 
@@ -22,27 +25,37 @@ final class ChatViewModel {
     // MARK: - Private
 
     let timelineService: TimelineService
+    private let coalescer = TimelineCoalescer()
     private var cancellables = Set<AnyCancellable>()
 
     init(room: Room) {
         self.roomName = room.displayName() ?? "Chat"
         self.timelineService = TimelineService(room: room)
 
-        timelineService.messagesSubject
-            .map { $0.reversed() }
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] messages in
-                Self.prefetchImages(messages)
-                self?.messages = messages
-            }
-            .store(in: &cancellables)
-
         timelineService.isPaginatingSubject
             .receive(on: DispatchQueue.main)
             .assign(to: &$isPaginating)
 
-        Task {
-            await timelineService.startListening()
+        // Wire SDK diffs → coalescer
+        timelineService.onDiffs = { [weak self] diffs in
+            self?.coalescer.receive(diffs: diffs)
+        }
+
+        // Coalescer output → UI
+        coalescer.onBatchReady = { [weak self] newMessages, tableUpdate in
+            guard let self else { return }
+            Self.prefetchImages(newMessages)
+            self.messages = newMessages
+            self.onTableUpdate?(tableUpdate)
+
+            // Auto-paginate when SDK delivers fewer messages than one page
+            if newMessages.count < 20 && !self.isPaginating {
+                self.loadOlderMessages()
+            }
+        }
+
+        Task { [weak self] in
+            await self?.timelineService.startListening()
         }
     }
 
@@ -62,6 +75,8 @@ final class ChatViewModel {
     }
 
     func cleanup() {
+        timelineService.onDiffs = nil
+        coalescer.onBatchReady = nil
         timelineService.stopListening()
     }
 

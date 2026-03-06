@@ -16,6 +16,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window = UIWindow(windowScene: windowScene)
         guard let window = self.window else { return }
 
+        DeviceInsets.configure(from: window)
         appCoordinator.window = window
         appCoordinator.start()
         window.makeKeyAndVisible()

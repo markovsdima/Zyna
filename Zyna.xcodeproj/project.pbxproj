@@ -51,7 +51,7 @@
 		32ED2CEE2F58F2580080ED2A /* Exceptions for "Zyna" folder in "Zyna" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Application/Info.plist,
+				App/Info.plist,
 			);
 			platformFiltersByRelativePath = {
 				SwiftUIScreens/Auth/AuthView.swift = (ios, );
@@ -238,7 +238,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 2ZL4A7F4SY;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Zyna/Application/Info.plist;
+				INFOPLIST_FILE = Zyna/App/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -273,7 +273,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 2ZL4A7F4SY;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Zyna/Application/Info.plist;
+				INFOPLIST_FILE = Zyna/App/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

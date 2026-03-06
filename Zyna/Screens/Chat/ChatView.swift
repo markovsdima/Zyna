@@ -13,6 +13,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
+    private let inputAccessory = ChatInputAccessoryView()
+
+    // MARK: - InputAccessoryView
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override var inputAccessoryView: UIView? { inputAccessory }
 
     // MARK: - Init
 
@@ -38,9 +45,25 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.view.keyboardDismissMode = .interactive
         node.tableNode.view.contentInsetAdjustmentBehavior = .never
 
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tableTapped))
+        tap.cancelsTouchesInView = false
+        node.tableNode.view.addGestureRecognizer(tap)
+
+        // Pre-set inset to the expected accessory height so the table
+        // doesn't visibly slide up when the keyboard notification arrives.
+        let estimatedAccessoryHeight: CGFloat = 49 + DeviceInsets.bottom
+        node.tableNode.contentInset.top = estimatedAccessoryHeight
+        node.tableNode.view.verticalScrollIndicatorInsets.top = estimatedAccessoryHeight
+
         setupNavigationBar()
         bindViewModel()
         bindInput()
+        observeKeyboard()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        becomeFirstResponder()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -79,19 +102,56 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - Bindings
 
     private func bindViewModel() {
-        viewModel.$messages
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.node.tableNode.reloadData()
-            }
-            .store(in: &cancellables)
+        viewModel.onTableUpdate = { [weak self] update in
+            self?.applyTableUpdate(update)
+        }
+    }
+
+    private func applyTableUpdate(_ update: TableUpdate) {
+        switch update {
+        case .reload:
+            node.tableNode.reloadData()
+        case .batch(let deletions, let insertions, let updates, let animated):
+            if deletions.isEmpty && insertions.isEmpty && updates.isEmpty { return }
+            let rowAnimation: UITableView.RowAnimation = animated ? .automatic : .none
+            node.tableNode.performBatch(animated: animated, updates: {
+                if !deletions.isEmpty { node.tableNode.deleteRows(at: deletions, with: rowAnimation) }
+                if !insertions.isEmpty { node.tableNode.insertRows(at: insertions, with: rowAnimation) }
+                if !updates.isEmpty { node.tableNode.reloadRows(at: updates, with: .none) }
+            }, completion: nil)
+        }
     }
 
     private func bindInput() {
-        node.inputNode.onSend = { [weak self] text in
+        inputAccessory.inputNode.onSend = { [weak self] text in
             self?.viewModel.sendMessage(text)
         }
+    }
+
+    // MARK: - Keyboard
+
+    private func observeKeyboard() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(keyboardWillChangeFrame),
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil
+        )
+    }
+
+    @objc private func tableTapped() {
+        inputAccessory.inputNode.textInputNode.resignFirstResponder()
+    }
+
+    @objc private func keyboardWillChangeFrame(_ note: Notification) {
+        guard !isMovingFromParent,
+              navigationController?.transitionCoordinator == nil,
+              let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+        // How much of the screen the keyboard (+ accessory) covers
+        let coveredHeight = max(0, UIScreen.main.bounds.height - endFrame.origin.y)
+        // Inverted table: contentInset.top is the visual bottom
+        node.tableNode.contentInset.top = coveredHeight
+        node.tableNode.view.verticalScrollIndicatorInsets.top = coveredHeight
     }
 
     // MARK: - ASTableDataSource
