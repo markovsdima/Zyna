@@ -13,6 +13,7 @@ final class ChatInputNode: ASDisplayNode {
     private let separatorNode = ASDisplayNode()
     
     var onSend: ((String) -> Void)?
+    var onSizeChanged: (() -> Void)?
     
     override init() {
         super.init()
@@ -126,6 +127,7 @@ final class ChatInputNode: ASDisplayNode {
         onSend?(text)
         textInputNode.textView.text = ""
         setNeedsLayout()
+        onSizeChanged?()
     }
 }
 
@@ -133,7 +135,7 @@ final class ChatInputNode: ASDisplayNode {
 
 extension ChatInputNode: ASEditableTextNodeDelegate {
     func editableTextNodeDidUpdateText(_ editableTextNode: ASEditableTextNode) {
-        // Текст изменился — пересчитать layout (высота поля)
         setNeedsLayout()
+        onSizeChanged?()
     }
 }
