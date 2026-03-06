@@ -7,5 +7,5 @@ import Foundation
 
 enum TableUpdate {
     case reload
-    case batch(deletions: [IndexPath], insertions: [IndexPath], updates: [IndexPath])
+    case batch(deletions: [IndexPath], insertions: [IndexPath], updates: [IndexPath], animated: Bool)
 }

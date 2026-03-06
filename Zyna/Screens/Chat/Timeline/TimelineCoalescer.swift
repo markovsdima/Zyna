@@ -8,6 +8,10 @@ import MatrixRustSDK
 
 /// Buffers raw SDK timeline diffs and flushes them as a single batch update
 /// after a 50 ms debounce window. All state is accessed on the main queue.
+///
+/// Maintains an incremental ChatMessage array so only changed items are re-mapped,
+/// and computes fine-grained TableUpdate (never falls back to .reload except for
+/// .reset / .clear diffs).
 final class TimelineCoalescer {
 
     /// Fired on the main queue with the new display-order messages and a table update.
@@ -18,6 +22,12 @@ final class TimelineCoalescer {
     /// Timeline items in chronological SDK order.
     private var currentItems: [TimelineItem] = []
 
+    /// Whether each currentItems[i] maps to a ChatMessage.
+    private var isMappable: [Bool] = []
+
+    /// Chat messages in chronological order (only mappable items).
+    private var chronMessages: [ChatMessage] = []
+
     /// Messages in display order (reversed chronological for the inverted table).
     private var displayMessages: [ChatMessage] = []
 
@@ -25,8 +35,6 @@ final class TimelineCoalescer {
     private var debounceWork: DispatchWorkItem?
 
     private static let debounceInterval: TimeInterval = 0.05
-    private static let maxDiffsBeforeReload = 50
-    private static let maxOpsBeforeReload = 100
 
     // MARK: - Public
 
@@ -57,7 +65,8 @@ final class TimelineCoalescer {
         pendingDiffs.removeAll()
         guard !diffs.isEmpty else { return }
 
-        let oldMessages = displayMessages
+        let oldDisplayMessages = displayMessages
+        var updatedIds = Set<String>()
         var hadResetOrClear = false
 
         for diff in diffs {
@@ -67,128 +76,195 @@ final class TimelineCoalescer {
             default:
                 break
             }
-            applySingleDiff(diff)
+            applySingleDiff(diff, updatedIds: &updatedIds)
         }
 
-        // Full re-map: SDK may mutate TimelineItem objects in-place (e.g. decryption)
-        let chronological = currentItems.compactMap { TimelineService.mapTimelineItem($0) }
-        displayMessages = Array(chronological.reversed())
+        displayMessages = Array(chronMessages.reversed())
 
-        let tableUpdate: TableUpdate
-        if hadResetOrClear || diffs.count > Self.maxDiffsBeforeReload {
-            tableUpdate = .reload
-        } else {
-            tableUpdate = computeBatchUpdate(old: oldMessages, new: displayMessages)
+        if hadResetOrClear {
+            onBatchReady?(displayMessages, .reload)
+            return
         }
 
-        onBatchReady?(displayMessages, tableUpdate)
+        if oldDisplayMessages == displayMessages {
+            return
+        }
+
+        // Structural diff on IDs
+        let oldIDs = oldDisplayMessages.map(\.id)
+        let newIDs = displayMessages.map(\.id)
+        let idDiff = newIDs.difference(from: oldIDs)
+
+        var deletions: [IndexPath] = []
+        var insertions: [IndexPath] = []
+        var removedOldOffsets = Set<Int>()
+
+        for change in idDiff {
+            switch change {
+            case .remove(let offset, _, _):
+                deletions.append(IndexPath(row: offset, section: 0))
+                removedOldOffsets.insert(offset)
+            case .insert(let offset, _, _):
+                insertions.append(IndexPath(row: offset, section: 0))
+            }
+        }
+
+        // Content updates: old indices for items whose content changed (excluding removed)
+        var updates: [IndexPath] = []
+        if !updatedIds.isEmpty {
+            for (oldIdx, msg) in oldDisplayMessages.enumerated() {
+                if updatedIds.contains(msg.id) && !removedOldOffsets.contains(oldIdx) {
+                    updates.append(IndexPath(row: oldIdx, section: 0))
+                }
+            }
+        }
+
+        // Animate only single-message appends with no other changes
+        let animated = deletions.isEmpty && insertions.count == 1 && updates.isEmpty
+
+        onBatchReady?(displayMessages, .batch(
+            deletions: deletions,
+            insertions: insertions,
+            updates: updates,
+            animated: animated
+        ))
     }
 
-    // MARK: - Apply Single Diff
+    // MARK: - Apply Single Diff (incremental)
 
-    // swiftlint:disable:next cyclomatic_complexity
-    private func applySingleDiff(_ diff: TimelineDiff) {
+    // swiftlint:disable:next cyclomatic_complexity function_body_length
+    private func applySingleDiff(_ diff: TimelineDiff, updatedIds: inout Set<String>) {
         switch diff.change() {
+
         case .append:
             guard let items = diff.append() else { return }
-            currentItems.append(contentsOf: items)
+            for item in items {
+                currentItems.append(item)
+                if let msg = TimelineService.mapTimelineItem(item) {
+                    chronMessages.append(msg)
+                    isMappable.append(true)
+                } else {
+                    isMappable.append(false)
+                }
+            }
 
         case .pushBack:
             guard let item = diff.pushBack() else { return }
             currentItems.append(item)
+            if let msg = TimelineService.mapTimelineItem(item) {
+                chronMessages.append(msg)
+                isMappable.append(true)
+            } else {
+                isMappable.append(false)
+            }
 
         case .pushFront:
             guard let item = diff.pushFront() else { return }
             currentItems.insert(item, at: 0)
+            if let msg = TimelineService.mapTimelineItem(item) {
+                chronMessages.insert(msg, at: 0)
+                isMappable.insert(true, at: 0)
+            } else {
+                isMappable.insert(false, at: 0)
+            }
 
         case .insert:
             guard let update = diff.insert() else { return }
             let idx = Int(update.index)
             guard idx <= currentItems.count else { return }
             currentItems.insert(update.item, at: idx)
+            if let msg = TimelineService.mapTimelineItem(update.item) {
+                let msgIdx = chatMessageIndex(forTimelineIndex: idx)
+                chronMessages.insert(msg, at: msgIdx)
+                isMappable.insert(true, at: idx)
+            } else {
+                isMappable.insert(false, at: idx)
+            }
 
         case .set:
             guard let update = diff.set() else { return }
             let idx = Int(update.index)
             guard idx < currentItems.count else { return }
+
+            let wasMappable = isMappable[idx]
+            let oldMsgIdx = wasMappable ? chatMessageIndex(forTimelineIndex: idx) : nil
+
             currentItems[idx] = update.item
+            let newMsg = TimelineService.mapTimelineItem(update.item)
+            let nowMappable = newMsg != nil
+            isMappable[idx] = nowMappable
+
+            switch (wasMappable, nowMappable) {
+            case (true, true):
+                if chronMessages[oldMsgIdx!] != newMsg! {
+                    chronMessages[oldMsgIdx!] = newMsg!
+                    updatedIds.insert(newMsg!.id)
+                }
+            case (false, true):
+                let msgIdx = chatMessageIndex(forTimelineIndex: idx)
+                chronMessages.insert(newMsg!, at: msgIdx)
+            case (true, false):
+                chronMessages.remove(at: oldMsgIdx!)
+            case (false, false):
+                break
+            }
 
         case .remove:
             guard let index = diff.remove() else { return }
             let idx = Int(index)
             guard idx < currentItems.count else { return }
+            if isMappable[idx] {
+                let msgIdx = chatMessageIndex(forTimelineIndex: idx)
+                chronMessages.remove(at: msgIdx)
+            }
             currentItems.remove(at: idx)
+            isMappable.remove(at: idx)
 
         case .popBack:
             guard !currentItems.isEmpty else { return }
+            if isMappable.last == true {
+                chronMessages.removeLast()
+            }
             currentItems.removeLast()
+            isMappable.removeLast()
 
         case .popFront:
             guard !currentItems.isEmpty else { return }
+            if isMappable.first == true {
+                chronMessages.removeFirst()
+            }
             currentItems.removeFirst()
+            isMappable.removeFirst()
 
         case .reset:
             currentItems = diff.reset() ?? []
+            rebuildChronMessages()
 
         case .truncate:
             if let length = diff.truncate() {
                 currentItems = Array(currentItems.prefix(Int(length)))
             }
+            rebuildChronMessages()
 
         case .clear:
             currentItems = []
+            chronMessages = []
+            isMappable = []
         }
     }
 
-    // MARK: - Batch Update Computation
+    // MARK: - Helpers
 
-    private func computeBatchUpdate(old: [ChatMessage], new: [ChatMessage]) -> TableUpdate {
-        if old.isEmpty && !new.isEmpty { return .reload }
-        if old == new { return .batch(deletions: [], insertions: [], updates: []) }
-
-        let oldIDs = old.map(\.id)
-        let newIDs = new.map(\.id)
-
-        let structuralDiff = newIDs.difference(from: oldIDs)
-        let hasStructuralChanges = !structuralDiff.isEmpty
-
-        // Content-only changes: same id, different content
-        let oldByID = Dictionary(uniqueKeysWithValues: old.map { ($0.id, $0) })
-        var contentUpdates: [IndexPath] = []
-        for (index, msg) in new.enumerated() {
-            if let oldMsg = oldByID[msg.id], oldMsg != msg {
-                contentUpdates.append(IndexPath(row: index, section: 0))
-            }
+    private func chatMessageIndex(forTimelineIndex timelineIndex: Int) -> Int {
+        var count = 0
+        for i in 0..<timelineIndex {
+            if isMappable[i] { count += 1 }
         }
-        let hasContentChanges = !contentUpdates.isEmpty
+        return count
+    }
 
-        // Mixed structural + content changes → safest to reload
-        if hasStructuralChanges && hasContentChanges {
-            return .reload
-        }
-
-        if hasStructuralChanges {
-            let opCount = structuralDiff.insertions.count + structuralDiff.removals.count
-            if opCount > Self.maxOpsBeforeReload {
-                return .reload
-            }
-
-            var deletions: [IndexPath] = []
-            var insertions: [IndexPath] = []
-
-            for change in structuralDiff {
-                switch change {
-                case .remove(let offset, _, _):
-                    deletions.append(IndexPath(row: offset, section: 0))
-                case .insert(let offset, _, _):
-                    insertions.append(IndexPath(row: offset, section: 0))
-                }
-            }
-
-            return .batch(deletions: deletions, insertions: insertions, updates: [])
-        }
-
-        // Content-only changes
-        return .batch(deletions: [], insertions: [], updates: contentUpdates)
+    private func rebuildChronMessages() {
+        isMappable = currentItems.map { TimelineService.mapTimelineItem($0) != nil }
+        chronMessages = currentItems.compactMap { TimelineService.mapTimelineItem($0) }
     }
 }

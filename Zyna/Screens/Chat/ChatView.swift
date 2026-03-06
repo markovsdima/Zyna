@@ -105,11 +105,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         switch update {
         case .reload:
             node.tableNode.reloadData()
-        case .batch(let deletions, let insertions, let updates):
+        case .batch(let deletions, let insertions, let updates, let animated):
             if deletions.isEmpty && insertions.isEmpty && updates.isEmpty { return }
-            node.tableNode.performBatch(animated: false, updates: {
-                if !deletions.isEmpty { node.tableNode.deleteRows(at: deletions, with: .none) }
-                if !insertions.isEmpty { node.tableNode.insertRows(at: insertions, with: .none) }
+            let rowAnimation: UITableView.RowAnimation = animated ? .automatic : .none
+            node.tableNode.performBatch(animated: animated, updates: {
+                if !deletions.isEmpty { node.tableNode.deleteRows(at: deletions, with: rowAnimation) }
+                if !insertions.isEmpty { node.tableNode.insertRows(at: insertions, with: rowAnimation) }
                 if !updates.isEmpty { node.tableNode.reloadRows(at: updates, with: .none) }
             }, completion: nil)
         }
