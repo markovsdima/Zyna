@@ -49,6 +49,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         tap.cancelsTouchesInView = false
         node.tableNode.view.addGestureRecognizer(tap)
 
+        // Pre-set inset to the expected accessory height so the table
+        // doesn't visibly slide up when the keyboard notification arrives.
+        let estimatedAccessoryHeight: CGFloat = 49 + DeviceInsets.bottom
+        node.tableNode.contentInset.top = estimatedAccessoryHeight
+        node.tableNode.view.verticalScrollIndicatorInsets.top = estimatedAccessoryHeight
+
         setupNavigationBar()
         bindViewModel()
         bindInput()
@@ -138,7 +144,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     @objc private func keyboardWillChangeFrame(_ note: Notification) {
-        guard let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+        guard !isMovingFromParent,
+              navigationController?.transitionCoordinator == nil,
+              let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         // How much of the screen the keyboard (+ accessory) covers
         let coveredHeight = max(0, UIScreen.main.bounds.height - endFrame.origin.y)
         // Inverted table: contentInset.top is the visual bottom
