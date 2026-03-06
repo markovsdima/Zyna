@@ -13,20 +13,15 @@ private let timelineLog = ScopedLog(.timeline)
 
 final class TimelineService {
 
-    let messagesSubject = CurrentValueSubject<[ChatMessage], Never>([])
     let isPaginatingSubject = CurrentValueSubject<Bool, Never>(false)
     let rawTimelineItemsSubject = PassthroughSubject<[TimelineItem], Never>()
+
+    /// Raw SDK diffs forwarded to the coalescer.
+    var onDiffs: (([TimelineDiff]) -> Void)?
 
     private let room: Room
     private var timeline: Timeline?
     private var listenerHandle: TaskHandle?
-    private var timelineItems: [TimelineItem] = []
-
-    /// Incrementally maintained ChatMessage array (chronological order).
-    private var chatMessages: [ChatMessage] = []
-
-    /// For each timelineItems[i], whether it maps to a ChatMessage.
-    private var isMappable: [Bool] = []
 
     init(room: Room) {
         self.room = room
@@ -43,7 +38,7 @@ final class TimelineService {
             self.timeline = timeline
 
             let listener = ZynaTimelineListener { [weak self] diffs in
-                self?.applyDiffs(diffs)
+                self?.handleDiffs(diffs)
             }
             self.listenerHandle = await timeline.addListener(listener: listener)
 
@@ -53,16 +48,14 @@ final class TimelineService {
         }
     }
 
-    // MARK: - Apply Diffs
+    // MARK: - Handle Diffs
 
-    private func applyDiffs(_ diffs: [TimelineDiff]) {
+    private func handleDiffs(_ diffs: [TimelineDiff]) {
         var allItems: [TimelineItem] = []
         var liveItems: [TimelineItem] = []
 
         for diff in diffs {
-            let change = diff.change()
-
-            switch change {
+            switch diff.change() {
             case .append:
                 if let items = diff.append() {
                     allItems.append(contentsOf: items)
@@ -84,8 +77,6 @@ final class TimelineService {
             default:
                 break
             }
-
-            applySingleDiff(diff)
         }
 
         // Only check LIVE events for call invites (not pagination history)
@@ -96,167 +87,15 @@ final class TimelineService {
             rawTimelineItemsSubject.send(allItems)
         }
 
-        // Safety net: SDK may mutate TimelineItem objects in-place (e.g. decryption)
-        // without sending explicit `set` diffs. Re-map to keep chatMessages current.
-        let freshMessages = timelineItems.compactMap { Self.mapTimelineItem($0) }
-        let structuralChange = freshMessages.count != chatMessages.count
-            || zip(freshMessages, chatMessages).contains { $0.id != $1.id }
+        // Forward raw diffs to the coalescer
+        onDiffs?(diffs)
 
-        if structuralChange {
-            chatMessages = freshMessages
-            isMappable = timelineItems.map { Self.mapTimelineItem($0) != nil }
-        } else if freshMessages != chatMessages {
-            chatMessages = freshMessages
-        }
-
-        // CurrentValueSubject — consumer coalesces via `for await .values`
-        messagesSubject.value = chatMessages
-
-        timelineLog("Timeline updated: \(diffs.count) diffs, \(chatMessages.count) messages")
-    }
-
-    // MARK: - Apply Single Diff (maintains chatMessages incrementally)
-
-    // swiftlint:disable:next cyclomatic_complexity function_body_length
-    private func applySingleDiff(_ diff: TimelineDiff) {
-        switch diff.change() {
-
-        case .append:
-            guard let items = diff.append() else { return }
-            for item in items {
-                timelineItems.append(item)
-                if let msg = Self.mapTimelineItem(item) {
-                    chatMessages.append(msg)
-                    isMappable.append(true)
-                } else {
-                    isMappable.append(false)
-                }
-            }
-
-        case .pushBack:
-            guard let item = diff.pushBack() else { return }
-            timelineItems.append(item)
-            if let msg = Self.mapTimelineItem(item) {
-                chatMessages.append(msg)
-                isMappable.append(true)
-            } else {
-                isMappable.append(false)
-            }
-
-        case .pushFront:
-            guard let item = diff.pushFront() else { return }
-            timelineItems.insert(item, at: 0)
-            if let msg = Self.mapTimelineItem(item) {
-                chatMessages.insert(msg, at: 0)
-                isMappable.insert(true, at: 0)
-            } else {
-                isMappable.insert(false, at: 0)
-            }
-
-        case .insert:
-            guard let update = diff.insert() else { return }
-            let tlIdx = Int(update.index)
-            timelineItems.insert(update.item, at: tlIdx)
-            if let msg = Self.mapTimelineItem(update.item) {
-                let msgIdx = chatMessageIndex(forTimelineIndex: tlIdx)
-                chatMessages.insert(msg, at: msgIdx)
-                isMappable.insert(true, at: tlIdx)
-            } else {
-                isMappable.insert(false, at: tlIdx)
-            }
-
-        case .set:
-            guard let update = diff.set() else { return }
-            let tlIdx = Int(update.index)
-            guard tlIdx < timelineItems.count else { return }
-
-            let wasMappable = isMappable[tlIdx]
-            let oldMsgIdx = wasMappable ? chatMessageIndex(forTimelineIndex: tlIdx) : nil
-
-            timelineItems[tlIdx] = update.item
-            let newMsg = Self.mapTimelineItem(update.item)
-            let nowMappable = newMsg != nil
-            isMappable[tlIdx] = nowMappable
-
-            switch (wasMappable, nowMappable) {
-            case (true, true):
-                chatMessages[oldMsgIdx!] = newMsg!
-            case (false, true):
-                let msgIdx = chatMessageIndex(forTimelineIndex: tlIdx)
-                chatMessages.insert(newMsg!, at: msgIdx)
-            case (true, false):
-                chatMessages.remove(at: oldMsgIdx!)
-            case (false, false):
-                break
-            }
-
-        case .remove:
-            guard let index = diff.remove() else { return }
-            let tlIdx = Int(index)
-            guard tlIdx < timelineItems.count else { return }
-
-            if isMappable[tlIdx] {
-                let msgIdx = chatMessageIndex(forTimelineIndex: tlIdx)
-                chatMessages.remove(at: msgIdx)
-            }
-            timelineItems.remove(at: tlIdx)
-            isMappable.remove(at: tlIdx)
-
-        case .popBack:
-            guard !timelineItems.isEmpty else { return }
-            if isMappable.last == true {
-                chatMessages.removeLast()
-            }
-            timelineItems.removeLast()
-            isMappable.removeLast()
-
-        case .popFront:
-            guard !timelineItems.isEmpty else { return }
-            if isMappable.first == true {
-                chatMessages.removeFirst()
-            }
-            timelineItems.removeFirst()
-            isMappable.removeFirst()
-
-        case .reset:
-            if let items = diff.reset() {
-                timelineItems = items
-            }
-            rebuildChatMessages()
-
-        case .truncate:
-            if let length = diff.truncate() {
-                timelineItems = Array(timelineItems.prefix(Int(length)))
-            }
-            rebuildChatMessages()
-
-        case .clear:
-            timelineItems = []
-            chatMessages = []
-            isMappable = []
-        }
-    }
-
-    // MARK: - Helpers
-
-    /// Returns the ChatMessage array index for a given timelineItems index.
-    private func chatMessageIndex(forTimelineIndex timelineIndex: Int) -> Int {
-        var count = 0
-        for i in 0..<timelineIndex {
-            if isMappable[i] { count += 1 }
-        }
-        return count
-    }
-
-    /// Full rebuild of chatMessages and isMappable from timelineItems.
-    private func rebuildChatMessages() {
-        isMappable = timelineItems.map { Self.mapTimelineItem($0) != nil }
-        chatMessages = timelineItems.compactMap { Self.mapTimelineItem($0) }
+        timelineLog("Timeline diffs forwarded: \(diffs.count) diffs")
     }
 
     // MARK: - Map SDK Item -> ChatMessage
 
-    private static func mapTimelineItem(_ item: TimelineItem) -> ChatMessage? {
+    static func mapTimelineItem(_ item: TimelineItem) -> ChatMessage? {
         guard let event = item.asEvent() else { return nil }
 
         // Filter out wrapped call signaling messages

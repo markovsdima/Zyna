@@ -96,34 +96,23 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - Bindings
 
     private func bindViewModel() {
-        viewModel.tableDiffsSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] diffs in
-                self?.applyTableDiffs(diffs)
-            }
-            .store(in: &cancellables)
+        viewModel.onTableUpdate = { [weak self] update in
+            self?.applyTableUpdate(update)
+        }
     }
 
-    private func applyTableDiffs(_ diffs: [ChatTableDiff]) {
-        if diffs.contains(where: { if case .reloadData = $0 { return true }; return false }) {
+    private func applyTableUpdate(_ update: TableUpdate) {
+        switch update {
+        case .reload:
             node.tableNode.reloadData()
-            return
+        case .batch(let deletions, let insertions, let updates):
+            if deletions.isEmpty && insertions.isEmpty && updates.isEmpty { return }
+            node.tableNode.performBatch(animated: false, updates: {
+                if !deletions.isEmpty { node.tableNode.deleteRows(at: deletions, with: .none) }
+                if !insertions.isEmpty { node.tableNode.insertRows(at: insertions, with: .none) }
+                if !updates.isEmpty { node.tableNode.reloadRows(at: updates, with: .none) }
+            }, completion: nil)
         }
-
-        node.tableNode.performBatch(animated: false, updates: {
-            for diff in diffs {
-                switch diff {
-                case .insertRows(let indexPaths):
-                    node.tableNode.insertRows(at: indexPaths, with: .none)
-                case .deleteRows(let indexPaths):
-                    node.tableNode.deleteRows(at: indexPaths, with: .none)
-                case .reloadRows(let indexPaths):
-                    node.tableNode.reloadRows(at: indexPaths, with: .none)
-                case .reloadData:
-                    break
-                }
-            }
-        }, completion: nil)
     }
 
     private func bindInput() {

@@ -35,7 +35,7 @@ enum ChatMessageContent: Equatable {
 
 // MARK: - Chat Message
 
-struct ChatMessage: Identifiable, Equatable {
+struct ChatMessage: Identifiable, Equatable, Hashable {
     let id: String
     let eventId: String?
     let senderId: String
@@ -53,14 +53,8 @@ struct ChatMessage: Identifiable, Equatable {
             && lhs.timestamp == rhs.timestamp
             && lhs.content == rhs.content
     }
-}
 
-// MARK: - Table Diff Types
-
-/// Table-ready diff with IndexPaths computed for the inverted table.
-enum ChatTableDiff {
-    case insertRows([IndexPath])
-    case deleteRows([IndexPath])
-    case reloadRows([IndexPath])
-    case reloadData
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }

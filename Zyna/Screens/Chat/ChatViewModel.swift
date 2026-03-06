@@ -9,13 +9,13 @@ import MatrixRustSDK
 
 final class ChatViewModel {
 
-    // MARK: - Published State
+    // MARK: - State
 
-    @Published private(set) var messages: [ChatMessage] = []
+    private(set) var messages: [ChatMessage] = []
     @Published private(set) var isPaginating: Bool = false
 
-    /// Publishes table-ready diffs with IndexPaths for the inverted table.
-    let tableDiffsSubject = PassthroughSubject<[ChatTableDiff], Never>()
+    /// Called on the main queue when the table needs updating.
+    var onTableUpdate: ((TableUpdate) -> Void)?
 
     let roomName: String
 
@@ -25,7 +25,7 @@ final class ChatViewModel {
     // MARK: - Private
 
     let timelineService: TimelineService
-    private var timelineTask: Task<Void, Never>?
+    private let coalescer = TimelineCoalescer()
     private var cancellables = Set<AnyCancellable>()
 
     init(room: Room) {
@@ -36,49 +36,26 @@ final class ChatViewModel {
             .receive(on: DispatchQueue.main)
             .assign(to: &$isPaginating)
 
-        timelineTask = Task { [weak self] in
+        // Wire SDK diffs → coalescer
+        timelineService.onDiffs = { [weak self] diffs in
+            self?.coalescer.receive(diffs: diffs)
+        }
+
+        // Coalescer output → UI
+        coalescer.onBatchReady = { [weak self] newMessages, tableUpdate in
             guard let self else { return }
-            await self.timelineService.startListening()
+            Self.prefetchImages(newMessages)
+            self.messages = newMessages
+            self.onTableUpdate?(tableUpdate)
 
-            // AsyncStream with .bufferingNewest(1) ensures true coalescing:
-            // while we process one snapshot, rapid-fire SDK updates overwrite
-            // the buffer and only the latest snapshot is delivered next.
-            let stream = AsyncStream<[ChatMessage]>(bufferingPolicy: .bufferingNewest(1)) { continuation in
-                self.timelineService.messagesSubject
-                    .dropFirst() // skip initial empty value
-                    .sink { continuation.yield($0) }
-                    .store(in: &self.cancellables)
-            }
-
-            for await snapshot in stream {
-                guard !Task.isCancelled else { break }
-                await MainActor.run { self.applySnapshot(snapshot) }
+            // Auto-paginate when SDK delivers fewer messages than one page
+            if newMessages.count < 20 && !self.isPaginating {
+                self.loadOlderMessages()
             }
         }
-    }
 
-    @MainActor
-    private func applySnapshot(_ chronological: [ChatMessage]) {
-        let reversed = Array(chronological.reversed())
-        let oldMessages = messages
-        let oldCount = oldMessages.count
-
-        Self.prefetchImages(reversed)
-        messages = reversed
-
-        let tableDiffs = Self.computeTableDiffs(
-            old: oldMessages,
-            new: reversed,
-            oldCount: oldCount
-        )
-        if !tableDiffs.isEmpty {
-            print("[chat-vm] UI update: \(tableDiffs), \(reversed.count) messages")
-            tableDiffsSubject.send(tableDiffs)
-        }
-
-        // Auto-paginate when SDK delivers fewer messages than one page
-        if reversed.count < 20 && !isPaginating {
-            loadOlderMessages()
+        Task { [weak self] in
+            await self?.timelineService.startListening()
         }
     }
 
@@ -98,43 +75,9 @@ final class ChatViewModel {
     }
 
     func cleanup() {
-        timelineTask?.cancel()
-        timelineTask = nil
+        timelineService.onDiffs = nil
+        coalescer.onBatchReady = nil
         timelineService.stopListening()
-    }
-
-    // MARK: - Snapshot Diffing (compares old vs new reversed arrays)
-
-    private static func computeTableDiffs(
-        old: [ChatMessage],
-        new: [ChatMessage],
-        oldCount: Int
-    ) -> [ChatTableDiff] {
-        let newCount = new.count
-
-        // Empty → non-empty: reload
-        if oldCount == 0 && newCount > 0 {
-            return [.reloadData]
-        }
-
-        // New messages appended at chronological end = inserted at row 0 in reversed array.
-        // Detect: new array is longer, and the tail matches the old array.
-        if newCount > oldCount {
-            let appendedCount = newCount - oldCount
-            let tailMatches = old.isEmpty || (new[appendedCount].id == old[0].id)
-            if tailMatches {
-                let indexPaths = (0..<appendedCount).map { IndexPath(row: $0, section: 0) }
-                return [.insertRows(indexPaths)]
-            }
-        }
-
-        // Everything else (pagination, profile updates, decryption, removals): reload.
-        // This is fine because coalescing ensures we rarely hit this path repeatedly.
-        if old != new {
-            return [.reloadData]
-        }
-
-        return []
     }
 
     // MARK: - Prefetch
