@@ -14,6 +14,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
     private let inputAccessory = ChatInputAccessoryView()
+    private var activeContextMenu: ContextMenuController?
+    private var interactionLocks = Set<String>()
 
     // MARK: - InputAccessoryView
 
@@ -162,13 +164,90 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
         let message = viewModel.messages[indexPath.row]
-        return {
+        return { [weak self] in
+            let cellNode: ASCellNode & ContextMenuCellNode
             switch message.content {
             case .image:
-                return ImageMessageCellNode(message: message)
+                cellNode = ImageMessageCellNode(message: message)
             default:
-                return TextMessageCellNode(message: message)
+                cellNode = TextMessageCellNode(message: message)
             }
+
+            cellNode.onInteractionLockChanged = { [weak self] locked in
+                if locked {
+                    self?.lockInteraction("contextMenu")
+                } else {
+                    self?.unlockInteraction("contextMenu")
+                }
+            }
+
+            cellNode.onContextMenuActivated = { [weak self, weak cellNode] in
+                guard let self, let cellNode else { return }
+                self.presentContextMenu(for: message, from: cellNode)
+            }
+
+            return cellNode
+        }
+    }
+
+    // MARK: - Context Menu
+
+    private func presentContextMenu(for message: ChatMessage, from cellNode: ContextMenuCellNode) {
+        guard let window = view.window,
+              let info = cellNode.extractBubbleForMenu(in: window.coordinateSpace) else { return }
+
+        let actions = [
+            ContextMenuAction(
+                title: "Reply",
+                image: UIImage(systemName: "arrowshape.turn.up.left"),
+                handler: { print("[context-menu] Reply tapped: \(message.id)") }
+            ),
+            ContextMenuAction(
+                title: "Delete",
+                image: UIImage(systemName: "trash"),
+                isDestructive: true,
+                handler: { print("[context-menu] Delete tapped: \(message.id)") }
+            )
+        ]
+
+        let menuVC = ContextMenuController(
+            contentNode: info.node,
+            sourceFrame: info.frame,
+            actions: actions
+        )
+        menuVC.onDismissComplete = { [weak self, weak cellNode] in
+            cellNode?.restoreBubbleFromMenu()
+            self?.unlockInteraction("contextMenu")
+            self?.activeContextMenu = nil
+        }
+
+        cellNode.onDragChanged = { [weak menuVC] point in
+            menuVC?.trackFinger(at: point)
+        }
+        cellNode.onDragEnded = { [weak menuVC] point in
+            menuVC?.releaseFinger(at: point)
+        }
+
+        activeContextMenu = menuVC
+        menuVC.show(in: window)
+    }
+
+    // MARK: - Interaction Lock
+
+    func lockInteraction(_ token: String) {
+        let wasEmpty = interactionLocks.isEmpty
+        interactionLocks.insert(token)
+        if wasEmpty {
+            node.tableNode.view.isScrollEnabled = false
+            navigationController?.interactivePopGestureRecognizer?.isEnabled = false
+        }
+    }
+
+    func unlockInteraction(_ token: String) {
+        interactionLocks.remove(token)
+        if interactionLocks.isEmpty {
+            node.tableNode.view.isScrollEnabled = true
+            navigationController?.interactivePopGestureRecognizer?.isEnabled = true
         }
     }
 
