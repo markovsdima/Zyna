@@ -59,10 +59,13 @@ final class ContextSourceNode: ASDisplayNode {
     }
 
     func restoreContentFromMenu() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         addSubnode(contentNode)
         contentNode.view.transform = .identity
         contentNode.view.alpha = 1
         contentNode.frame = bounds
+        CATransaction.commit()
     }
 
     // MARK: - Gesture

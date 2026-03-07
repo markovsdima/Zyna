@@ -287,9 +287,11 @@ final class ContextMenuController: NSObject {
             self.actionsContainer.frame.origin.y = self.sourceFrame.maxY + Self.gap
         } completion: { _ in
             self.onDismissComplete?()
-            self.overlayWindow?.isHidden = true
-            self.overlayWindow = nil
             completion?()
+            DispatchQueue.main.async {
+                self.overlayWindow?.isHidden = true
+                self.overlayWindow = nil
+            }
         }
     }
 
