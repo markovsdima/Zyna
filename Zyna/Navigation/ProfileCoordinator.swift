@@ -8,9 +8,13 @@ import AsyncDisplayKit
 final class ProfileCoordinator {
 
     let navigationController = ASDKNavigationController()
+    var onLogout: (() -> Void)?
 
     func start() {
         let vc = ProfileViewController()
+        vc.onLogout = { [weak self] in
+            self?.onLogout?()
+        }
         navigationController.setViewControllers([vc], animated: false)
     }
 }
