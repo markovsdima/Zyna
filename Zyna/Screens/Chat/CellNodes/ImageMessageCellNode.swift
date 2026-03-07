@@ -6,11 +6,26 @@
 import AsyncDisplayKit
 import MatrixRustSDK
 
-final class ImageMessageCellNode: ASCellNode {
+final class ImageMessageCellNode: ASCellNode, ContextMenuCellNode {
+
+    // MARK: - Context Menu
+
+    var onContextMenuActivated: (() -> Void)?
+
+    var onDragChanged: ((CGPoint) -> Void)? {
+        get { contextSourceNode.onDragChanged }
+        set { contextSourceNode.onDragChanged = newValue }
+    }
+
+    var onDragEnded: ((CGPoint) -> Void)? {
+        get { contextSourceNode.onDragEnded }
+        set { contextSourceNode.onDragEnded = newValue }
+    }
 
     // MARK: - Subnodes
 
     private let bubbleNode = ASDisplayNode()
+    private let contextSourceNode: ContextSourceNode
     private let imageNode = ASImageNode()
     private let timeNode = ASTextNode()
     private let timeBadgeNode = ASDisplayNode()
@@ -63,7 +78,12 @@ final class ImageMessageCellNode: ASCellNode {
             self.aspectRatio = 4.0 / 3.0
         }
 
+        self.contextSourceNode = ContextSourceNode(contentNode: bubbleNode)
         super.init()
+
+        contextSourceNode.activated = { [weak self] _ in
+            self?.onContextMenuActivated?()
+        }
 
         automaticallyManagesSubnodes = true
         selectionStyle = .none
@@ -74,10 +94,36 @@ final class ImageMessageCellNode: ASCellNode {
         imageNode.clipsToBounds = true
         imageNode.displaysAsynchronously = true
 
-        // Bubble
+        // Bubble — self-contained with all content
         bubbleNode.backgroundColor = isOutgoing ? .systemBlue : .systemGray5
         bubbleNode.cornerRadius = 18
         bubbleNode.clipsToBounds = true
+        bubbleNode.automaticallyManagesSubnodes = true
+        bubbleNode.layoutSpecBlock = { [weak self] _, _ in
+            guard let self else { return ASLayoutSpec() }
+            let maxWidth = ScreenConstants.width * Self.maxBubbleWidthRatio
+            let imgHeight = maxWidth / self.aspectRatio
+
+            self.imageNode.style.preferredSize = CGSize(width: maxWidth, height: min(imgHeight, 400))
+
+            let timePadded = ASInsetLayoutSpec(
+                insets: UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6),
+                child: self.timeNode
+            )
+            let timeBadge = ASBackgroundLayoutSpec(child: timePadded, background: self.timeBadgeNode)
+
+            let timeOverlay = ASRelativeLayoutSpec(
+                horizontalPosition: .end,
+                verticalPosition: .end,
+                sizingOption: .minimumSize,
+                child: ASInsetLayoutSpec(
+                    insets: UIEdgeInsets(top: 0, left: 0, bottom: 8, right: 8),
+                    child: timeBadge
+                )
+            )
+
+            return ASOverlayLayoutSpec(child: self.imageNode, overlay: timeOverlay)
+        }
 
         // Time badge
         timeBadgeNode.backgroundColor = UIColor.black.withAlphaComponent(0.4)
@@ -136,35 +182,6 @@ final class ImageMessageCellNode: ASCellNode {
     // MARK: - Layout
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        let maxWidth = ScreenConstants.width * Self.maxBubbleWidthRatio
-        let imageHeight = maxWidth / aspectRatio
-
-        imageNode.style.preferredSize = CGSize(width: maxWidth, height: min(imageHeight, 400))
-
-        // Time badge with padding
-        let timePadded = ASInsetLayoutSpec(
-            insets: UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6),
-            child: timeNode
-        )
-        let timeBadge = ASBackgroundLayoutSpec(child: timePadded, background: timeBadgeNode)
-
-        // Time overlay at bottom-right
-        let timeOverlay = ASRelativeLayoutSpec(
-            horizontalPosition: .end,
-            verticalPosition: .end,
-            sizingOption: .minimumSize,
-            child: ASInsetLayoutSpec(
-                insets: UIEdgeInsets(top: 0, left: 0, bottom: 8, right: 8),
-                child: timeBadge
-            )
-        )
-
-        let imageWithTime = ASOverlayLayoutSpec(child: imageNode, overlay: timeOverlay)
-
-        // Bubble behind image
-        let bubble = ASBackgroundLayoutSpec(child: imageWithTime, background: bubbleNode)
-
-        // Sender name above bubble
         let bubbleWithName: ASLayoutElement
         if showSenderName {
             let nameInset = ASInsetLayoutSpec(
@@ -176,13 +193,12 @@ final class ImageMessageCellNode: ASCellNode {
                 spacing: 0,
                 justifyContent: .start,
                 alignItems: .start,
-                children: [nameInset, bubble]
+                children: [nameInset, contextSourceNode]
             )
         } else {
-            bubbleWithName = bubble
+            bubbleWithName = contextSourceNode
         }
 
-        // Spacer for alignment
         let spacer = ASLayoutSpec()
         spacer.style.flexGrow = 1
 
@@ -194,6 +210,17 @@ final class ImageMessageCellNode: ASCellNode {
             : [bubbleWithName, spacer]
 
         return ASInsetLayoutSpec(insets: Self.cellInsets, child: hStack)
+    }
+
+    // MARK: - Context Menu Reparenting
+
+    func extractBubbleForMenu(in coordinateSpace: UICoordinateSpace) -> (node: ASDisplayNode, frame: CGRect)? {
+        guard isNodeLoaded else { return nil }
+        return contextSourceNode.extractContentForMenu(in: coordinateSpace)
+    }
+
+    func restoreBubbleFromMenu() {
+        contextSourceNode.restoreContentFromMenu()
     }
 
     // MARK: - Helpers

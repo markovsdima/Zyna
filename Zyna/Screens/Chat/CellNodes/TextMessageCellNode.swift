@@ -5,11 +5,26 @@
 
 import AsyncDisplayKit
 
-final class TextMessageCellNode: ASCellNode {
+final class TextMessageCellNode: ASCellNode, ContextMenuCellNode {
+
+    // MARK: - Context Menu
+
+    var onContextMenuActivated: (() -> Void)?
+
+    var onDragChanged: ((CGPoint) -> Void)? {
+        get { contextSourceNode.onDragChanged }
+        set { contextSourceNode.onDragChanged = newValue }
+    }
+
+    var onDragEnded: ((CGPoint) -> Void)? {
+        get { contextSourceNode.onDragEnded }
+        set { contextSourceNode.onDragEnded = newValue }
+    }
 
     // MARK: - Subnodes
 
     private let bubbleNode = ASDisplayNode()
+    private let contextSourceNode: ContextSourceNode
     private let textNode = ASTextNode()
     private let timeNode = ASTextNode()
     private let senderNameNode = ASTextNode()
@@ -41,7 +56,12 @@ final class TextMessageCellNode: ASCellNode {
     init(message: ChatMessage, isGroupChat: Bool = false) {
         self.isOutgoing = message.isOutgoing
         self.showSenderName = !message.isOutgoing && isGroupChat
+        self.contextSourceNode = ContextSourceNode(contentNode: bubbleNode)
         super.init()
+
+        contextSourceNode.activated = { [weak self] _ in
+            self?.onContextMenuActivated?()
+        }
 
         automaticallyManagesSubnodes = true
         selectionStyle = .none
@@ -84,10 +104,29 @@ final class TextMessageCellNode: ASCellNode {
             ]
         )
 
-        // Bubble
+        // Bubble — self-contained with all content
         bubbleNode.backgroundColor = isOutgoing ? .systemBlue : .systemGray5
         bubbleNode.cornerRadius = 18
         bubbleNode.clipsToBounds = true
+        bubbleNode.automaticallyManagesSubnodes = true
+        bubbleNode.layoutSpecBlock = { [weak self] _, _ in
+            guard let self else { return ASLayoutSpec() }
+            let timeSpec = ASStackLayoutSpec(
+                direction: .vertical,
+                spacing: 0,
+                justifyContent: .end,
+                alignItems: .end,
+                children: [self.timeNode]
+            )
+            let textTimeRow = ASStackLayoutSpec(
+                direction: .horizontal,
+                spacing: 6,
+                justifyContent: .start,
+                alignItems: .end,
+                children: [self.textNode, timeSpec]
+            )
+            return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: textTimeRow)
+        }
 
         // Sender name
         if showSenderName, let name = message.senderDisplayName {
@@ -105,32 +144,6 @@ final class TextMessageCellNode: ASCellNode {
     // MARK: - Layout
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        // Time aligned to bottom
-        let timeSpec = ASStackLayoutSpec(
-            direction: .vertical,
-            spacing: 0,
-            justifyContent: .end,
-            alignItems: .end,
-            children: [timeNode]
-        )
-
-        // Text + time row
-        let textTimeRow = ASStackLayoutSpec(
-            direction: .horizontal,
-            spacing: 6,
-            justifyContent: .start,
-            alignItems: .end,
-            children: [textNode, timeSpec]
-        )
-
-        let paddedContent = ASInsetLayoutSpec(
-            insets: Self.bubbleInsets,
-            child: textTimeRow
-        )
-
-        let bubble = ASBackgroundLayoutSpec(child: paddedContent, background: bubbleNode)
-
-        // Sender name above bubble (for incoming in group chats)
         let bubbleWithName: ASLayoutElement
         if showSenderName {
             let nameInset = ASInsetLayoutSpec(
@@ -142,13 +155,12 @@ final class TextMessageCellNode: ASCellNode {
                 spacing: 0,
                 justifyContent: .start,
                 alignItems: .start,
-                children: [nameInset, bubble]
+                children: [nameInset, contextSourceNode]
             )
         } else {
-            bubbleWithName = bubble
+            bubbleWithName = contextSourceNode
         }
 
-        // Spacer for left/right alignment
         let spacer = ASLayoutSpec()
         spacer.style.flexGrow = 1
 
@@ -160,6 +172,17 @@ final class TextMessageCellNode: ASCellNode {
             : [bubbleWithName, spacer]
 
         return ASInsetLayoutSpec(insets: Self.cellInsets, child: hStack)
+    }
+
+    // MARK: - Context Menu Reparenting
+
+    func extractBubbleForMenu(in coordinateSpace: UICoordinateSpace) -> (node: ASDisplayNode, frame: CGRect)? {
+        guard isNodeLoaded else { return nil }
+        return contextSourceNode.extractContentForMenu(in: coordinateSpace)
+    }
+
+    func restoreBubbleFromMenu() {
+        contextSourceNode.restoreContentFromMenu()
     }
 
     // MARK: - Helpers

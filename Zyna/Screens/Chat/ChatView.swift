@@ -14,6 +14,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
     private let inputAccessory = ChatInputAccessoryView()
+    private var activeContextMenu: ContextMenuController?
 
     // MARK: - InputAccessoryView
 
@@ -162,14 +163,65 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
         let message = viewModel.messages[indexPath.row]
-        return {
+        return { [weak self] in
+            let cellNode: ASCellNode & ContextMenuCellNode
             switch message.content {
             case .image:
-                return ImageMessageCellNode(message: message)
+                cellNode = ImageMessageCellNode(message: message)
             default:
-                return TextMessageCellNode(message: message)
+                cellNode = TextMessageCellNode(message: message)
             }
+
+            cellNode.onContextMenuActivated = { [weak self, weak cellNode] in
+                guard let self, let cellNode else { return }
+                self.presentContextMenu(for: message, from: cellNode)
+            }
+
+            return cellNode
         }
+    }
+
+    // MARK: - Context Menu
+
+    private func presentContextMenu(for message: ChatMessage, from cellNode: ContextMenuCellNode) {
+        guard let window = view.window,
+              let info = cellNode.extractBubbleForMenu(in: window.coordinateSpace) else { return }
+
+        let actions = [
+            ContextMenuAction(
+                title: "Reply",
+                image: UIImage(systemName: "arrowshape.turn.up.left"),
+                handler: { print("[context-menu] Reply tapped: \(message.id)") }
+            ),
+            ContextMenuAction(
+                title: "Delete",
+                image: UIImage(systemName: "trash"),
+                isDestructive: true,
+                handler: { print("[context-menu] Delete tapped: \(message.id)") }
+            )
+        ]
+
+        let menuVC = ContextMenuController(
+            contentNode: info.node,
+            sourceFrame: info.frame,
+            actions: actions
+        )
+        menuVC.onDismissComplete = { [weak self, weak cellNode] in
+            cellNode?.restoreBubbleFromMenu()
+            self?.node.tableNode.view.isScrollEnabled = true
+            self?.activeContextMenu = nil
+        }
+
+        cellNode.onDragChanged = { [weak menuVC] point in
+            menuVC?.trackFinger(at: point)
+        }
+        cellNode.onDragEnded = { [weak menuVC] point in
+            menuVC?.releaseFinger(at: point)
+        }
+
+        node.tableNode.view.isScrollEnabled = false
+        activeContextMenu = menuVC
+        menuVC.show(in: window)
     }
 
     // MARK: - ASTableDelegate — Batch Fetching (Pagination)
