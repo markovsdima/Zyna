@@ -9,6 +9,7 @@ protocol ContextMenuCellNode: ASCellNode {
     var onContextMenuActivated: (() -> Void)? { get set }
     var onDragChanged: ((CGPoint) -> Void)? { get set }
     var onDragEnded: ((CGPoint) -> Void)? { get set }
+    var onInteractionLockChanged: ((Bool) -> Void)? { get set }
     func extractBubbleForMenu(in coordinateSpace: UICoordinateSpace) -> (node: ASDisplayNode, frame: CGRect)?
     func restoreBubbleFromMenu()
 }

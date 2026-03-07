@@ -15,6 +15,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var cancellables = Set<AnyCancellable>()
     private let inputAccessory = ChatInputAccessoryView()
     private var activeContextMenu: ContextMenuController?
+    private var interactionLocks = Set<String>()
 
     // MARK: - InputAccessoryView
 
@@ -172,6 +173,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 cellNode = TextMessageCellNode(message: message)
             }
 
+            cellNode.onInteractionLockChanged = { [weak self] locked in
+                if locked {
+                    self?.lockInteraction("contextMenu")
+                } else {
+                    self?.unlockInteraction("contextMenu")
+                }
+            }
+
             cellNode.onContextMenuActivated = { [weak self, weak cellNode] in
                 guard let self, let cellNode else { return }
                 self.presentContextMenu(for: message, from: cellNode)
@@ -208,7 +217,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         )
         menuVC.onDismissComplete = { [weak self, weak cellNode] in
             cellNode?.restoreBubbleFromMenu()
-            self?.node.tableNode.view.isScrollEnabled = true
+            self?.unlockInteraction("contextMenu")
             self?.activeContextMenu = nil
         }
 
@@ -219,9 +228,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             menuVC?.releaseFinger(at: point)
         }
 
-        node.tableNode.view.isScrollEnabled = false
         activeContextMenu = menuVC
         menuVC.show(in: window)
+    }
+
+    // MARK: - Interaction Lock
+
+    func lockInteraction(_ token: String) {
+        let wasEmpty = interactionLocks.isEmpty
+        interactionLocks.insert(token)
+        if wasEmpty {
+            node.tableNode.view.isScrollEnabled = false
+            navigationController?.interactivePopGestureRecognizer?.isEnabled = false
+        }
+    }
+
+    func unlockInteraction(_ token: String) {
+        interactionLocks.remove(token)
+        if interactionLocks.isEmpty {
+            node.tableNode.view.isScrollEnabled = true
+            navigationController?.interactivePopGestureRecognizer?.isEnabled = true
+        }
     }
 
     // MARK: - ASTableDelegate — Batch Fetching (Pagination)

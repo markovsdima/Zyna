@@ -118,9 +118,15 @@ final class ContextMenuController: NSObject {
 
         // 5. Actions position
         actionsContainer.frame.origin.y = sourceFrame.maxY + Self.gap
-        let centerX = sourceFrame.midX - actionsContainer.frame.width / 2
+        let isRightAligned = sourceFrame.midX > bounds.width / 2
+        let actionsX: CGFloat
+        if isRightAligned {
+            actionsX = sourceFrame.maxX - actionsContainer.frame.width
+        } else {
+            actionsX = sourceFrame.minX
+        }
         actionsContainer.frame.origin.x = min(
-            max(Self.screenPadding, centerX),
+            max(Self.screenPadding, actionsX),
             bounds.width - Self.screenPadding - actionsContainer.frame.width
         )
 
@@ -132,7 +138,7 @@ final class ContextMenuController: NSObject {
 
         // 7. Animate in
         UIView.animate(
-            withDuration: 0.4,
+            withDuration: 0.35,
             delay: 0,
             usingSpringWithDamping: 0.75,
             initialSpringVelocity: 0,

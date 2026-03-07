@@ -22,6 +22,11 @@ final class ImageMessageCellNode: ASCellNode, ContextMenuCellNode {
         set { contextSourceNode.onDragEnded = newValue }
     }
 
+    var onInteractionLockChanged: ((Bool) -> Void)? {
+        get { contextSourceNode.onInteractionLockChanged }
+        set { contextSourceNode.onInteractionLockChanged = newValue }
+    }
+
     // MARK: - Subnodes
 
     private let bubbleNode = ASDisplayNode()

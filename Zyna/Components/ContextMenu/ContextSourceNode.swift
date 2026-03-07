@@ -14,6 +14,8 @@ final class ContextSourceNode: ASDisplayNode {
     var onDragChanged: ((CGPoint) -> Void)?
     /// Called with screen-space point when finger lifts after activation.
     var onDragEnded: ((CGPoint) -> Void)?
+    /// Called when interaction should be locked (true) or unlocked (false).
+    var onInteractionLockChanged: ((Bool) -> Void)?
 
     private var shrinkAnimator: UIViewPropertyAnimator?
     private var activationTimer: Timer?
@@ -117,6 +119,7 @@ final class ContextSourceNode: ASDisplayNode {
     }
 
     private func beginShrinkAnimation() {
+        onInteractionLockChanged?(true)
         let targetScale: CGFloat = 0.92
 
         shrinkAnimator = UIViewPropertyAnimator(
@@ -157,6 +160,7 @@ final class ContextSourceNode: ASDisplayNode {
         guard let animator = shrinkAnimator else { return }
         animator.stopAnimation(true)
         shrinkAnimator = nil
+        onInteractionLockChanged?(false)
 
         UIView.animate(withDuration: 0.2) {
             self.contentNode.view.transform = .identity
@@ -171,6 +175,7 @@ extension ContextSourceNode: UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool {
+        if shrinkAnimator != nil || didActivate { return false }
         return other is UIPanGestureRecognizer
     }
 }
