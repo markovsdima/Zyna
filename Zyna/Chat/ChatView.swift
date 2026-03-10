@@ -18,6 +18,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var interactionLocks = Set<String>()
+    private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
 
     // MARK: - InputAccessoryView
 
@@ -285,5 +286,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 context.completeBatchFetching(true)
                 self?.batchFetchCancellable = nil
             }
+    }
+
+    // MARK: - 120fps Scroll Boost
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if decelerate {
+            fpsBooster.start()
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        fpsBooster.stop()
     }
 }

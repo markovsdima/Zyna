@@ -12,6 +12,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     private let viewModel = RoomsViewModel()
     private let tableNode = ASTableNode()
     private var cancellables = Set<AnyCancellable>()
+    private lazy var fpsBooster = ScrollFPSBooster(hostView: tableNode.view)
 
     var onChatSelected: ((Room) -> Void)? {
         get { viewModel.onChatSelected }
@@ -113,5 +114,19 @@ extension RoomsViewController {
             viewModel.deleteChat(at: indexPath.row)
             tableNode.deleteRows(at: [indexPath], with: .fade)
         }
+    }
+}
+
+// MARK: - 120fps Scroll Boost
+
+extension RoomsViewController {
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if decelerate {
+            fpsBooster.start()
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        fpsBooster.stop()
     }
 }
