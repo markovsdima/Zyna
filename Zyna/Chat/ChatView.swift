@@ -13,7 +13,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
+    private var batchFetchCancellable: AnyCancellable?
     private let inputAccessory = ChatInputAccessoryView()
+    private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var interactionLocks = Set<String>()
 
@@ -71,6 +73,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         if isMovingFromParent {
+            audioPlayer.stop()
             viewModel.cleanup()
         }
     }
@@ -128,6 +131,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         inputAccessory.inputNode.onSend = { [weak self] text in
             self?.viewModel.sendMessage(text)
         }
+
+        inputAccessory.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
+            // Convert Float waveform (0...1) to UInt16 (0...1024) for Matrix SDK
+            let sdkWaveform = waveform.map { UInt16(min(max($0, 0), 1) * 1024) }
+            self?.viewModel.sendVoiceMessage(fileURL: fileURL, duration: duration, waveform: sdkWaveform)
+        }
     }
 
     // MARK: - Keyboard
@@ -163,10 +172,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
-        let message = viewModel.messages[indexPath.row]
+        let messages = viewModel.messages
+        guard indexPath.row < messages.count else {
+            return { ASCellNode() }
+        }
+        let message = messages[indexPath.row]
+        let audioPlayer = self.audioPlayer
         return { [weak self] in
-            let cellNode: ASCellNode & ContextMenuCellNode
+            let cellNode: MessageCellNode
             switch message.content {
+            case .voice:
+                cellNode = VoiceMessageCellNode(message: message, audioPlayer: audioPlayer)
             case .image:
                 cellNode = ImageMessageCellNode(message: message)
             default:
@@ -260,14 +276,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
         viewModel.loadOlderMessages()
 
-        viewModel.$isPaginating
+        batchFetchCancellable = viewModel.$isPaginating
             .dropFirst()
             .filter { !$0 }
             .first()
             .receive(on: DispatchQueue.main)
-            .sink { _ in
+            .sink { [weak self] _ in
                 context.completeBatchFetching(true)
+                self?.batchFetchCancellable = nil
             }
-            .store(in: &cancellables)
     }
 }

@@ -158,6 +158,10 @@ final class TimelineService {
             return .notice(body: content.body)
         case .emote(let content):
             return .emote(body: content.body)
+        case .audio(let content):
+            let duration = content.audio?.duration ?? content.info?.duration ?? 0
+            let waveform = content.audio?.waveform ?? []
+            return .voice(source: content.source, duration: duration, waveform: waveform)
         default:
             return .unsupported(typeName: "message")
         }
@@ -196,6 +200,31 @@ final class TimelineService {
             timelineLog("Message sent")
         } catch {
             timelineLog("Send failed: \(error)")
+        }
+    }
+
+    func sendVoiceMessage(url: URL, duration: TimeInterval, waveform: [UInt16]) async {
+        guard let timeline else { return }
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
+        let params = UploadParameters(
+            source: .file(filename: url.path),
+            caption: nil,
+            formattedCaption: nil,
+            mentions: nil,
+            replyParams: nil,
+            useSendQueue: true
+        )
+        let audioInfo = AudioInfo(duration: duration, size: fileSize, mimetype: "audio/mp4")
+        do {
+            _ = try timeline.sendVoiceMessage(
+                params: params,
+                audioInfo: audioInfo,
+                waveform: waveform,
+                progressWatcher: nil
+            )
+            timelineLog("Voice message sent, duration=\(String(format: "%.1f", duration))s")
+        } catch {
+            timelineLog("Voice send failed: \(error)")
         }
     }
 

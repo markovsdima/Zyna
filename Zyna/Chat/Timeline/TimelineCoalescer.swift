@@ -264,7 +264,8 @@ final class TimelineCoalescer {
     }
 
     private func rebuildChronMessages() {
-        isMappable = currentItems.map { TimelineService.mapTimelineItem($0) != nil }
-        chronMessages = currentItems.compactMap { TimelineService.mapTimelineItem($0) }
+        let mapped = currentItems.map { TimelineService.mapTimelineItem($0) }
+        isMappable = mapped.map { $0 != nil }
+        chronMessages = mapped.compactMap { $0 }
     }
 }
