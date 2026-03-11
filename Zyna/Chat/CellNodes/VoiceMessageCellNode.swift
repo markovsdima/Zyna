@@ -9,17 +9,24 @@ import MatrixRustSDK
 
 final class VoiceMessageCellNode: MessageCellNode {
 
+    // MARK: - Icons (pre-rendered once, thread-safe)
+
+    private static let playWhite  = AppIcon.play.rendered(color: .white)
+    private static let playBlue   = AppIcon.play.rendered(color: .systemBlue)
+    private static let pauseWhite = AppIcon.pause.rendered(color: .white)
+    private static let pauseBlue  = AppIcon.pause.rendered(color: .systemBlue)
+
     // MARK: - Subnodes
 
-    private let playButtonNode = ASButtonNode()
+    private let playControlNode = ASControlNode()
+    private let playIconNode = ASImageNode()
     private let durationNode = ASTextNode()
-    private var waveformBars: [ASDisplayNode] = []
+    private let waveformNode: WaveformNode
 
     // MARK: - State
 
     private let mediaSource: MediaSource?
     private let totalDuration: TimeInterval
-    private let waveform: [UInt16]
     private weak var audioPlayer: AudioPlayerService?
     private var cancellable: AnyCancellable?
     private var currentProgress: Float = 0
@@ -35,23 +42,34 @@ final class VoiceMessageCellNode: MessageCellNode {
     init(message: ChatMessage, audioPlayer: AudioPlayerService, isGroupChat: Bool = false) {
         self.audioPlayer = audioPlayer
 
+        let waveformData: [UInt16]
         if case .voice(let source, let duration, let waveform) = message.content {
             self.mediaSource = source
             self.totalDuration = duration
-            self.waveform = waveform
+            waveformData = waveform
         } else {
             assertionFailure("VoiceMessageCellNode requires voice content")
             self.mediaSource = nil
             self.totalDuration = 0
-            self.waveform = []
+            waveformData = []
         }
+
+        let samples = Self.resampleWaveform(waveformData, to: Self.barCount)
+        let isOutgoing = message.isOutgoing
+        self.waveformNode = WaveformNode(
+            samples: samples,
+            filledColor: isOutgoing ? .white : .systemBlue,
+            unfilledColor: isOutgoing
+                ? UIColor.white.withAlphaComponent(0.4)
+                : UIColor.systemBlue.withAlphaComponent(0.3)
+        )
 
         super.init(message: message, isGroupChat: isGroupChat)
 
         contextSourceNode.shouldBegin = { [weak self] point in
             guard let self, self.isNodeLoaded else { return true }
-            let buttonPoint = self.contextSourceNode.view.convert(point, to: self.playButtonNode.view)
-            return !self.playButtonNode.view.bounds.contains(buttonPoint)
+            let buttonPoint = self.contextSourceNode.view.convert(point, to: self.playControlNode.view)
+            return !self.playControlNode.view.bounds.contains(buttonPoint)
         }
 
         setupSubnodes()
@@ -62,25 +80,22 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     private func setupSubnodes() {
         // Play button
-        updatePlayButtonImage(playing: false)
-        playButtonNode.style.preferredSize = CGSize(width: 32, height: 32)
+        playIconNode.image = isOutgoing ? Self.playWhite : Self.playBlue
+        playIconNode.contentMode = .center
+        playIconNode.isUserInteractionEnabled = false
+        playControlNode.automaticallyManagesSubnodes = true
+        playControlNode.style.preferredSize = CGSize(width: 32, height: 32)
+        playControlNode.layoutSpecBlock = { [weak self] _, _ in
+            guard let self else { return ASLayoutSpec() }
+            return ASCenterLayoutSpec(centeringOptions: .XY, sizingOptions: [], child: self.playIconNode)
+        }
 
         // Duration
         durationNode.attributedText = Self.durationString(totalDuration, isOutgoing: isOutgoing)
 
-        // Waveform bars
-        let samples = Self.resampleWaveform(waveform, to: Self.barCount)
-        for sample in samples {
-            let bar = ASDisplayNode()
-            bar.cornerRadius = 1.5
-            bar.style.width = ASDimension(unit: .points, value: 3)
-            let height = max(3, CGFloat(sample) / 1024.0 * 20)
-            bar.style.height = ASDimension(unit: .points, value: height)
-            bar.backgroundColor = isOutgoing
-                ? UIColor.white.withAlphaComponent(0.4)
-                : UIColor.systemBlue.withAlphaComponent(0.3)
-            waveformBars.append(bar)
-        }
+        // Waveform
+        let waveformSize = WaveformNode.size(for: Self.barCount)
+        waveformNode.style.preferredSize = waveformSize
 
         // Bubble
         bubbleNode.isUserInteractionEnabled = true
@@ -92,7 +107,7 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     override func didLoad() {
         super.didLoad()
-        playButtonNode.addTarget(self, action: #selector(playTapped), forControlEvents: .touchUpInside)
+        playControlNode.addTarget(self, action: #selector(playTapped), forControlEvents: .touchUpInside)
     }
 
     // MARK: - Player Observation
@@ -110,12 +125,12 @@ final class VoiceMessageCellNode: MessageCellNode {
 
                 if playing != self.isPlaying {
                     self.isPlaying = playing
-                    self.updatePlayButtonImage(playing: playing)
+                    self.updatePlayIcon(playing: playing)
                 }
 
                 if progress != self.currentProgress {
                     self.currentProgress = progress
-                    self.updateWaveformProgress(progress)
+                    self.waveformNode.updateProgress(progress)
                     self.updateDurationLabel(progress: progress)
                 }
             }
@@ -124,21 +139,14 @@ final class VoiceMessageCellNode: MessageCellNode {
     // MARK: - Bubble Layout
 
     private func bubbleLayout() -> ASLayoutSpec {
-        let waveformStack = ASStackLayoutSpec(
-            direction: .horizontal,
-            spacing: 2,
-            justifyContent: .start,
-            alignItems: .center,
-            children: waveformBars
-        )
-        waveformStack.style.flexShrink = 1
+        waveformNode.style.flexShrink = 1
 
         let contentRow = ASStackLayoutSpec(
             direction: .horizontal,
             spacing: 8,
             justifyContent: .start,
             alignItems: .center,
-            children: [playButtonNode, waveformStack, durationNode]
+            children: [playControlNode, waveformNode, durationNode]
         )
 
         let timeSpec = ASStackLayoutSpec(
@@ -179,28 +187,11 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     // MARK: - UI Updates
 
-    private func updatePlayButtonImage(playing: Bool) {
-        let name = playing ? "pause.fill" : "play.fill"
-        let color: UIColor = isOutgoing ? .white : .systemBlue
-        let config = UIImage.SymbolConfiguration(pointSize: 22, weight: .medium)
-        playButtonNode.setImage(
-            UIImage(systemName: name, withConfiguration: config)?.withTintColor(color, renderingMode: .alwaysOriginal),
-            for: .normal
-        )
-    }
-
-    private func updateWaveformProgress(_ progress: Float) {
-        let filledCount = Int(progress * Float(waveformBars.count))
-        for (i, bar) in waveformBars.enumerated() {
-            if i < filledCount {
-                bar.backgroundColor = isOutgoing
-                    ? UIColor.white
-                    : UIColor.systemBlue
-            } else {
-                bar.backgroundColor = isOutgoing
-                    ? UIColor.white.withAlphaComponent(0.4)
-                    : UIColor.systemBlue.withAlphaComponent(0.3)
-            }
+    private func updatePlayIcon(playing: Bool) {
+        if isOutgoing {
+            playIconNode.image = playing ? Self.pauseWhite : Self.playWhite
+        } else {
+            playIconNode.image = playing ? Self.pauseBlue : Self.playBlue
         }
     }
 
@@ -226,7 +217,6 @@ final class VoiceMessageCellNode: MessageCellNode {
         ])
     }
 
-    /// Resample a waveform array to a target count using linear interpolation.
     private static func resampleWaveform(_ waveform: [UInt16], to count: Int) -> [UInt16] {
         guard !waveform.isEmpty else {
             return [UInt16](repeating: 100, count: count)
