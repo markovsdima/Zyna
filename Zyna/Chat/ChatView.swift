@@ -238,7 +238,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 title: "Delete",
                 image: UIImage(systemName: "trash"),
                 isDestructive: true,
-                handler: { print("[context-menu] Delete tapped: \(message.id)") }
+                handler: { [weak self] in
+                    self?.triggerPaintSplashDelete(for: message)
+                }
             )
         ]
 
@@ -317,5 +319,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         fpsBooster.stop()
+    }
+
+    // MARK: - Paint Splash Delete
+
+    private func triggerPaintSplashDelete(for message: ChatMessage) {
+        guard let indexPath = indexPathForMessage(message) else { return }
+
+        PaintSplashTrigger.trigger(in: node.tableNode, at: indexPath) { [weak self] in
+            guard let self else { return }
+            // Local-only stub: remove from array + table
+            self.viewModel.deleteMessageLocally(message.id)
+            self.node.tableNode.performBatch(animated: true, updates: {
+                self.node.tableNode.deleteRows(at: [indexPath], with: .automatic)
+            }, completion: nil)
+        }
+    }
+
+    private func indexPathForMessage(_ message: ChatMessage) -> IndexPath? {
+        guard let row = viewModel.messages.firstIndex(where: { $0.id == message.id }) else {
+            return nil
+        }
+        return IndexPath(row: row, section: 0)
     }
 }

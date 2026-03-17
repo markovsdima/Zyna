@@ -38,4 +38,3 @@ final class MetalContext {
         self.library = library
     }
 }
-

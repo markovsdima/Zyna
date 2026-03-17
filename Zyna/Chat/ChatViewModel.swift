@@ -81,6 +81,13 @@ final class ChatViewModel {
         }
     }
 
+    /// Local-only stub: removes the message from the in-memory array.
+    /// Does NOT redact on the server — message will reappear on next sync.
+    func deleteMessageLocally(_ messageId: String) {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        messages.remove(at: index)
+    }
+
     func loadOlderMessages() {
         guard !isPaginating else { return }
         Task {
