@@ -46,7 +46,7 @@ final class InlineEmojiGridNode: ASDisplayNode {
         collectionNode.dataSource = self
         collectionNode.delegate = self
         collectionNode.backgroundColor = .clear
-        collectionNode.showsVerticalScrollIndicator = false
+        collectionNode.showsVerticalScrollIndicator = true
 
         setupSearchBar()
     }
@@ -84,6 +84,7 @@ final class InlineEmojiGridNode: ASDisplayNode {
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
         // Search bar content: icon + text field
         searchTextNode.style.flexGrow = 1
+        searchTextNode.style.flexShrink = 1
         let searchContent = ASStackLayoutSpec(
             direction: .horizontal,
             spacing: 6,

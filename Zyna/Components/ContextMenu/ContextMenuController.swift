@@ -338,9 +338,14 @@ final class ContextMenuController: NSObject {
             window.makeKey()
         }
 
-        emojiGridNode.frame = CGRect(origin: .zero, size: CGSize(width: Self.emojiGridWidth, height: Self.emojiGridHeight))
         emojiGridContainer.addSubview(emojiGridNode.view)
-        emojiGridNode.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        emojiGridNode.view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            emojiGridNode.view.topAnchor.constraint(equalTo: emojiGridContainer.topAnchor),
+            emojiGridNode.view.leadingAnchor.constraint(equalTo: emojiGridContainer.leadingAnchor),
+            emojiGridNode.view.trailingAnchor.constraint(equalTo: emojiGridContainer.trailingAnchor),
+            emojiGridNode.view.bottomAnchor.constraint(equalTo: emojiGridContainer.bottomAnchor)
+        ])
 
         emojiGridContainer.frame = CGRect(x: 0, y: 0, width: Self.emojiGridWidth, height: Self.emojiGridHeight)
         container.addSubview(emojiGridContainer)
