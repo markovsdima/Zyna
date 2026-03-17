@@ -67,6 +67,20 @@ final class ChatViewModel {
         }
     }
 
+    func sendVoiceMessage(fileURL: URL, duration: TimeInterval, waveform: [UInt16]) {
+        Task {
+            await timelineService.sendVoiceMessage(url: fileURL, duration: duration, waveform: waveform)
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+    }
+
+    func toggleReaction(_ key: String, for message: ChatMessage) {
+        guard let itemId = message.itemIdentifier else { return }
+        Task {
+            await timelineService.toggleReaction(key, to: itemId)
+        }
+    }
+
     func loadOlderMessages() {
         guard !isPaginating else { return }
         Task {

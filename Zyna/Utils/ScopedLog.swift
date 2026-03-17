@@ -34,6 +34,8 @@ struct LogScope: OptionSet {
     static let crypto      = LogScope(rawValue: bit(7))
     static let ui          = LogScope(rawValue: bit(8))
     static let call        = LogScope(rawValue: bit(9))
+    static let displayLink      = LogScope(rawValue: bit(10))
+    static let voiceRecording   = LogScope(rawValue: bit(11))
 
     // MARK: - Presets
 
@@ -47,7 +49,9 @@ struct LogScope: OptionSet {
         .media,
         .crypto,
         .ui,
-        .call
+        .call,
+        .displayLink,
+        .voiceRecording
     ]
 
     static let none: LogScope = []
@@ -136,6 +140,8 @@ private extension LogScope {
         if contains(.crypto)     { names.append("crypto") }
         if contains(.ui)         { names.append("ui") }
         if contains(.call)       { names.append("call") }
+        if contains(.displayLink){ names.append("displayLink") }
+        if contains(.voiceRecording){ names.append("voiceRecording") }
         return names.isEmpty ? "NONE" : names.joined(separator: "|")
     }
 }

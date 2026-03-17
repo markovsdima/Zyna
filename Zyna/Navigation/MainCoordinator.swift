@@ -8,6 +8,7 @@ import AsyncDisplayKit
 final class MainCoordinator {
 
     let tabBarController: ASTabBarController = MainTabBarController()
+    var onLogout: (() -> Void)?
 
     private var chatsCoordinator: ChatsCoordinator?
     private var profileCoordinator: ProfileCoordinator?
@@ -23,6 +24,9 @@ final class MainCoordinator {
         )
 
         let profile = ProfileCoordinator()
+        profile.onLogout = { [weak self] in
+            self?.onLogout?()
+        }
         profile.start()
         profile.navigationController.tabBarItem = UITabBarItem(
             title: "Профиль",
@@ -39,7 +43,7 @@ final class MainCoordinator {
         )
 
         tabBarController.setViewControllers(
-            [profile.navigationController, chats.navigationController, settings.navigationController],
+            [settings.navigationController, chats.navigationController, profile.navigationController],
             animated: false
         )
         tabBarController.selectedIndex = 1

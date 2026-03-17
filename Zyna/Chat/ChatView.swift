@@ -13,9 +13,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
+    private var batchFetchCancellable: AnyCancellable?
     private let inputAccessory = ChatInputAccessoryView()
+    private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var interactionLocks = Set<String>()
+    private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
 
     // MARK: - InputAccessoryView
 
@@ -46,6 +49,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.view.separatorStyle = .none
         node.tableNode.view.keyboardDismissMode = .interactive
         node.tableNode.view.contentInsetAdjustmentBehavior = .never
+        node.tableNode.view.showsVerticalScrollIndicator = false
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(tableTapped))
         tap.cancelsTouchesInView = false
@@ -63,6 +67,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         observeKeyboard()
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let navBottom = navigationController?.navigationBar.frame.maxY ?? 0
+        node.tableNode.contentInset.bottom = navBottom
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         becomeFirstResponder()
@@ -71,6 +81,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         if isMovingFromParent {
+            audioPlayer.stop()
             viewModel.cleanup()
         }
     }
@@ -78,6 +89,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - Navigation
 
     private func setupNavigationBar() {
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithDefaultBackground()
+        navigationItem.scrollEdgeAppearance = appearance
+
         navigationItem.hidesBackButton = true
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "chevron.left"),
@@ -128,6 +143,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         inputAccessory.inputNode.onSend = { [weak self] text in
             self?.viewModel.sendMessage(text)
         }
+
+        inputAccessory.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
+            // Convert Float waveform (0...1) to UInt16 (0...1024) for Matrix SDK
+            let sdkWaveform = waveform.map { UInt16(min(max($0, 0), 1) * 1024) }
+            self?.viewModel.sendVoiceMessage(fileURL: fileURL, duration: duration, waveform: sdkWaveform)
+        }
     }
 
     // MARK: - Keyboard
@@ -163,10 +184,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
-        let message = viewModel.messages[indexPath.row]
+        let messages = viewModel.messages
+        guard indexPath.row < messages.count else {
+            return { ASCellNode() }
+        }
+        let message = messages[indexPath.row]
+        let audioPlayer = self.audioPlayer
         return { [weak self] in
-            let cellNode: ASCellNode & ContextMenuCellNode
+            let cellNode: MessageCellNode
             switch message.content {
+            case .voice:
+                cellNode = VoiceMessageCellNode(message: message, audioPlayer: audioPlayer)
             case .image:
                 cellNode = ImageMessageCellNode(message: message)
             default:
@@ -184,6 +212,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             cellNode.onContextMenuActivated = { [weak self, weak cellNode] in
                 guard let self, let cellNode else { return }
                 self.presentContextMenu(for: message, from: cellNode)
+            }
+
+            cellNode.onReactionTapped = { [weak self] key in
+                self?.viewModel.toggleReaction(key, for: message)
             }
 
             return cellNode
@@ -219,6 +251,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             cellNode?.restoreBubbleFromMenu()
             self?.unlockInteraction("contextMenu")
             self?.activeContextMenu = nil
+        }
+
+        menuVC.onReactionSelected = { [weak self] emoji in
+            self?.viewModel.toggleReaction(emoji, for: message)
         }
 
         cellNode.onDragChanged = { [weak menuVC] point in
@@ -260,14 +296,26 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
         viewModel.loadOlderMessages()
 
-        viewModel.$isPaginating
+        batchFetchCancellable = viewModel.$isPaginating
             .dropFirst()
             .filter { !$0 }
             .first()
             .receive(on: DispatchQueue.main)
-            .sink { _ in
+            .sink { [weak self] _ in
                 context.completeBatchFetching(true)
+                self?.batchFetchCancellable = nil
             }
-            .store(in: &cancellables)
+    }
+
+    // MARK: - 120fps Scroll Boost
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if decelerate {
+            fpsBooster.start()
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        fpsBooster.stop()
     }
 }

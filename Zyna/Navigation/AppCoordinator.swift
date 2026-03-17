@@ -43,10 +43,21 @@ final class AppCoordinator {
 
     private func showMain() {
         let coordinator = MainCoordinator()
+        coordinator.onLogout = { [weak self] in
+            self?.performLogout()
+        }
         coordinator.start()
         self.mainCoordinator = coordinator
 
         guard let tabBar = coordinator.tabBarController as? UIViewController else { return }
         window?.rootViewController = tabBar
+    }
+
+    private func performLogout() {
+        Task { @MainActor in
+            await MatrixClientService.shared.logout()
+            self.mainCoordinator = nil
+            self.showAuth()
+        }
     }
 }
