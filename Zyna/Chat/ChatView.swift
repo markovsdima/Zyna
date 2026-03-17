@@ -49,6 +49,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.view.separatorStyle = .none
         node.tableNode.view.keyboardDismissMode = .interactive
         node.tableNode.view.contentInsetAdjustmentBehavior = .never
+        node.tableNode.view.showsVerticalScrollIndicator = false
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(tableTapped))
         tap.cancelsTouchesInView = false
@@ -64,6 +65,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         bindViewModel()
         bindInput()
         observeKeyboard()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let navBottom = navigationController?.navigationBar.frame.maxY ?? 0
+        node.tableNode.contentInset.bottom = navBottom
     }
 
     override func viewDidAppear(_ animated: Bool) {
