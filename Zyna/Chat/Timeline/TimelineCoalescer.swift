@@ -186,26 +186,24 @@ final class TimelineCoalescer {
             let idx = Int(update.index)
             guard idx < currentItems.count else { return }
 
-            let wasMappable = isMappable[idx]
-            let oldMsgIdx = wasMappable ? chatMessageIndex(forTimelineIndex: idx) : nil
+            let oldMsgIdx = isMappable[idx] ? chatMessageIndex(forTimelineIndex: idx) : nil
 
             currentItems[idx] = update.item
             let newMsg = TimelineService.mapTimelineItem(update.item)
-            let nowMappable = newMsg != nil
-            isMappable[idx] = nowMappable
+            isMappable[idx] = newMsg != nil
 
-            switch (wasMappable, nowMappable) {
-            case (true, true):
-                if chronMessages[oldMsgIdx!] != newMsg! {
-                    chronMessages[oldMsgIdx!] = newMsg!
-                    updatedIds.insert(newMsg!.id)
+            switch (oldMsgIdx, newMsg) {
+            case let (oldIdx?, msg?):
+                if chronMessages[oldIdx] != msg {
+                    chronMessages[oldIdx] = msg
+                    updatedIds.insert(msg.id)
                 }
-            case (false, true):
+            case let (nil, msg?):
                 let msgIdx = chatMessageIndex(forTimelineIndex: idx)
-                chronMessages.insert(newMsg!, at: msgIdx)
-            case (true, false):
-                chronMessages.remove(at: oldMsgIdx!)
-            case (false, false):
+                chronMessages.insert(msg, at: msgIdx)
+            case let (oldIdx?, nil):
+                chronMessages.remove(at: oldIdx)
+            case (nil, nil):
                 break
             }
 
