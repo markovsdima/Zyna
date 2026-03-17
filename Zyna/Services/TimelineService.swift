@@ -120,15 +120,40 @@ final class TimelineService {
             return nil
         }()
 
+        let reactions = buildReactions(from: event)
+
+        let itemIdentifier: ChatItemIdentifier? = {
+            switch event.eventOrTransactionId {
+            case .eventId(let id): return .eventId(id)
+            case .transactionId(let id): return .transactionId(id)
+            }
+        }()
+
         return ChatMessage(
             id: item.uniqueId().id,
             eventId: eventId,
+            itemIdentifier: itemIdentifier,
             senderId: event.sender,
             senderDisplayName: senderName,
             isOutgoing: event.isOwn,
             timestamp: timestamp,
-            content: content
+            content: content,
+            reactions: reactions
         )
+    }
+
+    private static func buildReactions(from event: EventTimelineItem) -> [MessageReaction] {
+        guard case .msgLike(let msgContent) = event.content else { return [] }
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        return msgContent.reactions
+            .map { reaction in
+                MessageReaction(
+                    key: reaction.key,
+                    count: reaction.senders.count,
+                    isOwn: reaction.senders.contains { $0.senderId == currentUserId }
+                )
+            }
+            .sorted { $0.count > $1.count }
     }
 
     private static func contentFromEvent(_ event: EventTimelineItem) -> ChatMessageContent? {
@@ -225,6 +250,16 @@ final class TimelineService {
             timelineLog("Voice message sent, duration=\(String(format: "%.1f", duration))s")
         } catch {
             timelineLog("Voice send failed: \(error)")
+        }
+    }
+
+    func toggleReaction(_ key: String, to itemId: ChatItemIdentifier) async {
+        guard let timeline else { return }
+        do {
+            try await timeline.toggleReaction(itemId: itemId.toSDK(), key: key)
+            timelineLog("Toggled reaction \(key)")
+        } catch {
+            timelineLog("Toggle reaction failed: \(error)")
         }
     }
 

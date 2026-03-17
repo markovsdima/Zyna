@@ -28,12 +28,17 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         set { contextSourceNode.onInteractionLockChanged = newValue }
     }
 
+    // MARK: - Reactions
+
+    var onReactionTapped: ((String) -> Void)?
+
     // MARK: - Subnodes
 
     let bubbleNode = ASDisplayNode()
     let contextSourceNode: ContextSourceNode
     let timeNode = ASTextNode()
     let senderNameNode = ASTextNode()
+    private(set) var reactionsNode: ReactionsNode?
 
     // MARK: - State
 
@@ -83,6 +88,19 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
                 ]
             )
         }
+
+        // Reactions
+        if !message.reactions.isEmpty {
+            let rNode = ReactionsNode(reactions: message.reactions)
+            rNode.onReactionTapped = { [weak self] key in
+                self?.onReactionTapped?(key)
+            }
+            rNode.style.maxWidth = ASDimension(
+                unit: .points,
+                value: ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
+            )
+            self.reactionsNode = rNode
+        }
     }
 
     @available(*, unavailable)
@@ -94,22 +112,29 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
     /// Subclasses can override to customize pre-layout (e.g. set maxWidth),
     /// then call super.
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        let bubbleWithName: ASLayoutElement
+        var columnChildren: [ASLayoutElement] = []
+
         if showSenderName {
             let nameInset = ASInsetLayoutSpec(
                 insets: UIEdgeInsets(top: 0, left: 12, bottom: 2, right: 0),
                 child: senderNameNode
             )
-            bubbleWithName = ASStackLayoutSpec(
-                direction: .vertical,
-                spacing: 0,
-                justifyContent: .start,
-                alignItems: .start,
-                children: [nameInset, contextSourceNode]
-            )
-        } else {
-            bubbleWithName = contextSourceNode
+            columnChildren.append(nameInset)
         }
+
+        columnChildren.append(contextSourceNode)
+
+        if let reactionsNode {
+            columnChildren.append(reactionsNode)
+        }
+
+        let column = ASStackLayoutSpec(
+            direction: .vertical,
+            spacing: 4,
+            justifyContent: .start,
+            alignItems: isOutgoing ? .end : .start,
+            children: columnChildren
+        )
 
         let spacer = ASLayoutSpec()
         spacer.style.flexGrow = 1
@@ -118,8 +143,8 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         hStack.spacing = 4
         hStack.alignItems = .start
         hStack.children = isOutgoing
-            ? [spacer, bubbleWithName]
-            : [bubbleWithName, spacer]
+            ? [spacer, column]
+            : [column, spacer]
 
         return ASInsetLayoutSpec(insets: MessageCellHelpers.cellInsets, child: hStack)
     }

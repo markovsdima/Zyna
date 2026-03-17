@@ -36,16 +36,40 @@ enum ChatMessageContent: Equatable {
     }
 }
 
+// MARK: - Reaction
+
+struct MessageReaction: Equatable {
+    let key: String
+    let count: Int
+    let isOwn: Bool
+}
+
+// MARK: - Item Identifier (safe copy of SDK's EventOrTransactionId)
+
+enum ChatItemIdentifier: Equatable {
+    case eventId(String)
+    case transactionId(String)
+
+    func toSDK() -> EventOrTransactionId {
+        switch self {
+        case .eventId(let id): return .eventId(eventId: id)
+        case .transactionId(let id): return .transactionId(transactionId: id)
+        }
+    }
+}
+
 // MARK: - Chat Message
 
 struct ChatMessage: Identifiable, Equatable, Hashable {
     let id: String
     let eventId: String?
+    let itemIdentifier: ChatItemIdentifier?
     let senderId: String
     let senderDisplayName: String?
     let isOutgoing: Bool
     let timestamp: Date
     let content: ChatMessageContent
+    let reactions: [MessageReaction]
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         lhs.id == rhs.id
@@ -55,6 +79,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.isOutgoing == rhs.isOutgoing
             && lhs.timestamp == rhs.timestamp
             && lhs.content == rhs.content
+            && lhs.reactions == rhs.reactions
     }
 
     func hash(into hasher: inout Hasher) {

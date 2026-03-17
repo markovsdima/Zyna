@@ -14,6 +14,7 @@ final class ContextMenuController: NSObject {
     private let actions: [ContextMenuAction]
 
     var onDismissComplete: (() -> Void)?
+    var onReactionSelected: ((String) -> Void)?
 
     // MARK: - Views
 
@@ -23,6 +24,13 @@ final class ContextMenuController: NSObject {
     private let dimmingView = UIView()
     private let actionsContainer = UIView()
     private let actionsStack = UIStackView()
+    private let reactionsBar = UIView()
+
+    // MARK: - Emoji Grid (expanded picker)
+
+    private let emojiGridContainer = UIView()
+    private let emojiGridNode = InlineEmojiGridNode()
+    private var isEmojiGridVisible = false
 
     // MARK: - Drag-to-Select
 
@@ -34,14 +42,21 @@ final class ContextMenuController: NSObject {
 
     private var targetContentFrame: CGRect = .zero
     private var targetActionsY: CGFloat = 0
+    private var targetReactionsY: CGFloat = 0
+    private var reactionsAboveBubble = true
 
     // MARK: - Constants
 
+    private static let quickEmojis = ["👍", "❤️", "😂", "😮", "😢", "🔥"]
     private static let actionsWidth: CGFloat = 250
     private static let actionsCornerRadius: CGFloat = 14
     private static let actionRowHeight: CGFloat = 44
     private static let gap: CGFloat = 8
-    private static let screenPadding: CGFloat = 16
+    private static let screenPadding: CGFloat = MessageCellHelpers.cellInsets.right
+    private static let reactionsBarHeight: CGFloat = 44
+    private static let emojiButtonSize: CGFloat = 36
+    private static let emojiGridHeight: CGFloat = 300
+    private static let emojiGridWidth: CGFloat = 266
 
     // MARK: - Init
 
@@ -62,7 +77,7 @@ final class ContextMenuController: NSObject {
         window.isHidden = false
         self.overlayWindow = window
 
-        let container = window.rootViewController!.view!
+        let container = window.rootViewController!.view! // swiftlint:disable:this force_unwrapping
         let bounds = sourceWindow.bounds
         let safeTop = sourceWindow.safeAreaInsets.top + Self.screenPadding
         let maxBottom = bounds.height - sourceWindow.safeAreaInsets.bottom - Self.screenPadding
@@ -70,27 +85,54 @@ final class ContextMenuController: NSObject {
         // 1. Dimming
         setupDimming(in: container)
 
-        // 2. Actions (calculate size before layout)
+        // 2. Reactions bar + Actions (calculate sizes before layout)
+        buildReactionsBar(in: container)
         buildActions(in: container)
+        buildEmojiGrid(in: container)
         let actionsHeight = actionsContainer.frame.height
+        let reactionsH = Self.reactionsBarHeight
 
-        // 3. Calculate layout
+        // 3. Calculate layout — reactions above bubble, actions below
         let availableHeight = maxBottom - safeTop
-        let maxContentVisible = availableHeight - Self.gap - actionsHeight
+        let maxContentVisible = availableHeight - reactionsH - Self.gap - Self.gap - actionsHeight
         let contentHeight = sourceFrame.height
         let visibleContentHeight = min(contentHeight, maxContentVisible)
 
+        // Try placing reactions above bubble
+        var reactionsY = sourceFrame.origin.y - Self.gap - reactionsH
         var bubbleY = sourceFrame.origin.y
         var actionsY = bubbleY + visibleContentHeight + Self.gap
+        reactionsAboveBubble = true
+
+        // If reactions don't fit above, place them below actions
+        if reactionsY < safeTop {
+            reactionsAboveBubble = false
+            bubbleY = safeTop
+            actionsY = bubbleY + visibleContentHeight + Self.gap
+            reactionsY = bubbleY - Self.gap - reactionsH
+        }
 
         if actionsY + actionsHeight > maxBottom {
             let excess = actionsY + actionsHeight - maxBottom
             bubbleY -= excess
             actionsY -= excess
+            if reactionsAboveBubble {
+                reactionsY = bubbleY - Self.gap - reactionsH
+            }
         }
 
-        if bubbleY < safeTop {
-            bubbleY = safeTop
+        if bubbleY < safeTop + (reactionsAboveBubble ? reactionsH + Self.gap : 0) {
+            bubbleY = safeTop + (reactionsAboveBubble ? reactionsH + Self.gap : 0)
+            actionsY = bubbleY + visibleContentHeight + Self.gap
+            if reactionsAboveBubble {
+                reactionsY = bubbleY - Self.gap - reactionsH
+            }
+        }
+
+        // If reactions below, place after actions
+        if !reactionsAboveBubble {
+            reactionsY = safeTop
+            bubbleY = reactionsY + reactionsH + Self.gap
             actionsY = bubbleY + visibleContentHeight + Self.gap
         }
 
@@ -101,6 +143,7 @@ final class ContextMenuController: NSObject {
             height: visibleContentHeight
         )
         targetActionsY = actionsY
+        targetReactionsY = reactionsY
 
         // 4. Content scroll view
         contentScroll.clipsToBounds = true
@@ -116,7 +159,7 @@ final class ContextMenuController: NSObject {
         hostNode.addSubnode(contentNode)
         contentNode.frame = CGRect(origin: .zero, size: sourceFrame.size)
 
-        // 5. Actions position
+        // 5. Actions & reactions position
         actionsContainer.frame.origin.y = sourceFrame.maxY + Self.gap
         let isRightAligned = sourceFrame.midX > bounds.width / 2
         let actionsX: CGFloat
@@ -130,10 +173,26 @@ final class ContextMenuController: NSObject {
             bounds.width - Self.screenPadding - actionsContainer.frame.width
         )
 
+        // Reactions bar X — align with bubble
+        let reactionsBarWidth = reactionsBar.frame.width
+        let reactionsX: CGFloat
+        if isRightAligned {
+            reactionsX = sourceFrame.maxX - reactionsBarWidth
+        } else {
+            reactionsX = sourceFrame.minX
+        }
+        reactionsBar.frame.origin.x = min(
+            max(Self.screenPadding, reactionsX),
+            bounds.width - Self.screenPadding - reactionsBarWidth
+        )
+        reactionsBar.frame.origin.y = sourceFrame.origin.y - Self.gap - reactionsH
+
         // 6. Initial state
         dimmingView.alpha = 0
         actionsContainer.alpha = 0
         actionsContainer.transform = CGAffineTransform(translationX: 0, y: 8)
+        reactionsBar.alpha = 0
+        reactionsBar.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
         selectionFeedback.prepare()
 
         // 7. Animate in
@@ -150,12 +209,16 @@ final class ContextMenuController: NSObject {
             self.actionsContainer.frame.origin.y = self.targetActionsY
             self.actionsContainer.alpha = 1
             self.actionsContainer.transform = .identity
+            self.reactionsBar.frame.origin.y = self.targetReactionsY
+            self.reactionsBar.alpha = 1
+            self.reactionsBar.transform = .identity
         }
     }
 
     // MARK: - Drag-to-Select
 
     func trackFinger(at screenPoint: CGPoint) {
+        guard !isEmojiGridVisible else { return }
         let row = hitTestRow(at: screenPoint)
 
         guard row !== highlightedRow else { return }
@@ -171,6 +234,7 @@ final class ContextMenuController: NSObject {
     }
 
     func releaseFinger(at screenPoint: CGPoint) {
+        guard !isEmojiGridVisible else { return }
         guard let row = highlightedRow else { return }
         row.backgroundColor = .clear
         highlightedRow = nil
@@ -194,6 +258,183 @@ final class ContextMenuController: NSObject {
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(backgroundTapped))
         dimmingView.addGestureRecognizer(tap)
+    }
+
+    private func buildReactionsBar(in container: UIView) {
+        reactionsBar.backgroundColor = .secondarySystemBackground
+        reactionsBar.layer.cornerRadius = Self.reactionsBarHeight / 2
+        reactionsBar.layer.shadowColor = UIColor.black.cgColor
+        reactionsBar.layer.shadowOpacity = 0.12
+        reactionsBar.layer.shadowRadius = 8
+        reactionsBar.layer.shadowOffset = CGSize(width: 0, height: 2)
+
+        let stack = UIStackView()
+        stack.axis = .horizontal
+        stack.spacing = 2
+        stack.alignment = .center
+        stack.distribution = .fillEqually
+
+        for emoji in Self.quickEmojis {
+            let button = UIButton(type: .system)
+            button.setTitle(emoji, for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 24)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.widthAnchor.constraint(equalToConstant: Self.emojiButtonSize).isActive = true
+            button.heightAnchor.constraint(equalToConstant: Self.emojiButtonSize).isActive = true
+            button.addAction(UIAction { [weak self] _ in
+                self?.dismissMenu {
+                    self?.onReactionSelected?(emoji)
+                }
+            }, for: .touchUpInside)
+            stack.addArrangedSubview(button)
+        }
+
+        // "+" button for full picker
+        let addButton = UIButton(type: .system)
+        addButton.setImage(UIImage(systemName: "plus"), for: .normal)
+        addButton.tintColor = .secondaryLabel
+        addButton.translatesAutoresizingMaskIntoConstraints = false
+        addButton.widthAnchor.constraint(equalToConstant: Self.emojiButtonSize).isActive = true
+        addButton.heightAnchor.constraint(equalToConstant: Self.emojiButtonSize).isActive = true
+        addButton.addAction(UIAction { [weak self] _ in
+            self?.showEmojiGrid()
+        }, for: .touchUpInside)
+        stack.addArrangedSubview(addButton)
+
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        reactionsBar.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: reactionsBar.leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(equalTo: reactionsBar.trailingAnchor, constant: -6),
+            stack.topAnchor.constraint(equalTo: reactionsBar.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: reactionsBar.bottomAnchor)
+        ])
+
+        let emojiCount = CGFloat(Self.quickEmojis.count + 1)
+        let barWidth = emojiCount * Self.emojiButtonSize + CGFloat(Self.quickEmojis.count) * 2 + 12
+        reactionsBar.frame = CGRect(x: 0, y: 0, width: barWidth, height: Self.reactionsBarHeight)
+
+        container.addSubview(reactionsBar)
+    }
+
+    // MARK: - Emoji Grid (inline expanded picker)
+
+    private func buildEmojiGrid(in container: UIView) {
+        emojiGridContainer.backgroundColor = .secondarySystemBackground
+        emojiGridContainer.layer.cornerRadius = Self.actionsCornerRadius
+        emojiGridContainer.clipsToBounds = true
+        emojiGridContainer.alpha = 0
+        emojiGridContainer.isHidden = true
+
+        emojiGridNode.onEmojiSelected = { [weak self] emoji in
+            self?.dismissMenu {
+                self?.onReactionSelected?(emoji)
+            }
+        }
+
+        emojiGridNode.onSearchActivated = { [weak self] in
+            guard let self, let window = self.overlayWindow as? OverlayWindow else { return }
+            window.allowKeyStatus = true
+            window.makeKey()
+        }
+
+        emojiGridNode.frame = CGRect(origin: .zero, size: CGSize(width: Self.emojiGridWidth, height: Self.emojiGridHeight))
+        emojiGridContainer.addSubview(emojiGridNode.view)
+        emojiGridNode.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+
+        emojiGridContainer.frame = CGRect(x: 0, y: 0, width: Self.emojiGridWidth, height: Self.emojiGridHeight)
+        container.addSubview(emojiGridContainer)
+    }
+
+    private func showEmojiGrid() {
+        guard !isEmojiGridVisible else { return }
+        isEmojiGridVisible = true
+
+        // Don't make overlay key — input bar must stay in place.
+        // Search field will request key status on demand via onSearchActivated.
+
+        // Position emoji grid where reactionsBar is, but expanded
+        let barFrame = reactionsBar.frame
+        let gridWidth = Self.emojiGridWidth
+        let gridHeight = Self.emojiGridHeight
+
+        // Align emoji grid edge with bubble edge
+        let bounds = overlayWindow?.bounds ?? UIScreen.main.bounds
+        let isRightAligned = sourceFrame.midX > bounds.width / 2
+        var gridX: CGFloat
+        if isRightAligned {
+            gridX = sourceFrame.maxX - gridWidth
+        } else {
+            gridX = sourceFrame.minX
+        }
+        var gridY = barFrame.origin.y
+
+        // Clamp X to screen
+        gridX = min(max(Self.screenPadding, gridX), bounds.width - Self.screenPadding - gridWidth)
+
+        // Calculate combined layout: grid + gap + bubble must fit on screen
+        let currentBubbleY = contentScroll.frame.origin.y
+        let bubbleHeight = contentScroll.frame.height
+        let maxBottom = bounds.height - (overlayWindow?.safeAreaInsets.bottom ?? 0) - Self.screenPadding
+        let totalNeeded = gridHeight + Self.gap + bubbleHeight
+        let bottomOfBubble = gridY + totalNeeded
+
+        // If everything doesn't fit, shift grid up so bubble stays on screen
+        if bottomOfBubble > maxBottom {
+            gridY = maxBottom - totalNeeded
+            // Don't go above safe area
+            let safeTop = (overlayWindow?.safeAreaInsets.top ?? 0) + Self.screenPadding
+            gridY = max(gridY, safeTop)
+        }
+
+        let targetFrame = CGRect(x: gridX, y: gridY, width: gridWidth, height: gridHeight)
+        let newBubbleY = targetFrame.maxY + Self.gap
+
+        // Start from reactions bar frame
+        emojiGridContainer.frame = barFrame
+        emojiGridContainer.isHidden = false
+        emojiGridContainer.alpha = 0
+
+        UIView.animate(
+            withDuration: 0.3,
+            delay: 0,
+            usingSpringWithDamping: 0.85,
+            initialSpringVelocity: 0,
+            options: []
+        ) {
+            self.reactionsBar.alpha = 0
+            self.actionsContainer.alpha = 0
+            self.actionsContainer.transform = CGAffineTransform(translationX: 0, y: 8)
+            self.emojiGridContainer.frame = targetFrame
+            self.emojiGridContainer.alpha = 1
+
+            // Shift bubble below grid
+            if newBubbleY != currentBubbleY {
+                self.contentScroll.frame.origin.y = newBubbleY
+            }
+        }
+    }
+
+    private func hideEmojiGrid(completion: (() -> Void)? = nil) {
+        guard isEmojiGridVisible else {
+            completion?()
+            return
+        }
+
+        // Dismiss keyboard and revoke key status
+        emojiGridContainer.endEditing(true)
+        (overlayWindow as? OverlayWindow)?.allowKeyStatus = false
+
+        UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseIn) {
+            self.emojiGridContainer.alpha = 0
+            self.emojiGridContainer.frame = self.reactionsBar.frame
+            // Restore bubble to original position
+            self.contentScroll.frame.origin.y = self.targetContentFrame.origin.y
+        } completion: { _ in
+            self.emojiGridContainer.isHidden = true
+            self.isEmojiGridVisible = false
+            completion?()
+        }
     }
 
     private func buildActions(in container: UIView) {
@@ -279,12 +520,19 @@ final class ContextMenuController: NSObject {
     // MARK: - Dismiss
 
     private func dismissMenu(completion: (() -> Void)? = nil) {
+        if isEmojiGridVisible {
+            isEmojiGridVisible = false
+        }
+
         UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseIn) {
             self.dimmingView.alpha = 0
             self.contentScroll.contentOffset = .zero
             self.contentScroll.frame = self.sourceFrame
             self.actionsContainer.alpha = 0
             self.actionsContainer.frame.origin.y = self.sourceFrame.maxY + Self.gap
+            self.reactionsBar.alpha = 0
+            self.reactionsBar.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
+            self.emojiGridContainer.alpha = 0
         } completion: { _ in
             self.onDismissComplete?()
             completion?()
@@ -304,7 +552,9 @@ final class ContextMenuController: NSObject {
 
 private final class OverlayWindow: UIWindow {
 
-    override var canBecomeKey: Bool { false }
+    var allowKeyStatus = false
+
+    override var canBecomeKey: Bool { allowKeyStatus }
 
     override init(windowScene: UIWindowScene) {
         super.init(windowScene: windowScene)
@@ -328,3 +578,4 @@ private final class HighlightControl: UIControl {
         }
     }
 }
+

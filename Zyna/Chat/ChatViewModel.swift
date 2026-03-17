@@ -74,6 +74,13 @@ final class ChatViewModel {
         }
     }
 
+    func toggleReaction(_ key: String, for message: ChatMessage) {
+        guard let itemId = message.itemIdentifier else { return }
+        Task {
+            await timelineService.toggleReaction(key, to: itemId)
+        }
+    }
+
     func loadOlderMessages() {
         guard !isPaginating else { return }
         Task {

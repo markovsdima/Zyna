@@ -203,6 +203,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self.presentContextMenu(for: message, from: cellNode)
             }
 
+            cellNode.onReactionTapped = { [weak self] key in
+                self?.viewModel.toggleReaction(key, for: message)
+            }
+
             return cellNode
         }
     }
@@ -236,6 +240,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             cellNode?.restoreBubbleFromMenu()
             self?.unlockInteraction("contextMenu")
             self?.activeContextMenu = nil
+        }
+
+        menuVC.onReactionSelected = { [weak self] emoji in
+            self?.viewModel.toggleReaction(emoji, for: message)
         }
 
         cellNode.onDragChanged = { [weak menuVC] point in
