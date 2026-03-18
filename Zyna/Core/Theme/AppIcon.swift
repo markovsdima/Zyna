@@ -13,16 +13,22 @@ enum AppIcon {
     case attach
     case send
     case mic
+    case lockOpen
+    case lockClosed
+    case chevronUp
 
     var systemName: String {
         switch self {
-        case .play:   return "play.fill"
-        case .pause:  return "pause.fill"
-        case .stop:   return "stop.circle.fill"
-        case .trash:  return "trash.circle.fill"
-        case .attach: return "paperclip"
-        case .send:   return "arrow.up.circle.fill"
-        case .mic:    return "mic.fill"
+        case .play:       return "play.fill"
+        case .pause:      return "pause.fill"
+        case .stop:       return "stop.circle.fill"
+        case .trash:      return "trash.circle.fill"
+        case .attach:     return "paperclip"
+        case .send:       return "arrow.up.circle.fill"
+        case .mic:        return "mic.fill"
+        case .lockOpen:   return "lock.open.fill"
+        case .lockClosed: return "lock.fill"
+        case .chevronUp:  return "chevron.up"
         }
     }
 
