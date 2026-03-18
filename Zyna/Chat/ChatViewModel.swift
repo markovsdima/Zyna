@@ -17,6 +17,12 @@ final class ChatViewModel {
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate) -> Void)?
 
+    /// Called when messages become redacted (from any source). Passes message IDs.
+    var onRedactedDetected: (([String]) -> Void)?
+
+    /// Called when a redaction request fails.
+    var onRedactionFailed: ((String, Error) -> Void)?
+
     let roomName: String
 
     // MARK: - Coordinator callback
@@ -45,8 +51,36 @@ final class ChatViewModel {
         coalescer.onBatchReady = { [weak self] newMessages, tableUpdate in
             guard let self else { return }
             Self.prefetchImages(newMessages)
+
+            // Detect newly redacted messages in updates
+            let redactedIds: [String]
+            if case .batch(_, _, let updates, _) = tableUpdate, !updates.isEmpty {
+                redactedIds = updates.compactMap { ip -> String? in
+                    guard ip.row < newMessages.count else { return nil }
+                    let msg = newMessages[ip.row]
+                    return msg.content.isRedacted ? msg.id : nil
+                }
+            } else {
+                redactedIds = []
+            }
+
             self.messages = newMessages
-            self.onTableUpdate?(tableUpdate)
+
+            if !redactedIds.isEmpty {
+                // Filter redacted from normal table update (controller handles them via animation)
+                if case .batch(let del, let ins, let upd, let anim) = tableUpdate {
+                    let filtered = upd.filter { ip in
+                        guard ip.row < newMessages.count else { return true }
+                        return !newMessages[ip.row].content.isRedacted
+                    }
+                    self.onTableUpdate?(.batch(deletions: del, insertions: ins, updates: filtered, animated: anim))
+                } else {
+                    self.onTableUpdate?(tableUpdate)
+                }
+                self.onRedactedDetected?(redactedIds)
+            } else {
+                self.onTableUpdate?(tableUpdate)
+            }
 
             // Auto-paginate when SDK delivers fewer messages than one page
             if newMessages.count < 20 && !self.isPaginating {
@@ -79,6 +113,23 @@ final class ChatViewModel {
         Task {
             await timelineService.toggleReaction(key, to: itemId)
         }
+    }
+
+    func redactMessage(_ message: ChatMessage) {
+        guard let itemId = message.itemIdentifier else { return }
+        Task {
+            do {
+                try await timelineService.redactEvent(itemId)
+            } catch {
+                await MainActor.run {
+                    onRedactionFailed?(message.id, error)
+                }
+            }
+        }
+    }
+
+    func hideMessage(_ messageId: String) {
+        coalescer.hide(messageId)
     }
 
     func loadOlderMessages() {

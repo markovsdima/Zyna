@@ -167,7 +167,7 @@ final class TimelineService {
         case .poll:
             return .unsupported(typeName: "poll")
         case .redacted:
-            return .text(body: "Message deleted")
+            return .redacted
         case .unableToDecrypt:
             return .text(body: "Encrypted message")
         }
@@ -251,6 +251,12 @@ final class TimelineService {
         } catch {
             timelineLog("Voice send failed: \(error)")
         }
+    }
+
+    func redactEvent(_ itemId: ChatItemIdentifier, reason: String? = nil) async throws {
+        guard let timeline else { return }
+        try await timeline.redactEvent(eventOrTransactionId: itemId.toSDK(), reason: reason)
+        timelineLog("Redacted event \(itemId)")
     }
 
     func toggleReaction(_ key: String, to itemId: ChatItemIdentifier) async {

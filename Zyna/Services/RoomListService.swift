@@ -197,7 +197,7 @@ final class ZynaRoomListService: NSObject {
         case .poll(let question, _, _, _, _, _, _):
             text = "Poll: \(question)"
         case .redacted:
-            text = "Message deleted"
+            text = "..последнее сообщение удалено.."
         case .unableToDecrypt:
             text = "Encrypted message"
         }

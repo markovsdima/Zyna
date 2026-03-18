@@ -17,6 +17,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let inputAccessory = ChatInputAccessoryView()
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
+    private var pendingRedactedIds: [String] = []
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
 
@@ -121,6 +122,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func bindViewModel() {
         viewModel.onTableUpdate = { [weak self] update in
             self?.applyTableUpdate(update)
+        }
+
+        viewModel.onRedactedDetected = { [weak self] messageIds in
+            self?.handleRedactedMessages(messageIds)
         }
     }
 
@@ -228,19 +233,24 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         guard let window = view.window,
               let info = cellNode.extractBubbleForMenu(in: window.coordinateSpace) else { return }
 
-        let actions = [
+        var actions = [
             ContextMenuAction(
                 title: "Reply",
                 image: UIImage(systemName: "arrowshape.turn.up.left"),
                 handler: { print("[context-menu] Reply tapped: \(message.id)") }
-            ),
-            ContextMenuAction(
+            )
+        ]
+
+        if message.itemIdentifier != nil && !message.content.isRedacted {
+            actions.append(ContextMenuAction(
                 title: "Delete",
                 image: UIImage(systemName: "trash"),
                 isDestructive: true,
-                handler: { print("[context-menu] Delete tapped: \(message.id)") }
-            )
-        ]
+                handler: { [weak self] in
+                    self?.triggerPaintSplashDelete(for: message)
+                }
+            ))
+        }
 
         let menuVC = ContextMenuController(
             contentNode: info.node,
@@ -251,6 +261,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             cellNode?.restoreBubbleFromMenu()
             self?.unlockInteraction("contextMenu")
             self?.activeContextMenu = nil
+            self?.flushPendingRedactions()
         }
 
         menuVC.onReactionSelected = { [weak self] emoji in
@@ -317,5 +328,53 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         fpsBooster.stop()
+    }
+
+    // MARK: - Paint Splash Delete
+
+    private func triggerPaintSplashDelete(for message: ChatMessage) {
+        viewModel.redactMessage(message)
+    }
+
+    private func handleRedactedMessages(_ messageIds: [String]) {
+        // Defer if context menu is active (bubble is reparented to overlay)
+        if activeContextMenu != nil {
+            pendingRedactedIds.append(contentsOf: messageIds)
+            return
+        }
+
+        for messageId in messageIds {
+            guard let row = viewModel.messages.firstIndex(where: { $0.id == messageId }) else {
+                viewModel.hideMessage(messageId)
+                continue
+            }
+
+            let indexPath = IndexPath(row: row, section: 0)
+
+            // If cell is off-screen, hide immediately without animation
+            guard let cellNode = node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode,
+                  cellNode.isNodeLoaded else {
+                viewModel.hideMessage(messageId)
+                continue
+            }
+
+            PaintSplashTrigger.trigger(in: node.tableNode, at: indexPath) { [weak self] in
+                self?.viewModel.hideMessage(messageId)
+            }
+        }
+    }
+
+    private func flushPendingRedactions() {
+        guard !pendingRedactedIds.isEmpty else { return }
+        let ids = pendingRedactedIds
+        pendingRedactedIds.removeAll()
+        handleRedactedMessages(ids)
+    }
+
+    private func indexPathForMessage(_ message: ChatMessage) -> IndexPath? {
+        guard let row = viewModel.messages.firstIndex(where: { $0.id == message.id }) else {
+            return nil
+        }
+        return IndexPath(row: row, section: 0)
     }
 }

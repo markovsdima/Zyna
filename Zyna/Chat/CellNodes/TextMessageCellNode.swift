@@ -35,6 +35,8 @@ final class TextMessageCellNode: MessageCellNode {
             bodyText = "🎤 Voice message"
         case .unsupported(let typeName):
             bodyText = "[\(typeName)]"
+        case .redacted:
+            bodyText = "Message deleted"
         }
 
         textNode.attributedText = NSAttributedString(

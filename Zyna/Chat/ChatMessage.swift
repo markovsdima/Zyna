@@ -15,6 +15,12 @@ enum ChatMessageContent: Equatable {
     case emote(body: String)
     case voice(source: MediaSource, duration: TimeInterval, waveform: [UInt16])
     case unsupported(typeName: String)
+    case redacted
+
+    var isRedacted: Bool {
+        if case .redacted = self { return true }
+        return false
+    }
 
     static func == (lhs: ChatMessageContent, rhs: ChatMessageContent) -> Bool {
         switch (lhs, rhs) {
@@ -30,6 +36,8 @@ enum ChatMessageContent: Equatable {
             return a == b
         case (.unsupported(let a), .unsupported(let b)):
             return a == b
+        case (.redacted, .redacted):
+            return true
         default:
             return false
         }
