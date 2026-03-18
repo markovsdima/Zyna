@@ -56,24 +56,15 @@ final class ChatInputNode: ASDisplayNode {
 
         textInputNode.backgroundColor = .secondarySystemBackground
 
-        attachButtonNode.setImage(
-            Self.renderSymbol("paperclip", pointSize: 22, color: .gray),
-            for: .normal
-        )
+        attachButtonNode.setImage(AppIcon.attach.rendered(size: 22, color: .gray), for: .normal)
         attachButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
         // Send button
-        sendButtonNode.setImage(
-            Self.renderSymbol("arrow.up.circle.fill", pointSize: 22, weight: .semibold, color: .systemBlue),
-            for: .normal
-        )
+        sendButtonNode.setImage(AppIcon.send.rendered(size: 22, weight: .semibold, color: .systemBlue), for: .normal)
         sendButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
         // Mic button
-        micButtonNode.setImage(
-            Self.renderSymbol("mic.fill", pointSize: 22, color: .gray),
-            for: .normal
-        )
+        micButtonNode.setImage(AppIcon.mic.rendered(size: 22, color: .gray), for: .normal)
         micButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
         // Overlay is hidden by default
@@ -284,23 +275,6 @@ final class ChatInputNode: ASDisplayNode {
     private var currentWaveform: [Float] {
         if case .recording(_, let w) = recorder.state { return w }
         return []
-    }
-
-    // MARK: - Helpers
-
-    private static func renderSymbol(
-        _ name: String,
-        pointSize: CGFloat,
-        weight: UIImage.SymbolWeight = .regular,
-        color: UIColor
-    ) -> UIImage? {
-        let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
-        guard let symbol = UIImage(systemName: name, withConfiguration: config) else { return nil }
-        let renderer = UIGraphicsImageRenderer(size: symbol.size)
-        return renderer.image { _ in
-            color.setFill()
-            symbol.withRenderingMode(.alwaysTemplate).draw(at: .zero)
-        }
     }
 
     // MARK: - Actions
