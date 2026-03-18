@@ -5,6 +5,8 @@
 
 import AsyncDisplayKit
 import Combine
+import PhotosUI
+import UniformTypeIdentifiers
 
 final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
@@ -18,6 +20,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactedIds: [String] = []
+    private var isPickerPresented = false
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
 
@@ -150,9 +153,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         inputAccessory.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
-            // Convert Float waveform (0...1) to UInt16 (0...1024) for Matrix SDK
-            let sdkWaveform = waveform.map { UInt16(min(max($0, 0), 1) * 1024) }
-            self?.viewModel.sendVoiceMessage(fileURL: fileURL, duration: duration, waveform: sdkWaveform)
+            self?.viewModel.sendVoiceMessage(fileURL: fileURL, duration: duration, waveform: waveform)
+        }
+
+        inputAccessory.inputNode.onAttachTapped = { [weak self] in
+            self?.presentPhotoPicker()
         }
     }
 
@@ -173,6 +178,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     @objc private func keyboardWillChangeFrame(_ note: Notification) {
         guard !isMovingFromParent,
+              !isPickerPresented,
               navigationController?.transitionCoordinator == nil,
               let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         // How much of the screen the keyboard (+ accessory) covers
@@ -376,5 +382,61 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return nil
         }
         return IndexPath(row: row, section: 0)
+    }
+
+    // MARK: - Photo Picker
+
+    private func presentPhotoPicker() {
+        isPickerPresented = true
+        var config = PHPickerConfiguration()
+        config.selectionLimit = 10
+        config.filter = .images
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+}
+
+// MARK: - PHPickerViewControllerDelegate
+
+extension ChatViewController: PHPickerViewControllerDelegate {
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true) { [weak self] in
+            guard let self else { return }
+            self.isPickerPresented = false
+            self.becomeFirstResponder()
+        }
+        guard !results.isEmpty else { return }
+
+        let captionText = inputAccessory.inputNode.textInputNode.textView.text?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let caption = (captionText?.isEmpty == false) ? captionText : nil
+        if caption != nil {
+            inputAccessory.inputNode.textInputNode.textView.text = ""
+        }
+
+        Task {
+            var processed: [ProcessedImage] = []
+            for result in results {
+                guard let data = await loadImageData(from: result) else { continue }
+                if let image = try? await MediaPreprocessor.processImage(from: data) {
+                    processed.append(image)
+                }
+            }
+            guard !processed.isEmpty else { return }
+            await MainActor.run {
+                viewModel.sendImages(processed, caption: caption)
+            }
+        }
+    }
+
+    private func loadImageData(from result: PHPickerResult) async -> Data? {
+        await withCheckedContinuation { continuation in
+            result.itemProvider.loadDataRepresentation(
+                forTypeIdentifier: UTType.image.identifier
+            ) { data, _ in
+                continuation.resume(returning: data)
+            }
+        }
     }
 }

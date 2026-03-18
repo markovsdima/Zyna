@@ -64,25 +64,11 @@ final class VoiceRecordingOverlayNode: ASDisplayNode {
         chevronNode.style.preferredSize = CGSize(width: 12, height: 14)
 
         // Stop button (locked mode)
-        stopButtonNode.setImage(
-            UIImage(
-                systemName: "stop.circle.fill",
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)
-            ),
-            for: .normal
-        )
-        stopButtonNode.tintColor = .systemBlue
+        stopButtonNode.setImage(AppIcon.stop.rendered(size: 28, color: .systemBlue), for: .normal)
         stopButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
         // Cancel button (locked mode)
-        cancelButtonNode.setImage(
-            UIImage(
-                systemName: "trash.circle.fill",
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)
-            ),
-            for: .normal
-        )
-        cancelButtonNode.tintColor = .systemRed
+        cancelButtonNode.setImage(AppIcon.trash.rendered(size: 28, color: .systemRed), for: .normal)
         cancelButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
         // Waveform bars

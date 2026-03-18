@@ -93,17 +93,16 @@ final class MatrixClientService {
         clearSessionDirectories()
 
         do {
+            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+                .passphrase(passphrase: passphrase)
+
             let client = try await ClientBuilder()
                 .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
-                .sessionPaths(
-                    dataPath: sessionDataPath(),
-                    cachePath: sessionCachePath()
-                )
-                .sessionPassphrase(passphrase: passphrase)
+                .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
                 .setSessionDelegate(sessionDelegate: sessionDelegate)
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
-                .requestConfig(config: .init(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+                .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
                 .build()
 
             try await client.login(
@@ -144,17 +143,16 @@ final class MatrixClientService {
         do {
             let session = try sessionDelegate.retrieveSessionFromKeychain(userId: userId)
 
+            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+                .passphrase(passphrase: passphrase)
+
             let client = try await ClientBuilder()
                 .homeserverUrl(url: session.homeserverUrl)
-                .sessionPaths(
-                    dataPath: sessionDataPath(),
-                    cachePath: sessionCachePath()
-                )
-                .sessionPassphrase(passphrase: passphrase)
+                .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
                 .setSessionDelegate(sessionDelegate: sessionDelegate)
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
-                .requestConfig(config: .init(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+                .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
                 .build()
 
             try await client.restoreSession(session: session)
@@ -209,6 +207,71 @@ final class MatrixClientService {
 
         self.client = nil
         stateSubject.send(.loggedOut)
+    }
+
+    // MARK: - OIDC
+
+    // TODO: Replace with https://markovsdima.github.io/oidc/callback + Associated Domains once Apple Developer Account is active
+    private static let oidcRedirectURI = "zyna://oidc/callback"
+
+    private static let oidcConfig = OidcConfiguration(
+        clientName: "Zyna",
+        redirectUri: oidcRedirectURI,
+        clientUri: "https://github.com/markovsdima/Zyna",
+        logoUri: nil,
+        tosUri: nil,
+        policyUri: nil,
+        staticRegistrations: [:]
+    )
+
+    /// Build a client for a given homeserver (without logging in).
+    func buildUnauthenticatedClient(homeserver: String) async throws -> Client {
+        clearSessionDirectories()
+
+        let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+            .passphrase(passphrase: passphrase)
+
+        return try await ClientBuilder()
+            .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
+            .sqliteStore(config: storeConfig)
+            .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
+            .setSessionDelegate(sessionDelegate: sessionDelegate)
+            .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
+            .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+            .build()
+    }
+
+    /// Start an OIDC authentication flow. Returns the login URL and authorization data.
+    func startOIDCFlow(client: Client) async throws -> (loginURL: URL, authData: OAuthAuthorizationData) {
+        let authData = try await client.urlForOidc(
+            oidcConfiguration: Self.oidcConfig,
+            prompt: .consent,
+            loginHint: nil,
+            deviceId: nil,
+            additionalScopes: nil
+        )
+        guard let url = URL(string: authData.loginUrl()) else {
+            throw AuthenticationError.invalidOIDCURL
+        }
+        return (url, authData)
+    }
+
+    /// Complete an OIDC flow after receiving the callback URL from the browser.
+    func completeOIDCFlow(client: Client, callbackURL: String) async throws {
+        try await client.loginWithOidcCallback(callbackUrl: callbackURL)
+
+        let userId = try client.userId()
+        UserDefaults.standard.set(userId, forKey: userIdKey)
+
+        let session = try client.session()
+        sessionDelegate.saveSessionInKeychain(session: session)
+
+        authLog("OIDC login successful as \(userId)")
+
+        self.client = client
+        stateSubject.send(.loggedIn)
+
+        try await startSync()
     }
 
     // MARK: - Helpers

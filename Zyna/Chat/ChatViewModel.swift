@@ -101,10 +101,22 @@ final class ChatViewModel {
         }
     }
 
-    func sendVoiceMessage(fileURL: URL, duration: TimeInterval, waveform: [UInt16]) {
+    func sendVoiceMessage(fileURL: URL, duration: TimeInterval, waveform: [Float]) {
         Task {
             await timelineService.sendVoiceMessage(url: fileURL, duration: duration, waveform: waveform)
             try? FileManager.default.removeItem(at: fileURL)
+        }
+    }
+
+    func sendImages(_ images: [ProcessedImage], caption: String?) {
+        for (i, image) in images.enumerated() {
+            let cap = (i == 0) ? caption : nil
+            Task {
+                await timelineService.sendImage(
+                    imageData: image.imageData,
+                    width: image.width, height: image.height, caption: cap
+                )
+            }
         }
     }
 

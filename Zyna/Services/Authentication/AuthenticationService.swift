@@ -15,6 +15,8 @@ enum AuthenticationError: LocalizedError {
     case invalidCredentials
     case networkError
     case sessionNotFound
+    case invalidOIDCURL
+    case registrationNotSupported
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +30,10 @@ enum AuthenticationError: LocalizedError {
             return "Network connection error"
         case .sessionNotFound:
             return "No saved session found"
+        case .invalidOIDCURL:
+            return "Server returned an invalid authentication URL"
+        case .registrationNotSupported:
+            return "This server does not support registration"
         }
     }
 }

@@ -15,13 +15,21 @@ final class ChatInputNode: ASDisplayNode {
     private let separatorNode = ASDisplayNode()
 
     private let overlayNode = VoiceRecordingOverlayNode()
+    private let previewNode = VoicePreviewNode()
     private let recorder = AudioRecorderService()
+    private let previewPlayer = AudioPlayerService()
     private var cancellables = Set<AnyCancellable>()
 
     private var isTextEmpty: Bool = true
     private var isRecording: Bool = false
+    private var voicePreview: VoicePreviewData?
     private var gestureState: VoiceRecordingGestureState = .idle
     private var gestureStartPoint: CGPoint = .zero
+
+    /// Saved mic button center in self coordinates (before layout switch hides it)
+    private var micCenter: CGPoint = .zero
+    private var pulseView: UIView?
+    private var lockView: LockIndicatorView?
 
     /// Thresholds for gesture recognition
     private let cancelSlideDistance: CGFloat = 120
@@ -30,6 +38,7 @@ final class ChatInputNode: ASDisplayNode {
 
     var onSend: ((String) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
+    var onAttachTapped: (() -> Void)?
     var onSizeChanged: (() -> Void)?
 
     override init() {
@@ -52,39 +61,22 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.style.minHeight = ASDimension(unit: .points, value: 36)
         textInputNode.style.maxHeight = ASDimension(unit: .points, value: 120)
         textInputNode.scrollEnabled = true
-
         textInputNode.backgroundColor = .secondarySystemBackground
 
-        attachButtonNode.setImage(
-            Self.renderSymbol("paperclip", pointSize: 22, color: .gray),
-            for: .normal
-        )
+        attachButtonNode.setImage(AppIcon.attach.rendered(size: 22, color: .gray), for: .normal)
         attachButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
-        // Send button
-        sendButtonNode.setImage(
-            Self.renderSymbol("arrow.up.circle.fill", pointSize: 22, weight: .semibold, color: .systemBlue),
-            for: .normal
-        )
+        sendButtonNode.setImage(AppIcon.send.rendered(size: 22, weight: .semibold, color: .systemBlue), for: .normal)
         sendButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
-        // Mic button
-        micButtonNode.setImage(
-            Self.renderSymbol("mic.fill", pointSize: 22, color: .gray),
-            for: .normal
-        )
+        micButtonNode.setImage(AppIcon.mic.rendered(size: 22, color: .gray), for: .normal)
         micButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
-        // Overlay is hidden by default
         overlayNode.alpha = 0
         overlayNode.isUserInteractionEnabled = false
 
-        overlayNode.onStop = { [weak self] in
-            self?.finishRecording()
-        }
-        overlayNode.onCancel = { [weak self] in
-            self?.cancelRecording()
-        }
+        overlayNode.onStop = { [weak self] in self?.finishRecording() }
+        overlayNode.onCancel = { [weak self] in self?.cancelRecording() }
     }
 
     // MARK: - didLoad
@@ -96,18 +88,21 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.view.layer.cornerRadius = 18
         textInputNode.view.clipsToBounds = true
         sendButtonNode.addTarget(self, action: #selector(sendTapped), forControlEvents: .touchUpInside)
+        attachButtonNode.addTarget(self, action: #selector(attachTapped), forControlEvents: .touchUpInside)
 
-        // Long press on parent view — ASButtonNode swallows touches,
-        // so we track mic hit in the gesture handler instead.
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleMicGesture(_:)))
         longPress.minimumPressDuration = 0.05
         longPress.allowableMovement = 20
+        longPress.delegate = self
         view.addGestureRecognizer(longPress)
     }
 
     // MARK: - Layout
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
+        if voicePreview != nil {
+            return previewLayout(constrainedSize)
+        }
         if isRecording {
             return recordingLayout(constrainedSize)
         }
@@ -115,30 +110,19 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func normalLayout(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        // Buttons pinned to bottom (when text field expands to multiple lines)
         let attachSpec = ASStackLayoutSpec(
-            direction: .vertical,
-            spacing: 0,
-            justifyContent: .end,
-            alignItems: .center,
+            direction: .vertical, spacing: 0, justifyContent: .end, alignItems: .center,
             children: [attachButtonNode]
         )
 
         let rightButton = isTextEmpty ? micButtonNode : sendButtonNode
         let rightSpec = ASStackLayoutSpec(
-            direction: .vertical,
-            spacing: 0,
-            justifyContent: .end,
-            alignItems: .center,
+            direction: .vertical, spacing: 0, justifyContent: .end, alignItems: .center,
             children: [rightButton]
         )
 
-        // Horizontal stack: [attach] [input] [send/mic]
         let inputRow = ASStackLayoutSpec(
-            direction: .horizontal,
-            spacing: 8,
-            justifyContent: .start,
-            alignItems: .end,
+            direction: .horizontal, spacing: 8, justifyContent: .start, alignItems: .end,
             children: [attachSpec, textInputNode, rightSpec]
         )
 
@@ -147,10 +131,8 @@ final class ChatInputNode: ASDisplayNode {
             child: inputRow
         )
 
-        // Separator + input row
         let fullStack = ASStackLayoutSpec.vertical()
         fullStack.children = [separatorNode, paddedRow]
-
         return fullStack
     }
 
@@ -164,7 +146,19 @@ final class ChatInputNode: ASDisplayNode {
 
         let fullStack = ASStackLayoutSpec.vertical()
         fullStack.children = [separatorNode, paddedOverlay]
+        return fullStack
+    }
 
+    private func previewLayout(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
+        previewNode.style.height = ASDimension(unit: .points, value: 48)
+
+        let paddedPreview = ASInsetLayoutSpec(
+            insets: UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0),
+            child: previewNode
+        )
+
+        let fullStack = ASStackLayoutSpec.vertical()
+        fullStack.children = [separatorNode, paddedPreview]
         return fullStack
     }
 
@@ -173,8 +167,14 @@ final class ChatInputNode: ASDisplayNode {
     private func bindRecorder() {
         recorder.$state
             .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in self?.handleRecorderState(state) }
+            .store(in: &cancellables)
+
+        previewPlayer.$state
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
-                self?.handleRecorderState(state)
+                guard self?.voicePreview != nil else { return }
+                self?.previewNode.updatePlayState(state.isPlaying)
             }
             .store(in: &cancellables)
     }
@@ -186,12 +186,16 @@ final class ChatInputNode: ASDisplayNode {
         case .recording(let duration, let waveform):
             overlayNode.update(state: gestureState, duration: duration, waveform: waveform)
         case .finished(let fileURL, let duration, let waveform):
-            onVoiceRecordingFinished?(fileURL, duration, waveform)
-            hideOverlay()
+            if gestureState == .locked {
+                showVoicePreview(VoicePreviewData(fileURL: fileURL, duration: duration, waveform: waveform))
+            } else {
+                onVoiceRecordingFinished?(fileURL, duration, waveform)
+                hideRecording()
+            }
         case .cancelled:
-            hideOverlay()
+            hideRecording()
         case .error:
-            hideOverlay()
+            hideRecording()
         }
     }
 
@@ -201,24 +205,23 @@ final class ChatInputNode: ASDisplayNode {
         switch gesture.state {
         case .began:
             let point = gesture.location(in: view)
-            // Only start if the gesture began on the mic button
-            guard isTextEmpty,
-                  micButtonNode.view.frame.insetBy(dx: -20, dy: -20).contains(
-                      view.convert(point, to: micButtonNode.supernode?.view ?? view)
-                  ) else {
-                gesture.isEnabled = false
-                gesture.isEnabled = true
-                return
-            }
             gestureStartPoint = point
             gestureState = .holding
-            showOverlay()
+            // Save mic center before layout switch
+            micCenter = CGPoint(
+                x: micButtonNode.view.frame.midX,
+                y: micButtonNode.view.frame.midY
+            )
+            showRecording()
             recorder.startRecording()
 
         case .changed:
             let point = gesture.location(in: view)
-            let dx = gestureStartPoint.x - point.x  // positive = left
-            let dy = gestureStartPoint.y - point.y   // positive = up
+            let dx = gestureStartPoint.x - point.x
+            let dy = gestureStartPoint.y - point.y
+
+            // Pulse follows finger upward
+            if dy > 0 { updatePulsePosition(dy: dy) }
 
             if gestureState == .locked { return }
 
@@ -226,11 +229,20 @@ final class ChatInputNode: ASDisplayNode {
                 gestureState = .locked
                 overlayNode.isUserInteractionEnabled = true
                 overlayNode.update(state: .locked, duration: currentDuration, waveform: currentWaveform)
+                lockView?.snapAndDismiss { }
+                lockView = nil
+                dismissPulse()
                 setNeedsLayout()
+            } else if dy > slideDeadZone {
+                let progress = dy / lockSlideDistance
+                lockView?.updateProgress(progress)
+                positionLockView(dy: dy)
             } else if dx > slideDeadZone {
                 let effectiveDx = dx - slideDeadZone
                 let progress = min(1, effectiveDx / cancelSlideDistance)
                 gestureState = .slidingToCancel(progress)
+                lockView?.dismiss()
+                lockView = nil
 
                 if progress >= 1 {
                     gestureState = .cancelled
@@ -255,21 +267,141 @@ final class ChatInputNode: ASDisplayNode {
         }
     }
 
-    // MARK: - Recording Control
+    // MARK: - Recording State
 
-    private func showOverlay() {
+    private func showRecording() {
         isRecording = true
         overlayNode.alpha = 1
         overlayNode.isUserInteractionEnabled = false
         setNeedsLayout()
         onSizeChanged?()
+        showPulse()
+        showLock()
     }
 
-    private func hideOverlay() {
+    private func hideRecording() {
         isRecording = false
         gestureState = .idle
         overlayNode.alpha = 0
         overlayNode.isUserInteractionEnabled = false
+        dismissPulse()
+        lockView?.dismiss()
+        lockView = nil
+        setNeedsLayout()
+        onSizeChanged?()
+    }
+
+    // MARK: - Pulse (UIView — per-frame position tracking)
+
+    private func showPulse() {
+        let size: CGFloat = 64
+        let pulse = UIView(frame: CGRect(
+            x: micCenter.x - size / 2,
+            y: micCenter.y - size / 2,
+            width: size, height: size
+        ))
+        pulse.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.25)
+        pulse.layer.cornerRadius = size / 2
+        pulse.alpha = 0
+        view.addSubview(pulse)
+        pulseView = pulse
+
+        UIView.animate(withDuration: 0.15) { pulse.alpha = 1 }
+
+        let anim = CABasicAnimation(keyPath: "transform.scale")
+        anim.fromValue = 1.0
+        anim.toValue = 1.4
+        anim.duration = 0.8
+        anim.autoreverses = true
+        anim.repeatCount = .infinity
+        pulse.layer.add(anim, forKey: "pulse")
+    }
+
+    private func updatePulsePosition(dy: CGFloat) {
+        pulseView?.center = CGPoint(x: micCenter.x, y: micCenter.y - dy)
+    }
+
+    private func dismissPulse() {
+        guard let pulse = pulseView else { return }
+        pulse.layer.removeAllAnimations()
+        UIView.animate(withDuration: 0.15, animations: { pulse.alpha = 0 }) { _ in
+            pulse.removeFromSuperview()
+        }
+        pulseView = nil
+    }
+
+    // MARK: - Lock Indicator (UIView — per-frame position tracking)
+
+    private func showLock() {
+        let lock = LockIndicatorView()
+        let lockSize = CGSize(width: 40, height: 80)
+        lock.frame = CGRect(
+            x: micCenter.x - lockSize.width / 2,
+            y: micCenter.y - lockSize.height - 24,
+            width: lockSize.width,
+            height: lockSize.height
+        )
+        view.addSubview(lock)
+        lock.show()
+        lockView = lock
+    }
+
+    private func positionLockView(dy: CGFloat) {
+        guard let lock = lockView else { return }
+        let lockSize = CGSize(width: 40, height: 80)
+        lock.frame.origin = CGPoint(
+            x: micCenter.x - lockSize.width / 2,
+            y: micCenter.y - lockSize.height - 24 - dy
+        )
+    }
+
+    // MARK: - Voice Preview
+
+    private func showVoicePreview(_ data: VoicePreviewData) {
+        voicePreview = data
+        isRecording = false
+        overlayNode.alpha = 0
+        overlayNode.isUserInteractionEnabled = false
+        gestureState = .idle
+        dismissPulse()
+        lockView?.dismiss()
+        lockView = nil
+
+        previewNode.configure(with: data)
+        previewNode.onPlay = { [weak self] in
+            guard let url = self?.voicePreview?.fileURL else { return }
+            self?.previewPlayer.playLocal(url: url)
+        }
+        previewNode.onPause = { [weak self] in
+            self?.previewPlayer.pause()
+        }
+        previewNode.onDelete = { [weak self] in
+            self?.discardVoicePreview()
+        }
+        previewNode.onSend = { [weak self] in
+            self?.sendVoicePreview()
+        }
+
+        setNeedsLayout()
+        onSizeChanged?()
+    }
+
+    private func discardVoicePreview() {
+        previewPlayer.stop()
+        if let url = voicePreview?.fileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        voicePreview = nil
+        setNeedsLayout()
+        onSizeChanged?()
+    }
+
+    private func sendVoicePreview() {
+        previewPlayer.stop()
+        if let data = voicePreview {
+            onVoiceRecordingFinished?(data.fileURL, data.duration, data.waveform)
+        }
+        voicePreview = nil
         setNeedsLayout()
         onSizeChanged?()
     }
@@ -282,7 +414,6 @@ final class ChatInputNode: ASDisplayNode {
         recorder.cancelRecording()
     }
 
-    /// Convenience accessors for current recorder state
     private var currentDuration: TimeInterval {
         if case .recording(let d, _) = recorder.state { return d }
         return 0
@@ -293,24 +424,11 @@ final class ChatInputNode: ASDisplayNode {
         return []
     }
 
-    // MARK: - Helpers
-
-    private static func renderSymbol(
-        _ name: String,
-        pointSize: CGFloat,
-        weight: UIImage.SymbolWeight = .regular,
-        color: UIColor
-    ) -> UIImage? {
-        let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
-        guard let symbol = UIImage(systemName: name, withConfiguration: config) else { return nil }
-        let renderer = UIGraphicsImageRenderer(size: symbol.size)
-        return renderer.image { _ in
-            color.setFill()
-            symbol.withRenderingMode(.alwaysTemplate).draw(at: .zero)
-        }
-    }
-
     // MARK: - Actions
+
+    @objc private func attachTapped() {
+        onAttachTapped?()
+    }
 
     @objc private func sendTapped() {
         let text = textInputNode.textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -330,6 +448,18 @@ final class ChatInputNode: ASDisplayNode {
             isTextEmpty = empty
             setNeedsLayout()
         }
+    }
+}
+
+// MARK: - UIGestureRecognizerDelegate
+
+extension ChatInputNode: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard isTextEmpty, !isRecording, voicePreview == nil else { return false }
+        let point = touch.location(in: view)
+        let micFrame = micButtonNode.view.frame.insetBy(dx: -20, dy: -20)
+        let micFrameInSelf = view.convert(micFrame, from: micButtonNode.supernode?.view ?? view)
+        return micFrameInSelf.contains(point)
     }
 }
 

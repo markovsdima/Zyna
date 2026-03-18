@@ -19,6 +19,8 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         set { viewModel.onChatSelected = newValue }
     }
 
+    var onComposeTapped: (() -> Void)?
+
     override init() {
         super.init(node: BaseNode())
 
@@ -75,7 +77,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     }
 
     @objc private func composeButtonTapped() {
-        print("Compose button tapped")
+        onComposeTapped?()
     }
 }
 

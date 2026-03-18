@@ -94,7 +94,7 @@ final class TimelineCoalescer {
         var hadResetOrClear = false
 
         for diff in diffs {
-            switch diff.change() {
+            switch diff {
             case .reset, .clear:
                 hadResetOrClear = true
             default:
@@ -162,10 +162,9 @@ final class TimelineCoalescer {
 
     // swiftlint:disable:next cyclomatic_complexity function_body_length
     private func applySingleDiff(_ diff: TimelineDiff, updatedIds: inout Set<String>) {
-        switch diff.change() {
+        switch diff {
 
-        case .append:
-            guard let items = diff.append() else { return }
+        case .append(let items):
             for item in items {
                 currentItems.append(item)
                 if let msg = TimelineService.mapTimelineItem(item) {
@@ -176,8 +175,7 @@ final class TimelineCoalescer {
                 }
             }
 
-        case .pushBack:
-            guard let item = diff.pushBack() else { return }
+        case .pushBack(let item):
             currentItems.append(item)
             if let msg = TimelineService.mapTimelineItem(item) {
                 chronMessages.append(msg)
@@ -186,8 +184,7 @@ final class TimelineCoalescer {
                 isMappable.append(false)
             }
 
-        case .pushFront:
-            guard let item = diff.pushFront() else { return }
+        case .pushFront(let item):
             currentItems.insert(item, at: 0)
             if let msg = TimelineService.mapTimelineItem(item) {
                 chronMessages.insert(msg, at: 0)
@@ -196,12 +193,11 @@ final class TimelineCoalescer {
                 isMappable.insert(false, at: 0)
             }
 
-        case .insert:
-            guard let update = diff.insert() else { return }
-            let idx = Int(update.index)
+        case .insert(let index, let item):
+            let idx = Int(index)
             guard idx <= currentItems.count else { return }
-            currentItems.insert(update.item, at: idx)
-            if let msg = TimelineService.mapTimelineItem(update.item) {
+            currentItems.insert(item, at: idx)
+            if let msg = TimelineService.mapTimelineItem(item) {
                 let msgIdx = chatMessageIndex(forTimelineIndex: idx)
                 chronMessages.insert(msg, at: msgIdx)
                 isMappable.insert(true, at: idx)
@@ -209,15 +205,14 @@ final class TimelineCoalescer {
                 isMappable.insert(false, at: idx)
             }
 
-        case .set:
-            guard let update = diff.set() else { return }
-            let idx = Int(update.index)
+        case .set(let index, let item):
+            let idx = Int(index)
             guard idx < currentItems.count else { return }
 
             let oldMsgIdx = isMappable[idx] ? chatMessageIndex(forTimelineIndex: idx) : nil
 
-            currentItems[idx] = update.item
-            let newMsg = TimelineService.mapTimelineItem(update.item)
+            currentItems[idx] = item
+            let newMsg = TimelineService.mapTimelineItem(item)
             isMappable[idx] = newMsg != nil
 
             switch (oldMsgIdx, newMsg) {
@@ -235,8 +230,7 @@ final class TimelineCoalescer {
                 break
             }
 
-        case .remove:
-            guard let index = diff.remove() else { return }
+        case .remove(let index):
             let idx = Int(index)
             guard idx < currentItems.count else { return }
             if isMappable[idx] {
@@ -262,14 +256,12 @@ final class TimelineCoalescer {
             currentItems.removeFirst()
             isMappable.removeFirst()
 
-        case .reset:
-            currentItems = diff.reset() ?? []
+        case .reset(let items):
+            currentItems = items
             rebuildChronMessages()
 
-        case .truncate:
-            if let length = diff.truncate() {
-                currentItems = Array(currentItems.prefix(Int(length)))
-            }
+        case .truncate(let length):
+            currentItems = Array(currentItems.prefix(Int(length)))
             rebuildChronMessages()
 
         case .clear:
