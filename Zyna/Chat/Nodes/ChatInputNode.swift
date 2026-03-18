@@ -99,11 +99,11 @@ final class ChatInputNode: ASDisplayNode {
         sendButtonNode.addTarget(self, action: #selector(sendTapped), forControlEvents: .touchUpInside)
         attachButtonNode.addTarget(self, action: #selector(attachTapped), forControlEvents: .touchUpInside)
 
-        // Long press on parent view — ASButtonNode swallows touches,
-        // so we track mic hit in the gesture handler instead.
+        // Long press for mic — only recognized near the mic button
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleMicGesture(_:)))
         longPress.minimumPressDuration = 0.05
         longPress.allowableMovement = 20
+        longPress.delegate = self
         view.addGestureRecognizer(longPress)
     }
 
@@ -203,15 +203,6 @@ final class ChatInputNode: ASDisplayNode {
         switch gesture.state {
         case .began:
             let point = gesture.location(in: view)
-            // Only start if the gesture began on the mic button
-            guard isTextEmpty,
-                  micButtonNode.view.frame.insetBy(dx: -20, dy: -20).contains(
-                      view.convert(point, to: micButtonNode.supernode?.view ?? view)
-                  ) else {
-                gesture.isEnabled = false
-                gesture.isEnabled = true
-                return
-            }
             gestureStartPoint = point
             gestureState = .holding
             showOverlay()
@@ -336,6 +327,18 @@ final class ChatInputNode: ASDisplayNode {
             isTextEmpty = empty
             setNeedsLayout()
         }
+    }
+}
+
+// MARK: - UIGestureRecognizerDelegate
+
+extension ChatInputNode: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard isTextEmpty else { return false }
+        let point = touch.location(in: view)
+        let micFrame = micButtonNode.view.frame.insetBy(dx: -20, dy: -20)
+        let micFrameInSelf = view.convert(micFrame, from: micButtonNode.supernode?.view ?? view)
+        return micFrameInSelf.contains(point)
     }
 }
 
