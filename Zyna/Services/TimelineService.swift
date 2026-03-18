@@ -32,7 +32,7 @@ final class TimelineService {
     func startListening() async {
         do {
             // Subscribe room for full sliding sync delivery (live events)
-            try? MatrixClientService.shared.roomListService?.subscribeToRooms(roomIds: [room.id()])
+            try? await MatrixClientService.shared.roomListService?.subscribeToRooms(roomIds: [room.id()])
 
             let timeline = try await room.timeline()
             self.timeline = timeline
@@ -55,25 +55,21 @@ final class TimelineService {
         var liveItems: [TimelineItem] = []
 
         for diff in diffs {
-            switch diff.change() {
-            case .append:
-                if let items = diff.append() {
-                    allItems.append(contentsOf: items)
-                    liveItems.append(contentsOf: items)
-                }
-            case .pushBack:
-                if let item = diff.pushBack() {
-                    allItems.append(item)
-                    liveItems.append(item)
-                }
-            case .pushFront:
-                if let item = diff.pushFront() { allItems.append(item) }
-            case .insert:
-                if let update = diff.insert() { allItems.append(update.item) }
-            case .set:
-                if let update = diff.set() { allItems.append(update.item) }
-            case .reset:
-                if let items = diff.reset() { allItems.append(contentsOf: items) }
+            switch diff {
+            case .append(let items):
+                allItems.append(contentsOf: items)
+                liveItems.append(contentsOf: items)
+            case .pushBack(let item):
+                allItems.append(item)
+                liveItems.append(item)
+            case .pushFront(let item):
+                allItems.append(item)
+            case .insert(_, let item):
+                allItems.append(item)
+            case .set(_, let item):
+                allItems.append(item)
+            case .reset(let items):
+                allItems.append(contentsOf: items)
             default:
                 break
             }
@@ -170,6 +166,8 @@ final class TimelineService {
             return .redacted
         case .unableToDecrypt:
             return .text(body: "Encrypted message")
+        case .other:
+            return nil
         }
     }
 
@@ -228,28 +226,47 @@ final class TimelineService {
         }
     }
 
-    func sendVoiceMessage(url: URL, duration: TimeInterval, waveform: [UInt16]) async {
+    func sendVoiceMessage(url: URL, duration: TimeInterval, waveform: [Float]) async {
         guard let timeline else { return }
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
         let params = UploadParameters(
             source: .file(filename: url.path),
-            caption: nil,
-            formattedCaption: nil,
-            mentions: nil,
-            replyParams: nil,
-            useSendQueue: true
+            caption: nil, formattedCaption: nil, mentions: nil, inReplyTo: nil
         )
         let audioInfo = AudioInfo(duration: duration, size: fileSize, mimetype: "audio/mp4")
         do {
             _ = try timeline.sendVoiceMessage(
-                params: params,
-                audioInfo: audioInfo,
-                waveform: waveform,
-                progressWatcher: nil
+                params: params, audioInfo: audioInfo, waveform: waveform
             )
             timelineLog("Voice message sent, duration=\(String(format: "%.1f", duration))s")
         } catch {
             timelineLog("Voice send failed: \(error)")
+        }
+    }
+
+    func sendImage(imageData: Data, width: UInt64, height: UInt64, caption: String?) async {
+        guard let timeline else { return }
+
+        let imageURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+        do { try imageData.write(to: imageURL) } catch {
+            timelineLog("Image write to temp failed: \(error)")
+            return
+        }
+
+        // sendImage throws InvalidAttachmentData — using sendFile as workaround
+        let fileInfo = FileInfo(
+            mimetype: "image/jpeg", size: UInt64(imageData.count),
+            thumbnailInfo: nil, thumbnailSource: nil
+        )
+        let params = UploadParameters(
+            source: .file(filename: imageURL.path(percentEncoded: false)),
+            caption: caption, formattedCaption: nil, mentions: nil, inReplyTo: nil
+        )
+        do {
+            _ = try timeline.sendFile(params: params, fileInfo: fileInfo)
+            timelineLog("Image sent via sendFile, \(width)×\(height)")
+        } catch {
+            timelineLog("Image send failed: \(error)")
         }
     }
 

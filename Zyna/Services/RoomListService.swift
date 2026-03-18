@@ -200,6 +200,8 @@ final class ZynaRoomListService: NSObject {
             text = "..последнее сообщение удалено.."
         case .unableToDecrypt:
             text = "Encrypted message"
+        case .other:
+            return (nil, timestamp)
         }
 
         return (text, timestamp)

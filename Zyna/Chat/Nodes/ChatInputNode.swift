@@ -30,6 +30,7 @@ final class ChatInputNode: ASDisplayNode {
 
     var onSend: ((String) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
+    var onAttachTapped: (() -> Void)?
     var onSizeChanged: (() -> Void)?
 
     override init() {
@@ -96,6 +97,7 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.view.layer.cornerRadius = 18
         textInputNode.view.clipsToBounds = true
         sendButtonNode.addTarget(self, action: #selector(sendTapped), forControlEvents: .touchUpInside)
+        attachButtonNode.addTarget(self, action: #selector(attachTapped), forControlEvents: .touchUpInside)
 
         // Long press on parent view — ASButtonNode swallows touches,
         // so we track mic hit in the gesture handler instead.
@@ -311,6 +313,10 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     // MARK: - Actions
+
+    @objc private func attachTapped() {
+        onAttachTapped?()
+    }
 
     @objc private func sendTapped() {
         let text = textInputNode.textView.text.trimmingCharacters(in: .whitespacesAndNewlines)

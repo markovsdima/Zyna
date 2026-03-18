@@ -93,17 +93,16 @@ final class MatrixClientService {
         clearSessionDirectories()
 
         do {
+            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+                .passphrase(passphrase: passphrase)
+
             let client = try await ClientBuilder()
                 .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
-                .sessionPaths(
-                    dataPath: sessionDataPath(),
-                    cachePath: sessionCachePath()
-                )
-                .sessionPassphrase(passphrase: passphrase)
+                .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
                 .setSessionDelegate(sessionDelegate: sessionDelegate)
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
-                .requestConfig(config: .init(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+                .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
                 .build()
 
             try await client.login(
@@ -144,17 +143,16 @@ final class MatrixClientService {
         do {
             let session = try sessionDelegate.retrieveSessionFromKeychain(userId: userId)
 
+            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+                .passphrase(passphrase: passphrase)
+
             let client = try await ClientBuilder()
                 .homeserverUrl(url: session.homeserverUrl)
-                .sessionPaths(
-                    dataPath: sessionDataPath(),
-                    cachePath: sessionCachePath()
-                )
-                .sessionPassphrase(passphrase: passphrase)
+                .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
                 .setSessionDelegate(sessionDelegate: sessionDelegate)
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
-                .requestConfig(config: .init(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+                .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
                 .build()
 
             try await client.restoreSession(session: session)
