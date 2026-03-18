@@ -31,6 +31,9 @@ final class TimelineCoalescer {
     /// Messages in display order (reversed chronological for the inverted table).
     private var displayMessages: [ChatMessage] = []
 
+    /// IDs of messages hidden after paint-splash animation (redacted and dismissed).
+    private var hiddenIds = Set<String>()
+
     private var pendingDiffs: [TimelineDiff] = []
     private var debounceWork: DispatchWorkItem?
 
@@ -44,6 +47,27 @@ final class TimelineCoalescer {
             guard let self else { return }
             self.pendingDiffs.append(contentsOf: diffs)
             self.scheduleFlush()
+        }
+    }
+
+    /// Permanently hides a message from the display array (called after splash animation).
+    func hide(_ messageId: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.hiddenIds.insert(messageId)
+
+            let oldDisplay = self.displayMessages
+            self.displayMessages = self.chronMessages.reversed().filter { msg in
+                !self.hiddenIds.contains(msg.id) && !msg.content.isRedacted
+            }
+
+            guard let oldIdx = oldDisplay.firstIndex(where: { $0.id == messageId }) else { return }
+            self.onBatchReady?(self.displayMessages, .batch(
+                deletions: [IndexPath(row: oldIdx, section: 0)],
+                insertions: [],
+                updates: [],
+                animated: false
+            ))
         }
     }
 
@@ -79,7 +103,11 @@ final class TimelineCoalescer {
             applySingleDiff(diff, updatedIds: &updatedIds)
         }
 
-        displayMessages = Array(chronMessages.reversed())
+        // Filter out: hidden (post-animation) and already-redacted (historical).
+        // Keep live redactions (in updatedIds) so the controller can animate them first.
+        displayMessages = chronMessages.reversed().filter { msg in
+            !hiddenIds.contains(msg.id) && (!msg.content.isRedacted || updatedIds.contains(msg.id))
+        }
 
         if hadResetOrClear {
             onBatchReady?(displayMessages, .reload)
