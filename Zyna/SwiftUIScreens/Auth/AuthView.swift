@@ -7,19 +7,19 @@ import SwiftUI
 
 struct AuthView: View {
     @ObservedObject var viewModel: AuthViewModel
-    
+
     @State private var username: String = ""
     @State private var password: String = ""
     @State private var homeserver: String = "matrix.org"
     @State private var showPassword = false
-    
+
     var body: some View {
         ZStack {
-            
+
             // MARK: - Background Layers
-            
+
             Color.black.ignoresSafeArea(.all)
-            
+
             Group {
                 ParticlePatternView()
                 InterstellarLinesView()
@@ -30,17 +30,20 @@ struct AuthView: View {
             .onTapGesture {
                 UIApplication.shared.endEditing()
             }
-            
+
             // MARK: - Content
-            
+
             VStack(spacing: 20) {
                 Spacer()
                 logoView()
                 Spacer()
-                
+
                 homeserverInput()
-                loginInput()
-                passwordInput()
+
+                if viewModel.serverSupportsPassword {
+                    loginInput()
+                    passwordInput()
+                }
 
                 if let error = viewModel.errorMessage {
                     Text(error)
@@ -49,8 +52,17 @@ struct AuthView: View {
                         .padding(.horizontal)
                 }
 
-                Spacer().frame(height: 50)
-                signInButton()
+                Spacer().frame(height: 30)
+
+                if viewModel.serverSupportsPassword {
+                    signInButton()
+                }
+
+                if !viewModel.serverSupportsPassword && viewModel.serverSupportsOIDC {
+                    oidcSignInButton()
+                }
+
+                createAccountButton()
             }
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -61,21 +73,21 @@ struct AuthView: View {
             viewModel.tryRestoreSession()
         }
     }
-    
+
     // MARK: - View Components
-    
+
     private func logoView() -> some View {
         Group {
             Text("Zyna")
                 .font(.system(size: 88, weight: .bold, design: .rounded))
                 .foregroundColor(.white.opacity(0.85))
                 .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
-            
-            Text("Safe chats. Stunning vibes.") // Grace meets security
+
+            Text("Safe chats. Stunning vibes.")
                 .foregroundColor(.white).opacity(0.75)
         }
     }
-    
+
     @ViewBuilder private func homeserverInput() -> some View {
         ZStack(alignment: .leading) {
             if homeserver.isEmpty {
@@ -95,6 +107,9 @@ struct AuthView: View {
                 )
                 .autocapitalization(.none)
                 .disableAutocorrection(true)
+                .onChange(of: homeserver) { newValue in
+                    viewModel.checkServerCapabilities(homeserver: newValue)
+                }
         }.padding(.horizontal)
     }
 
@@ -144,7 +159,7 @@ struct AuthView: View {
             .disableAutocorrection(true)
             .padding(.horizontal)
             .transition(.move(edge: .top).combined(with: .opacity))
-            
+
             if password.isEmpty {
                 HStack {
                     Text("Password")
@@ -153,7 +168,7 @@ struct AuthView: View {
                     Spacer()
                 }
             }
-            
+
             Button(action: {
                 showPassword.toggle()
             }) {
@@ -163,7 +178,7 @@ struct AuthView: View {
             }
         }
     }
-    
+
     private func signInButton() -> some View {
         Button(action: {
             viewModel.login(username: username, password: password, homeserver: homeserver)
@@ -185,5 +200,40 @@ struct AuthView: View {
         }
         .disabled(viewModel.isLoading)
         .padding(.horizontal)
+    }
+
+    private func oidcSignInButton() -> some View {
+        Button(action: {
+            viewModel.loginWithOIDC(homeserver: homeserver)
+        }) {
+            Group {
+                if viewModel.isLoading {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text("Sign In with Browser")
+                        .font(.headline)
+                }
+            }
+            .foregroundColor(.white)
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(.black, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 5)
+        }
+        .disabled(viewModel.isLoading)
+        .padding(.horizontal)
+    }
+
+    private func createAccountButton() -> some View {
+        Button(action: {
+            viewModel.register(homeserver: homeserver)
+        }) {
+            Text("Create Account")
+                .font(.subheadline)
+                .foregroundColor(.white.opacity(0.7))
+        }
+        .disabled(viewModel.isLoading)
+        .padding(.bottom, 16)
     }
 }
