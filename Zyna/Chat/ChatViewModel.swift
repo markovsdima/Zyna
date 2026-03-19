@@ -25,6 +25,7 @@ final class ChatViewModel {
 
     let roomName: String
     @Published private(set) var partnerPresence: UserPresence?
+    @Published private(set) var partnerUserId: String?
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -98,7 +99,10 @@ final class ChatViewModel {
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
             guard info.isDirect, let userId = info.heroes.first?.userId else { return }
-            await MainActor.run { self.directUserId = userId }
+            await MainActor.run {
+                self.directUserId = userId
+                self.partnerUserId = userId
+            }
             PresenceTracker.shared.register(userIds: [userId], for: "chat")
             PresenceTracker.shared.$statuses
                 .map { $0[userId] }

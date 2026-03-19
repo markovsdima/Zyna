@@ -8,7 +8,7 @@ import AsyncDisplayKit
 class RoomsCellNode: ASCellNode {
 
     private let chat: RoomModel
-    private let avatarImageNode = ASNetworkImageNode()
+    private let avatarImageNode = ASImageNode()
     private let avatarBackgroundNode = ASDisplayNode()
     private let avatarTextNode = ASTextNode()
     private let nameNode = ASTextNode()
@@ -27,30 +27,28 @@ class RoomsCellNode: ASCellNode {
         setupNodes()
     }
 
-    private var hasAvatar: Bool { chat.avatarURL != nil }
-
     private func setupNodes() {
         // Avatar background (colored circle with initials as fallback)
-        avatarBackgroundNode.backgroundColor = chat.avatarColor
+        avatarBackgroundNode.backgroundColor = chat.avatar.color
         avatarBackgroundNode.cornerRadius = 25
         avatarBackgroundNode.borderWidth = 0.5
         avatarBackgroundNode.borderColor = UIColor.separator.cgColor
 
         avatarTextNode.attributedText = NSAttributedString(
-            string: chat.avatarInitials,
+            string: chat.avatar.initials,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 18, weight: .medium),
                 .foregroundColor: UIColor.white
             ]
         )
 
-        // Avatar image (network loaded, shown on top if URL exists)
-        if let url = chat.avatarURL {
-            avatarImageNode.url = url
-            avatarImageNode.cornerRadius = 25
-            avatarImageNode.clipsToBounds = true
-            avatarImageNode.contentMode = .scaleAspectFill
-            avatarImageNode.shouldRenderProgressImages = false
+        // Avatar image (authenticated media, loaded async)
+        avatarImageNode.cornerRadius = 25
+        avatarImageNode.clipsToBounds = true
+        avatarImageNode.contentMode = .scaleAspectFill
+        avatarImageNode.isLayerBacked = true
+        if chat.avatar.mxcAvatarURL != nil {
+            loadAvatarImage()
         }
 
         // Name
@@ -107,16 +105,21 @@ class RoomsCellNode: ASCellNode {
         separatorNode.backgroundColor = UIColor.separator
     }
 
-    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        // Avatar: colored background with centered initials, image overlaid if available
-        avatarBackgroundNode.style.preferredSize = CGSize(width: 50, height: 50)
-        let initials = ASCenterLayoutSpec(centeringOptions: .XY, sizingOptions: .minimumXY, child: avatarTextNode)
-        var avatar: ASLayoutSpec = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: initials)
-
-        if hasAvatar {
-            avatarImageNode.style.preferredSize = CGSize(width: 50, height: 50)
-            avatar = ASOverlayLayoutSpec(child: avatar, overlay: avatarImageNode)
+    private func loadAvatarImage() {
+        guard let mxc = chat.avatar.mxcAvatarURL else { return }
+        Task { @MainActor in
+            guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: 100) else { return }
+            self.avatarImageNode.image = image
         }
+    }
+
+    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
+        // Avatar: colored background with centered initials, image overlaid on top
+        avatarBackgroundNode.style.preferredSize = CGSize(width: 50, height: 50)
+        avatarImageNode.style.preferredSize = CGSize(width: 50, height: 50)
+        let initials = ASCenterLayoutSpec(centeringOptions: .XY, sizingOptions: .minimumXY, child: avatarTextNode)
+        let withInitials = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: initials)
+        let avatar: ASLayoutSpec = ASOverlayLayoutSpec(child: withInitials, overlay: avatarImageNode)
 
         // Avatar with optional online indicator
         let avatarSection: ASLayoutSpec

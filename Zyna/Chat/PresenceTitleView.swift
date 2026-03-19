@@ -15,6 +15,14 @@ final class PresenceTitleView: UIView {
         didSet { updateStatus() }
     }
 
+    var isTappable = false {
+        didSet { tapRecognizer.isEnabled = isTappable }
+    }
+
+    var onTapped: (() -> Void)?
+
+    private lazy var tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+
     private let nameLabel = UILabel()
     private let statusLabel = UILabel()
     private let stack = UIStackView()
@@ -51,6 +59,13 @@ final class PresenceTitleView: UIView {
             stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor),
             stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor)
         ])
+
+        tapRecognizer.isEnabled = false
+        addGestureRecognizer(tapRecognizer)
+    }
+
+    @objc private func handleTap() {
+        onTapped?()
     }
 
     private func updateStatus() {
@@ -65,21 +80,11 @@ final class PresenceTitleView: UIView {
             statusLabel.text = "online"
             statusLabel.textColor = .systemGreen
         } else if let lastSeen = presence.lastSeen {
-            statusLabel.text = Self.formatLastSeen(lastSeen)
+            statusLabel.text = lastSeen.presenceLastSeenString
             statusLabel.textColor = .secondaryLabel
         } else {
             statusLabel.text = nil
             statusLabel.isHidden = true
-        }
-    }
-
-    private static func formatLastSeen(_ date: Date) -> String {
-        let diff = Date().timeIntervalSince(date)
-        switch diff {
-        case ..<60:       return "last seen just now"
-        case ..<3600:     return "last seen \(Int(diff / 60)) min ago"
-        case ..<86400:    return "last seen today"
-        default:          return "last seen recently"
         }
     }
 

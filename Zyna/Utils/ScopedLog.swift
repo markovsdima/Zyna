@@ -78,7 +78,7 @@ enum LogConfig {
     /// - [.messageSend, .calls]
     /// - .all.subtracting(.network)
     /// - .all.subtracting([.network, .calls])
-    static var enabled: LogScope = [.presence, .rooms]
+    static var enabled: LogScope = .all.subtracting(.presence)
 
     static func enableAll() { enabled = .all }
     static func disableAll() { enabled = .none }

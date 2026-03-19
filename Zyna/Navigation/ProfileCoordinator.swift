@@ -11,7 +11,7 @@ final class ProfileCoordinator {
     var onLogout: (() -> Void)?
 
     func start() {
-        let vc = ProfileViewController()
+        let vc = ProfileViewController(mode: .own)
         vc.onLogout = { [weak self] in
             self?.onLogout?()
         }

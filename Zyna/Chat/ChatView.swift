@@ -12,6 +12,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
+    var onTitleTapped: ((String) -> Void)?
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -106,6 +107,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self?.presenceTitleView.presence = presence
             }
             .store(in: &cancellables)
+
+        viewModel.$partnerUserId
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] userId in
+                self?.presenceTitleView.isTappable = userId != nil
+            }
+            .store(in: &cancellables)
+
+        presenceTitleView.onTapped = { [weak self] in
+            guard let userId = self?.viewModel.partnerUserId else { return }
+            self?.onTitleTapped?(userId)
+        }
 
         navigationItem.hidesBackButton = true
         navigationItem.leftBarButtonItem = UIBarButtonItem(

@@ -132,10 +132,16 @@ final class ZynaRoomListService: NSObject {
 
                 let directUserId: String? = info.isDirect ? info.heroes.first?.userId : nil
 
+                var avatarURL = room.avatarUrl()
+                if avatarURL == nil, let partnerId = directUserId,
+                   let client = MatrixClientService.shared.client {
+                    avatarURL = (try? await client.getProfile(userId: partnerId))?.avatarUrl
+                }
+
                 summaries.append(RoomSummary(
                     id: room.id(),
                     displayName: room.displayName() ?? "Unknown",
-                    avatarURL: room.avatarUrl(),
+                    avatarURL: avatarURL,
                     lastMessage: lastMessage,
                     lastMessageTimestamp: lastTimestamp,
                     unreadCount: info.notificationCount,
