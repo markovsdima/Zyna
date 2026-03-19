@@ -24,6 +24,7 @@ final class ChatViewModel {
     var onRedactionFailed: ((String, Error) -> Void)?
 
     let roomName: String
+    @Published private(set) var partnerPresence: UserPresence?
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -33,6 +34,7 @@ final class ChatViewModel {
     let timelineService: TimelineService
     private let coalescer = TimelineCoalescer()
     private var cancellables = Set<AnyCancellable>()
+    private var directUserId: String?
 
     init(room: Room) {
         self.roomName = room.displayName() ?? "Chat"
@@ -90,6 +92,18 @@ final class ChatViewModel {
 
         Task { [weak self] in
             await self?.timelineService.startListening()
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            guard let info = try? await room.roomInfo() else { return }
+            guard info.isDirect, let userId = info.heroes.first?.userId else { return }
+            await MainActor.run { self.directUserId = userId }
+            PresenceTracker.shared.register(userIds: [userId], for: "chat")
+            PresenceTracker.shared.$statuses
+                .map { $0[userId] }
+                .receive(on: DispatchQueue.main)
+                .assign(to: &self.$partnerPresence)
         }
     }
 
@@ -152,6 +166,7 @@ final class ChatViewModel {
     }
 
     func cleanup() {
+        PresenceTracker.shared.unregister(for: "chat")
         timelineService.onDiffs = nil
         coalescer.onBatchReady = nil
         timelineService.stopListening()

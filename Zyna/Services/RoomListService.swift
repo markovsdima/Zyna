@@ -17,6 +17,8 @@ struct RoomSummary: Identifiable {
     let lastMessageTimestamp: Date?
     let unreadCount: UInt64
     let isEncrypted: Bool
+    /// Matrix user ID of the other person in a DM room, nil for group rooms.
+    let directUserId: String?
 }
 
 private let roomsLog = ScopedLog(.rooms)
@@ -128,6 +130,8 @@ final class ZynaRoomListService: NSObject {
 
                 let (lastMessage, lastTimestamp) = Self.extractLastMessage(from: await room.latestEvent())
 
+                let directUserId: String? = info.isDirect ? info.heroes.first?.userId : nil
+
                 summaries.append(RoomSummary(
                     id: room.id(),
                     displayName: room.displayName() ?? "Unknown",
@@ -135,7 +139,8 @@ final class ZynaRoomListService: NSObject {
                     lastMessage: lastMessage,
                     lastMessageTimestamp: lastTimestamp,
                     unreadCount: info.notificationCount,
-                    isEncrypted: room.encryptionState() != .notEncrypted
+                    isEncrypted: room.encryptionState() != .notEncrypted,
+                    directUserId: directUserId
                 ))
             }
 

@@ -36,6 +36,7 @@ struct LogScope: OptionSet {
     static let call        = LogScope(rawValue: bit(9))
     static let displayLink      = LogScope(rawValue: bit(10))
     static let voiceRecording   = LogScope(rawValue: bit(11))
+    static let presence         = LogScope(rawValue: bit(12))
 
     // MARK: - Presets
 
@@ -51,7 +52,8 @@ struct LogScope: OptionSet {
         .ui,
         .call,
         .displayLink,
-        .voiceRecording
+        .voiceRecording,
+        .presence
     ]
 
     static let none: LogScope = []
@@ -76,7 +78,7 @@ enum LogConfig {
     /// - [.messageSend, .calls]
     /// - .all.subtracting(.network)
     /// - .all.subtracting([.network, .calls])
-    static var enabled: LogScope = Dmitry.calls
+    static var enabled: LogScope = [.presence, .rooms]
 
     static func enableAll() { enabled = .all }
     static func disableAll() { enabled = .none }
@@ -142,6 +144,7 @@ private extension LogScope {
         if contains(.call)       { names.append("call") }
         if contains(.displayLink){ names.append("displayLink") }
         if contains(.voiceRecording){ names.append("voiceRecording") }
+        if contains(.presence)      { names.append("presence") }
         return names.isEmpty ? "NONE" : names.joined(separator: "|")
     }
 }

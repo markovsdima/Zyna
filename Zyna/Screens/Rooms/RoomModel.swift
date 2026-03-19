@@ -14,9 +14,11 @@ struct RoomModel {
     let timestamp: String
     let avatarURL: URL?
     let avatarColor: UIColor
-    let isOnline: Bool
+    var isOnline: Bool
+    var lastSeen: Date?
     let unreadCount: Int
     let avatarInitials: String
+    let directUserId: String?
 }
 
 extension RoomModel {
@@ -40,8 +42,10 @@ extension RoomModel {
             avatarURL: room.avatarURL.flatMap { Self.mxcToHTTPS($0) },
             avatarColor: Self.avatarColors[Self.stableHash(room.id) % Self.avatarColors.count],
             isOnline: false,
+            lastSeen: nil,
             unreadCount: Int(room.unreadCount),
-            avatarInitials: String(initials.prefix(2))
+            avatarInitials: String(initials.prefix(2)),
+            directUserId: room.directUserId
         )
     }
 

@@ -21,4 +21,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         appCoordinator.start()
         window.makeKeyAndVisible()
     }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        PresenceService.shared.stopHeartbeatLoop()
+    }
+
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        appCoordinator.resumeHeartbeatIfNeeded()
+    }
 }
