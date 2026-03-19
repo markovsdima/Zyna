@@ -18,8 +18,8 @@ enum MatrixClientState {
     case error(Error)
 }
 
-private let authLog = ScopedLog(.auth)
-private let syncLog = ScopedLog(.sync)
+private let logAuth = ScopedLog(.auth)
+private let logSync = ScopedLog(.sync)
 
 // MARK: - Matrix Client Service
 
@@ -119,14 +119,14 @@ final class MatrixClientService {
             let session = try client.session()
             sessionDelegate.saveSessionInKeychain(session: session)
 
-            authLog("Logged in as \(userId)")
+            logAuth("Logged in as \(userId)")
 
             self.client = client
             stateSubject.send(.loggedIn)
 
             try await startSync()
         } catch {
-            authLog("Login failed: \(error)")
+            logAuth("Login failed: \(error)")
             stateSubject.send(.error(error))
             throw error
         }
@@ -136,7 +136,7 @@ final class MatrixClientService {
 
     func restoreSession() async throws {
         guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
-            authLog("No stored userId found")
+            logAuth("No stored userId found")
             throw AuthenticationError.sessionNotFound
         }
 
@@ -156,14 +156,14 @@ final class MatrixClientService {
                 .build()
 
             try await client.restoreSession(session: session)
-            authLog("Session restored for \(userId)")
+            logAuth("Session restored for \(userId)")
 
             self.client = client
             stateSubject.send(.loggedIn)
 
             try await startSync()
         } catch {
-            authLog("Session restore failed: \(error)")
+            logAuth("Session restore failed: \(error)")
             stateSubject.send(.error(error))
             throw error
         }
@@ -182,14 +182,14 @@ final class MatrixClientService {
 
         await syncService.start()
         stateSubject.send(.syncing)
-        syncLog("Sync started")
+        logSync("Sync started")
     }
 
     func stopSync() async {
         await syncService?.stop()
         syncService = nil
         roomListService = nil
-        syncLog("Sync stopped")
+        logSync("Sync stopped")
     }
 
     // MARK: - Logout
@@ -202,7 +202,7 @@ final class MatrixClientService {
             try? await client.logout()
             sessionDelegate.clearSession(userId: userId)
             UserDefaults.standard.removeObject(forKey: userIdKey)
-            authLog("Logged out")
+            logAuth("Logged out")
         }
 
         self.client = nil
@@ -266,7 +266,7 @@ final class MatrixClientService {
         let session = try client.session()
         sessionDelegate.saveSessionInKeychain(session: session)
 
-        authLog("OIDC login successful as \(userId)")
+        logAuth("OIDC login successful as \(userId)")
 
         self.client = client
         stateSubject.send(.loggedIn)

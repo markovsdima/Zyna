@@ -7,7 +7,7 @@ import Foundation
 import Combine
 import WebRTC
 
-private let callLog = ScopedLog(.call)
+private let logCall = ScopedLog(.call)
 
 // MARK: - WebRTC Client
 
@@ -82,7 +82,7 @@ final class WebRTCClient: NSObject {
             // User accepted incoming call — process buffered offer
             if let sdp = pendingOfferSDP {
                 pendingOfferSDP = nil
-                callLog("User accepted — processing buffered offer")
+                logCall("User accepted — processing buffered offer")
                 Task { await handleRemoteOffer(sdp: sdp) }
             }
 
@@ -98,7 +98,7 @@ final class WebRTCClient: NSObject {
 
     private func createOfferAndSend() async {
         guard peerConnection == nil else {
-            callLog("Ignoring duplicate createOffer — peer connection already exists")
+            logCall("Ignoring duplicate createOffer — peer connection already exists")
             return
         }
 
@@ -111,11 +111,11 @@ final class WebRTCClient: NSObject {
             let offer = try await pc.offer(for: WebRTCAudioConfig.offerConstraints)
             try await pc.setLocalDescription(offer)
 
-            callLog("Created SDP offer (\(offer.sdp.count) bytes)")
+            logCall("Created SDP offer (\(offer.sdp.count) bytes)")
             await callService?.sendOffer(sdp: offer.sdp)
             flushLocalCandidates()
         } catch {
-            callLog("Failed to create offer: \(error)")
+            logCall("Failed to create offer: \(error)")
             callService?.endCall(reason: .normal)
         }
     }
@@ -125,7 +125,7 @@ final class WebRTCClient: NSObject {
     private func handleRemoteOffer(sdp: String) async {
         // Guard against duplicate offers — only create if no active peer connection
         guard peerConnection == nil else {
-            callLog("Ignoring duplicate offer — peer connection already exists")
+            logCall("Ignoring duplicate offer — peer connection already exists")
             return
         }
 
@@ -143,11 +143,11 @@ final class WebRTCClient: NSObject {
             let answer = try await pc.answer(for: WebRTCAudioConfig.offerConstraints)
             try await pc.setLocalDescription(answer)
 
-            callLog("Created SDP answer (\(answer.sdp.count) bytes)")
+            logCall("Created SDP answer (\(answer.sdp.count) bytes)")
             await callService?.sendAnswer(sdp: answer.sdp)
             flushLocalCandidates()
         } catch {
-            callLog("Failed to handle offer / create answer: \(error)")
+            logCall("Failed to handle offer / create answer: \(error)")
             callService?.endCall(reason: .normal)
         }
     }
@@ -160,9 +160,9 @@ final class WebRTCClient: NSObject {
             try await peerConnection?.setRemoteDescription(remoteDesc)
             setHasRemoteDescription(true)
             processPendingICECandidates()
-            callLog("Set remote answer")
+            logCall("Set remote answer")
         } catch {
-            callLog("Failed to set remote answer: \(error)")
+            logCall("Failed to set remote answer: \(error)")
         }
     }
 
@@ -180,7 +180,7 @@ final class WebRTCClient: NSObject {
                 do {
                     try await peerConnection?.add(rtcCandidate)
                 } catch {
-                    callLog("Failed to add ICE candidate: \(error)")
+                    logCall("Failed to add ICE candidate: \(error)")
                 }
             } else {
                 pendingICECandidates.append(rtcCandidate)
@@ -201,7 +201,7 @@ final class WebRTCClient: NSObject {
         let config = WebRTCAudioConfig.peerConnectionConfig()
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         peerConnection = factory.peerConnection(with: config, constraints: constraints, delegate: self)
-        callLog("Peer connection created")
+        logCall("Peer connection created")
     }
 
     // MARK: - Audio Track
@@ -213,7 +213,7 @@ final class WebRTCClient: NSObject {
         localAudioTrack = audioTrack
 
         peerConnection?.add(audioTrack, streamIds: ["local_stream"])
-        callLog("Local audio track added")
+        logCall("Local audio track added")
 
         // Configure audio gain after a short delay for sender parameters to settle
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -231,7 +231,7 @@ final class WebRTCClient: NSObject {
                 encoding.minBitrateBps = NSNumber(value: 64_000)
             }
             transceiver.sender.parameters = parameters
-            callLog("Audio gain configured (64-128 kbps)")
+            logCall("Audio gain configured (64-128 kbps)")
             break
         }
     }
@@ -248,7 +248,7 @@ final class WebRTCClient: NSObject {
         let candidates = pendingICECandidates
         pendingICECandidates.removeAll()
 
-        callLog("Processing \(candidates.count) pending ICE candidates")
+        logCall("Processing \(candidates.count) pending ICE candidates")
 
         Task {
             for candidate in candidates {
@@ -271,7 +271,7 @@ final class WebRTCClient: NSObject {
         let candidates = pendingLocalCandidates
         pendingLocalCandidates.removeAll()
 
-        callLog("Flushing \(candidates.count) queued local ICE candidates")
+        logCall("Flushing \(candidates.count) queued local ICE candidates")
         Task {
             await callService?.sendICECandidates(candidates)
         }
@@ -294,11 +294,11 @@ final class WebRTCClient: NSObject {
 extension WebRTCClient: CallServiceDelegate {
 
     func callService(_ service: CallService, didReceiveOffer sdp: String, callId: String) {
-        callLog("Received remote offer for call \(callId) (state: \(service.state))")
+        logCall("Received remote offer for call \(callId) (state: \(service.state))")
 
         // For incoming calls: buffer the offer until user accepts (state → .connecting)
         if case .incomingRinging = service.state {
-            callLog("Buffering offer — waiting for user to accept")
+            logCall("Buffering offer — waiting for user to accept")
             pendingOfferSDP = sdp
             return
         }
@@ -307,17 +307,17 @@ extension WebRTCClient: CallServiceDelegate {
     }
 
     func callService(_ service: CallService, didReceiveAnswer sdp: String, callId: String) {
-        callLog("Received remote answer for call \(callId)")
+        logCall("Received remote answer for call \(callId)")
         Task { await handleRemoteAnswer(sdp: sdp) }
     }
 
     func callService(_ service: CallService, didReceiveICECandidates candidates: [ICECandidate], callId: String) {
-        callLog("Received \(candidates.count) remote ICE candidates")
+        logCall("Received \(candidates.count) remote ICE candidates")
         Task { await handleRemoteICECandidates(candidates) }
     }
 
     func callService(_ service: CallService, didEndCall callId: String, reason: CallHangupReason) {
-        callLog("Call ended: \(reason.rawValue)")
+        logCall("Call ended: \(reason.rawValue)")
         cleanup()
     }
 }
@@ -327,22 +327,22 @@ extension WebRTCClient: CallServiceDelegate {
 extension WebRTCClient: RTCPeerConnectionDelegate {
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {
-        callLog("Signaling state: \(stateChanged.rawValue)")
+        logCall("Signaling state: \(stateChanged.rawValue)")
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {
         for audioTrack in stream.audioTracks {
             audioTrack.isEnabled = true
         }
-        callLog("Remote stream added (audio tracks: \(stream.audioTracks.count))")
+        logCall("Remote stream added (audio tracks: \(stream.audioTracks.count))")
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {
-        callLog("Remote stream removed")
+        logCall("Remote stream removed")
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
-        callLog("ICE connection state: \(newState.rawValue)")
+        logCall("ICE connection state: \(newState.rawValue)")
 
         switch newState {
         case .connected, .completed:
@@ -351,14 +351,14 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
             }
 
         case .failed:
-            callLog("ICE failed — attempting restart")
+            logCall("ICE failed — attempting restart")
             peerConnection.restartIce()
 
         case .disconnected:
             // Wait briefly then restart if still in call
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 guard self?.callService?.state.isActive == true else { return }
-                callLog("ICE still disconnected — restarting")
+                logCall("ICE still disconnected — restarting")
                 peerConnection.restartIce()
             }
 
@@ -390,25 +390,25 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {
-        callLog("ICE candidates removed: \(candidates.count)")
+        logCall("ICE candidates removed: \(candidates.count)")
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {
-        callLog("ICE gathering state: \(newState.rawValue)")
+        logCall("ICE gathering state: \(newState.rawValue)")
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver) {
         if let track = rtpReceiver.track {
             track.isEnabled = true
-            callLog("RTP receiver added: \(track.kind)")
+            logCall("RTP receiver added: \(track.kind)")
         }
     }
 
     func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {
-        callLog("Renegotiation needed")
+        logCall("Renegotiation needed")
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
-        callLog("Data channel opened: \(dataChannel.label)")
+        logCall("Data channel opened: \(dataChannel.label)")
     }
 }

@@ -49,7 +49,7 @@ struct SessionData: Codable {
     let oidcData: String?
 }
 
-private let keychainLog = ScopedLog(.keychain)
+private let logKeychain = ScopedLog(.keychain)
 
 // MARK: - Session Delegate
 
@@ -93,18 +93,18 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
             let data = try encoder.encode(sessionData)
             let dataString = String(data: data, encoding: .utf8) ?? ""
             try keychain.set(dataString, key: session.userId)
-            keychainLog("Session saved for user: \(session.userId)")
+            logKeychain("Session saved for user: \(session.userId)")
         } catch {
-            keychainLog("Failed to save session: \(error)")
+            logKeychain("Failed to save session: \(error)")
         }
     }
 
     func clearSession(userId: String) {
         do {
             try keychain.remove(userId)
-            keychainLog("Session cleared for user: \(userId)")
+            logKeychain("Session cleared for user: \(userId)")
         } catch {
-            keychainLog("Failed to clear session: \(error)")
+            logKeychain("Failed to clear session: \(error)")
         }
     }
 }
