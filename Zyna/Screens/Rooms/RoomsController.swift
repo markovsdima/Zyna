@@ -60,6 +60,16 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         }
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        viewModel.registerPresence()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        viewModel.unregisterPresence()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
 

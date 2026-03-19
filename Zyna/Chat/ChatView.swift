@@ -12,10 +12,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
+    var onTitleTapped: ((String) -> Void)?
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
     private var batchFetchCancellable: AnyCancellable?
+    private let presenceTitleView = PresenceTitleView()
     private let inputAccessory = ChatInputAccessoryView()
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
@@ -35,7 +37,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
         super.init(node: ChatNode())
-        title = viewModel.roomName
+        presenceTitleView.name = viewModel.roomName
         hidesBottomBarWhenPushed = true
     }
 
@@ -96,6 +98,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let appearance = UINavigationBarAppearance()
         appearance.configureWithDefaultBackground()
         navigationItem.scrollEdgeAppearance = appearance
+
+        navigationItem.titleView = presenceTitleView
+
+        viewModel.$partnerPresence
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] presence in
+                self?.presenceTitleView.presence = presence
+            }
+            .store(in: &cancellables)
+
+        viewModel.$partnerUserId
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] userId in
+                self?.presenceTitleView.isTappable = userId != nil
+            }
+            .store(in: &cancellables)
+
+        presenceTitleView.onTapped = { [weak self] in
+            guard let userId = self?.viewModel.partnerUserId else { return }
+            self?.onTitleTapped?(userId)
+        }
 
         navigationItem.hidesBackButton = true
         navigationItem.leftBarButtonItem = UIBarButtonItem(

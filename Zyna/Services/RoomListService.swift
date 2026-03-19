@@ -17,9 +17,11 @@ struct RoomSummary: Identifiable {
     let lastMessageTimestamp: Date?
     let unreadCount: UInt64
     let isEncrypted: Bool
+    /// Matrix user ID of the other person in a DM room, nil for group rooms.
+    let directUserId: String?
 }
 
-private let roomsLog = ScopedLog(.rooms)
+private let logRooms = ScopedLog(.rooms)
 
 // MARK: - Room List Service
 
@@ -49,7 +51,7 @@ final class ZynaRoomListService: NSObject {
     private func observeClientState() {
         matrixService.stateSubject
             .sink { [weak self] state in
-                roomsLog("Client state changed: \(state)")
+                logRooms("Client state changed: \(state)")
                 if case .syncing = state {
                     self?.startListening()
                 }
@@ -61,12 +63,12 @@ final class ZynaRoomListService: NSObject {
 
     private func startListening() {
         guard let sdkRoomListService = matrixService.roomListService else {
-            roomsLog("roomListService is nil, cannot start listening")
+            logRooms("roomListService is nil, cannot start listening")
             return
         }
 
         guard !isListening else {
-            roomsLog("Already listening, skipping")
+            logRooms("Already listening, skipping")
             return
         }
         isListening = true
@@ -74,7 +76,7 @@ final class ZynaRoomListService: NSObject {
 
         // Observe RoomListService state
         let stateListener = ServiceStateListener { state in
-            roomsLog("RoomListService state: \(state)")
+            logRooms("RoomListService state: \(state)")
         }
         self.serviceStateHandle = sdkRoomListService.state(listener: stateListener)
 
@@ -88,7 +90,7 @@ final class ZynaRoomListService: NSObject {
                     pageSize: 200,
                     listener: EntriesListener { [weak self] updates in
                         guard let self else { return }
-                        roomsLog("Received \(updates.count) room list entry updates")
+                        logRooms("Received \(updates.count) room list entry updates")
                         self.applyUpdates(updates)
                     }
                 )
@@ -99,14 +101,14 @@ final class ZynaRoomListService: NSObject {
 
                 // Observe loading state — store stateStream handle to keep it alive
                 let loadingResult = try roomList.loadingState(listener: LoadingStateListener { state in
-                    roomsLog("RoomList loading state: \(state)")
+                    logRooms("RoomList loading state: \(state)")
                 })
                 self.loadingStateStreamHandle = loadingResult.stateStream
-                roomsLog("Initial loading state: \(loadingResult.state)")
+                logRooms("Initial loading state: \(loadingResult.state)")
 
-                roomsLog("Room list listener started")
+                logRooms("Room list listener started")
             } catch {
-                roomsLog("Failed to start room list listener: \(error)")
+                logRooms("Failed to start room list listener: \(error)")
             }
         }
     }
@@ -119,7 +121,7 @@ final class ZynaRoomListService: NSObject {
         }
 
         let currentRooms = rooms
-        roomsLog("Room count after diffs: \(currentRooms.count)")
+        logRooms("Room count after diffs: \(currentRooms.count)")
 
         Task {
             var summaries: [RoomSummary] = []
@@ -128,14 +130,23 @@ final class ZynaRoomListService: NSObject {
 
                 let (lastMessage, lastTimestamp) = Self.extractLastMessage(from: await room.latestEvent())
 
+                let directUserId: String? = info.isDirect ? info.heroes.first?.userId : nil
+
+                var avatarURL = room.avatarUrl()
+                if avatarURL == nil, let partnerId = directUserId,
+                   let client = MatrixClientService.shared.client {
+                    avatarURL = (try? await client.getProfile(userId: partnerId))?.avatarUrl
+                }
+
                 summaries.append(RoomSummary(
                     id: room.id(),
                     displayName: room.displayName() ?? "Unknown",
-                    avatarURL: room.avatarUrl(),
+                    avatarURL: avatarURL,
                     lastMessage: lastMessage,
                     lastMessageTimestamp: lastTimestamp,
                     unreadCount: info.notificationCount,
-                    isEncrypted: room.encryptionState() != .notEncrypted
+                    isEncrypted: room.encryptionState() != .notEncrypted,
+                    directUserId: directUserId
                 ))
             }
 
@@ -143,7 +154,7 @@ final class ZynaRoomListService: NSObject {
                 self?.roomsSubject.send(summaries)
             }
 
-            roomsLog("Rooms updated: \(summaries.count) rooms")
+            logRooms("Rooms updated: \(summaries.count) rooms")
         }
     }
 

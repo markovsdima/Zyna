@@ -7,7 +7,7 @@ import Foundation
 import Combine
 import MatrixRustSDK
 
-private let timelineLog = ScopedLog(.timeline)
+private let logTimeline = ScopedLog(.timeline)
 
 // MARK: - Timeline Service
 
@@ -42,9 +42,9 @@ final class TimelineService {
             }
             self.listenerHandle = await timeline.addListener(listener: listener)
 
-            timelineLog("Timeline listener started for room \(room.id())")
+            logTimeline("Timeline listener started for room \(room.id())")
         } catch {
-            timelineLog("Failed to start timeline: \(error)")
+            logTimeline("Failed to start timeline: \(error)")
         }
     }
 
@@ -86,7 +86,7 @@ final class TimelineService {
         // Forward raw diffs to the coalescer
         onDiffs?(diffs)
 
-        timelineLog("Timeline diffs forwarded: \(diffs.count) diffs")
+        logTimeline("Timeline diffs forwarded: \(diffs.count) diffs")
     }
 
     // MARK: - Map SDK Item -> ChatMessage
@@ -206,9 +206,9 @@ final class TimelineService {
 
         do {
             try await timeline.paginateBackwards(numEvents: 20)
-            timelineLog("Paginated backwards successfully")
+            logTimeline("Paginated backwards successfully")
         } catch {
-            timelineLog("Pagination failed: \(error)")
+            logTimeline("Pagination failed: \(error)")
         }
 
         await MainActor.run { isPaginatingSubject.send(false) }
@@ -220,9 +220,9 @@ final class TimelineService {
         guard let timeline else { return }
         do {
             try await timeline.send(msg: messageEventContentFromMarkdown(md: text))
-            timelineLog("Message sent")
+            logTimeline("Message sent")
         } catch {
-            timelineLog("Send failed: \(error)")
+            logTimeline("Send failed: \(error)")
         }
     }
 
@@ -238,9 +238,9 @@ final class TimelineService {
             _ = try timeline.sendVoiceMessage(
                 params: params, audioInfo: audioInfo, waveform: waveform
             )
-            timelineLog("Voice message sent, duration=\(String(format: "%.1f", duration))s")
+            logTimeline("Voice message sent, duration=\(String(format: "%.1f", duration))s")
         } catch {
-            timelineLog("Voice send failed: \(error)")
+            logTimeline("Voice send failed: \(error)")
         }
     }
 
@@ -249,7 +249,7 @@ final class TimelineService {
 
         let imageURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
         do { try imageData.write(to: imageURL) } catch {
-            timelineLog("Image write to temp failed: \(error)")
+            logTimeline("Image write to temp failed: \(error)")
             return
         }
 
@@ -264,25 +264,25 @@ final class TimelineService {
         )
         do {
             _ = try timeline.sendFile(params: params, fileInfo: fileInfo)
-            timelineLog("Image sent via sendFile, \(width)×\(height)")
+            logTimeline("Image sent via sendFile, \(width)×\(height)")
         } catch {
-            timelineLog("Image send failed: \(error)")
+            logTimeline("Image send failed: \(error)")
         }
     }
 
     func redactEvent(_ itemId: ChatItemIdentifier, reason: String? = nil) async throws {
         guard let timeline else { return }
         try await timeline.redactEvent(eventOrTransactionId: itemId.toSDK(), reason: reason)
-        timelineLog("Redacted event \(itemId)")
+        logTimeline("Redacted event \(itemId)")
     }
 
     func toggleReaction(_ key: String, to itemId: ChatItemIdentifier) async {
         guard let timeline else { return }
         do {
             try await timeline.toggleReaction(itemId: itemId.toSDK(), key: key)
-            timelineLog("Toggled reaction \(key)")
+            logTimeline("Toggled reaction \(key)")
         } catch {
-            timelineLog("Toggle reaction failed: \(error)")
+            logTimeline("Toggle reaction failed: \(error)")
         }
     }
 
@@ -292,7 +292,7 @@ final class TimelineService {
         do {
             _ = try await timeline.send(msg: messageEventContentFromMarkdown(md: text))
         } catch {
-            timelineLog("Call signaling send failed: \(error)")
+            logTimeline("Call signaling send failed: \(error)")
         }
     }
 
@@ -318,7 +318,7 @@ final class TimelineService {
                   let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let content = dict["content"] as? [String: Any],
                   let callId = content["call_id"] as? String else {
-                timelineLog("Call invite detected but failed to extract callId")
+                logTimeline("Call invite detected but failed to extract callId")
                 continue
             }
 
@@ -336,7 +336,7 @@ final class TimelineService {
                 return nil
             }()
 
-            timelineLog("Incoming call invite detected: callId=\(callId) from \(callerName ?? event.sender), sdp=\(offerSDP?.count ?? 0) bytes")
+            logTimeline("Incoming call invite detected: callId=\(callId) from \(callerName ?? event.sender), sdp=\(offerSDP?.count ?? 0) bytes")
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }

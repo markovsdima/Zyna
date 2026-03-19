@@ -7,7 +7,7 @@ import Foundation
 import Combine
 import MatrixRustSDK
 
-private let callLog = ScopedLog(.call)
+private let logCall = ScopedLog(.call)
 
 // MARK: - Call Signaling Service
 
@@ -52,34 +52,34 @@ final class CallSignalingService {
                 self?.processItems(items)
             }
             .store(in: &cancellables)
-        callLog("Signaling subscribed to TimelineService for room \(roomId)")
+        logCall("Signaling subscribed to TimelineService for room \(roomId)")
     }
 
     // MARK: - Send Events
 
     func sendInvite(_ content: CallInviteContent) async throws {
         guard let json = CallEventJSON.encode(content) else {
-            callLog("Failed to encode call invite")
+            logCall("Failed to encode call invite")
             return
         }
         // Send as native m.call.invite — SDK delivers as .callInvite in timeline
         try await room.sendRaw(eventType: "m.call.invite", content: json)
-        callLog("Sent m.call.invite (callId: \(content.callId))")
+        logCall("Sent m.call.invite (callId: \(content.callId))")
     }
 
     func sendAnswer(_ content: CallAnswerContent) async throws {
         try await sendViaTimeline(type: "m.call.answer", content: content)
-        callLog("Sent m.call.answer (callId: \(content.callId))")
+        logCall("Sent m.call.answer (callId: \(content.callId))")
     }
 
     func sendCandidates(_ content: CallCandidatesContent) async throws {
         try await sendViaTimeline(type: "m.call.candidates", content: content)
-        callLog("Sent m.call.candidates (callId: \(content.callId), count: \(content.candidates.count))")
+        logCall("Sent m.call.candidates (callId: \(content.callId), count: \(content.candidates.count))")
     }
 
     func sendHangup(_ content: CallHangupContent) async throws {
         try await sendViaTimeline(type: "m.call.hangup", content: content)
-        callLog("Sent m.call.hangup (callId: \(content.callId))")
+        logCall("Sent m.call.hangup (callId: \(content.callId))")
     }
 
     // MARK: - Stop
@@ -87,7 +87,7 @@ final class CallSignalingService {
     func stop() {
         cancellables.removeAll()
         timelineService = nil
-        callLog("Signaling stopped for room \(roomId)")
+        logCall("Signaling stopped for room \(roomId)")
     }
 
     // MARK: - Private — Send
@@ -144,16 +144,16 @@ final class CallSignalingService {
     /// Handle native m.call.invite (delivered as .callInvite by SDK)
     private func handleCallInvite(_ event: EventTimelineItem) {
         guard let contentDict = extractEventContent(event) else {
-            callLog("Failed to extract content from call invite")
+            logCall("Failed to extract content from call invite")
             return
         }
 
         guard let content = CallEventJSON.decode(CallInviteContent.self, from: contentDict) else {
-            callLog("Failed to decode CallInviteContent from raw JSON")
+            logCall("Failed to decode CallInviteContent from raw JSON")
             return
         }
 
-        callLog("Received call invite: callId=\(content.callId), sdp=\(content.offer.sdp.count) bytes")
+        logCall("Received call invite: callId=\(content.callId), sdp=\(content.offer.sdp.count) bytes")
         incomingEventSubject.send(.invite(content))
     }
 
@@ -167,14 +167,14 @@ final class CallSignalingService {
         let type = String(payload[payload.startIndex..<colonIndex])
         let jsonString = String(payload[payload.index(after: colonIndex)...])
 
-        callLog("Received signaling via text: \(type)")
+        logCall("Received signaling via text: \(type)")
         parseCallData(type: type, jsonString: jsonString)
     }
 
     /// Handle legacy/failedToParse call events (from other clients using VoIP v1, etc.)
     private func handleLegacyCallEvent(_ event: EventTimelineItem, eventType: String) {
         guard let contentDict = extractEventContent(event) else { return }
-        callLog("Parsed legacy call event type: \(eventType)")
+        logCall("Parsed legacy call event type: \(eventType)")
         parseCallData(type: eventType, dict: contentDict)
     }
 
@@ -190,17 +190,17 @@ final class CallSignalingService {
         switch type {
         case "m.call.answer":
             guard let content = CallEventJSON.decode(CallAnswerContent.self, from: dict) else { return }
-            callLog("Received call answer: callId=\(content.callId)")
+            logCall("Received call answer: callId=\(content.callId)")
             incomingEventSubject.send(.answer(content))
 
         case "m.call.candidates":
             guard let content = CallEventJSON.decode(CallCandidatesContent.self, from: dict) else { return }
-            callLog("Received ICE candidates: callId=\(content.callId), count=\(content.candidates.count)")
+            logCall("Received ICE candidates: callId=\(content.callId), count=\(content.candidates.count)")
             incomingEventSubject.send(.candidates(content))
 
         case "m.call.hangup":
             guard let content = CallEventJSON.decode(CallHangupContent.self, from: dict) else { return }
-            callLog("Received call hangup: callId=\(content.callId)")
+            logCall("Received call hangup: callId=\(content.callId)")
             incomingEventSubject.send(.hangup(content))
 
         default:

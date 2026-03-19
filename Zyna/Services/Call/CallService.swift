@@ -8,7 +8,7 @@ import Combine
 import MatrixRustSDK
 import AVFoundation
 
-private let callLog = ScopedLog(.call)
+private let logCall = ScopedLog(.call)
 
 // MARK: - Call Service Delegate (WebRTC integration point)
 
@@ -61,7 +61,7 @@ final class CallService {
     /// After calling this, provide the SDP offer via `sendOffer(sdp:)`.
     func startCall(room: Room, timelineService: TimelineService) {
         guard !state.isActive else {
-            callLog("Cannot start call: already active")
+            logCall("Cannot start call: already active")
             return
         }
 
@@ -76,7 +76,7 @@ final class CallService {
 
         configureAudioSession()
         stateSubject.send(.outgoingRinging(callId: callId, roomId: room.id()))
-        callLog("Starting outgoing call \(callId) in room \(room.id())")
+        logCall("Starting outgoing call \(callId) in room \(room.id())")
 
         startRingTimeout(callId: callId)
     }
@@ -84,7 +84,7 @@ final class CallService {
     /// Send SDP offer to the remote peer (called by WebRTC layer after creating offer).
     func sendOffer(sdp: String) async {
         guard case .outgoingRinging(let callId, _) = state else {
-            callLog("Cannot send offer: not in outgoingRinging state")
+            logCall("Cannot send offer: not in outgoingRinging state")
             return
         }
 
@@ -92,7 +92,7 @@ final class CallService {
         do {
             try await signalingService?.sendInvite(content)
         } catch {
-            callLog("Failed to send offer: \(error)")
+            logCall("Failed to send offer: \(error)")
             endCall(reason: .normal)
         }
     }
@@ -100,7 +100,7 @@ final class CallService {
     /// Send SDP answer to the remote peer (called by WebRTC layer after creating answer).
     func sendAnswer(sdp: String) async {
         guard let callId = state.callId else {
-            callLog("Cannot send answer: no active call")
+            logCall("Cannot send answer: no active call")
             return
         }
 
@@ -111,7 +111,7 @@ final class CallService {
                 stateSubject.send(.connecting(callId: cid, roomId: rid))
             }
         } catch {
-            callLog("Failed to send answer: \(error)")
+            logCall("Failed to send answer: \(error)")
             endCall(reason: .normal)
         }
     }
@@ -124,7 +124,7 @@ final class CallService {
         do {
             try await signalingService?.sendCandidates(content)
         } catch {
-            callLog("Failed to send ICE candidates: \(error)")
+            logCall("Failed to send ICE candidates: \(error)")
         }
     }
 
@@ -134,21 +134,21 @@ final class CallService {
 
         cancelRingTimeout()
         stateSubject.send(.connected(callId: callId, roomId: roomId))
-        callLog("Call \(callId) connected")
+        logCall("Call \(callId) connected")
     }
 
     // MARK: - Accept Incoming Call
 
     func acceptCall() {
         guard case .incomingRinging(let callId, let roomId, _) = state else {
-            callLog("Cannot accept: not in incomingRinging state")
+            logCall("Cannot accept: not in incomingRinging state")
             return
         }
 
         cancelRingTimeout()
         configureAudioSession()
         stateSubject.send(.connecting(callId: callId, roomId: roomId))
-        callLog("Accepted call \(callId)")
+        logCall("Accepted call \(callId)")
     }
 
     // MARK: - End Call
@@ -172,7 +172,7 @@ final class CallService {
         deactivateAudioSession()
 
         stateSubject.send(.ended(callId: callId, reason: reason))
-        callLog("Call \(callId) ended: \(reason.rawValue)")
+        logCall("Call \(callId) ended: \(reason.rawValue)")
 
         // Reset to idle after a short delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -186,7 +186,7 @@ final class CallService {
 
     func handleIncomingCall(room: Room, callId: String, callerName: String?, offerSDP: String?, timelineService: TimelineService) {
         guard !state.isActive else {
-            callLog("Ignoring incoming call: already active")
+            logCall("Ignoring incoming call: already active")
             // TODO: Send busy hangup
             return
         }
@@ -200,12 +200,12 @@ final class CallService {
         signaling.subscribe(to: timelineService)
 
         stateSubject.send(.incomingRinging(callId: callId, roomId: room.id(), callerName: callerName))
-        callLog("Incoming call \(callId) from \(callerName ?? "unknown") in room \(room.id())")
+        logCall("Incoming call \(callId) from \(callerName ?? "unknown") in room \(room.id())")
 
         // Deliver offer SDP directly — the invite event was already published
         // before signaling subscribed (PassthroughSubject race condition)
         if let sdp = offerSDP {
-            callLog("Delivering offer SDP directly (\(sdp.count) bytes)")
+            logCall("Delivering offer SDP directly (\(sdp.count) bytes)")
             delegate?.callService(self, didReceiveOffer: sdp, callId: callId)
         }
 
@@ -261,7 +261,7 @@ final class CallService {
             guard self?.state.callId == callId else { return }
 
             await MainActor.run {
-                callLog("Call \(callId) timed out")
+                logCall("Call \(callId) timed out")
                 self?.endCall(reason: .timeout)
             }
         }
@@ -279,9 +279,9 @@ final class CallService {
         do {
             try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
             try session.setActive(true)
-            callLog("Audio session configured")
+            logCall("Audio session configured")
         } catch {
-            callLog("Failed to configure audio session: \(error)")
+            logCall("Failed to configure audio session: \(error)")
         }
     }
 
@@ -289,9 +289,9 @@ final class CallService {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setActive(false, options: .notifyOthersOnDeactivation)
-            callLog("Audio session deactivated")
+            logCall("Audio session deactivated")
         } catch {
-            callLog("Failed to deactivate audio session: \(error)")
+            logCall("Failed to deactivate audio session: \(error)")
         }
     }
 }

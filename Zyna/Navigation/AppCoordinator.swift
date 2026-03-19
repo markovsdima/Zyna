@@ -49,11 +49,21 @@ final class AppCoordinator {
         coordinator.start()
         self.mainCoordinator = coordinator
 
+        if let userId = MatrixClientService.shared.client.flatMap({ try? $0.userId() }) {
+            PresenceService.shared.startHeartbeatLoop(userId: userId)
+        }
+
         guard let tabBar = coordinator.tabBarController as? UIViewController else { return }
         window?.rootViewController = tabBar
     }
 
+    func resumeHeartbeatIfNeeded() {
+        guard let userId = MatrixClientService.shared.client.flatMap({ try? $0.userId() }) else { return }
+        PresenceService.shared.startHeartbeatLoop(userId: userId)
+    }
+
     private func performLogout() {
+        PresenceService.shared.stopHeartbeatLoop()
         Task { @MainActor in
             await MatrixClientService.shared.logout()
             self.mainCoordinator = nil

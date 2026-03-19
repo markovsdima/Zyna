@@ -49,6 +49,20 @@ final class MediaCache {
         }
     }
 
+    func loadThumbnail(mxcUrl: String, size: Int) async -> UIImage? {
+        let key = mxcUrl as NSString
+
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+
+        guard let source = try? MediaSource.fromUrl(url: mxcUrl) else { return nil }
+        let px = UInt64(size)
+        guard let image = await loadThumbnail(source: source, width: px, height: px) else { return nil }
+        cache.setObject(image, forKey: key)
+        return image
+    }
+
     // MARK: - Private
 
     private func cacheKey(_ source: MediaSource) -> NSString {

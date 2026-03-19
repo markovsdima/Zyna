@@ -23,8 +23,47 @@ final class RoomsViewModel {
                 return summaries.map { RoomModel(from: $0) }
             }
             .receive(on: DispatchQueue.main)
-            .assign(to: &$chats)
+            .sink { [weak self] rooms in
+                self?.chats = rooms
+                self?.syncRegistration()
+            }
+            .store(in: &cancellables)
+
+        PresenceTracker.shared.$statuses
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] statuses in
+                self?.applyPresence(statuses)
+            }
+            .store(in: &cancellables)
     }
+
+    // MARK: - Presence
+
+    func registerPresence() {
+        syncRegistration()
+    }
+
+    func unregisterPresence() {
+        PresenceTracker.shared.unregister(for: "rooms")
+    }
+
+    private func syncRegistration() {
+        let userIds = chats.compactMap { $0.directUserId }
+        PresenceTracker.shared.register(userIds: userIds, for: "rooms")
+    }
+
+    private func applyPresence(_ statuses: [String: UserPresence]) {
+        guard !statuses.isEmpty else { return }
+        chats = chats.map { chat in
+            guard let userId = chat.directUserId, let status = statuses[userId] else { return chat }
+            var updated = chat
+            updated.isOnline = status.online
+            updated.lastSeen = status.lastSeen
+            return updated
+        }
+    }
+
+    // MARK: - Actions
 
     func selectChat(at index: Int) {
         guard index < chats.count else { return }

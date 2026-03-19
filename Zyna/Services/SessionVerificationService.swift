@@ -35,7 +35,7 @@ enum VerificationStep: Equatable {
     }
 }
 
-private let verifyLog = ScopedLog(.auth)
+private let logVerify = ScopedLog(.auth)
 
 // MARK: - Session Verification Service
 
@@ -71,7 +71,7 @@ final class SessionVerificationService {
         controller.setDelegate(delegate: delegate)
         self.delegate = delegate
 
-        verifyLog("Verification controller ready")
+        logVerify("Verification controller ready")
     }
 
     private var delegate: VerificationDelegate?
@@ -82,25 +82,25 @@ final class SessionVerificationService {
         guard let controller else { throw VerificationError.controllerNotReady }
         stepSubject.send(.requestingVerification)
         try await controller.requestDeviceVerification()
-        verifyLog("Device verification requested")
+        logVerify("Device verification requested")
     }
 
     func approveVerification() async throws {
         guard let controller else { throw VerificationError.controllerNotReady }
         try await controller.approveVerification()
-        verifyLog("Verification approved")
+        logVerify("Verification approved")
     }
 
     func declineVerification() async throws {
         guard let controller else { throw VerificationError.controllerNotReady }
         try await controller.declineVerification()
-        verifyLog("Verification declined")
+        logVerify("Verification declined")
     }
 
     func cancelVerification() async throws {
         guard let controller else { throw VerificationError.controllerNotReady }
         try await controller.cancelVerification()
-        verifyLog("Verification cancelled")
+        logVerify("Verification cancelled")
     }
 }
 
@@ -133,11 +133,11 @@ private final class VerificationDelegate: SessionVerificationControllerDelegate 
     }
 
     func didReceiveVerificationRequest(details: SessionVerificationRequestDetails) {
-        verifyLog("Received verification request from \(details.deviceId)")
+        logVerify("Received verification request from \(details.deviceId)")
     }
 
     func didAcceptVerificationRequest() {
-        verifyLog("Verification request accepted, starting SAS")
+        logVerify("Verification request accepted, starting SAS")
         onStep(.waitingForAcceptance)
         Task {
             try? await controller?.startSasVerification()
@@ -145,13 +145,13 @@ private final class VerificationDelegate: SessionVerificationControllerDelegate 
     }
 
     func didStartSasVerification() {
-        verifyLog("SAS verification started, waiting for emojis")
+        logVerify("SAS verification started, waiting for emojis")
     }
 
     func didReceiveVerificationData(data: SessionVerificationData) {
         switch data {
         case .emojis(let emojis, _):
-            verifyLog("Received \(emojis.count) verification emojis")
+            logVerify("Received \(emojis.count) verification emojis")
             onStep(.showingEmojis(emojis))
         case .decimals:
             break
@@ -159,17 +159,17 @@ private final class VerificationDelegate: SessionVerificationControllerDelegate 
     }
 
     func didFail() {
-        verifyLog("Verification failed")
+        logVerify("Verification failed")
         onStep(.failed)
     }
 
     func didCancel() {
-        verifyLog("Verification cancelled")
+        logVerify("Verification cancelled")
         onStep(.cancelled)
     }
 
     func didFinish() {
-        verifyLog("Verification finished successfully")
+        logVerify("Verification finished successfully")
         onStep(.verified)
     }
 }

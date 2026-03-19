@@ -92,8 +92,16 @@ final class ChatsCoordinator {
         vc.onCallTapped = { [weak self] in
             self?.startCall(in: room, timelineService: viewModel.timelineService)
         }
+        vc.onTitleTapped = { [weak self] userId in
+            self?.showProfile(userId: userId)
+        }
         navigationController.pushViewController(vc, animated: true)
         navigationController.enableFullScreenPopGesture()
+    }
+
+    private func showProfile(userId: String) {
+        let vc = ProfileViewController(mode: .other(userId: userId))
+        navigationController.pushViewController(vc, animated: true)
     }
 
     // MARK: - Calls

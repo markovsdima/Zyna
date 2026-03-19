@@ -7,7 +7,7 @@ import Foundation
 import CallKit
 import AVFoundation
 
-private let callLog = ScopedLog(.call)
+private let logCall = ScopedLog(.call)
 
 // MARK: - CallKit Service
 
@@ -55,9 +55,9 @@ final class CallKitService: NSObject {
 
         provider.reportNewIncomingCall(with: uuid, update: update) { error in
             if let error {
-                callLog("Failed to report incoming call: \(error)")
+                logCall("Failed to report incoming call: \(error)")
             } else {
-                callLog("Reported incoming call to CallKit (uuid: \(uuid))")
+                logCall("Reported incoming call to CallKit (uuid: \(uuid))")
             }
         }
     }
@@ -74,9 +74,9 @@ final class CallKitService: NSObject {
 
         callController.request(CXTransaction(action: startAction)) { error in
             if let error {
-                callLog("Failed to start outgoing call: \(error)")
+                logCall("Failed to start outgoing call: \(error)")
             } else {
-                callLog("Started outgoing call in CallKit (uuid: \(uuid))")
+                logCall("Started outgoing call in CallKit (uuid: \(uuid))")
             }
         }
 
@@ -121,9 +121,9 @@ final class CallKitService: NSObject {
         do {
             try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
             try session.setActive(true)
-            callLog("Audio session configured for voice call")
+            logCall("Audio session configured for voice call")
         } catch {
-            callLog("Failed to configure audio session: \(error)")
+            logCall("Failed to configure audio session: \(error)")
         }
     }
 
@@ -132,7 +132,7 @@ final class CallKitService: NSObject {
         do {
             try session.setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
-            callLog("Failed to deactivate audio session: \(error)")
+            logCall("Failed to deactivate audio session: \(error)")
         }
     }
 }
@@ -142,20 +142,20 @@ final class CallKitService: NSObject {
 extension CallKitService: CXProviderDelegate {
 
     func providerDidReset(_ provider: CXProvider) {
-        callLog("CallKit provider did reset")
+        logCall("CallKit provider did reset")
         currentCallUUID = nil
         deactivateAudioSession()
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        callLog("CallKit: answer call")
+        logCall("CallKit: answer call")
         configureAudioSession()
         onAnswerCall?()
         action.fulfill()
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        callLog("CallKit: end call")
+        logCall("CallKit: end call")
         onEndCall?()
         deactivateAudioSession()
         currentCallUUID = nil
@@ -163,16 +163,16 @@ extension CallKitService: CXProviderDelegate {
     }
 
     func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
-        callLog("CallKit: mute = \(action.isMuted)")
+        logCall("CallKit: mute = \(action.isMuted)")
         onMuteToggle?(action.isMuted)
         action.fulfill()
     }
 
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
-        callLog("CallKit: audio session activated")
+        logCall("CallKit: audio session activated")
     }
 
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
-        callLog("CallKit: audio session deactivated")
+        logCall("CallKit: audio session deactivated")
     }
 }
