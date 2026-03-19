@@ -2,53 +2,87 @@
 <img width="1206" height="799" alt="ZynaGitHubLogo" src="https://github.com/user-attachments/assets/0ef25bcc-f1c9-49f6-812e-c9883ad98876" /><br>
 
 
-**A secure messenger built for creative expression**
+**Matrix-based iOS messenger with a focus on visual interaction**
 
-Zyna combines Matrix protocol security with next-level visual interaction design. More than just messaging - it's a canvas for digital creativity.
+Zyna is an iOS client for the Matrix protocol. The core messaging works — text, images, voice messages, VoIP calls. On top of that, it explores what a messenger can look like when you invest in animations and GPU-rendered effects (Metal shaders for message deletion, 120fps scroll, custom transitions).
 
-## ✨ Vision
+End-to-end encrypted. Open source. Work in progress.
 
-**Beyond Text, Beyond Limits**
+## 📦 What's Built
 
-While Telegram raised the bar above WhatsApp, Zyna takes it even higher. We're building a messenger where every conversation becomes an opportunity for creative expression - from dynamic visual effects to color-coded message highlighting for instant organization.
+**Messaging**
+- Text, image, and voice messages
+- Voice recording with waveform visualization, lock gesture, and slide-to-cancel
+- Emoji reactions with custom context menu
+- Message deletion with paint-splash animation (Metal compute shaders)
+- Image preprocessing and thumbnail caching
 
-**For Creators, By Creators**
+**Calls**
+- VoIP calls over WebRTC with ICE candidate exchange
 
-Artists, designers, content creators, and anyone who thinks in colors, animations, and visual stories. Zyna transforms everyday messaging into an interactive experience.
+**Authentication**
+- Password login and OIDC registration
+- Session restore from Keychain
+- Device verification
 
-## 🔐 Security First
+**Rooms**
+- Real-time room list with sliding sync
+- Unread badges, last message preview, encryption indicators
+- DM and group creation
 
-Built on the battle-tested **Matrix protocol** with end-to-end encryption as the foundation. Privacy isn't a feature - it's the architecture.
+**Profile & Presence**
+- Editable profile with avatar upload
+- Online / offline / last seen indicators
 
-**Roadmap:**
-- Phase 1: Matrix client with enhanced UX
-- Phase 2: Custom Zyna servers for advanced features
+**Performance**
+- 120fps scroll optimization
+- Full-screen swipe-to-pop navigation
 
-## 🛠 Tech Stack
+## 🔧 Tech Stack & Architecture
 
-- **Matrix Rust SDK** - Secure, decentralized messaging protocol
-- **Texture (AsyncDisplayKit)** - Smooth, performant UI rendering
-- **RxFlow** - Reactive navigation and flow management  
-- **GRDB** - High-performance reactive database
+- **Matrix Rust SDK** — messaging, E2E encryption, sliding sync
+- **Texture (AsyncDisplayKit)** — async UI rendering
+- **Combine** — reactive state and data flow
+- **Metal** — GPU-accelerated visual effects
+- **WebRTC** — peer-to-peer voice calls
+- **KeychainAccess** — session and credential storage
 
-## 🎯 Key Features
+Coordinator pattern for navigation. Texture nodes for screens, SwiftUI for auth flow.
 
-- **Visual Message Styling** - Color, highlight, and style individual messages
-- **Advanced Animations** - Smooth micro-interactions throughout the app
-- **Creative Stickers & Media** - Rich multimedia expression tools
-- **Smart Organization** - Color-coded conversations and quick search
-- **Matrix Security** - End-to-end encryption by default
+## 🗺 Up Next
 
-## 🚀 Development Status
+- Settings screen (theme, notifications, account management)
+- CallKit integration
+- Push notifications
+- Local database (GRDB) for offline-first UI
+- Visual message styling and color-coded conversations
+- App Store release
 
-**Foundation Phase** ✅
-- [x] Project structure and architecture
-- [x] Core dependencies integration
-- [x] Navigation framework setup
-- [ ] Matrix SDK integration
-- [ ] Basic messaging UI
-- [ ] Visual styling system
+## ⚡ Getting Started
 
-## 📱 Coming Soon
+**Requirements**
+- Xcode 16.2+
+- iOS 16.0+
+- [Carthage](https://github.com/Carthage/Carthage) 0.39+
 
-This is just the beginning. Follow along as we build the future of creative messaging.
+**Build**
+
+```bash
+git clone https://github.com/markovsdima/Zyna.git
+cd Zyna
+
+# Rebuild Carthage dependencies if needed (pre-built frameworks are included):
+carthage bootstrap --use-xcframeworks --platform iOS
+
+open Zyna.xcodeproj
+```
+
+SPM dependencies (Matrix Rust SDK, WebRTC, KeychainAccess, GRDB) resolve automatically on first build.
+
+**Run**
+
+Build and run on a simulator or device. On the login screen, enter any Matrix homeserver (defaults to `matrix.org`). You can use an existing account or register via OIDC if the server supports it.
+
+## License
+
+AGPL-3.0

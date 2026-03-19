@@ -43,38 +43,39 @@ final class TextInputNode: BaseNode {
         
         return backgroundSpec
     }
+    override func didLoad() {
+        super.didLoad()
+
+        // UIView access is safe here (main thread, view loaded)
+        switch type {
+        case .password:
+            textNode.textView.isSecureTextEntry = true
+        default:
+            break
+        }
+        textNode.textView.backgroundColor = .clear
+        textNode.textView.isScrollEnabled = false
+        textNode.textView.tintColor = .black
+    }
+
     private func setupUI() {
-        // Keyboard & secure settings
+        // Keyboard settings (proxy properties — safe in init)
         switch type {
         case .email:
             textNode.keyboardType = .emailAddress
             textNode.autocapitalizationType = .none
-        case .password:
-            textNode.textView.isSecureTextEntry = true
-        case .regular:
+        default:
             break
         }
-        
+
         // TextNode style
         textNode.typingAttributes = [
             NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 24),
             NSAttributedString.Key.foregroundColor.rawValue: UIColor.textInput
         ]
-        
-        //        textNode.attributedText = NSAttributedString(
-        //            string: placeholder ?? "",
-        //            attributes: [
-        //                .font: UIFont.systemFont(ofSize: 16),
-        //                .foregroundColor: UIColor(white: 0.75, alpha: 1)
-        //            ]
-        //        )
         textNode.style.flexGrow = 1.0
-        //textNode.style.height = ASDimension(unit: .points, value: 44)
-        textNode.textView.backgroundColor = .clear
-        textNode.textView.isScrollEnabled = false
-        textNode.textView.tintColor = .black
         textNode.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-        
+
         // Placeholder
         textNode.attributedPlaceholderText = NSAttributedString(
             string: placeholder ?? "",
@@ -83,15 +84,11 @@ final class TextInputNode: BaseNode {
                 .foregroundColor: UIColor.textInputPlaceholder
             ]
         )
-        
+
         // Background style
         backgroundNode.backgroundColor = .textInputBG
         backgroundNode.cornerRadius = 8
-        
-        //backgroundNode.cornerRoundingType = .precomposited
         backgroundNode.clipsToBounds = true
         backgroundNode.style.height = ASDimension(unit: .points, value: 44)
-        //addSubnode(backgroundNode)
-        //addSubnode(textNode)
     }
 }
