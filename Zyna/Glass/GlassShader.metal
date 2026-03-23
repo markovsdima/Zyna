@@ -1,15 +1,11 @@
 //
-//  GlassShader.metal
-//  Zyna
-//
-//  Created by Dmitry Markovskiy on 22.03.2026.
-//
 //  Liquid glass effect — multi-shape glass + liquid pool.
 //  Glass shapes: up to 3 (rounded rect + circles).
 //  Liquid pool: opaque with refraction, absorption, caustics.
 //
 
 #include <metal_stdlib>
+#include "LiquidHelpers.h"
 using namespace metal;
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -46,7 +42,6 @@ struct GlassUniforms {
 // h(x) = (1 - (1-x)^N)^(1/N), derivative gives refraction strength
 constant float REFRACT_STRENGTH = 350.0;    // overall refraction magnitude
 constant float SQUIRCLE_N = 2.5;            // squircle exponent (lower = wider slope distribution)
-constant float REFRACT_SCALE = 1.0;        // refraction zone width multiplier (1=cornerR, higher=deeper into glass)
 
 // Chromatic aberration on glass edges — per-channel displacement scale
 constant float CHROMA_SPREAD = 0.08;        // max spread between R and B channels
@@ -61,7 +56,7 @@ constant float GLASS_TINT = 0.42;              // car-window darkening (1.0 = no
 
 constant float GLASS_DISTORTION = 2.0;
 
-constant float BORDER_WIDTH = 0.10; // 0.07
+constant float BORDER_WIDTH = 0.10;
 constant float BORDER_BRIGHTNESS = 0.8;
 constant float BORDER_COLOR_MIX = 0.4;
 
@@ -96,66 +91,6 @@ inline float3 decodeHDR(float3 color, float isHDR) {
         return (color - 0.375) * 2.0;
     }
     return color;
-}
-
-// ─── Procedural noise ────────────────────────────────────────────────
-
-inline float hash21(float2 p) {
-    float3 p3 = fract(float3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
-inline float vnoise(float2 p) {
-    float2 i = floor(p);
-    float2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float a = hash21(i);
-    float b = hash21(i + float2(1, 0));
-    float c = hash21(i + float2(0, 1));
-    float d = hash21(i + float2(1, 1));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
-inline float fbm(float2 p) {
-    float v = 0.0, a = 0.5;
-    for (int i = 0; i < 3; i++) {
-        v += a * vnoise(p);
-        p = p * 2.0 + float2(100.0);
-        a *= 0.5;
-    }
-    return v;
-}
-
-// ─── Surface wave ────────────────────────────────────────────────────
-
-inline float surfaceWave(float x, float time, float energy) {
-    if (energy < 0.001) return 0.0;
-    // Large organic wave + medium sloshing + fast ripples + fbm noise
-    float wave = sin(x * 3.0  + time * 1.2) * 0.035
-               + sin(x * 7.0  - time * 1.8) * 0.020
-               + sin(x * 13.0 + time * 2.5) * 0.010
-               + (fbm(float2(x * 5.0, time * 0.6)) - 0.5) * 0.025;
-    return energy * wave;
-}
-
-// ─── Caustics ────────────────────────────────────────────────────────
-
-inline float caustic(float2 p, float time) {
-    float2 p1 = p * 3.5 + float2(time * 0.25, time * 0.18);
-    float2 p2 = p * 5.5 - float2(time * 0.15, time * 0.3);
-    float c = abs(sin(p1.x + sin(p1.y * 1.3)))
-            + abs(sin(p2.y + cos(p2.x * 1.1)));
-    return pow(c * 0.5, 4.0);
-}
-
-// ─── Caustic brightness (neutral, not green) ─────────────────────────
-
-inline float causticBrightness(float depth, float2 uv, float time, float energy) {
-    float causticAnim = time * energy + time * 0.05;
-    float c = caustic(uv * 8.0, causticAnim);
-    float fade = exp(-depth * 5.0);
-    return c * fade;
 }
 
 // ─── Vertex ──────────────────────────────────────────────────────────
@@ -274,8 +209,7 @@ fragment float4 glassFragment(
         }
 
         float distFromEdge = -localSdf;
-        float domeScale = localCornerR * REFRACT_SCALE;
-        float normDistFromEdge = saturate(distFromEdge / domeScale);
+        float normDistFromEdge = saturate(distFromEdge / localCornerR);
 
         // ── Squircle refraction profile ──
         float slope = squircleSlope(normDistFromEdge, SQUIRCLE_N);
