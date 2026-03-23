@@ -56,9 +56,11 @@ final class GlassRenderer: UIView {
 
     // MARK: - Render
 
+    /// - shapeRect: where the glass shape sits within the capture texture (normalized 0-1)
     func render(
         with sourceTexture: MTLTexture,
         cornerRadius: CGFloat,
+        shapeRect: SIMD4<Float>,
         isHDR: Bool
     ) {
         let drawableSize = metalLayer.drawableSize
@@ -88,11 +90,14 @@ final class GlassRenderer: UIView {
             var padding2: Float
         }
 
+        // cornerRadius normalized by drawable height
+        let cornerRNorm = Float(cornerRadius) * scale / res.y
+
         var u = Uniforms(
             resolution: res,
-            cornerRadius: Float(cornerRadius) * scale / res.y,
+            cornerRadius: cornerRNorm,
             isHDR: isHDR ? 1.0 : 0.0,
-            shapeRect: SIMD4<Float>(0, 0, 1, 1),
+            shapeRect: shapeRect,
             aspect: aspect,
             padding0: 0,
             padding1: 0,

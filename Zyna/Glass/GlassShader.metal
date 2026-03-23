@@ -1,8 +1,13 @@
 //
-//  Copyright 2025 Dmitry Markovsky
-//  SPDX-License-Identifier: AGPL-3.0-only
+//  GlassShader.metal
+//  Zyna
 //
+//  Created by Dmitry Markovskiy on 22.03.2026.
+//
+//  Apple-style liquid glass effect.
+//  Ported from LiquidGlass (Telegram), single rounded rect.
 //  Coordinate system: normalized drawable space [0,1], origin top-left.
+//  Shape occupies a sub-region of the drawable (with padding for edge refraction).
 //
 
 #include <metal_stdlib>
@@ -19,7 +24,7 @@ struct GlassUniforms {
     float2 resolution;      // drawable size in pixels
     float cornerRadius;     // normalized by drawable height
     float isHDR;            // 1.0 for bgr10a2, 0.0 for bgra8
-    float4 shapeRect;       // (x, y, w, h) normalized [0,1]
+    float4 shapeRect;       // (x, y, w, h) normalized [0,1] — where glass sits in drawable
     float aspect;           // resolution.x / resolution.y
     float padding0;
     float padding1;
@@ -29,12 +34,9 @@ struct GlassUniforms {
 // ─── Constants ───────────────────────────────────────────────────────
 
 // Edge refraction (Apple Liquid Glass бортик)
-// Profile shape: exponential peak at edge, quadratic inner.
-// MAX_REFRACT_UV is the peak UV displacement (resolution-independent).
-constant float REFRACT_EDGE_WEIGHT = 0.8;   // edge vs inner balance
-constant float REFRACT_INNER_WEIGHT = 0.2;
-constant float REFRACT_DECAY = 5.0;         // edge peak sharpness
-constant float MAX_REFRACT_UV = 0.25;       // max UV offset (~15%)
+constant float REFRACT_EDGE_STRENGTH = 50.0;
+constant float REFRACT_INNER_STRENGTH = 30.0;
+constant float REFRACT_DECAY = 5.0;
 
 // Blur mix
 constant float BLUR_MIX = 0.7;
@@ -88,11 +90,11 @@ fragment float4 glassFragment(
     float2 uv = in.uv;
     float aspect = u.aspect;
 
-    // ── Aspect-corrected coordinates ──
-    // All SDF math in aspect-corrected space so circles stay round
+    // ── Coordinates ──
+    // p = aspect-corrected position for SDF math
     float2 p = float2(uv.x * aspect, uv.y);
 
-    // Shape in aspect-corrected space
+    // Shape rect within the drawable (with padding around it)
     float2 inputOrigin = u.shapeRect.xy;
     float2 inputSize = u.shapeRect.zw;
     float2 inputCenter = inputOrigin + inputSize * 0.5;
@@ -103,8 +105,7 @@ fragment float4 glassFragment(
     float2 pInput = p - inputCenterP;
     float sdf = sdRoundedRect(pInput, inputHalfSize, inputCornerR);
 
-    // Scale factor for resolution-dependent effects
-    float scaleY = inputSize.y; // shape height in normalized coords
+    float scaleY = inputSize.y;
 
     // ── Mask ──
     float aaInner = -0.005 * scaleY;
@@ -112,7 +113,7 @@ fragment float4 glassFragment(
     float mask = 1.0 - smoothstep(aaInner, aaOuter, sdf);
     if (mask < 0.001) discard_fragment();
 
-    // ── Normal (finite differences on SDF) ──
+    // ── Normal (SDF gradient via finite differences) ──
     float eps = 0.001 * scaleY;
     float sdfR = sdRoundedRect(pInput + float2(eps, 0), inputHalfSize, inputCornerR);
     float sdfU = sdRoundedRect(pInput + float2(0, eps), inputHalfSize, inputCornerR);
@@ -120,27 +121,24 @@ fragment float4 glassFragment(
     float gradLen = length(grad);
     float2 normal = gradLen > 0.00001 ? grad / gradLen : float2(0.0);
 
-    // ── Edge properties ──
+    // ── Edge refraction ──
     float distFromEdge = -sdf;
     float normDistFromEdge = saturate(distFromEdge / inputCornerR);
 
-    // ── Edge refraction ──
-    // Exponential peak at edge, quadratic inner — Apple Liquid Glass profile
+    // Exponential peak at edge, quadratic inner
     float edgeFactor = exp(-normDistFromEdge * REFRACT_DECAY);
     float innerFactor = (1.0 - normDistFromEdge);
     innerFactor = innerFactor * innerFactor;
+    float totalRefract = REFRACT_EDGE_STRENGTH * edgeFactor + REFRACT_INNER_STRENGTH * innerFactor;
 
-    // Normalized 0-1 refraction profile
-    float refractProfile = REFRACT_EDGE_WEIGHT * edgeFactor + REFRACT_INNER_WEIGHT * innerFactor;
-
-    // Convert normal back to UV space for displacement
+    // Normal in UV space (undo aspect correction)
     float2 refractNormalUV = float2(normal.x / aspect, normal.y);
     float rnLen = length(refractNormalUV);
     refractNormalUV = rnLen > 0.00001 ? refractNormalUV / rnLen : float2(0.0);
 
-    // Resolution-independent UV offset
-    // Outward = toward edge = glass "wrap" / stretch effect
-    float2 refractOffset = refractNormalUV * refractProfile * MAX_REFRACT_UV;
+    // Refraction offset scaled by shape height (matches original Telegram formula)
+    float formScale = inputSize.y;
+    float2 refractOffset = refractNormalUV * totalRefract * formScale / u.resolution.y;
 
     float2 refractedUV = clamp(uv - refractOffset, 0.0, 1.0);
 
@@ -153,9 +151,9 @@ fragment float4 glassFragment(
     float avgLuma = 0.0;
     for (int i = 0; i < 5; i++) {
         float t = (float(i) + 0.5) / 5.0;
-        float2 glowUV = float2(mix(inputOrigin.x + 0.05, inputOrigin.x + inputSize.x - 0.05, t),
+        float2 glowUV = float2(mix(inputOrigin.x + 0.05 * inputSize.x,
+                                    inputOrigin.x + inputSize.x * 0.95, t),
                                 inputOrigin.y + inputSize.y * 0.5);
-        // In our case UV maps 1:1 to texture, so sample directly
         float3 s = decodeHDR(blurTex.sample(samp, glowUV).rgb, u.isHDR);
         avgLuma += dot(s, float3(0.299, 0.587, 0.114));
     }
@@ -175,7 +173,7 @@ fragment float4 glassFragment(
     col = mix(col + float3(0.1, 0.1, 0.11), col, darkBoost);
 
     // ── Glass border ──
-    float borderWidth = BORDER_WIDTH * u.cornerRadius;
+    float borderWidth = BORDER_WIDTH * inputCornerR;
     float borderMask = 1.0 - smoothstep(0.0, borderWidth, distFromEdge);
 
     // Directional lighting: upper-left = bright, lower-right = shadow

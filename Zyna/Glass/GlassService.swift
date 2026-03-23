@@ -293,7 +293,7 @@ final class GlassService {
             reg.renderer.isHidden = false
 
             // Snap to device pixels
-            let frameInWindow = CGRect(
+            let glassFrame = CGRect(
                 x: round(rawFrame.origin.x * scale) / scale,
                 y: round(rawFrame.origin.y * scale) / scale,
                 width: round(rawFrame.width * scale) / scale,
@@ -302,18 +302,37 @@ final class GlassService {
 
             guard shouldCapture else { continue }
 
+            // Capture with padding for edge refraction (content beyond glass boundary)
+            let padding: CGFloat = 20
+            let windowBounds = sourceWindow.bounds
+            let captureFrame = CGRect(
+                x: max(glassFrame.origin.x - padding, 0),
+                y: max(glassFrame.origin.y - padding, 0),
+                width: min(glassFrame.width + padding * 2, windowBounds.width - max(glassFrame.origin.x - padding, 0)),
+                height: min(glassFrame.height + padding * 2, windowBounds.height - max(glassFrame.origin.y - padding, 0))
+            )
+
             #if DEBUG
             let capStart = CACurrentMediaTime()
             #endif
 
-            guard let texture = captureManager.capture(frame: frameInWindow, from: sourceWindow) else { continue }
+            guard let texture = captureManager.capture(frame: captureFrame, from: sourceWindow) else { continue }
 
             #if DEBUG
             captureTime += CACurrentMediaTime() - capStart
             #endif
 
-            reg.renderer.frame = frameInWindow
+            // Renderer covers the capture area (wider than glass)
+            reg.renderer.frame = captureFrame
             reg.renderer.contentScaleFactor = scale
+
+            // Compute where the glass shape sits within the capture texture (normalized 0-1)
+            let shapeInCapture = SIMD4<Float>(
+                Float((glassFrame.origin.x - captureFrame.origin.x) / captureFrame.width),
+                Float((glassFrame.origin.y - captureFrame.origin.y) / captureFrame.height),
+                Float(glassFrame.width / captureFrame.width),
+                Float(glassFrame.height / captureFrame.height)
+            )
 
             #if DEBUG
             let renStart = CACurrentMediaTime()
@@ -322,6 +341,7 @@ final class GlassService {
             reg.renderer.render(
                 with: texture,
                 cornerRadius: anchor.cornerRadius,
+                shapeRect: shapeInCapture,
                 isHDR: texture.pixelFormat == .bgr10a2Unorm
             )
 
