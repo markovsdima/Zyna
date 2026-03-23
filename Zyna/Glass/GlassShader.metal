@@ -4,9 +4,9 @@
 //
 //  Created by Dmitry Markovskiy on 22.03.2026.
 //
-//  Apple-style liquid glass effect — multi-shape support.
-//  Supports up to 3 shapes: rounded rect + circles.
-//  Per-shape normals via ownership detection.
+//  Liquid glass effect — multi-shape glass + liquid pool.
+//  Glass shapes: up to 3 (rounded rect + circles).
+//  Liquid pool: opaque with refraction, absorption, caustics.
 //
 
 #include <metal_stdlib>
@@ -31,16 +31,24 @@ struct GlassUniforms {
     // Shape 2: circle (centerX, centerY, radius, 0) normalized
     float4 shape2;
     float  shapeCount;      // 1, 2, or 3
-    float  padding0;
+    float  screenResY;      // full screen height in pixels (for refraction scaling)
+    // Liquid pool
+    float  liquidTop;       // normalized Y of liquid surface (rest position)
+    float  liquidBottom;    // 1.0 = screen bottom
+    float  hasLiquid;       // 1.0 = pool active
+    float  time;            // accumulated wave time (advances during scroll, stops in idle)
+    float  waveEnergy;      // 0..1 — wave amplitude multiplier (decays after scroll stops)
 };
 
 // ─── Constants ───────────────────────────────────────────────────────
 
-constant float REFRACT_EDGE_STRENGTH = 50.0;
-constant float REFRACT_INNER_STRENGTH = 30.0;
+constant float REFRACT_EDGE_STRENGTH = 600.0;
+constant float REFRACT_INNER_STRENGTH = 150.0;
 constant float REFRACT_DECAY = 5.0;
 
 constant float BLUR_MIX = 0.7;
+
+constant float GLASS_DISTORTION = 3.0;
 
 constant float BORDER_WIDTH = 0.07;
 constant float BORDER_BRIGHTNESS = 0.5;
@@ -62,6 +70,66 @@ inline float3 decodeHDR(float3 color, float isHDR) {
         return (color - 0.375) * 2.0;
     }
     return color;
+}
+
+// ─── Procedural noise ────────────────────────────────────────────────
+
+inline float hash21(float2 p) {
+    float3 p3 = fract(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+inline float vnoise(float2 p) {
+    float2 i = floor(p);
+    float2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + float2(1, 0));
+    float c = hash21(i + float2(0, 1));
+    float d = hash21(i + float2(1, 1));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+inline float fbm(float2 p) {
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 3; i++) {
+        v += a * vnoise(p);
+        p = p * 2.0 + float2(100.0);
+        a *= 0.5;
+    }
+    return v;
+}
+
+// ─── Surface wave ────────────────────────────────────────────────────
+
+inline float surfaceWave(float x, float time, float energy) {
+    if (energy < 0.001) return 0.0;
+    // Large organic wave + medium sloshing + fast ripples + fbm noise
+    float wave = sin(x * 3.0  + time * 1.2) * 0.035
+               + sin(x * 7.0  - time * 1.8) * 0.020
+               + sin(x * 13.0 + time * 2.5) * 0.010
+               + (fbm(float2(x * 5.0, time * 0.6)) - 0.5) * 0.025;
+    return energy * wave;
+}
+
+// ─── Caustics ────────────────────────────────────────────────────────
+
+inline float caustic(float2 p, float time) {
+    float2 p1 = p * 3.5 + float2(time * 0.25, time * 0.18);
+    float2 p2 = p * 5.5 - float2(time * 0.15, time * 0.3);
+    float c = abs(sin(p1.x + sin(p1.y * 1.3)))
+            + abs(sin(p2.y + cos(p2.x * 1.1)));
+    return pow(c * 0.5, 4.0);
+}
+
+// ─── Caustic brightness (neutral, not green) ─────────────────────────
+
+inline float causticBrightness(float depth, float2 uv, float time, float energy) {
+    float causticAnim = time * energy + time * 0.05;
+    float c = caustic(uv * 8.0, causticAnim);
+    float fade = exp(-depth * 5.0);
+    return c * fade;
 }
 
 // ─── Vertex ──────────────────────────────────────────────────────────
@@ -96,7 +164,7 @@ fragment float4 glassFragment(
     float2 p = float2(uv.x * aspect, uv.y);
     int shapeCount = int(u.shapeCount);
 
-    // ── Shape 0: rounded rect ──
+    // ── Shape SDFs ──
     float2 s0origin = u.shape0.xy;
     float2 s0size = u.shape0.zw;
     float2 s0center = s0origin + s0size * 0.5;
@@ -106,18 +174,16 @@ fragment float4 glassFragment(
     float2 p0 = p - s0centerP;
     float sdf0 = sdRoundedRect(p0, s0half, s0cornerR);
 
-    // ── Shape 1: circle ──
     float sdf1 = 10000.0;
     float2 p1 = float2(0.0);
     float s1radius = 0.0;
     if (shapeCount >= 2) {
         float2 s1center = float2(u.shape1.x * aspect, u.shape1.y);
-        s1radius = u.shape1.z; // normalized by height, aspect handled by p-space
+        s1radius = u.shape1.z;
         p1 = p - s1center;
         sdf1 = sdCircle(p1, s1radius);
     }
 
-    // ── Shape 2: circle ──
     float sdf2 = 10000.0;
     float2 p2 = float2(0.0);
     float s2radius = 0.0;
@@ -128,109 +194,273 @@ fragment float4 glassFragment(
         sdf2 = sdCircle(p2, s2radius);
     }
 
-    // ── Combined SDF ──
     float sdf = min(sdf0, min(sdf1, sdf2));
-
     float scaleY = s0size.y;
 
-    // ── Mask ──
+    // ── Glass mask ──
     float aaInner = -0.005 * scaleY;
     float aaOuter = 0.003 * scaleY;
-    float mask = 1.0 - smoothstep(aaInner, aaOuter, sdf);
-    if (mask < 0.001) discard_fragment();
+    float glassMask = 1.0 - smoothstep(aaInner, aaOuter, sdf);
 
-    // ── Per-shape ownership: determine which shape owns this pixel ──
-    // Use original SDFs for stable ownership
-    float2 localNormal;
-    float localSdf;
-    float localCornerR;
+    // ── Liquid surface ──
+    bool hasLiquid = u.hasLiquid > 0.5;
+    float surfY = 10000.0;
+    if (hasLiquid) {
+        surfY = u.liquidTop + surfaceWave(uv.x, u.time, u.waveEnergy);
+    }
 
-    if (sdf1 < sdf0 && sdf1 < sdf2) {
-        // Shape 1 (circle) owns this pixel
-        localSdf = sdf1;
-        localCornerR = s1radius;
-        localNormal = length(p1) > 0.00001 ? normalize(p1) : float2(0.0);
-    } else if (sdf2 < sdf0 && sdf2 < sdf1) {
-        // Shape 2 (circle) owns this pixel
-        localSdf = sdf2;
-        localCornerR = s2radius;
-        localNormal = length(p2) > 0.00001 ? normalize(p2) : float2(0.0);
+    bool belowSurface = hasLiquid && uv.y > surfY;
+
+    // Discard: outside glass and liquid (with splash margin)
+    float splashMargin = 0.4 * u.waveEnergy;
+    if (glassMask < 0.001 && !(hasLiquid && uv.y > (surfY - splashMargin))) discard_fragment();
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Glass shapes
+    // ════════════════════════════════════════════════════════════════════
+
+    if (glassMask >= 0.001) {
+        float2 localNormal;
+        float localSdf;
+        float localCornerR;
+        float formScale;
+
+        if (sdf1 < sdf0 && sdf1 < sdf2) {
+            localSdf = sdf1;
+            localCornerR = s1radius;
+            formScale = u.shape1.z * 2.0;     // circle diameter
+            localNormal = length(p1) > 0.00001 ? normalize(p1) : float2(0.0);
+        } else if (sdf2 < sdf0 && sdf2 < sdf1) {
+            localSdf = sdf2;
+            localCornerR = s2radius;
+            formScale = u.shape2.z * 2.0;     // circle diameter
+            localNormal = length(p2) > 0.00001 ? normalize(p2) : float2(0.0);
+        } else {
+            localSdf = sdf0;
+            localCornerR = s0cornerR;
+            formScale = s0size.y;              // rect height
+            float eps = 0.002;
+            float sdfR = sdRoundedRect(p0 + float2(eps, 0), s0half, s0cornerR);
+            float sdfU = sdRoundedRect(p0 + float2(0, eps), s0half, s0cornerR);
+            float2 grad = float2(sdfR - sdf0, sdfU - sdf0);
+            float gradLen = length(grad);
+            localNormal = gradLen > 0.00001 ? grad / gradLen : float2(0.0);
+        }
+
+        float distFromEdge = -localSdf;
+        float normDistFromEdge = saturate(distFromEdge / localCornerR);
+
+        float edgeFactor = exp(-normDistFromEdge * REFRACT_DECAY);
+        float innerFactor = (1.0 - normDistFromEdge);
+        innerFactor = innerFactor * innerFactor;
+        float totalRefract = REFRACT_EDGE_STRENGTH * edgeFactor + REFRACT_INNER_STRENGTH * innerFactor;
+
+        float2 refractNormalUV = float2(localNormal.x / aspect, localNormal.y);
+        float rnLen = length(refractNormalUV);
+        refractNormalUV = rnLen > 0.00001 ? refractNormalUV / rnLen : float2(0.0);
+
+        // Scale by form size, denominator = screen height (not capture rect)
+        // This matches Telegram where offset is computed in drawable coords (full screen)
+        float2 refractOffset = refractNormalUV * totalRefract * formScale / u.screenResY;
+        float2 refractedUV = clamp(uv - refractOffset, 0.0, 1.0);
+
+        // Glass distortion — subtle hash noise for organic imperfection
+        float2 pNoise = p * 80.0;
+        float dn1 = fract(sin(dot(pNoise * 0.19, float2(127.1, 311.7))) * 43758.5453) - 0.5;
+        float dn2 = fract(sin(dot(pNoise * 0.29, float2(269.5, 183.3))) * 43758.5453) - 0.5;
+        float dn3 = fract(sin(dot(pNoise * 0.21, float2(419.2, 371.9))) * 43758.5453) - 0.5;
+        float dn4 = fract(sin(dot(pNoise * 0.39, float2(523.7, 97.1))) * 43758.5453) - 0.5;
+        float2 glassDistort = float2(
+            dn1 * 0.6 + dn2 * 0.4,
+            dn3 * 0.6 + dn4 * 0.4
+        ) * GLASS_DISTORTION / u.resolution;
+        refractedUV = clamp(refractedUV + glassDistort, 0.0, 1.0);
+
+        float3 clearSample = decodeHDR(clearTex.sample(samp, refractedUV).rgb, u.isHDR);
+        float3 blurSample = decodeHDR(blurTex.sample(samp, refractedUV).rgb, u.isHDR);
+        float3 col = mix(clearSample, blurSample, BLUR_MIX);
+
+        // Underwater effect: only during splash, fades in gradually
+        if (belowSurface && u.waveEnergy > 0.01) {
+            float glassDepth = saturate((uv.y - surfY) / max(u.liquidBottom - surfY, 0.001));
+            float fadeIn = smoothstep(0.0, 0.15, glassDepth) * u.waveEnergy;
+            float absorption = exp(-glassDepth * 3.0);
+            float3 deepBlur = decodeHDR(blurTex.sample(samp, float2(uv.x, min(uv.y + glassDepth * 0.08, 1.0))).rgb, u.isHDR);
+            float3 underwaterCol = mix(deepBlur * 0.6, col, absorption * 0.6 + 0.1);
+            col = mix(col, underwaterCol, fadeIn);
+        }
+
+        // Global light glow
+        float avgLuma = 0.0;
+        for (int i = 0; i < 5; i++) {
+            float t = (float(i) + 0.5) / 5.0;
+            float2 glowUV = float2(mix(s0origin.x + 0.05 * s0size.x,
+                                        s0origin.x + s0size.x * 0.95, t),
+                                    s0origin.y + s0size.y * 0.5);
+            float3 s = decodeHDR(blurTex.sample(samp, glowUV).rgb, u.isHDR);
+            avgLuma += dot(s, float3(0.299, 0.587, 0.114));
+        }
+        avgLuma /= 5.0;
+
+        float glowAmount = smoothstep(0.05, 0.35, avgLuma);
+        float localLuma = dot(col, float3(0.299, 0.587, 0.114));
+        col *= mix(1.0, 1.4, glowAmount);
+        float darknessFactor = 1.0 - smoothstep(0.0, 0.3, localLuma);
+        col += float3(0.15, 0.15, 0.17) * glowAmount * darknessFactor;
+
+        float luma = dot(col, float3(0.299, 0.587, 0.114));
+        float darkBoost = smoothstep(0.0, 0.15, luma);
+        col = mix(col + float3(0.1, 0.1, 0.11), col, darkBoost);
+
+        // Glass border
+        float borderWidth = BORDER_WIDTH * localCornerR;
+        float borderMask = 1.0 - smoothstep(0.0, borderWidth, distFromEdge);
+
+        float signProduct = localNormal.x * localNormal.y;
+        float lightFactor = sign(signProduct) * pow(abs(signProduct), 0.5);
+        lightFactor = lightFactor * 0.5 + 0.5;
+        lightFactor = clamp(lightFactor, 0.0, 1.0);
+
+        float borderBrightness = BORDER_BRIGHTNESS * mix(0.02, 1.0, lightFactor);
+
+        float refractLuma = dot(col, float3(0.299, 0.587, 0.114));
+        float3 saturatedRefract = mix(float3(refractLuma), col, 1.5);
+        saturatedRefract = clamp(saturatedRefract, 0.0, 1.0);
+        float3 borderColor = mix(float3(1.0), saturatedRefract, BORDER_COLOR_MIX);
+
+        col += borderColor * borderMask * borderBrightness;
+
+        return float4(clamp(col, 0.0, 1.0), glassMask);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Liquid pool — procedural 2D waves
+    // ════════════════════════════════════════════════════════════════════
+
+    float energy = u.waveEnergy;
+    float t = u.time;
+
+    // Surface displacement: surfaceWave (sinusoidal) already in surfY
+    // Add extra 2D sloshing when energy > 0
+    float splashDisp = 0.0;
+    if (energy > 0.01) {
+        // Large sloshing wave — the main visible deformation
+        splashDisp += sin(uv.x * 8.0 + t * 1.5) * 0.03;
+        splashDisp += sin(uv.x * 5.0 - t * 0.9) * 0.02;
+        // Noise-driven organic shape
+        splashDisp += (fbm(float2(uv.x * 6.0 + t * 0.4, t * 0.3)) - 0.5) * 0.04;
+        splashDisp *= energy;
+    }
+
+    float refinedSurfY = surfY - splashDisp;
+
+    // Above even the splash → discard
+    if (uv.y < refinedSurfY) discard_fragment();
+
+    float poolRange = max(u.liquidBottom - refinedSurfY, 0.001);
+    float depth = saturate((uv.y - refinedSurfY) / poolRange);
+    float depthSq = depth * depth;
+    bool isSplashPeak = uv.y < surfY;
+
+    // ── Plain blur (idle state) ──
+    float blurAmount = smoothstep(0.0, 0.25, depth);
+    float3 idleClear = decodeHDR(clearTex.sample(samp, uv).rgb, u.isHDR);
+    float3 idleBlur  = decodeHDR(blurTex.sample(samp, uv).rgb, u.isHDR);
+    float3 idleCol   = mix(idleClear, idleBlur, blurAmount);
+    idleCol *= 1.0 - depth * 0.15;
+
+    // ── Liquid effects (splash state) ──
+    float3 splashCol = idleCol;
+    if (energy > 0.01) {
+        // 2D refraction — warp UV based on noise, not column scanning
+        float2 refrUV = uv;
+        float warpAmt = energy * (0.015 + depth * 0.025);
+        float2 noiseCoord = float2(uv.x * 8.0 + t * 0.5, uv.y * 6.0 - t * 0.3);
+        refrUV.x += (vnoise(noiseCoord) - 0.5) * warpAmt;
+        refrUV.y += (vnoise(noiseCoord + float2(100.0, 0.0)) - 0.5) * warpAmt;
+        // Upward shift near surface — magnifying lens effect
+        refrUV.y -= (0.03 + depthSq * 0.04) * energy;
+        refrUV = clamp(refrUV, 0.0, 1.0);
+
+        // Chromatic aberration
+        float spread = depthSq * energy * 0.025;
+        float3 content;
+        content.r = decodeHDR(clearTex.sample(samp, refrUV + float2( spread, 0)).rgb, u.isHDR).r;
+        content.g = decodeHDR(clearTex.sample(samp, refrUV).rgb, u.isHDR).g;
+        content.b = decodeHDR(clearTex.sample(samp, refrUV - float2( spread, 0)).rgb, u.isHDR).b;
+
+        float3 blurContent = decodeHDR(blurTex.sample(samp, refrUV).rgb, u.isHDR);
+        content = mix(content, blurContent, saturate(depth * 1.5));
+
+        // Liquid body
+        float2 deepUV = float2(uv.x, min(uv.y + depth * 0.08, 1.0));
+        float3 deepSample = decodeHDR(blurTex.sample(samp, deepUV).rgb, u.isHDR);
+        float deepLuma = dot(deepSample, float3(0.299, 0.587, 0.114));
+        float3 liqCol = mix(float3(deepLuma), deepSample, 1.2 + energy * 0.5);
+        liqCol = clamp(liqCol, 0.0, 1.0);
+        liqCol *= (1.0 - depth * 0.35);
+        liqCol += float3(0.08) * causticBrightness(depth, uv, t, energy);
+
+        float absorption = exp(-depth * 4.0);
+        splashCol = mix(liqCol, content, absorption);
+    }
+
+    // ── Blend: idle=plain blur, active=liquid ──
+    float3 col = mix(idleCol, splashCol, energy);
+
+    // ── Surface effects ──
+    float surfDist = uv.y - refinedSurfY;
+    float nearSurface = exp(-surfDist * 150.0);
+
+    if (energy > 0.01 && nearSurface > 0.01) {
+        // Slope from surface wave + splash
+        float eps = 0.003;
+        float wL = surfaceWave(uv.x - eps, t, energy);
+        float wR = surfaceWave(uv.x + eps, t, energy);
+        float slope = (wR - wL) / (2.0 * eps) + splashDisp * 8.0;
+
+        // Specular highlight along wave crests
+        float specular = pow(saturate(1.0 - abs(slope) * 6.0), 6.0);
+
+        // Reflection
+        float2 reflectUV = clamp(float2(uv.x + slope * 0.02, refinedSurfY - surfDist * 0.5), 0.0, 1.0);
+        float3 reflected = decodeHDR(clearTex.sample(samp, reflectUV).rgb, u.isHDR);
+        float fresnel = pow(1.0 - saturate(surfDist * 60.0), 3.0);
+
+        col = mix(col, reflected, fresnel * 0.4 * energy);
+        col += float3(0.8, 0.8, 0.85) * specular * nearSurface * energy;
+
+        // Bright edge line at surface
+        float edgeLine = exp(-surfDist * 250.0);
+        col += float3(0.7, 0.7, 0.75) * edgeLine * 0.6 * energy;
+    }
+
+    // ── Alpha ──
+    float alpha;
+    if (isSplashPeak && energy > 0.01) {
+        float thinness = saturate((surfY - uv.y) / max(splashMargin, 0.001));
+        alpha = (1.0 - thinness * 0.4) * 0.85 * energy;
+
+        // Iridescent color shift at splash tips
+        float huePhase = uv.x * 10.0 + uv.y * 6.0 + t * 1.5 + splashDisp * 15.0;
+        float3 hueShift = float3(
+            sin(huePhase) * 0.5 + 0.5,
+            sin(huePhase + 2.094) * 0.5 + 0.5,
+            sin(huePhase + 4.189) * 0.5 + 0.5
+        );
+
+        float baseLuma = dot(col, float3(0.299, 0.587, 0.114)) + 0.1;
+        float iridStrength = thinness * energy * 0.45;
+        col = mix(col, hueShift * baseLuma, iridStrength);
+        float luma = dot(col, float3(0.299, 0.587, 0.114));
+        col = mix(float3(luma), col, 1.5);
+        col += float3(0.08) * thinness * nearSurface;
     } else {
-        // Shape 0 (rounded rect) owns this pixel
-        localSdf = sdf0;
-        localCornerR = s0cornerR;
-        // Normal via finite differences
-        float eps = 0.001 * scaleY;
-        float sdfR = sdRoundedRect(p0 + float2(eps, 0), s0half, s0cornerR);
-        float sdfU = sdRoundedRect(p0 + float2(0, eps), s0half, s0cornerR);
-        float2 grad = float2(sdfR - sdf0, sdfU - sdf0);
-        float gradLen = length(grad);
-        localNormal = gradLen > 0.00001 ? grad / gradLen : float2(0.0);
+        float st = smoothstep(0.0, 0.2, surfDist);
+        float gradualFade = st * st * 0.97;
+        float sharpFade = smoothstep(0.0, 0.005, surfDist);
+        alpha = mix(gradualFade, sharpFade, energy);
     }
 
-    // ── Edge refraction ──
-    float distFromEdge = -localSdf;
-    float normDistFromEdge = saturate(distFromEdge / localCornerR);
-
-    float edgeFactor = exp(-normDistFromEdge * REFRACT_DECAY);
-    float innerFactor = (1.0 - normDistFromEdge);
-    innerFactor = innerFactor * innerFactor;
-    float totalRefract = REFRACT_EDGE_STRENGTH * edgeFactor + REFRACT_INNER_STRENGTH * innerFactor;
-
-    float2 refractNormalUV = float2(localNormal.x / aspect, localNormal.y);
-    float rnLen = length(refractNormalUV);
-    refractNormalUV = rnLen > 0.00001 ? refractNormalUV / rnLen : float2(0.0);
-
-    float formScale = s0size.y;
-    float2 refractOffset = refractNormalUV * totalRefract * formScale / u.resolution.y;
-
-    float2 refractedUV = clamp(uv - refractOffset, 0.0, 1.0);
-
-    // ── Sample ──
-    float3 clearSample = decodeHDR(clearTex.sample(samp, refractedUV).rgb, u.isHDR);
-    float3 blurSample = decodeHDR(blurTex.sample(samp, refractedUV).rgb, u.isHDR);
-    float3 col = mix(clearSample, blurSample, BLUR_MIX);
-
-    // ── Global light glow ──
-    float avgLuma = 0.0;
-    for (int i = 0; i < 5; i++) {
-        float t = (float(i) + 0.5) / 5.0;
-        float2 glowUV = float2(mix(s0origin.x + 0.05 * s0size.x,
-                                    s0origin.x + s0size.x * 0.95, t),
-                                s0origin.y + s0size.y * 0.5);
-        float3 s = decodeHDR(blurTex.sample(samp, glowUV).rgb, u.isHDR);
-        avgLuma += dot(s, float3(0.299, 0.587, 0.114));
-    }
-    avgLuma /= 5.0;
-
-    float glowAmount = smoothstep(0.05, 0.35, avgLuma);
-    float localLuma = dot(col, float3(0.299, 0.587, 0.114));
-    col *= mix(1.0, 1.4, glowAmount);
-    float darknessFactor = 1.0 - smoothstep(0.0, 0.3, localLuma);
-    col += float3(0.15, 0.15, 0.17) * glowAmount * darknessFactor;
-
-    // ── Brightness floor ──
-    float luma = dot(col, float3(0.299, 0.587, 0.114));
-    float darkBoost = smoothstep(0.0, 0.15, luma);
-    col = mix(col + float3(0.1, 0.1, 0.11), col, darkBoost);
-
-    // ── Glass border ──
-    float borderWidth = BORDER_WIDTH * localCornerR;
-    float borderMask = 1.0 - smoothstep(0.0, borderWidth, distFromEdge);
-
-    float signProduct = localNormal.x * localNormal.y;
-    float lightFactor = sign(signProduct) * pow(abs(signProduct), 0.5);
-    lightFactor = lightFactor * 0.5 + 0.5;
-    lightFactor = clamp(lightFactor, 0.0, 1.0);
-
-    float borderBrightness = BORDER_BRIGHTNESS * mix(0.02, 1.0, lightFactor);
-
-    float refractLuma = dot(col, float3(0.299, 0.587, 0.114));
-    float3 saturatedRefract = mix(float3(refractLuma), col, 1.5);
-    saturatedRefract = clamp(saturatedRefract, 0.0, 1.0);
-    float3 borderColor = mix(float3(1.0), saturatedRefract, BORDER_COLOR_MIX);
-
-    col += borderColor * borderMask * borderBrightness;
-
-    return float4(clamp(col, 0.0, 1.0), mask);
+    return float4(clamp(col, 0.0, 1.0), alpha);
 }

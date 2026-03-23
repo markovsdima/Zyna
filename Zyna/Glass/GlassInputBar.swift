@@ -29,6 +29,7 @@ final class GlassInputBar: UIView {
         isUserInteractionEnabled = false
 
         anchor.cornerRadius = 18
+        anchor.extendsCaptureToScreenBottom = true
         anchor.shapeProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
                 ?? GlassRenderer.ShapeParams()

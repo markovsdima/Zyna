@@ -22,6 +22,10 @@ final class GlassAnchor: UIView {
 
     var cornerRadius: CGFloat = 24
 
+    /// When true, the capture rect extends from the glass top to the screen bottom,
+    /// and a liquid-dissolve pass distorts content with increasing intensity downward.
+    var extendsCaptureToScreenBottom = false
+
     /// Custom multi-shape provider. Return nil for default single rounded rect.
     var shapeProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.ShapeParams)?
 

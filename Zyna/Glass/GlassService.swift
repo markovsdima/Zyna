@@ -5,6 +5,7 @@
 
 import UIKit
 import IOSurface
+import Metal
 
 // MARK: - GlassRegistration
 
@@ -128,6 +129,12 @@ final class GlassService {
         weak var anchor: GlassAnchor?
         let renderer: GlassRenderer
         var contentView: UIView?
+        // Cached for render-without-capture (liquid wave animation)
+        var lastTexture: MTLTexture?
+        var lastCaptureFrame: CGRect?
+        var lastShapes: GlassRenderer.ShapeParams?
+        var lastIsHDR: Bool = false
+        var lastLiquidZone: GlassRenderer.LiquidZone?
     }
 
     private struct WeakSource {
@@ -146,6 +153,11 @@ final class GlassService {
     private var needsCapture = true // true on first frame
     private var continuousCaptureUntil: CFTimeInterval = 0
     private var captureSources: [WeakSource] = []
+
+    // Liquid wave animation
+    private var waveTime: Float = 0
+    private var waveEnergy: Float = 0
+    private var lastTickTime: CFTimeInterval = 0
 
     #if DEBUG
     private var tickCount = 0
@@ -284,12 +296,37 @@ final class GlassService {
         // 3. Anchor is being animated (navigation push/pop, keyboard)
         // 4. Animated content under glass (Lottie, GIF)
         let anyAnimating = registrations.values.contains { $0.anchor?.isAnimating == true }
+        let hasLiquidPool = registrations.values.contains { $0.anchor?.extendsCaptureToScreenBottom == true }
         let inBurst = CACurrentMediaTime() < continuousCaptureUntil
         let shouldCapture = needsCapture || inBurst || anyAnimating || hasActiveSourceUnderGlass()
 
         if shouldCapture {
             needsCapture = false
         }
+
+        // Wave energy: ramps up during scroll, decays when idle
+        let now = CACurrentMediaTime()
+        let dt = lastTickTime > 0 ? Float(now - lastTickTime) : 0
+        lastTickTime = now
+
+        if hasLiquidPool {
+            // Splash only when the input bar itself moves (keyboard), not on scroll
+            let anchorMoving = registrations.values.contains {
+                $0.anchor?.extendsCaptureToScreenBottom == true && $0.anchor?.isAnimating == true
+            }
+            if anchorMoving {
+                waveEnergy = min(waveEnergy + dt * 5.0, 1.0)
+                waveTime += dt
+            } else {
+                waveEnergy = max(waveEnergy - dt * 0.35, 0)
+                if waveEnergy > 0.001 {
+                    waveTime += dt * waveEnergy
+                }
+            }
+        }
+
+        // Render when capturing OR waves still decaying
+        let shouldRender = shouldCapture || (hasLiquidPool && waveEnergy > 0.001)
 
         let scale = sourceWindow.screen.scale
 
@@ -299,7 +336,7 @@ final class GlassService {
         var renderTime: Double = 0
         #endif
 
-        for (_, reg) in registrations {
+        for (id, reg) in registrations {
             guard let anchor = reg.anchor,
                   let rawFrame = anchor.presentationFrame(),
                   rawFrame.width > 0, rawFrame.height > 0
@@ -318,66 +355,124 @@ final class GlassService {
                 height: round(rawFrame.height * scale) / scale
             )
 
-            guard shouldCapture else { continue }
+            let wantsLiquid = anchor.extendsCaptureToScreenBottom
 
-            // Capture with padding for edge refraction (content beyond glass boundary)
-            let padding: CGFloat = 20
-            let windowBounds = sourceWindow.bounds
-            let captureFrame = CGRect(
-                x: max(glassFrame.origin.x - padding, 0),
-                y: max(glassFrame.origin.y - padding, 0),
-                width: min(glassFrame.width + padding * 2, windowBounds.width - max(glassFrame.origin.x - padding, 0)),
-                height: min(glassFrame.height + padding * 2, windowBounds.height - max(glassFrame.origin.y - padding, 0))
-            )
+            // Skip if nothing to do
+            guard shouldCapture || (shouldRender && wantsLiquid) else { continue }
 
-            #if DEBUG
-            let capStart = CACurrentMediaTime()
-            #endif
+            if shouldCapture {
+                // ── Capture new frame ──
+                let windowBounds = sourceWindow.bounds
+                let sidePadding: CGFloat = 20
+                // Liquid mode: more top padding to capture cells approaching the surface
+                let topPadding: CGFloat = wantsLiquid ? 80 : 20
+                let captureY = max(glassFrame.origin.y - topPadding, 0)
+                let captureFrame: CGRect
+                if wantsLiquid {
+                    captureFrame = CGRect(
+                        x: max(glassFrame.origin.x - sidePadding, 0),
+                        y: captureY,
+                        width: min(glassFrame.width + sidePadding * 2, windowBounds.width - max(glassFrame.origin.x - sidePadding, 0)),
+                        height: windowBounds.height - captureY
+                    )
+                } else {
+                    captureFrame = CGRect(
+                        x: max(glassFrame.origin.x - sidePadding, 0),
+                        y: captureY,
+                        width: min(glassFrame.width + sidePadding * 2, windowBounds.width - max(glassFrame.origin.x - sidePadding, 0)),
+                        height: min(glassFrame.height + sidePadding * 2, windowBounds.height - captureY)
+                    )
+                }
 
-            guard let texture = captureManager.capture(frame: captureFrame, from: sourceWindow) else { continue }
+                #if DEBUG
+                let capStart = CACurrentMediaTime()
+                #endif
 
-            #if DEBUG
-            captureTime += CACurrentMediaTime() - capStart
-            #endif
+                guard let texture = captureManager.capture(frame: captureFrame, from: sourceWindow) else { continue }
 
-            // Renderer covers the capture area (wider than glass)
-            reg.renderer.frame = captureFrame
-            reg.renderer.contentScaleFactor = scale
+                #if DEBUG
+                captureTime += CACurrentMediaTime() - capStart
+                #endif
 
-            // Content view tracks the glass frame (not capture frame)
-            reg.contentView?.frame = glassFrame
+                reg.renderer.frame = captureFrame
+                reg.renderer.contentScaleFactor = scale
+                reg.contentView?.frame = glassFrame
 
-            // Build shape params
-            let shapes: GlassRenderer.ShapeParams
-            if let provider = anchor.shapeProvider {
-                shapes = provider(glassFrame, captureFrame, scale)
-            } else {
-                // Default: single rounded rect
-                var s = GlassRenderer.ShapeParams()
-                s.shape0 = SIMD4<Float>(
-                    Float((glassFrame.origin.x - captureFrame.origin.x) / captureFrame.width),
-                    Float((glassFrame.origin.y - captureFrame.origin.y) / captureFrame.height),
-                    Float(glassFrame.width / captureFrame.width),
-                    Float(glassFrame.height / captureFrame.height)
+                let shapes: GlassRenderer.ShapeParams
+                if let provider = anchor.shapeProvider {
+                    shapes = provider(glassFrame, captureFrame, scale)
+                } else {
+                    var s = GlassRenderer.ShapeParams()
+                    s.shape0 = SIMD4<Float>(
+                        Float((glassFrame.origin.x - captureFrame.origin.x) / captureFrame.width),
+                        Float((glassFrame.origin.y - captureFrame.origin.y) / captureFrame.height),
+                        Float(glassFrame.width / captureFrame.width),
+                        Float(glassFrame.height / captureFrame.height)
+                    )
+                    s.shape0cornerR = Float(anchor.cornerRadius * scale) / Float(captureFrame.height * scale)
+                    s.shapeCount = 1
+                    shapes = s
+                }
+
+                let liquidZone: GlassRenderer.LiquidZone?
+                if wantsLiquid, captureFrame.height > 0 {
+                    // Surface overlaps into input bar for seamless blur
+                    let surfaceY = glassFrame.maxY - 14
+                    liquidZone = GlassRenderer.LiquidZone(
+                        top: Float((surfaceY - captureFrame.origin.y) / captureFrame.height),
+                        bottom: 1.0,
+                        waveEnergy: waveEnergy
+                    )
+                } else {
+                    liquidZone = nil
+                }
+
+                // Cache for render-only frames
+                registrations[id]?.lastTexture = texture
+                registrations[id]?.lastCaptureFrame = captureFrame
+                registrations[id]?.lastShapes = shapes
+                registrations[id]?.lastIsHDR = texture.pixelFormat == .bgr10a2Unorm
+                registrations[id]?.lastLiquidZone = liquidZone
+
+                #if DEBUG
+                let renStart = CACurrentMediaTime()
+                #endif
+
+                reg.renderer.render(
+                    with: texture,
+                    shapes: shapes,
+                    isHDR: texture.pixelFormat == .bgr10a2Unorm,
+                    liquidZone: liquidZone,
+                    time: waveTime
                 )
-                s.shape0cornerR = Float(anchor.cornerRadius * scale) / Float(captureFrame.height * scale)
-                s.shapeCount = 1
-                shapes = s
+
+                #if DEBUG
+                renderTime += CACurrentMediaTime() - renStart
+                #endif
+
+            } else if wantsLiquid,
+                      let texture = reg.lastTexture,
+                      let shapes = reg.lastShapes {
+                // ── Render-only: reuse cached texture, update wave animation ──
+                var lz = reg.lastLiquidZone
+                lz?.waveEnergy = waveEnergy
+
+                #if DEBUG
+                let renStart = CACurrentMediaTime()
+                #endif
+
+                reg.renderer.render(
+                    with: texture,
+                    shapes: shapes,
+                    isHDR: reg.lastIsHDR,
+                    liquidZone: lz,
+                    time: waveTime
+                )
+
+                #if DEBUG
+                renderTime += CACurrentMediaTime() - renStart
+                #endif
             }
-
-            #if DEBUG
-            let renStart = CACurrentMediaTime()
-            #endif
-
-            reg.renderer.render(
-                with: texture,
-                shapes: shapes,
-                isHDR: texture.pixelFormat == .bgr10a2Unorm
-            )
-
-            #if DEBUG
-            renderTime += CACurrentMediaTime() - renStart
-            #endif
         }
 
         // Cleanup dead weak references periodically
@@ -387,7 +482,7 @@ final class GlassService {
 
         #if DEBUG
         let totalTime = CACurrentMediaTime() - tickStart
-        if shouldCapture {
+        if shouldRender {
             captureTimeAccum += captureTime
             renderTimeAccum += renderTime
             totalTimeAccum += totalTime
@@ -397,9 +492,9 @@ final class GlassService {
             idleFrames += 1
         }
 
-        let now = CACurrentMediaTime()
-        if statsTimestamp == 0 { statsTimestamp = now }
-        if now - statsTimestamp >= 1.0 {
+        let statsNow = CACurrentMediaTime()
+        if statsTimestamp == 0 { statsTimestamp = statsNow }
+        if statsNow - statsTimestamp >= 1.0 {
             if tickCount > 0 {
                 let n = Double(tickCount)
                 let capAvg = captureTimeAccum / n * 1000

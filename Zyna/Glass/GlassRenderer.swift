@@ -25,7 +25,7 @@ final class GlassRenderer: UIView {
     init() {
         let ctx = MetalContext.shared
         uniformsBuffer = ctx.device.makeBuffer(length: 256, options: [])!
-        gaussianBlur = MPSImageGaussianBlur(device: ctx.device, sigma: 12.0)
+        gaussianBlur = MPSImageGaussianBlur(device: ctx.device, sigma: 2.0)
         gaussianBlur.edgeMode = .clamp
         super.init(frame: .zero)
 
@@ -54,7 +54,7 @@ final class GlassRenderer: UIView {
         )
     }
 
-    // MARK: - Render
+    // MARK: - Types
 
     /// Multi-shape glass uniforms. Matches GlassUniforms in Metal.
     struct ShapeParams {
@@ -68,10 +68,24 @@ final class GlassRenderer: UIView {
         var shapeCount: Float = 1
     }
 
+    /// Liquid pool parameters.
+    struct LiquidZone {
+        /// Normalized Y of the liquid surface (rest position) in capture coords.
+        var top: Float
+        /// Normalized Y of pool bottom (1.0 = screen bottom).
+        var bottom: Float
+        /// 0..1 — wave amplitude. Driven by scroll, decays in idle.
+        var waveEnergy: Float
+    }
+
+    // MARK: - Render
+
     func render(
         with sourceTexture: MTLTexture,
         shapes: ShapeParams,
-        isHDR: Bool
+        isHDR: Bool,
+        liquidZone: LiquidZone? = nil,
+        time: Float = 0
     ) {
         let drawableSize = metalLayer.drawableSize
         guard drawableSize.width > 0, drawableSize.height > 0 else { return }
@@ -85,7 +99,7 @@ final class GlassRenderer: UIView {
         // Pass 1: Gaussian blur
         gaussianBlur.encode(commandBuffer: cmdBuf, sourceTexture: sourceTexture, destinationTexture: blurTex)
 
-        // Pass 2: Glass fragment
+        // Pass 2: Glass + liquid pool fragment
         let aspect = res.x / res.y
 
         struct Uniforms {
@@ -97,8 +111,15 @@ final class GlassRenderer: UIView {
             var shape1: SIMD4<Float>
             var shape2: SIMD4<Float>
             var shapeCount: Float
-            var padding0: Float
+            var screenResY: Float
+            var liquidTop: Float
+            var liquidBottom: Float
+            var hasLiquid: Float
+            var time: Float
+            var waveEnergy: Float
         }
+
+        let screenResY = Float(UIScreen.main.bounds.height * UIScreen.main.scale)
 
         var u = Uniforms(
             resolution: res,
@@ -109,7 +130,12 @@ final class GlassRenderer: UIView {
             shape1: shapes.shape1,
             shape2: shapes.shape2,
             shapeCount: shapes.shapeCount,
-            padding0: 0
+            screenResY: screenResY,
+            liquidTop: liquidZone?.top ?? 0,
+            liquidBottom: liquidZone?.bottom ?? 1,
+            hasLiquid: liquidZone != nil ? 1.0 : 0.0,
+            time: time,
+            waveEnergy: liquidZone?.waveEnergy ?? 0
         )
         memcpy(uniformsBuffer.contents(), &u, MemoryLayout<Uniforms>.size)
 
