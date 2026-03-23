@@ -18,21 +18,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var cancellables = Set<AnyCancellable>()
     private var batchFetchCancellable: AnyCancellable?
     private let presenceTitleView = PresenceTitleView()
-    private let inputAccessory = ChatInputAccessoryView()
+    private let glassInputBar = GlassInputBar()
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactedIds: [String] = []
     private var isPickerPresented = false
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
-    private var glassView: GlassView?   // iOS < 26
-    private var glassAnchorView: UIView?    // GlassAnchor — bottom
-
-    // MARK: - InputAccessoryView
-
-    override var canBecomeFirstResponder: Bool { true }
-
-    override var inputAccessoryView: UIView? { inputAccessory }
 
     // MARK: - Init
 
@@ -63,41 +55,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         tap.cancelsTouchesInView = false
         node.tableNode.view.addGestureRecognizer(tap)
 
-        // Pre-set inset to the expected accessory height so the table
-        // doesn't visibly slide up when the keyboard notification arrives.
-        let estimatedAccessoryHeight: CGFloat = 49 + DeviceInsets.bottom
-        node.tableNode.contentInset.top = estimatedAccessoryHeight
-        node.tableNode.view.verticalScrollIndicatorInsets.top = estimatedAccessoryHeight
-
         setupNavigationBar()
         bindViewModel()
         bindInput()
-        observeKeyboard()
 
-        // Glass: IOSurface + overlay (default) vs CABackdropLayer (legacy, for A/B testing)
-        let useOverlayPath = true
+        // Glass input bar
+        view.addSubview(glassInputBar)
 
-        if useOverlayPath {
-            let container = GlassContainerView()
-            container.cornerRadius = 20
-
-            let label = UILabel()
-            label.text = "Glass Button"
-            label.textColor = .white
-            label.font = .systemFont(ofSize: 16, weight: .medium)
-            label.textAlignment = .center
-            label.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            container.contentView.addSubview(label)
-
-            view.addSubview(container)
-            glassAnchorView = container
-        } else {
-            let gv = GlassView()
-            gv.cornerRadius = 20
-            gv.isUserInteractionEnabled = false
-            view.addSubview(gv)
-            glassView = gv
-        }
+        // Pre-set inset
+        let estimatedBarHeight: CGFloat = 49 + DeviceInsets.bottom
+        node.tableNode.contentInset.top = estimatedBarHeight
+        node.tableNode.view.verticalScrollIndicatorInsets.top = estimatedBarHeight
     }
 
     override func viewDidLayoutSubviews() {
@@ -105,22 +73,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let navBottom = navigationController?.navigationBar.frame.maxY ?? 0
         node.tableNode.contentInset.bottom = navBottom
 
-        // Position glass test capsule at center of screen
-        let glassH: CGFloat = 49
-        let glassInset: CGFloat = 16
-        let glassFrame = CGRect(
-            x: glassInset,
-            y: view.bounds.height * 0.5 - glassH * 0.5,
-            width: view.bounds.width - glassInset * 2,
-            height: glassH
-        )
-        glassView?.frame = glassFrame
-        glassAnchorView?.frame = glassFrame
+        glassInputBar.updateLayout(in: view)
+        node.tableNode.contentInset.top = glassInputBar.coveredHeight
+        node.tableNode.view.verticalScrollIndicatorInsets.top = glassInputBar.coveredHeight
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        becomeFirstResponder()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -210,44 +169,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func bindInput() {
-        inputAccessory.inputNode.onSend = { [weak self] text in
+        glassInputBar.inputNode.onSend = { [weak self] text in
             self?.viewModel.sendMessage(text)
         }
 
-        inputAccessory.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
+        glassInputBar.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
             self?.viewModel.sendVoiceMessage(fileURL: fileURL, duration: duration, waveform: waveform)
         }
 
-        inputAccessory.inputNode.onAttachTapped = { [weak self] in
+        glassInputBar.inputNode.onAttachTapped = { [weak self] in
             self?.presentPhotoPicker()
         }
     }
 
-    // MARK: - Keyboard
-
-    private func observeKeyboard() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(keyboardWillChangeFrame),
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil
-        )
-    }
-
     @objc private func tableTapped() {
-        inputAccessory.inputNode.textInputNode.resignFirstResponder()
-    }
-
-    @objc private func keyboardWillChangeFrame(_ note: Notification) {
-        guard !isMovingFromParent,
-              !isPickerPresented,
-              navigationController?.transitionCoordinator == nil,
-              let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-        // How much of the screen the keyboard (+ accessory) covers
-        let coveredHeight = max(0, UIScreen.main.bounds.height - endFrame.origin.y)
-        // Inverted table: contentInset.top is the visual bottom
-        node.tableNode.contentInset.top = coveredHeight
-        node.tableNode.view.verticalScrollIndicatorInsets.top = coveredHeight
+        glassInputBar.inputNode.textInputNode.resignFirstResponder()
     }
 
     // MARK: - ASTableDataSource
@@ -474,11 +410,11 @@ extension ChatViewController: PHPickerViewControllerDelegate {
         }
         guard !results.isEmpty else { return }
 
-        let captionText = inputAccessory.inputNode.textInputNode.textView.text?
+        let captionText = glassInputBar.inputNode.textInputNode.textView.text?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let caption = (captionText?.isEmpty == false) ? captionText : nil
         if caption != nil {
-            inputAccessory.inputNode.textInputNode.textView.text = ""
+            glassInputBar.inputNode.textInputNode.textView.text = ""
         }
 
         Task {

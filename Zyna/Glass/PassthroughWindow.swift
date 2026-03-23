@@ -10,7 +10,7 @@ import UIKit
 /// (labels, buttons, text fields placed via GlassContainerView).
 final class PassthroughWindow: UIWindow {
 
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { true }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         // Let the normal hit test find a view
