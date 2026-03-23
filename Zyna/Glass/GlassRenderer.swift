@@ -56,11 +56,21 @@ final class GlassRenderer: UIView {
 
     // MARK: - Render
 
-    /// - shapeRect: where the glass shape sits within the capture texture (normalized 0-1)
+    /// Multi-shape glass uniforms. Matches GlassUniforms in Metal.
+    struct ShapeParams {
+        /// Shape 0: rounded rect (x, y, w, h) in normalized capture coords
+        var shape0: SIMD4<Float> = .zero
+        var shape0cornerR: Float = 0
+        /// Shape 1: circle (centerX, centerY, radius, 0) in normalized capture coords
+        var shape1: SIMD4<Float> = .zero
+        /// Shape 2: circle (centerX, centerY, radius, 0) in normalized capture coords
+        var shape2: SIMD4<Float> = .zero
+        var shapeCount: Float = 1
+    }
+
     func render(
         with sourceTexture: MTLTexture,
-        cornerRadius: CGFloat,
-        shapeRect: SIMD4<Float>,
+        shapes: ShapeParams,
         isHDR: Bool
     ) {
         let drawableSize = metalLayer.drawableSize
@@ -76,32 +86,30 @@ final class GlassRenderer: UIView {
         gaussianBlur.encode(commandBuffer: cmdBuf, sourceTexture: sourceTexture, destinationTexture: blurTex)
 
         // Pass 2: Glass fragment
-        let scale = Float(metalLayer.contentsScale)
         let aspect = res.x / res.y
 
         struct Uniforms {
             var resolution: SIMD2<Float>
-            var cornerRadius: Float
             var isHDR: Float
-            var shapeRect: SIMD4<Float>
             var aspect: Float
+            var shape0: SIMD4<Float>
+            var shape0cornerR: Float
+            var shape1: SIMD4<Float>
+            var shape2: SIMD4<Float>
+            var shapeCount: Float
             var padding0: Float
-            var padding1: Float
-            var padding2: Float
         }
-
-        // cornerRadius normalized by drawable height
-        let cornerRNorm = Float(cornerRadius) * scale / res.y
 
         var u = Uniforms(
             resolution: res,
-            cornerRadius: cornerRNorm,
             isHDR: isHDR ? 1.0 : 0.0,
-            shapeRect: shapeRect,
             aspect: aspect,
-            padding0: 0,
-            padding1: 0,
-            padding2: 0
+            shape0: shapes.shape0,
+            shape0cornerR: shapes.shape0cornerR,
+            shape1: shapes.shape1,
+            shape2: shapes.shape2,
+            shapeCount: shapes.shapeCount,
+            padding0: 0
         )
         memcpy(uniformsBuffer.contents(), &u, MemoryLayout<Uniforms>.size)
 

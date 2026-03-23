@@ -5,14 +5,25 @@
 
 import UIKit
 
-/// Transparent overlay window that passes all touches to the window below.
-/// Used by GlassService to render glass effects above the main UI
-/// without intercepting input or stealing key status.
+/// Transparent overlay window for glass effects.
+/// Passes touches through EXCEPT on interactive content views
+/// (labels, buttons, text fields placed via GlassContainerView).
 final class PassthroughWindow: UIWindow {
 
     override var canBecomeKey: Bool { false }
 
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        // Let the normal hit test find a view
+        guard let hit = super.hitTest(point, with: event) else { return nil }
+
+        // If it hit the root view or a GlassRenderer — pass through
+        if hit === rootViewController?.view || hit is GlassRenderer {
+            return nil
+        }
+
+        // Otherwise it's interactive content — handle the touch
+        return hit
+    }
 
     override init(windowScene: UIWindowScene) {
         super.init(windowScene: windowScene)

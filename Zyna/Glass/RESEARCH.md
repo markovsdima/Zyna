@@ -227,6 +227,37 @@ CABackdropLayer имеет все `_mt_` методы: `mt_applyMaterialDescript
 
 Существует и работает. Возвращает IOSurface всего окна (1320×2868) за ~2.69ms. Но `createIOSurfaceWithFrame:` удобнее — сразу обрезает до нужного региона.
 
+### CARenderServerRenderDisplay — sandbox-заблокирован
+
+C-функция из QuartzCore, найдена через dlsym. Сигнатура из WebKit QuartzCoreSPI.h и coolstar/RecordMyScreen:
+
+```c
+void CARenderServerRenderDisplay(mach_port_t port, CFStringRef displayName, IOSurfaceRef surface, int x, int y);
+// Использование: CARenderServerRenderDisplay(0, CFSTR("LCD"), surface, 0, 0);
+```
+
+Вызов проходит без краша (1.56ms), но **0 пикселей** — render server не пишет в наш surface. Sandbox ограничение. coolstar использовал на jailbreak.
+
+Также найдены: `CARenderServerCaptureDisplay`, `CARenderServerRenderLayer`, `CARenderServerRenderDisplayExcludeList`, `CARenderServerCaptureDisplayExcludeList` — все существуют в QuartzCore.tbd, но заблокированы sandbox'ом.
+
+### _UIVisualEffectViewBackdropCaptureGroup — недостаточно
+
+Механизм регистрации backdrop'а в render server:
+
+```
+initWithName:scale:          — создать группу
+addBackdrop:update:          — добавить backdrop view
+setCaptureGroup:             — установить группу на _UIVisualEffectBackdropView
+scale / setScale:            — контроль разрешения (0.125 у Apple)
+updateAllBackdropViews       — обновить все backdrop'ы
+```
+
+**Эксперимент:** создали группу, создали `_UIVisualEffectBackdropView`, вызвали `setCaptureGroup:` + `addBackdrop:update:` + `applyRequestedFilterEffects` → `contents = nil`. Также пробовали добавить в ЖИВУЮ группу от UIVisualEffectView → `contents = nil`. CaptureGroup необходимое, но недостаточное условие. Активация происходит глубже (Mach IPC к render server при инициализации UIVisualEffectView).
+
+### CAWindowServer — crash (sandbox)
+
+Попытка получить `CAWindowServer.server` → crash при чтении displays. Sandbox полностью блокирует доступ к window server на iOS.
+
 ---
 
 ## Часть 6: Полезные ссылки и ресурсы
@@ -238,3 +269,6 @@ CABackdropLayer имеет все `_mt_` методы: `mt_applyMaterialDescript
 - [VariableBlurView — aheze](https://github.com/aheze/VariableBlurView) — CABackdropLayer трюки
 - [iOS Rendering Docs — EthanArbuckle](https://github.com/EthanArbuckle/ios-rendering-docs) — архитектура render server
 - [Reverse Engineering NSVisualEffectView — Oskar Groth](https://oskargroth.com/blog/reverse-engineering-nsvisualeffectview)
+- [WebKit QuartzCoreSPI.h — CARenderServer signatures](https://www.mail-archive.com/webkit-changes@lists.webkit.org/msg104923.html)
+- [coolstar/RecordMyScreen — CARenderServerRenderDisplay usage](https://github.com/coolstar/RecordMyScreen/blob/master/RecordMyScreen/CSScreenRecorder.m)
+- [Bryce Bostwick — On-Device Render Debugging](https://bryce.co/on-device-render-debugging/)

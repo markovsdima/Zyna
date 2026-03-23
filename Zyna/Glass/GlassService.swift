@@ -127,6 +127,7 @@ final class GlassService {
     private struct Registration {
         weak var anchor: GlassAnchor?
         let renderer: GlassRenderer
+        var contentView: UIView?
     }
 
     private struct WeakSource {
@@ -180,9 +181,26 @@ final class GlassService {
     func deregister(id: UUID) {
         guard let reg = registrations.removeValue(forKey: id) else { return }
         reg.renderer.removeFromSuperview()
+        reg.contentView?.removeFromSuperview()
 
         if registrations.isEmpty {
             tearDown()
+        }
+    }
+
+    /// Attach interactive content view on top of the glass renderer.
+    /// Called by GlassContainerView when it gets a window.
+    func attachContent(_ contentView: UIView, for anchor: GlassAnchor) {
+        guard let overlayRoot = overlayWindow?.rootViewController?.view else { return }
+
+        for (id, reg) in registrations where reg.anchor === anchor {
+            overlayRoot.addSubview(contentView)
+            registrations[id] = Registration(
+                anchor: reg.anchor,
+                renderer: reg.renderer,
+                contentView: contentView
+            )
+            break
         }
     }
 
@@ -326,7 +344,10 @@ final class GlassService {
             reg.renderer.frame = captureFrame
             reg.renderer.contentScaleFactor = scale
 
-            // Compute where the glass shape sits within the capture texture (normalized 0-1)
+            // Content view tracks the glass frame (not capture frame)
+            reg.contentView?.frame = glassFrame
+
+            // Build shape params — default: single rounded rect
             let shapeInCapture = SIMD4<Float>(
                 Float((glassFrame.origin.x - captureFrame.origin.x) / captureFrame.width),
                 Float((glassFrame.origin.y - captureFrame.origin.y) / captureFrame.height),
@@ -334,14 +355,18 @@ final class GlassService {
                 Float(glassFrame.height / captureFrame.height)
             )
 
+            var shapes = GlassRenderer.ShapeParams()
+            shapes.shape0 = shapeInCapture
+            shapes.shape0cornerR = Float(anchor.cornerRadius * scale) / Float(captureFrame.height * scale)
+            shapes.shapeCount = 1
+
             #if DEBUG
             let renStart = CACurrentMediaTime()
             #endif
 
             reg.renderer.render(
                 with: texture,
-                cornerRadius: anchor.cornerRadius,
-                shapeRect: shapeInCapture,
+                shapes: shapes,
                 isHDR: texture.pixelFormat == .bgr10a2Unorm
             )
 
@@ -375,7 +400,7 @@ final class GlassService {
                 let capAvg = captureTimeAccum / n * 1000
                 let renAvg = renderTimeAccum / n * 1000
                 let totAvg = totalTimeAccum / n * 1000
-                print("[glass] active=\(tickCount) idle=\(idleFrames) capture=\(String(format: "%.2f", capAvg))ms render=\(String(format: "%.2f", renAvg))ms total=\(String(format: "%.2f", totAvg))ms")
+                print("[glass] views=\(registrations.count) active=\(tickCount) idle=\(idleFrames) capture=\(String(format: "%.2f", capAvg))ms render=\(String(format: "%.2f", renAvg))ms total=\(String(format: "%.2f", totAvg))ms")
             } else {
                 print("[glass] idle (0 captures)")
             }

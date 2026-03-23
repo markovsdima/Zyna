@@ -26,7 +26,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
     private var glassView: GlassView?   // iOS < 26
-    private var glassAnchorView: UIView?    // GlassAnchor (iOS 26+), stored as UIView for availability
+    private var glassAnchorView: UIView?    // GlassAnchor — bottom
 
     // MARK: - InputAccessoryView
 
@@ -78,10 +78,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let useOverlayPath = true
 
         if useOverlayPath {
-            let anchor = GlassAnchor()
-            anchor.cornerRadius = 20
-            view.addSubview(anchor)
-            glassAnchorView = anchor
+            let container = GlassContainerView()
+            container.cornerRadius = 20
+
+            let label = UILabel()
+            label.text = "Glass Button"
+            label.textColor = .white
+            label.font = .systemFont(ofSize: 16, weight: .medium)
+            label.textAlignment = .center
+            label.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            container.contentView.addSubview(label)
+
+            view.addSubview(container)
+            glassAnchorView = container
         } else {
             let gv = GlassView()
             gv.cornerRadius = 20
