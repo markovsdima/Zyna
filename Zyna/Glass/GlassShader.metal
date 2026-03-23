@@ -50,7 +50,7 @@ constant float SQUIRCLE_N = 4.0;            // squircle exponent (4 = Apple-styl
 // Chromatic aberration on glass edges — per-channel displacement scale
 constant float CHROMA_SPREAD = 0.08;        // max spread between R and B channels
 
-constant float BLUR_MIX = 0.15;
+constant float BLUR_MIX = 0.35;
 
 // Glass tint — pulls colors toward mid-gray (Apple-style dynamic range compression)
 constant float TINT_GRAY = 0.38;           // target gray level
@@ -58,8 +58,8 @@ constant float TINT_STRENGTH = 0.42;       // how much to pull toward gray
 
 constant float GLASS_DISTORTION = 2.0;
 
-constant float BORDER_WIDTH = 0.1; // 0.07
-constant float BORDER_BRIGHTNESS = 0.5;
+constant float BORDER_WIDTH = 0.12; // 0.07
+constant float BORDER_BRIGHTNESS = 0.8;
 constant float BORDER_COLOR_MIX = 0.4;
 
 // ─── SDF ─────────────────────────────────────────────────────────────
@@ -331,9 +331,12 @@ fragment float4 glassFragment(
 
         // ── Apple-style tint — compress luminance, preserve color ──
         float preLuma = dot(col, float3(0.299, 0.587, 0.114));
-        float targetLuma = mix(preLuma, TINT_GRAY, TINT_STRENGTH);
+        // Brighter pixels get compressed proportionally more — no hard threshold
+        float brightExtra = preLuma * 0.28;
+        float targetLuma = mix(preLuma, TINT_GRAY, TINT_STRENGTH + brightExtra);
         // Additive chroma: keep color deviation from gray, shift the baseline
-        float3 chroma = col - preLuma;
+        // Slightly desaturate chroma (~15%) so colors are just a touch grayer
+        float3 chroma = (col - preLuma) * 0.70;
         col = clamp(float3(targetLuma) + chroma, 0.0, 1.0);
 
         // ── Global light glow — gentle ambient lift from bright areas ──
@@ -387,6 +390,9 @@ fragment float4 glassFragment(
         float3 borderColor = mix(float3(1.0), saturatedRefract, BORDER_COLOR_MIX);
 
         col += borderColor * borderMask * borderBrightness;
+
+        // Tint — like car window tint, darken everything uniformly
+        col *= 0.82;
 
         return float4(clamp(col, 0.0, 1.0), glassMask);
     }
