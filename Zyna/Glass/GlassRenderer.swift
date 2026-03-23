@@ -25,7 +25,7 @@ final class GlassRenderer: UIView {
     init() {
         let ctx = MetalContext.shared
         uniformsBuffer = ctx.device.makeBuffer(length: 256, options: [])!
-        gaussianBlur = MPSImageGaussianBlur(device: ctx.device, sigma: 2.0)
+        gaussianBlur = MPSImageGaussianBlur(device: ctx.device, sigma: 8.0)
         gaussianBlur.edgeMode = .clamp
         super.init(frame: .zero)
 

@@ -42,9 +42,13 @@ struct GlassUniforms {
 
 // ─── Constants ───────────────────────────────────────────────────────
 
-constant float REFRACT_EDGE_STRENGTH = 600.0;
-constant float REFRACT_INNER_STRENGTH = 150.0;
-constant float REFRACT_DECAY = 5.0;
+// Squircle refraction — models a physical glass dome with squircle cross-section
+// h(x) = (1 - (1-x)^N)^(1/N), derivative gives refraction strength
+constant float REFRACT_STRENGTH = 200.0;    // overall refraction magnitude
+constant float SQUIRCLE_N = 4.0;            // squircle exponent (4 = Apple-style)
+
+// Chromatic aberration on glass edges — per-channel displacement scale
+constant float CHROMA_SPREAD = 0.08;        // max spread between R and B channels
 
 constant float BLUR_MIX = 0.7;
 
@@ -63,6 +67,21 @@ inline float sdRoundedRect(float2 p, float2 halfSize, float r) {
 
 inline float sdCircle(float2 p, float r) {
     return length(p) - r;
+}
+
+// ─── Squircle refraction profile ────────────────────────────────────
+// Models glass dome height: h(x) = (1 - (1-x)^N)^(1/N)
+// where x = normalized distance from edge (0=edge, 1=center)
+// Returns the surface slope (derivative of h), which drives refraction strength.
+// Slope is steepest at the edge and flattens toward center — like real thick glass.
+inline float squircleSlope(float x, float N) {
+    // x = normDistFromEdge: 0 at rim, 1 at deep center
+    // Clamp away from 0 — the derivative is infinite at x=0 (vertical tangent)
+    float xc = clamp(x, 0.02, 1.0);
+    float inner = 1.0 - pow(1.0 - xc, N);
+    // dh/dx = (1-x)^(N-1) * inner^(1/N - 1)
+    float dh = pow(1.0 - xc, N - 1.0) * pow(max(inner, 0.001), 1.0 / N - 1.0);
+    return min(dh, 8.0);  // cap to prevent blowup
 }
 
 inline float3 decodeHDR(float3 color, float isHDR) {
@@ -250,19 +269,17 @@ fragment float4 glassFragment(
         float distFromEdge = -localSdf;
         float normDistFromEdge = saturate(distFromEdge / localCornerR);
 
-        float edgeFactor = exp(-normDistFromEdge * REFRACT_DECAY);
-        float innerFactor = (1.0 - normDistFromEdge);
-        innerFactor = innerFactor * innerFactor;
-        float totalRefract = REFRACT_EDGE_STRENGTH * edgeFactor + REFRACT_INNER_STRENGTH * innerFactor;
+        // ── Squircle refraction profile ──
+        // Slope of squircle dome: steep at edge, flat at center
+        float slope = squircleSlope(normDistFromEdge, SQUIRCLE_N);
+        float totalRefract = REFRACT_STRENGTH * slope;
 
         float2 refractNormalUV = float2(localNormal.x / aspect, localNormal.y);
         float rnLen = length(refractNormalUV);
         refractNormalUV = rnLen > 0.00001 ? refractNormalUV / rnLen : float2(0.0);
 
         // Scale by form size, denominator = screen height (not capture rect)
-        // This matches Telegram where offset is computed in drawable coords (full screen)
-        float2 refractOffset = refractNormalUV * totalRefract * formScale / u.screenResY;
-        float2 refractedUV = clamp(uv - refractOffset, 0.0, 1.0);
+        float2 baseOffset = refractNormalUV * totalRefract * formScale / u.screenResY;
 
         // Glass distortion — subtle hash noise for organic imperfection
         float2 pNoise = p * 80.0;
@@ -274,11 +291,29 @@ fragment float4 glassFragment(
             dn1 * 0.6 + dn2 * 0.4,
             dn3 * 0.6 + dn4 * 0.4
         ) * GLASS_DISTORTION / u.resolution;
-        refractedUV = clamp(refractedUV + glassDistort, 0.0, 1.0);
 
-        float3 clearSample = decodeHDR(clearTex.sample(samp, refractedUV).rgb, u.isHDR);
-        float3 blurSample = decodeHDR(blurTex.sample(samp, refractedUV).rgb, u.isHDR);
-        float3 col = mix(clearSample, blurSample, BLUR_MIX);
+        // ── Chromatic aberration — per-channel refraction ──
+        // Each channel gets a slightly different displacement, strongest at edges
+        float chromaScale = slope * CHROMA_SPREAD;
+        float2 offsetR = baseOffset * (1.0 - chromaScale) + glassDistort;
+        float2 offsetG = baseOffset + glassDistort;
+        float2 offsetB = baseOffset * (1.0 + chromaScale) + glassDistort;
+
+        float2 uvR = clamp(uv - offsetR, 0.0, 1.0);
+        float2 uvG = clamp(uv - offsetG, 0.0, 1.0);
+        float2 uvB = clamp(uv - offsetB, 0.0, 1.0);
+
+        float3 clearCol = float3(
+            decodeHDR(clearTex.sample(samp, uvR).rgb, u.isHDR).r,
+            decodeHDR(clearTex.sample(samp, uvG).rgb, u.isHDR).g,
+            decodeHDR(clearTex.sample(samp, uvB).rgb, u.isHDR).b
+        );
+        float3 blurCol = float3(
+            decodeHDR(blurTex.sample(samp, uvR).rgb, u.isHDR).r,
+            decodeHDR(blurTex.sample(samp, uvG).rgb, u.isHDR).g,
+            decodeHDR(blurTex.sample(samp, uvB).rgb, u.isHDR).b
+        );
+        float3 col = mix(clearCol, blurCol, BLUR_MIX);
 
         // Underwater effect: only during splash, fades in gradually
         if (belowSurface && u.waveEnergy > 0.01) {
@@ -316,16 +351,26 @@ fragment float4 glassFragment(
         float darkBoost = smoothstep(0.0, 0.15, luma);
         col = mix(col + float3(0.06, 0.06, 0.07), col, darkBoost);
 
-        // Glass border
-        float borderWidth = BORDER_WIDTH * localCornerR;
-        float borderMask = 1.0 - smoothstep(0.0, borderWidth, distFromEdge);
+        // ── Fresnel rim lighting — thin edge glow ──
+        float fresnelDist = saturate(distFromEdge / (localCornerR * 0.15));
+        float fresnel = pow(1.0 - fresnelDist, 4.0);
+        // Directional: top-left lit, bottom-right shadowed
+        float lightDir = saturate((-localNormal.x + -localNormal.y) * 0.5 + 0.5);
+        float fresnelLit = fresnel * mix(0.03, 0.15, lightDir);
+        col += float3(1.0, 1.0, 1.02) * fresnelLit;
 
-        float signProduct = localNormal.x * localNormal.y;
-        float lightFactor = sign(signProduct) * pow(abs(signProduct), 0.5);
-        lightFactor = lightFactor * 0.5 + 0.5;
-        lightFactor = clamp(lightFactor, 0.0, 1.0);
+        // ── Inner shadow — subtle darkening just inside the edge for depth ──
+        float shadowZone = smoothstep(0.0, localCornerR * 0.1, distFromEdge);
+        float shadowSide = saturate((localNormal.x + localNormal.y) * 0.5 + 0.5);
+        col *= 1.0 - (1.0 - shadowZone) * shadowSide * 0.08;
 
-        float borderBrightness = BORDER_BRIGHTNESS * mix(0.02, 1.0, lightFactor);
+        // ── Glass border — soft rim line ──
+        float borderInner = localCornerR * 0.01;
+        float borderOuter = BORDER_WIDTH * localCornerR;
+        float borderMask = smoothstep(borderInner, borderInner + borderOuter * 0.3, distFromEdge)
+                         * (1.0 - smoothstep(borderInner + borderOuter * 0.3, borderInner + borderOuter, distFromEdge));
+
+        float borderBrightness = BORDER_BRIGHTNESS * mix(0.05, 0.5, lightDir);
 
         float refractLuma = dot(col, float3(0.299, 0.587, 0.114));
         float3 saturatedRefract = mix(float3(refractLuma), col, 1.5);
