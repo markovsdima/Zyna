@@ -123,6 +123,7 @@ final class ContextSourceNode: ASDisplayNode {
 
     private func beginShrinkAnimation() {
         onInteractionLockChanged?(true)
+        GlassService.shared.captureFor(duration: 0.3)
         let targetScale: CGFloat = 0.92
 
         shrinkAnimator = UIViewPropertyAnimator(
@@ -165,6 +166,7 @@ final class ContextSourceNode: ASDisplayNode {
         shrinkAnimator = nil
         onInteractionLockChanged?(false)
 
+        GlassService.shared.captureFor(duration: 0.25)
         UIView.animate(withDuration: 0.2) {
             self.contentNode.view.transform = .identity
         }

@@ -196,6 +196,7 @@ final class ContextMenuController: NSObject {
         selectionFeedback.prepare()
 
         // 7. Animate in
+        GlassService.shared.captureFor(duration: 0.5)
         UIView.animate(
             withDuration: 0.35,
             delay: 0,
@@ -529,6 +530,7 @@ final class ContextMenuController: NSObject {
             isEmojiGridVisible = false
         }
 
+        GlassService.shared.captureFor(duration: 0.3)
         UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseIn) {
             self.dimmingView.alpha = 0
             self.contentScroll.contentOffset = .zero

@@ -6,7 +6,7 @@
 import AsyncDisplayKit
 import Combine
 import PhotosUI
-import UniformTypeIdentifiers
+//import UniformTypeIdentifiers
 
 final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
@@ -25,6 +25,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var isPickerPresented = false
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
+    private var glassView: GlassView?   // iOS < 26
+    private var glassAnchorView: UIView?    // GlassAnchor (iOS 26+), stored as UIView for availability
 
     // MARK: - InputAccessoryView
 
@@ -71,12 +73,40 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         bindViewModel()
         bindInput()
         observeKeyboard()
+
+        // Glass: IOSurface + overlay (default) vs CABackdropLayer (legacy, for A/B testing)
+        let useOverlayPath = true
+
+        if useOverlayPath {
+            let anchor = GlassAnchor()
+            anchor.cornerRadius = 20
+            view.addSubview(anchor)
+            glassAnchorView = anchor
+        } else {
+            let gv = GlassView()
+            gv.cornerRadius = 20
+            gv.isUserInteractionEnabled = false
+            view.addSubview(gv)
+            glassView = gv
+        }
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let navBottom = navigationController?.navigationBar.frame.maxY ?? 0
         node.tableNode.contentInset.bottom = navBottom
+
+        // Position glass test capsule at center of screen
+        let glassH: CGFloat = 49
+        let glassInset: CGFloat = 16
+        let glassFrame = CGRect(
+            x: glassInset,
+            y: view.bounds.height * 0.5 - glassH * 0.5,
+            width: view.bounds.width - glassInset * 2,
+            height: glassH
+        )
+        glassView?.frame = glassFrame
+        glassAnchorView?.frame = glassFrame
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -347,7 +377,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
     }
 
-    // MARK: - 120fps Scroll Boost
+    // MARK: - Scroll
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        GlassService.shared.setNeedsCapture()
+    }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if decelerate {
