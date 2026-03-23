@@ -112,7 +112,7 @@ fragment float4 glassFragment(
     float s1radius = 0.0;
     if (shapeCount >= 2) {
         float2 s1center = float2(u.shape1.x * aspect, u.shape1.y);
-        s1radius = u.shape1.z * aspect; // radius in aspect-corrected space
+        s1radius = u.shape1.z; // normalized by height, aspect handled by p-space
         p1 = p - s1center;
         sdf1 = sdCircle(p1, s1radius);
     }
@@ -123,7 +123,7 @@ fragment float4 glassFragment(
     float s2radius = 0.0;
     if (shapeCount >= 3) {
         float2 s2center = float2(u.shape2.x * aspect, u.shape2.y);
-        s2radius = u.shape2.z * aspect;
+        s2radius = u.shape2.z;
         p2 = p - s2center;
         sdf2 = sdCircle(p2, s2radius);
     }

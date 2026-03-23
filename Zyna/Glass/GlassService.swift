@@ -347,18 +347,23 @@ final class GlassService {
             // Content view tracks the glass frame (not capture frame)
             reg.contentView?.frame = glassFrame
 
-            // Build shape params — default: single rounded rect
-            let shapeInCapture = SIMD4<Float>(
-                Float((glassFrame.origin.x - captureFrame.origin.x) / captureFrame.width),
-                Float((glassFrame.origin.y - captureFrame.origin.y) / captureFrame.height),
-                Float(glassFrame.width / captureFrame.width),
-                Float(glassFrame.height / captureFrame.height)
-            )
-
-            var shapes = GlassRenderer.ShapeParams()
-            shapes.shape0 = shapeInCapture
-            shapes.shape0cornerR = Float(anchor.cornerRadius * scale) / Float(captureFrame.height * scale)
-            shapes.shapeCount = 1
+            // Build shape params
+            let shapes: GlassRenderer.ShapeParams
+            if let provider = anchor.shapeProvider {
+                shapes = provider(glassFrame, captureFrame, scale)
+            } else {
+                // Default: single rounded rect
+                var s = GlassRenderer.ShapeParams()
+                s.shape0 = SIMD4<Float>(
+                    Float((glassFrame.origin.x - captureFrame.origin.x) / captureFrame.width),
+                    Float((glassFrame.origin.y - captureFrame.origin.y) / captureFrame.height),
+                    Float(glassFrame.width / captureFrame.width),
+                    Float(glassFrame.height / captureFrame.height)
+                )
+                s.shape0cornerR = Float(anchor.cornerRadius * scale) / Float(captureFrame.height * scale)
+                s.shapeCount = 1
+                shapes = s
+            }
 
             #if DEBUG
             let renStart = CACurrentMediaTime()

@@ -29,6 +29,10 @@ final class GlassInputBar: UIView {
         isUserInteractionEnabled = false
 
         anchor.cornerRadius = 18
+        anchor.shapeProvider = { [weak self] glassFrame, captureFrame, scale in
+            self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
+                ?? GlassRenderer.ShapeParams()
+        }
         addSubview(anchor)
 
         contentView.backgroundColor = .clear
@@ -119,6 +123,69 @@ final class GlassInputBar: UIView {
                 self.superview?.layoutIfNeeded()
             }
         )
+    }
+
+    // MARK: - Multi-shape
+
+    private func buildShapes(glassFrame: CGRect, captureFrame: CGRect, scale: CGFloat) -> GlassRenderer.ShapeParams {
+        var p = GlassRenderer.ShapeParams()
+        let cw = captureFrame.width
+        let ch = captureFrame.height
+        guard cw > 0, ch > 0 else { return p }
+
+        // Layout constants from ChatInputNode.normalLayout
+        let hPad: CGFloat = 8    // horizontal padding
+        let vPad: CGFloat = 6    // vertical padding
+        let btnSize: CGFloat = 36
+        let spacing: CGFloat = 8 // between button and text field
+        let cornerR: CGFloat = 18
+
+        let contentY = glassFrame.origin.y + vPad
+        let contentH = glassFrame.height - vPad * 2
+
+        // Attach button (circle, bottom-aligned)
+        let attachCX = glassFrame.origin.x + hPad + btnSize / 2
+        let attachCY = contentY + contentH - btnSize / 2
+        let attachR = btnSize / 2
+
+        // Mic/Send button (circle, bottom-aligned)
+        let micCX = glassFrame.maxX - hPad - btnSize / 2
+        let micCY = attachCY
+        let micR = btnSize / 2
+
+        // Text field (rounded rect, between buttons)
+        let textX = glassFrame.origin.x + hPad + btnSize + spacing
+        let textW = glassFrame.width - hPad * 2 - btnSize * 2 - spacing * 2
+        let textY = contentY
+        let textH = contentH
+
+        // Shape 0: text field (rounded rect)
+        p.shape0 = SIMD4<Float>(
+            Float((textX - captureFrame.origin.x) / cw),
+            Float((textY - captureFrame.origin.y) / ch),
+            Float(textW / cw),
+            Float(textH / ch)
+        )
+        p.shape0cornerR = Float(cornerR * scale) / Float(ch * scale)
+
+        // Shape 1: attach (circle) — center + radius normalized by capture height
+        p.shape1 = SIMD4<Float>(
+            Float((attachCX - captureFrame.origin.x) / cw),
+            Float((attachCY - captureFrame.origin.y) / ch),
+            Float(attachR / ch),
+            0
+        )
+
+        // Shape 2: mic (circle)
+        p.shape2 = SIMD4<Float>(
+            Float((micCX - captureFrame.origin.x) / cw),
+            Float((micCY - captureFrame.origin.y) / ch),
+            Float(micR / ch),
+            0
+        )
+
+        p.shapeCount = 3
+        return p
     }
 
     // MARK: - Input size changes

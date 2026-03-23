@@ -49,8 +49,8 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func setupNodes() {
-        separatorNode.style.height = ASDimension(unit: .points, value: 0.5)
-        separatorNode.backgroundColor = .separator
+        separatorNode.style.height = ASDimension(unit: .points, value: 0)
+        separatorNode.backgroundColor = .clear
 
         textInputNode.typingAttributes = [
             NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16)
@@ -61,7 +61,7 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.style.minHeight = ASDimension(unit: .points, value: 36)
         textInputNode.style.maxHeight = ASDimension(unit: .points, value: 120)
         textInputNode.scrollEnabled = true
-        textInputNode.backgroundColor = .secondarySystemBackground
+        textInputNode.backgroundColor = .clear
 
         attachButtonNode.setImage(AppIcon.attach.rendered(size: 22, color: .gray), for: .normal)
         attachButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
@@ -83,7 +83,7 @@ final class ChatInputNode: ASDisplayNode {
 
     override func didLoad() {
         super.didLoad()
-        backgroundColor = .systemBackground
+        backgroundColor = .clear
         textInputNode.delegate = self
         textInputNode.view.layer.cornerRadius = 18
         textInputNode.view.clipsToBounds = true

@@ -22,6 +22,9 @@ final class GlassAnchor: UIView {
 
     var cornerRadius: CGFloat = 24
 
+    /// Custom multi-shape provider. Return nil for default single rounded rect.
+    var shapeProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.ShapeParams)?
+
     // MARK: - Registration
 
     private var registration: GlassRegistration?
