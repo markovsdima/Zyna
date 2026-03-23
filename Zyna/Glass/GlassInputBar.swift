@@ -63,14 +63,17 @@ final class GlassInputBar: UIView {
     // MARK: - Layout
 
     /// Call from ChatViewController.viewDidLayoutSubviews()
-    private let barInsetH: CGFloat = 6
+    private let barInsetClosed: CGFloat = 6
+    private let barInsetOpen: CGFloat = 0
 
     func updateLayout(in parentView: UIView) {
         let safeBottom = parentView.safeAreaInsets.bottom
 
-        // Measure input node height
+        let insetH = keyboardHeight > 0 ? barInsetOpen : barInsetClosed
         let fullWidth = parentView.bounds.width
-        let barWidth = fullWidth - barInsetH * 2
+        let barWidth = fullWidth - insetH * 2
+
+        // Measure input node height
         let fittedSize = inputNode.layoutThatFits(ASSizeRange(
             min: CGSize(width: barWidth, height: 0),
             max: CGSize(width: barWidth, height: .greatestFiniteMagnitude)
@@ -78,14 +81,12 @@ final class GlassInputBar: UIView {
 
         let barY: CGFloat
         if keyboardHeight > 0 {
-            // Keyboard open: sit right above keyboard, small gap
             barY = parentView.bounds.height - fittedSize.height - keyboardHeight - safeBottom - 4
         } else {
-            // No keyboard: float above home indicator
             barY = parentView.bounds.height - fittedSize.height - safeBottom * 0.5
         }
 
-        frame = CGRect(x: barInsetH, y: barY, width: barWidth, height: fittedSize.height)
+        frame = CGRect(x: insetH, y: barY, width: barWidth, height: fittedSize.height)
         anchor.frame = bounds
 
         inputNode.frame = CGRect(x: 0, y: 0, width: barWidth, height: fittedSize.height)

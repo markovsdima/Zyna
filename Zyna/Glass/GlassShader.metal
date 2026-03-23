@@ -50,7 +50,7 @@ constant float BLUR_MIX = 0.7;
 
 constant float GLASS_DISTORTION = 3.0;
 
-constant float BORDER_WIDTH = 0.07;
+constant float BORDER_WIDTH = 0.1; // 0.07
 constant float BORDER_BRIGHTNESS = 0.5;
 constant float BORDER_COLOR_MIX = 0.4;
 
@@ -290,27 +290,31 @@ fragment float4 glassFragment(
             col = mix(col, underwaterCol, fadeIn);
         }
 
-        // Global light glow
+        // Global light glow — sample across the whole form area (3×3 grid)
         float avgLuma = 0.0;
-        for (int i = 0; i < 5; i++) {
-            float t = (float(i) + 0.5) / 5.0;
-            float2 glowUV = float2(mix(s0origin.x + 0.05 * s0size.x,
-                                        s0origin.x + s0size.x * 0.95, t),
-                                    s0origin.y + s0size.y * 0.5);
-            float3 s = decodeHDR(blurTex.sample(samp, glowUV).rgb, u.isHDR);
-            avgLuma += dot(s, float3(0.299, 0.587, 0.114));
+        for (int iy = 0; iy < 3; iy++) {
+            float ty = (float(iy) + 0.5) / 3.0;
+            for (int ix = 0; ix < 3; ix++) {
+                float tx = (float(ix) + 0.5) / 3.0;
+                float2 glowUV = float2(
+                    mix(s0origin.x + 0.05 * s0size.x, s0origin.x + s0size.x * 0.95, tx),
+                    mix(s0origin.y + 0.05 * s0size.y, s0origin.y + s0size.y * 0.95, ty)
+                );
+                float3 s = decodeHDR(blurTex.sample(samp, glowUV).rgb, u.isHDR);
+                avgLuma += dot(s, float3(0.299, 0.587, 0.114));
+            }
         }
-        avgLuma /= 5.0;
+        avgLuma /= 9.0;
 
-        float glowAmount = smoothstep(0.05, 0.35, avgLuma);
+        float glowAmount = smoothstep(0.08, 0.4, avgLuma);
         float localLuma = dot(col, float3(0.299, 0.587, 0.114));
-        col *= mix(1.0, 1.4, glowAmount);
+        col *= mix(1.0, 1.2, glowAmount);
         float darknessFactor = 1.0 - smoothstep(0.0, 0.3, localLuma);
-        col += float3(0.15, 0.15, 0.17) * glowAmount * darknessFactor;
+        col += float3(0.08, 0.08, 0.09) * glowAmount * darknessFactor;
 
         float luma = dot(col, float3(0.299, 0.587, 0.114));
         float darkBoost = smoothstep(0.0, 0.15, luma);
-        col = mix(col + float3(0.1, 0.1, 0.11), col, darkBoost);
+        col = mix(col + float3(0.06, 0.06, 0.07), col, darkBoost);
 
         // Glass border
         float borderWidth = BORDER_WIDTH * localCornerR;
