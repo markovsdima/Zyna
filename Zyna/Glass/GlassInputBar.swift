@@ -28,7 +28,7 @@ final class GlassInputBar: UIView {
         backgroundColor = .clear
         isUserInteractionEnabled = false
 
-        anchor.cornerRadius = 18
+        anchor.cornerRadius = 24
         anchor.extendsCaptureToScreenBottom = true
         anchor.shapeProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
@@ -63,30 +63,43 @@ final class GlassInputBar: UIView {
     // MARK: - Layout
 
     /// Call from ChatViewController.viewDidLayoutSubviews()
+    private let barInsetH: CGFloat = 6
+
     func updateLayout(in parentView: UIView) {
         let safeBottom = parentView.safeAreaInsets.bottom
 
         // Measure input node height
-        let width = parentView.bounds.width
+        let fullWidth = parentView.bounds.width
+        let barWidth = fullWidth - barInsetH * 2
         let fittedSize = inputNode.layoutThatFits(ASSizeRange(
-            min: CGSize(width: width, height: 0),
-            max: CGSize(width: width, height: .greatestFiniteMagnitude)
+            min: CGSize(width: barWidth, height: 0),
+            max: CGSize(width: barWidth, height: .greatestFiniteMagnitude)
         )).size
 
-        let barHeight = fittedSize.height + safeBottom
-        let barY = parentView.bounds.height - barHeight - keyboardHeight
+        let barY: CGFloat
+        if keyboardHeight > 0 {
+            // Keyboard open: sit right above keyboard, small gap
+            barY = parentView.bounds.height - fittedSize.height - keyboardHeight - safeBottom - 4
+        } else {
+            // No keyboard: float above home indicator
+            barY = parentView.bounds.height - fittedSize.height - safeBottom * 0.5
+        }
 
-        frame = CGRect(x: 0, y: barY, width: width, height: fittedSize.height)
+        frame = CGRect(x: barInsetH, y: barY, width: barWidth, height: fittedSize.height)
         anchor.frame = bounds
 
-        inputNode.frame = CGRect(x: 0, y: 0, width: width, height: fittedSize.height)
+        inputNode.frame = CGRect(x: 0, y: 0, width: barWidth, height: fittedSize.height)
     }
 
     /// Returns how much space the input bar + keyboard covers at the bottom.
     var coveredHeight: CGFloat {
         guard let superview else { return 0 }
         let safeBottom = superview.safeAreaInsets.bottom
-        return bounds.height + safeBottom + keyboardHeight
+        if keyboardHeight > 0 {
+            return bounds.height + keyboardHeight + safeBottom + 4
+        } else {
+            return bounds.height + safeBottom * 0.5
+        }
     }
 
     // MARK: - Keyboard
@@ -135,11 +148,11 @@ final class GlassInputBar: UIView {
         guard cw > 0, ch > 0 else { return p }
 
         // Layout constants from ChatInputNode.normalLayout
-        let hPad: CGFloat = 8    // horizontal padding
+        let hPad: CGFloat = 14   // horizontal padding
         let vPad: CGFloat = 6    // vertical padding
-        let btnSize: CGFloat = 36
+        let btnSize: CGFloat = 48
         let spacing: CGFloat = 8 // between button and text field
-        let cornerR: CGFloat = 18
+        let cornerR: CGFloat = 24
 
         let contentY = glassFrame.origin.y + vPad
         let contentH = glassFrame.height - vPad * 2
