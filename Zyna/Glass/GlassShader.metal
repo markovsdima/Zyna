@@ -50,9 +50,13 @@ constant float SQUIRCLE_N = 4.0;            // squircle exponent (4 = Apple-styl
 // Chromatic aberration on glass edges — per-channel displacement scale
 constant float CHROMA_SPREAD = 0.08;        // max spread between R and B channels
 
-constant float BLUR_MIX = 0.7;
+constant float BLUR_MIX = 0.15;
 
-constant float GLASS_DISTORTION = 3.0;
+// Glass tint — pulls colors toward mid-gray (Apple-style dynamic range compression)
+constant float TINT_GRAY = 0.38;           // target gray level
+constant float TINT_STRENGTH = 0.42;       // how much to pull toward gray
+
+constant float GLASS_DISTORTION = 2.0;
 
 constant float BORDER_WIDTH = 0.1; // 0.07
 constant float BORDER_BRIGHTNESS = 0.5;
@@ -325,7 +329,14 @@ fragment float4 glassFragment(
             col = mix(col, underwaterCol, fadeIn);
         }
 
-        // Global light glow — sample across the whole form area (3×3 grid)
+        // ── Apple-style tint — compress luminance, preserve color ──
+        float preLuma = dot(col, float3(0.299, 0.587, 0.114));
+        float targetLuma = mix(preLuma, TINT_GRAY, TINT_STRENGTH);
+        // Additive chroma: keep color deviation from gray, shift the baseline
+        float3 chroma = col - preLuma;
+        col = clamp(float3(targetLuma) + chroma, 0.0, 1.0);
+
+        // ── Global light glow — gentle ambient lift from bright areas ──
         float avgLuma = 0.0;
         for (int iy = 0; iy < 3; iy++) {
             float ty = (float(iy) + 0.5) / 3.0;
@@ -341,15 +352,13 @@ fragment float4 glassFragment(
         }
         avgLuma /= 9.0;
 
-        float glowAmount = smoothstep(0.08, 0.4, avgLuma);
+        float glowAmount = smoothstep(0.15, 0.5, avgLuma);
         float localLuma = dot(col, float3(0.299, 0.587, 0.114));
-        col *= mix(1.0, 1.2, glowAmount);
+        // Subtle brightness lift — much gentler than before
+        col *= mix(1.0, 1.06, glowAmount);
+        // Lift dark areas slightly when surroundings are bright
         float darknessFactor = 1.0 - smoothstep(0.0, 0.3, localLuma);
-        col += float3(0.08, 0.08, 0.09) * glowAmount * darknessFactor;
-
-        float luma = dot(col, float3(0.299, 0.587, 0.114));
-        float darkBoost = smoothstep(0.0, 0.15, luma);
-        col = mix(col + float3(0.06, 0.06, 0.07), col, darkBoost);
+        col += float3(0.03) * glowAmount * darknessFactor;
 
         // ── Fresnel rim lighting — thin edge glow ──
         float fresnelDist = saturate(distFromEdge / (localCornerR * 0.15));
