@@ -44,8 +44,9 @@ struct GlassUniforms {
 
 // Squircle refraction — models a physical glass dome with squircle cross-section
 // h(x) = (1 - (1-x)^N)^(1/N), derivative gives refraction strength
-constant float REFRACT_STRENGTH = 200.0;    // overall refraction magnitude
-constant float SQUIRCLE_N = 4.0;            // squircle exponent (4 = Apple-style)
+constant float REFRACT_STRENGTH = 350.0;    // overall refraction magnitude
+constant float SQUIRCLE_N = 2.5;            // squircle exponent (lower = wider slope distribution)
+constant float REFRACT_SCALE = 1.0;        // refraction zone width multiplier (1=cornerR, higher=deeper into glass)
 
 // Chromatic aberration on glass edges — per-channel displacement scale
 constant float CHROMA_SPREAD = 0.08;        // max spread between R and B channels
@@ -56,9 +57,11 @@ constant float BLUR_MIX = 0.35;
 constant float TINT_GRAY = 0.38;           // target gray level
 constant float TINT_STRENGTH = 0.42;       // how much to pull toward gray
 
+constant float GLASS_TINT = 0.42;              // car-window darkening (1.0 = no tint, 0.0 = black)
+
 constant float GLASS_DISTORTION = 2.0;
 
-constant float BORDER_WIDTH = 0.12; // 0.07
+constant float BORDER_WIDTH = 0.10; // 0.07
 constant float BORDER_BRIGHTNESS = 0.8;
 constant float BORDER_COLOR_MIX = 0.4;
 
@@ -271,10 +274,10 @@ fragment float4 glassFragment(
         }
 
         float distFromEdge = -localSdf;
-        float normDistFromEdge = saturate(distFromEdge / localCornerR);
+        float domeScale = localCornerR * REFRACT_SCALE;
+        float normDistFromEdge = saturate(distFromEdge / domeScale);
 
         // ── Squircle refraction profile ──
-        // Slope of squircle dome: steep at edge, flat at center
         float slope = squircleSlope(normDistFromEdge, SQUIRCLE_N);
         float totalRefract = REFRACT_STRENGTH * slope;
 
@@ -282,7 +285,7 @@ fragment float4 glassFragment(
         float rnLen = length(refractNormalUV);
         refractNormalUV = rnLen > 0.00001 ? refractNormalUV / rnLen : float2(0.0);
 
-        // Scale by form size, denominator = screen height (not capture rect)
+        // Scale by form size
         float2 baseOffset = refractNormalUV * totalRefract * formScale / u.screenResY;
 
         // Glass distortion — subtle hash noise for organic imperfection
@@ -392,7 +395,7 @@ fragment float4 glassFragment(
         col += borderColor * borderMask * borderBrightness;
 
         // Tint — like car window tint, darken everything uniformly
-        col *= 0.82;
+        col *= GLASS_TINT;
 
         return float4(clamp(col, 0.0, 1.0), glassMask);
     }
