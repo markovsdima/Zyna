@@ -24,7 +24,7 @@ final class GlassRenderer: UIView {
 
     init() {
         let ctx = MetalContext.shared
-        uniformsBuffer = ctx.device.makeBuffer(length: 256, options: [])!
+        uniformsBuffer = ctx.device.makeBuffer(length: 512, options: [])!
         gaussianBlur = MPSImageGaussianBlur(device: ctx.device, sigma: 6.0)
         gaussianBlur.edgeMode = .clamp
         super.init(frame: .zero)
@@ -78,6 +78,17 @@ final class GlassRenderer: UIView {
         var waveEnergy: Float
     }
 
+    /// Chrome audio-reactive bars above input bar.
+    struct BarData {
+        /// Bar heights normalized 0..1 (max 16 bars)
+        var heights: [Float]
+        /// Number of active bars
+        var count: Int
+        /// Bar zone rect (x, y, w, h) in normalized capture coords.
+        /// y = top of tallest bar, h = max bar height zone
+        var zone: SIMD4<Float>
+    }
+
     // MARK: - Render
 
     func render(
@@ -85,7 +96,8 @@ final class GlassRenderer: UIView {
         shapes: ShapeParams,
         isHDR: Bool,
         liquidZone: LiquidZone? = nil,
-        time: Float = 0
+        time: Float = 0,
+        barData: BarData? = nil
     ) {
         let drawableSize = metalLayer.drawableSize
         guard drawableSize.width > 0, drawableSize.height > 0 else { return }
@@ -117,6 +129,12 @@ final class GlassRenderer: UIView {
             var hasLiquid: Float
             var time: Float
             var waveEnergy: Float
+            // Chrome bars
+            var barHeights: (Float, Float, Float, Float, Float, Float, Float, Float,
+                             Float, Float, Float, Float, Float, Float, Float, Float) = (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+            var barCount: Float = 0
+            var barZone: SIMD4<Float> = .zero
+            var barActive: Float = 0
         }
 
         let screenResY = Float(UIScreen.main.bounds.height * UIScreen.main.scale)
@@ -137,6 +155,19 @@ final class GlassRenderer: UIView {
             time: time,
             waveEnergy: liquidZone?.waveEnergy ?? 0
         )
+
+        if let bd = barData {
+            u.barActive = 1.0
+            u.barCount = Float(min(bd.count, 16))
+            u.barZone = bd.zone
+            withUnsafeMutablePointer(to: &u.barHeights) { ptr in
+                let floats = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: Float.self)
+                for i in 0..<min(bd.heights.count, 16) {
+                    floats[i] = bd.heights[i]
+                }
+            }
+        }
+
         memcpy(uniformsBuffer.contents(), &u, MemoryLayout<Uniforms>.size)
 
         guard let drawable = metalLayer.nextDrawable() else { return }

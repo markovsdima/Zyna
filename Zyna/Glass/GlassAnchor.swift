@@ -29,6 +29,18 @@ final class GlassAnchor: UIView {
     /// Custom multi-shape provider. Return nil for default single rounded rect.
     var shapeProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.ShapeParams)?
 
+    /// Chrome bar data provider. Return nil when bars are inactive.
+    var barProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.BarData?)?
+
+    /// Quick flag: true when bars are active (avoids calling barProvider just to check).
+    /// Used by GlassService to expand capture frame upward.
+    var hasBars: Bool = false
+
+    /// The view whose layer tree to capture as glass background.
+    /// Only this view's content is rendered — glass UI is excluded automatically.
+    /// If nil, falls back to the anchor's window.
+    weak var sourceView: UIView?
+
     // MARK: - Registration
 
     private var registration: GlassRegistration?

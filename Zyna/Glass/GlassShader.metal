@@ -34,6 +34,11 @@ struct GlassUniforms {
     float  hasLiquid;       // 1.0 = pool active
     float  time;            // accumulated wave time (advances during scroll, stops in idle)
     float  waveEnergy;      // 0..1 — wave amplitude multiplier (decays after scroll stops)
+    // Chrome bars
+    float  barHeights[16];  // normalized 0..1 per bar
+    float  barCount;        // number of active bars
+    float4 barZone;         // (x, y, w, h) normalized capture coords — zone above shape0
+    float  barActive;       // 1.0 = bars visible
 };
 
 // ─── Constants ───────────────────────────────────────────────────────
@@ -56,6 +61,14 @@ constant float GLASS_TINT = 0.42;              // car-window darkening (1.0 = no
 
 constant float GLASS_DISTORTION = 2.0;
 
+// Chrome metaball bars — liquid metal audio visualizer
+constant float META_K = 0.025;              // smooth-min blend radius (metaball blobbyness)
+constant float META_PUDDLE_H = 0.008;       // puddle half-height (thin base slab)
+constant float CHROME_BASE = 0.10;          // dark gunmetal base reflectance
+constant float CHROME_REFLECT = 0.70;       // environment reflection strength
+constant float CHROME_FRESNEL_POW = 3.0;    // fresnel exponent
+constant float CHROME_SPEC_POW = 48.0;      // specular highlight sharpness
+
 constant float BORDER_WIDTH = 0.10;
 constant float BORDER_BRIGHTNESS = 0.8;
 constant float BORDER_COLOR_MIX = 0.4;
@@ -69,6 +82,56 @@ inline float sdRoundedRect(float2 p, float2 halfSize, float r) {
 
 inline float sdCircle(float2 p, float r) {
     return length(p) - r;
+}
+
+// ─── Vertical capsule SDF ───────────────────────────────────────────
+// Capsule with center at `c`, half-height `hh`, radius `r`.
+inline float sdCapsuleV(float2 p, float2 c, float hh, float r) {
+    float2 d = p - c;
+    d.y = abs(d.y) - hh;
+    d.y = max(d.y, 0.0);
+    return length(d) - r;
+}
+
+// ─── Chrome metaball field ──────────────────────────────────────────
+// Liquid metal puddle + capsule bars, all smooth-unioned into one blobby field.
+// Returns SDF of the entire chrome body (negative = inside).
+
+inline float chromeMetaballField(
+    float2 p, float aspect,
+    constant GlassUniforms& u
+) {
+    if (u.barActive < 0.5) return 10000.0;
+
+    int count = min(int(u.barCount), 16);
+    float2 zoneOrigin = float2(u.barZone.x * aspect, u.barZone.y);
+    float zoneW = u.barZone.z * aspect;
+    float zoneH = u.barZone.w;
+    float zoneBottom = zoneOrigin.y + zoneH;
+
+    // Base puddle — wide flat capsule at zone bottom
+    float2 puddleCenter = float2(zoneOrigin.x + zoneW * 0.5, zoneBottom);
+    float puddleSdf = sdRoundedRect(p - puddleCenter, float2(zoneW * 0.5, META_PUDDLE_H), META_PUDDLE_H);
+
+    float field = puddleSdf;
+
+    // Bar capsules — grow upward from puddle
+    float barSpacing = zoneW / float(count);
+    float barRadius = barSpacing * 0.22;   // capsule radius (blobby)
+    float startX = zoneOrigin.x + barSpacing * 0.5;
+
+    for (int i = 0; i < count; i++) {
+        float h = u.barHeights[i] * zoneH;
+        if (h < 0.003) continue;
+
+        float cx = startX + float(i) * barSpacing;
+        float halfH = max(h * 0.5 - barRadius, 0.0);
+        float2 capCenter = float2(cx, zoneBottom - barRadius - halfH);
+        float capSdf = sdCapsuleV(p, capCenter, halfH, barRadius);
+        field = smin(field, capSdf, META_K);
+    }
+
+    return field;
 }
 
 // ─── Squircle refraction profile ────────────────────────────────────
@@ -155,6 +218,9 @@ fragment float4 glassFragment(
         sdf2 = sdCircle(p2, s2radius);
     }
 
+    // ── Chrome metaball field ──
+    float chromeSdf = chromeMetaballField(p, aspect, u);
+
     float sdf = min(sdf0, min(sdf1, sdf2));
     float scaleY = s0size.y;
 
@@ -162,6 +228,9 @@ fragment float4 glassFragment(
     float aaInner = -0.005 * scaleY;
     float aaOuter = 0.003 * scaleY;
     float glassMask = 1.0 - smoothstep(aaInner, aaOuter, sdf);
+
+    // ── Chrome mask (smooth edge) ──
+    float chromeMask = 1.0 - smoothstep(-0.002, 0.002, chromeSdf);
 
     // ── Liquid surface ──
     bool hasLiquid = u.hasLiquid > 0.5;
@@ -172,9 +241,9 @@ fragment float4 glassFragment(
 
     bool belowSurface = hasLiquid && uv.y > surfY;
 
-    // Discard: outside glass and liquid (with splash margin)
+    // Discard: outside glass, chrome, and liquid
     float splashMargin = 0.4 * u.waveEnergy;
-    if (glassMask < 0.001 && !(hasLiquid && uv.y > (surfY - splashMargin))) discard_fragment();
+    if (glassMask < 0.001 && chromeMask < 0.001 && !(hasLiquid && uv.y > (surfY - splashMargin))) discard_fragment();
 
     // ════════════════════════════════════════════════════════════════════
     //  Glass shapes
@@ -332,6 +401,61 @@ fragment float4 glassFragment(
         col *= GLASS_TINT;
 
         return float4(clamp(col, 0.0, 1.0), glassMask);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Chrome metaball — liquid metal audio bars
+    // ════════════════════════════════════════════════════════════════════
+
+    if (chromeMask > 0.001) {
+        // SDF gradient → surface normal
+        float eps = 0.0015;
+        float sdfR = chromeMetaballField(p + float2(eps, 0), aspect, u);
+        float sdfU = chromeMetaballField(p + float2(0, eps), aspect, u);
+        float2 grad = float2(sdfR - chromeSdf, sdfU - chromeSdf);
+        float gradLen = length(grad);
+        float2 normal = gradLen > 0.00001 ? grad / gradLen : float2(0.0, -1.0);
+
+        // Distance from edge for fresnel
+        float edgeDist = saturate(-chromeSdf / (META_K * 0.8));
+
+        // Environment reflection — flip Y + warp by normal
+        float2 normalUV = float2(normal.x / aspect, normal.y);
+        float2 reflUV = float2(uv.x + normalUV.x * 0.08, 1.0 - uv.y + normalUV.y * 0.08);
+        // Add subtle distortion for liquid feel
+        reflUV += float2(vnoise(p * 30.0 + u.time * 0.3) - 0.5, vnoise(p * 30.0 + 100.0) - 0.5) * 0.015;
+        reflUV = clamp(reflUV, 0.0, 1.0);
+        float3 envColor = decodeHDR(clearTex.sample(samp, reflUV).rgb, u.isHDR);
+        float envLuma = dot(envColor, float3(0.299, 0.587, 0.114));
+        // Boost contrast of reflection
+        envColor = mix(float3(envLuma), envColor, 1.3);
+
+        // Fresnel
+        float fresnel = pow(1.0 - edgeDist, CHROME_FRESNEL_POW);
+
+        // Specular — directional light from top-left
+        float2 lightDir = normalize(float2(-0.5, -0.7));
+        float spec = pow(saturate(dot(normal, lightDir)), CHROME_SPEC_POW);
+        // Secondary fill light from top-right
+        float2 fillDir = normalize(float2(0.4, -0.8));
+        float fillSpec = pow(saturate(dot(normal, fillDir)), CHROME_SPEC_POW * 0.5) * 0.3;
+
+        // Chrome composition
+        float3 col = float3(CHROME_BASE);
+        col += envColor * CHROME_REFLECT * (0.35 + fresnel * 0.65);
+        col += float3(0.85, 0.88, 1.0) * fresnel * 0.15;     // cool edge tint
+        col += float3(1.0) * spec * 0.8;                       // main specular
+        col += float3(0.9, 0.92, 1.0) * fillSpec;              // fill light
+
+        // Edge rim glow
+        float rim = exp(chromeSdf * 300.0);
+        col += float3(0.7, 0.72, 0.8) * rim * 0.4;
+
+        // Inner shadow on bottom side
+        float bottomShade = saturate(normal.y * 0.5 + 0.5);
+        col *= 1.0 - bottomShade * 0.15;
+
+        return float4(clamp(col, 0.0, 1.0), chromeMask);
     }
 
     // ════════════════════════════════════════════════════════════════════

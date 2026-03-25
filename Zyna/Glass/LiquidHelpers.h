@@ -68,4 +68,12 @@ inline float causticBrightness(float depth, float2 uv, float time, float energy)
     return c * fade;
 }
 
+// ─── Smooth minimum ─────────────────────────────────────────────────
+// Polynomial smooth-min for organic SDF merging (T-1000 liquid metal joints)
+
+inline float smin(float a, float b, float k) {
+    float h = saturate(0.5 + 0.5 * (b - a) / k);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
 #endif

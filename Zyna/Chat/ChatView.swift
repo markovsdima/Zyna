@@ -17,7 +17,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
     private var batchFetchCancellable: AnyCancellable?
-    private let presenceTitleView = PresenceTitleView()
+    private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
@@ -31,7 +31,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
         super.init(node: ChatNode())
-        presenceTitleView.name = viewModel.roomName
         hidesBottomBarWhenPushed = true
     }
 
@@ -59,8 +58,23 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         bindViewModel()
         bindInput()
 
+        // Glass nav bar (replaces system nav bar)
+        glassNavBar.name = viewModel.roomName
+        glassNavBar.onBack = { [weak self] in self?.onBack?() }
+        glassNavBar.onCall = { [weak self] in self?.onCallTapped?() }
+        glassNavBar.onTitleTapped = { [weak self] in
+            guard let userId = self?.viewModel.partnerUserId else { return }
+            self?.onTitleTapped?(userId)
+        }
+        view.addSubview(glassNavBar)
+
         // Glass input bar
         view.addSubview(glassInputBar)
+
+        // Both glass bars capture from the table — no self-capture
+        glassNavBar.sourceView = node.tableNode.view
+        glassInputBar.sourceView = node.tableNode.view
+
 
         // Pre-set inset
         let estimatedBarHeight: CGFloat = 49 + DeviceInsets.bottom
@@ -70,8 +84,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let navBottom = navigationController?.navigationBar.frame.maxY ?? 0
-        node.tableNode.contentInset.bottom = navBottom
+
+        glassNavBar.updateLayout(in: view)
+        node.tableNode.contentInset.bottom = glassNavBar.coveredHeight
 
         glassInputBar.updateLayout(in: view)
         node.tableNode.contentInset.top = glassInputBar.coveredHeight
@@ -80,11 +95,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // TEST: portal + mesh transform refraction (zero-capture)
+        // if let w = view.window { MeshPortalTest.install(in: view, sourceWindow: w) }
+
+        // TEST: 3D ray-traced glass
+        // if let w = view.window { Glass3DTest.install(in: view, sourceWindow: w) }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         if isMovingFromParent {
+            navigationController?.setNavigationBarHidden(false, animated: animated)
             audioPlayer.stop()
             viewModel.cleanup()
         }
@@ -93,53 +114,23 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - Navigation
 
     private func setupNavigationBar() {
-        let appearance = UINavigationBarAppearance()
-        appearance.configureWithDefaultBackground()
-        navigationItem.scrollEdgeAppearance = appearance
-
-        navigationItem.titleView = presenceTitleView
+        navigationController?.setNavigationBarHidden(true, animated: false)
 
         viewModel.$partnerPresence
             .receive(on: DispatchQueue.main)
             .sink { [weak self] presence in
-                self?.presenceTitleView.presence = presence
+                self?.glassNavBar.presence = presence
             }
             .store(in: &cancellables)
 
         viewModel.$partnerUserId
             .receive(on: DispatchQueue.main)
             .sink { [weak self] userId in
-                self?.presenceTitleView.isTappable = userId != nil
+                self?.glassNavBar.isTappable = userId != nil
             }
             .store(in: &cancellables)
-
-        presenceTitleView.onTapped = { [weak self] in
-            guard let userId = self?.viewModel.partnerUserId else { return }
-            self?.onTitleTapped?(userId)
-        }
-
-        navigationItem.hidesBackButton = true
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "chevron.left"),
-            style: .plain,
-            target: self,
-            action: #selector(backTapped)
-        )
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "phone.fill"),
-            style: .plain,
-            target: self,
-            action: #selector(callTapped)
-        )
     }
 
-    @objc private func backTapped() {
-        onBack?()
-    }
-
-    @objc private func callTapped() {
-        onCallTapped?()
-    }
 
     // MARK: - Bindings
 
