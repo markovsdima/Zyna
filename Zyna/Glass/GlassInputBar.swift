@@ -15,11 +15,20 @@ final class GlassInputBar: UIView {
 
     let inputNode = ChatInputNode()
 
+    /// The view to capture as glass background (e.g. the table/scroll view).
+    weak var sourceView: UIView? {
+        didSet { anchor.sourceView = sourceView }
+    }
+
     // MARK: - Private
 
     private let anchor = GlassAnchor()
     private let contentView = UIView()
     private var keyboardHeight: CGFloat = 0
+
+    // Chrome bars state
+    private var currentBarHeights: [Float] = []
+    private var barsActive: Bool = false
 
     // MARK: - Init
 
@@ -29,7 +38,7 @@ final class GlassInputBar: UIView {
         isUserInteractionEnabled = false
 
         anchor.cornerRadius = 24
-        anchor.extendsCaptureToScreenBottom = true
+        anchor.extendsCaptureToScreenBottom = false
         anchor.shapeProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
                 ?? GlassRenderer.ShapeParams()
@@ -42,6 +51,14 @@ final class GlassInputBar: UIView {
         // Remove default background — glass is our background
         inputNode.backgroundColor = .clear
         inputNode.view.backgroundColor = .clear
+
+        anchor.barProvider = { [weak self] glassFrame, captureFrame, scale in
+            self?.buildBarData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
+        }
+
+        inputNode.onWaveformUpdate = { [weak self] waveform in
+            self?.updateBarHeights(waveform)
+        }
 
         observeKeyboard()
         observeInputSize()
@@ -212,5 +229,62 @@ final class GlassInputBar: UIView {
             self.updateLayout(in: superview)
             superview.setNeedsLayout()
         }
+    }
+
+    // MARK: - Chrome Bars
+
+    private func updateBarHeights(_ waveform: [Float]) {
+        barsActive = !waveform.isEmpty
+        anchor.hasBars = barsActive
+
+        if waveform.isEmpty {
+            currentBarHeights = []
+            return
+        }
+
+        // Resample waveform tail to 16 bars
+        let barCount = 16
+        let tail = Array(waveform.suffix(barCount))
+        var heights = [Float](repeating: 0, count: barCount)
+        for i in 0..<min(tail.count, barCount) {
+            heights[i] = tail[i]
+        }
+        currentBarHeights = heights
+
+        GlassService.shared.setNeedsCapture()
+    }
+
+    private func buildBarData(
+        glassFrame: CGRect, captureFrame: CGRect, scale: CGFloat
+    ) -> GlassRenderer.BarData? {
+        guard barsActive, !currentBarHeights.isEmpty else { return nil }
+
+        let cw = captureFrame.width
+        let ch = captureFrame.height
+        guard cw > 0, ch > 0 else { return nil }
+
+        let maxBarHeight: CGFloat = 80
+
+        // Text field horizontal bounds (same as shape0)
+        let hPad: CGFloat = 14
+        let btnSize: CGFloat = 48
+        let spacing: CGFloat = 8
+        let textX = glassFrame.origin.x + hPad + btnSize + spacing
+        let textW = glassFrame.width - hPad * 2 - btnSize * 2 - spacing * 2
+
+        // Zone: above glass frame top edge
+        let zoneBottom = glassFrame.origin.y
+        let zoneTop = zoneBottom - maxBarHeight
+
+        return GlassRenderer.BarData(
+            heights: currentBarHeights,
+            count: min(currentBarHeights.count, 16),
+            zone: SIMD4<Float>(
+                Float((textX - captureFrame.origin.x) / cw),
+                Float((zoneTop - captureFrame.origin.y) / ch),
+                Float(textW / cw),
+                Float(maxBarHeight / ch)
+            )
+        )
     }
 }

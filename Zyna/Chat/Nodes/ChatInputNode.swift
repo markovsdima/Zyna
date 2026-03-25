@@ -40,6 +40,7 @@ final class ChatInputNode: ASDisplayNode {
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
     var onAttachTapped: (() -> Void)?
     var onSizeChanged: (() -> Void)?
+    var onWaveformUpdate: (([Float]) -> Void)?
 
     override init() {
         super.init()
@@ -186,7 +187,9 @@ final class ChatInputNode: ASDisplayNode {
             break
         case .recording(let duration, let waveform):
             overlayNode.update(state: gestureState, duration: duration, waveform: waveform)
+            onWaveformUpdate?(waveform)
         case .finished(let fileURL, let duration, let waveform):
+            onWaveformUpdate?([])
             if gestureState == .locked {
                 showVoicePreview(VoicePreviewData(fileURL: fileURL, duration: duration, waveform: waveform))
             } else {
@@ -194,8 +197,10 @@ final class ChatInputNode: ASDisplayNode {
                 hideRecording()
             }
         case .cancelled:
+            onWaveformUpdate?([])
             hideRecording()
         case .error:
+            onWaveformUpdate?([])
             hideRecording()
         }
     }

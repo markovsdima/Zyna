@@ -138,33 +138,46 @@ Glass рендерится в отдельном `PassthroughWindow` (overlay), 
 
 ## Часть 4: Финальная архитектура
 
+### Эволюция
+
+Первоначально использовалась two-window архитектура (overlay `PassthroughWindow` + `createIOSurfaceWithFrame:`) для обхода self-capture. Позже упрощена до **single-window + `layer.render()`**: рендерим только `sourceView` (без glass UI), что автоматически исключает self-capture без второго окна.
+
 ### Компоненты
 
 ```
-GlassAnchor (UIView)              — невидимый маркер в main window
+GlassAnchor (UIView)                — невидимый маркер, указывает sourceView для захвата
     ↓ didMoveToWindow
-GlassService (singleton)           — overlay window, capture, render loop
-    ├─ PassthroughWindow           — hitTest→nil, canBecomeKey→false
-    ├─ GlassRenderer (CAMetalLayer) — рисует по команде GlassService
-    ├─ ScreenCaptureManager        — double-buffered IOSurface A/B
-    └─ DisplayLinkDriver           — 120fps tick
+GlassService (singleton)            — capture + render loop, single window
+    ├─ CaptureCache                 — double-buffered MTLBuffer-backed CGContext (zero-copy CPU→GPU)
+    ├─ GlassRenderer (CAMetalLayer) — MPS blur + Metal fragment shader
+    └─ DisplayLinkDriver            — 120fps tick
 ```
 
 ### Flow
 
-1. Разработчик добавляет `GlassAnchor` как subview
+1. Разработчик добавляет `GlassAnchor` как subview, устанавливает `sourceView`
 2. `didMoveToWindow()` → `GlassService.shared.register(anchor:)`
-3. GlassService создаёт PassthroughWindow + GlassRenderer
-4. Каждый tick (120fps):
+3. GlassService создаёт GlassRenderer в main window
+4. Каждый tick (120fps, event-driven):
    - Опрос frame через `presentation layer → convert(bounds, to: window)`
-   - `createIOSurfaceWithFrame:` на source window
-   - `device.makeTexture(iosurface:)` — zero-copy
-   - Позиционирование renderer'а + Metal draw
+   - `sourceView.layer.render(in: ctx)` — рендер только контента, не glass UI
+   - CGContext пишет напрямую в MTLBuffer (zero-copy CPU→GPU, без memcpy)
+   - Double-buffered: CPU пишет slot A, GPU читает slot B, flip
+   - MPS Gaussian blur + Metal fragment shader (refraction, chromatic aberration, tint)
 5. Anchor убран → `GlassRegistration.deinit` → deregister → cleanup
 
-### iOS version split
+### Capture: layer.render() оптимизации
 
-IOSurface + overlay — основной путь на всех iOS. CABackdropLayer (GlassView) сохранён для A/B тестирования.
+- **Zero-copy CPU→GPU**: CGContext рендерит в MTLBuffer(.shared), buffer.makeTexture() даёт GPU view на ту же память — без memcpy
+- **Double-buffered**: два слота, CPU и GPU никогда не работают с одним буфером
+- **@2x capture** вместо @3x — за blur разница невидна, -44% пикселей
+- **Sublayer culling**: только intersecting + visible (isHidden, opacity) sublayers
+- **memset вместо ctx.clear()**: прямое обнуление буфера, минуя CG pipeline
+- **Fallback** на texture.replace() для Intel simulator (buffer-backed textures не поддерживаются)
+
+### Каждая glass зона = отдельный pipeline
+
+Nav bar и input bar — два независимых capture+render. Это быстрее fullscreen: capture масштабируется с пикселями, а два маленьких региона (~416K px) дешевле одного fullscreen (~1.34M px). Sublayer culling тоже эффективнее на маленьких регионах.
 
 ### Trigger-система (event-driven capture)
 
@@ -175,17 +188,17 @@ IOSurface + overlay — основной путь на всех iOS. CABackdropL
 3. **`anchor.isAnimating`** — автоматически (navigation push/pop, keyboard). Сравнивает `presentationFrame != modelFrame`
 4. **`GlassCaptureSource`** — протокол для анимированных ячеек (Lottie, GIF). Проверяет `needsGlassCapture && intersects(glassRect)`
 
-Idle = **0% CPU** (display link тикает но skip capture+render).
+Idle = **~0% CPU**: display link останавливается после 3 idle тиков. Watchdog timer (20 Hz, ~16μs/сек) проверяет `isAnimating` на якорях — при обнаружении анимации (navigation gesture и т.д.) перезапускает display link. Явные триггеры (`setNeedsCapture`, `captureFor`) тоже будят display link напрямую.
 
-### Производительность (финальная)
+### Производительность
 
 ```
-fps=120  capture=~5.5ms  render=~0.4ms  total=~6.2ms
+iPhone 16 Pro Max, iOS 26.3, 120fps:
+capture=~1.5ms  render=~0.3ms  total=~1.8ms (типичный)
+capture=~2.5ms  render=~1.0ms  total=~3.5ms (worst case)
 ```
 
-120Hz стабильно. Budget 8.33ms — запас ~25%.
-
-Сравнение на SE 2020 (A13): IOSurface total=7.2ms vs CABackdropLayer total=7.9ms — IOSurface быстрее.
+Budget 8.33ms — запас ~60%. До оптимизаций (IOSurface + overlay) было total=~6.2ms.
 
 ### API
 
@@ -193,6 +206,7 @@ fps=120  capture=~5.5ms  render=~0.4ms  total=~6.2ms
 // 3 строки — стекло готово:
 let glass = GlassAnchor()
 glass.cornerRadius = 20
+glass.sourceView = contentView  // что захватывать
 someView.addSubview(glass)
 // Убрать: glass.removeFromSuperview()
 ```
@@ -260,7 +274,136 @@ updateAllBackdropViews       — обновить все backdrop'ы
 
 ---
 
-## Часть 6: Полезные ссылки и ресурсы
+## Часть 6: Глубокое исследование альтернативных путей (24 марта 2026)
+
+Систематическое исследование всех возможных способов получить пиксели фона для Metal шейдера. 11 фаз экспериментов на устройстве (iPhone 16 Pro Max, iOS 26.3).
+
+### Rendering pipeline iOS
+
+```
+App Process                     backboardd                        GPU / Display
+═══════════                     ══════════                        ═══════════
+UIView / CALayer
+    ↓ CATransaction.commit()
+CA::Render::Encoder             CA::Render::Decoder
+    ↓ Mach IPC                      ↓
+com.apple.CARenderServer ──────→ Compositor (Metal)
+  (IOSurface ports,                 ↓
+   layer tree diffs)            Display IOSurface ──────────────→ IOMobileFramebuffer → Screen
+```
+
+Единственная точка выхода пикселей из render server в app process: `UIWindow.createIOSurfaceWithFrame:` (one-shot snapshot из пула IOSurface'ов).
+
+### CA::Render протокол
+
+**C++ символы полностью stripped на iOS.** Ни один из 25 mangled symbols (`CA::Render::Encoder`, `Decoder`, `Filter::encode`, `Object::decode` и др.) не доступен через dlsym. Apple стрипнул их начиная с iOS (на macOS были экспортированы).
+
+C-функции найдены:
+- `CARenderServerGetPort` → возвращает Mach port (≈30K-86K)
+- `CARenderServerGetServerPort` → 0 (недоступен)
+- `CARenderServerRenderLayer` → **crash** (неизвестная сигнатура)
+- `CARenderServerRenderDisplayClientList` → **crash** (неизвестная сигнатура)
+- `CARenderServerRenderDisplay` → 0 пикселей (sandbox)
+- `CARenderServerCaptureDisplayClientList` → nil
+
+### CAFilter — закрытая система
+
+42 типа фильтров на iOS 26. Новые: `glassBackground`, `glassForeground`, `liquidGlass`, `refraction`, `glass`, `chromaticAberration`, `chromaticAberrationMap`, `displacementMap`, `variableBlur`.
+
+**Type indices (через ivar `_type`):**
+
+  Фильтр              | _type      
+
+|---------------------|-------------|
+| colorMatrix         | 113 (0x71)  |
+| colorSaturate       | 117 (0x75)  |
+| chromaticAberration | 96 (0x60)   |
+| displacementMap     | 202 (0xCA)  |
+| gaussianBlur        | 280 (0x118) |
+| glassBackground     | 283 (0x11B) |
+| liquidGlass         | 867 (0x363) |
+| refraction          | 868 (0x364) |
+| glass               | 869 (0x365) |
+
+CAFilter принимает ЛЮБОЙ ключ через `setValue:forKey:` → хранит в `_attr` dict. Нельзя определить реальные параметры — render server игнорирует неизвестные ключи.
+
+`CA_copyRenderValue` (не `copyRenderValue:`) возвращает `CA::Render::Object*` — бинарное дерево вложенных объектов:
+- `displacementMap` содержит `glassBackground` содержит `chromaticAberration` → `vibrantColorMatrix`
+
+**Расширение невозможно.** Нет `registerFilter`, нет plugin mechanism, нет loadable modules. Таблица фильтров скомпилирована в QuartzCore.framework.
+
+### CAPortalLayer — compositor не применяет фильтры
+
+`_UIPortalView` с `layer.filters = [gaussianBlur(20)]`:
+- `drawHierarchy`: 0% non-black
+- `layer.render`: 0% non-black
+- IOSurface через createIOSurfaceWithFrame: **100% non-black**, но blur НЕ применён (0% diff с/без фильтра)
+- Blur radius sweep (0→50): 0% diff на каждом шаге
+
+**Compositor обрабатывает CAPortalLayer как redirect, пропуская все filters/backgroundFilters.**
+
+### _UIReplicantView и CASlotProxy
+
+`UIScreen._snapshotExcludingWindows:withRect:` → `_UIReplicantView`:
+- `layer.contents` = `CASlotProxy` (не IOSurface). CFTypeID=1 (не IOSurface TypeID)
+- CASlotProxy: 1 ivar (`_proxy` void*), 3 метода (`initWithName:`, `CA_copyRenderValue`, `dealloc`)
+- `_UIReplicantLayer._slotId` → `_UISlotId` (opaque ObjC object)
+- Пиксели живут в backboardd. Proxy = token, не данные.
+
+Pipeline _snapshotExcludingWindows → replicant → temp window → IOSurface **работает** (101/100 non-black), но **10.5ms** — медленнее createIOSurfaceWithFrame (6.7ms).
+
+### IOSurface global scan
+
+`IOSurfaceLookup(id)` **работает из sandbox** — возвращает IOSurface по глобальному ID, same backing memory.
+
+Scan IDs 1..2000: найдено **3 surface'а** (все 1320×471, вероятно системный UI). Display framebuffer **не доступен**. Ни одного screen-sized (1320×2868). Ни одного live (seed/pixels не меняются).
+
+IOSurface из `createIOSurfaceWithFrame:` — **static snapshot**, не обновляется render server'ом. Seed=1 неизменен. Render server использует пул IOSurface'ов (IDs переиспользуются после release).
+
+### Context ID capture
+
+`+[UIWindow createIOSurfaceWithContextIds:count:frame:]` **работает**: 1.53ms, 100/100 non-black. Сопоставимо с `createIOSurfaceWithFrame:` (1.11ms). Все варианты доступны:
+- `+createIOSurfaceWithContextIds:count:frame:outTransform:`
+- `+createIOSurfaceWithContextIds:count:frame:usePurpleGfx:outTransform:`
+- `+createIOSurfaceOnScreen:withContextIds:count:frame:baseTransform:`
+
+### ReplayKit
+
+`RPScreenRecorder.startCapture`: first frame latency **6633ms** (consent dialog), **21 fps**, разрешение 884×1920 (уменьшенное). IOSurface-backed CVPixelBuffer → MTLTexture работает. Непригодно для 120fps.
+
+Интересные SPI: `setWindowToRecord:`, `checkContextID:withHandler:`, `pauseInAppCapture`.
+
+### Сводная таблица всех исследованных методов
+
+ Метод                                      | Работает? | Скорость | Reusable? | Причина блокировки 
+--------------------------------------------|-----------|----------|-----------|--------------------
+ `createIOSurfaceWithFrame:`                | ✅        | ~1-5ms   | ❌ (пул)  | —                  
+ `createIOSurfaceWithContextIds:`           | ✅        | ~1.5ms   | ❌ (пул)  | —                  
+ `_snapshotExcludingWindows:`               | ✅        | ~10.5ms  | ❌        | View, не пиксели напрямую 
+ `layer.render(in:)`                        | ✅        | ~5-7ms   | ✅        | Только свой layer tree 
+ `RPScreenRecorder`                         | ✅        | 21fps    | ❌        | User consent, слишком медленно 
+ `IOSurfaceLookup(id)`                      | ✅        | мгновенно| ❌        | Surfaces статические 
+ `CARenderServerRenderDisplay`              | ❌        | —        | ✅        | Sandbox (0 пикселей) 
+ `CARenderServerRenderLayer`                | ❌        | —        | ✅        | Crash (неизвестная сигнатура) 
+ `CARenderServerRenderDisplayClientList`    | ❌        | —        | ✅        | Crash 
+ `CARenderServerCaptureDisplayClientList`   | ❌        | —        | —         | nil 
+ CAFilter на CAPortalLayer                  | ❌        | —        | —         | Compositor игнорирует 
+ Custom CAFilter plugin                     | ❌        | —        | —         | Нет механизма расширения 
+ CASlotProxy → IOSurface                    | ❌        | —        | —         | Opaque reference 
+ IOMobileFramebuffer                        | ❌        | —        | —         | Sandbox + entitlement 
+ CA::Render::Encoder                        | ❌        | —        | —         | Symbols stripped
+
+### Вывод
+
+**`layer.render()` + MTLBuffer-backed CGContext (zero-copy CPU→GPU) — текущий production путь.** Public API, App Store-safe, ~1.8ms total на 120fps.
+
+`createIOSurfaceWithFrame:` работает быстрее для единичного snapshot, но требует overlay window (self-capture проблема) и является private API. `layer.render()` с sublayer culling + sourceView isolation решает self-capture без второго окна.
+
+Архитектурная причина ограничений: Apple спроектировал render pipeline так, что пиксели никогда не передаются приложению в режиме реального времени. Каждый метод — one-shot snapshot. Reusable surface capture заблокирован sandbox'ом. Display framebuffer защищён на уровне ядра.
+
+---
+
+## Часть 7: Полезные ссылки и ресурсы
 
 - [CAPluginLayer & CABackdropLayer — Aditya Vaidyam](https://aditya.vaidyam.me/blog/2018/02/17/)
 - [The Secret Life of Core Animation — Aditya Vaidyam](https://medium.com/@avaidyam/the-secret-life-of-core-animation-e0966f942a71)
