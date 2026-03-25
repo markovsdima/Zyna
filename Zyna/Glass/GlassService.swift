@@ -26,7 +26,7 @@ final class GlassRegistration {
 
 /// Central coordinator for the glass effect system.
 /// Single-window architecture: renderers live in the main window.
-/// Capture via layer.render (hides renderers → render → shows them).
+/// Captures sourceView's layer tree only — glass UI is never in the capture path.
 ///
 /// Capture is driven by explicit triggers, not continuous:
 /// - `setNeedsCapture()` — one-shot (scroll, layout change, new message)

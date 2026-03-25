@@ -6,7 +6,7 @@
 import UIKit
 
 /// Glass navigation bar with 3 island shapes: back (circle), title (rounded rect), call (circle).
-/// Lives in the main window; interactive content rendered in overlay via GlassService.
+/// Lives in the main window; interactive content placed above glass renderer via GlassService.
 final class GlassNavBar: UIView {
 
     // MARK: - Public
@@ -67,7 +67,7 @@ final class GlassNavBar: UIView {
         }
         addSubview(anchor)
 
-        // Content (lives in overlay window)
+        // Content (placed above glass renderer in main window)
         contentView.backgroundColor = .clear
 
         backButton.setImage(
@@ -113,7 +113,7 @@ final class GlassNavBar: UIView {
         anchor.frame = bounds
     }
 
-    /// Called by GlassService when positioning content in overlay.
+    /// Called by GlassService when positioning content above renderer.
     /// Content frame is set to glassFrame by the service, so we layout relative to bounds.
     override func layoutSubviews() {
         super.layoutSubviews()

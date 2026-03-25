@@ -7,9 +7,8 @@ import UIKit
 
 /// A glass effect container with interactive content on top.
 ///
-/// Place in the main window like a normal UIView. The glass effect renders
-/// in the overlay window, and `contentView` is positioned on top of it
-/// (also in the overlay) for labels, buttons, text fields, etc.
+/// Place in the main window like a normal UIView. The glass renderer and
+/// `contentView` are positioned in the main window by GlassService.
 ///
 /// Usage:
 ///     let glass = GlassContainerView()
@@ -23,7 +22,7 @@ final class GlassContainerView: UIView {
     // MARK: - Public
 
     /// Add your interactive content here (labels, buttons, text fields).
-    /// Lives in the overlay window on top of the glass effect.
+    /// Positioned above the glass renderer in the main window.
     let contentView = UIView()
 
     var cornerRadius: CGFloat = 24 {
@@ -39,7 +38,7 @@ final class GlassContainerView: UIView {
     init() {
         super.init(frame: .zero)
         backgroundColor = .clear
-        isUserInteractionEnabled = false // touches go through to overlay
+        isUserInteractionEnabled = false // touches go through to content above
 
         anchor.cornerRadius = cornerRadius
         addSubview(anchor)

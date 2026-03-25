@@ -7,7 +7,7 @@ import UIKit
 import AsyncDisplayKit
 
 /// Glass input bar with 3 shapes: attach (circle), text field (rounded rect), mic (circle).
-/// Lives in the main window, content rendered in overlay via GlassService.
+/// Lives in the main window, content placed above glass renderer via GlassService.
 /// Tracks keyboard position and triggers glass capture on changes.
 final class GlassInputBar: UIView {
 
