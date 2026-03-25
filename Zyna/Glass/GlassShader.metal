@@ -531,36 +531,36 @@ fragment float4 glassFragment(
     // ── Liquid effects (splash state) ──
     float3 splashCol = idleCol;
     if (energy > 0.01) {
-        // 2D refraction — warp UV based on noise, not column scanning
+        // 2D refraction — warp UV based on noise
         float2 refrUV = uv;
-        float warpAmt = energy * (0.015 + depth * 0.025);
+        float warpAmt = energy * (0.03 + depth * 0.05);
         float2 noiseCoord = float2(uv.x * 8.0 + t * 0.5, uv.y * 6.0 - t * 0.3);
         refrUV.x += (vnoise(noiseCoord) - 0.5) * warpAmt;
         refrUV.y += (vnoise(noiseCoord + float2(100.0, 0.0)) - 0.5) * warpAmt;
         // Upward shift near surface — magnifying lens effect
-        refrUV.y -= (0.03 + depthSq * 0.04) * energy;
+        refrUV.y -= (0.05 + depthSq * 0.06) * energy;
         refrUV = clamp(refrUV, 0.0, 1.0);
 
         // Chromatic aberration
-        float spread = depthSq * energy * 0.025;
+        float spread = depthSq * energy * 0.04;
         float3 content;
         content.r = decodeHDR(clearTex.sample(samp, refrUV + float2( spread, 0)).rgb, u.isHDR).r;
         content.g = decodeHDR(clearTex.sample(samp, refrUV).rgb, u.isHDR).g;
         content.b = decodeHDR(clearTex.sample(samp, refrUV - float2( spread, 0)).rgb, u.isHDR).b;
 
         float3 blurContent = decodeHDR(blurTex.sample(samp, refrUV).rgb, u.isHDR);
-        content = mix(content, blurContent, saturate(depth * 1.5));
+        content = mix(content, blurContent, saturate(depth * 1.2));
 
         // Liquid body
-        float2 deepUV = float2(uv.x, min(uv.y + depth * 0.08, 1.0));
+        float2 deepUV = float2(uv.x, min(uv.y + depth * 0.1, 1.0));
         float3 deepSample = decodeHDR(blurTex.sample(samp, deepUV).rgb, u.isHDR);
         float deepLuma = dot(deepSample, float3(0.299, 0.587, 0.114));
-        float3 liqCol = mix(float3(deepLuma), deepSample, 1.2 + energy * 0.5);
+        float3 liqCol = mix(float3(deepLuma), deepSample, 1.3 + energy * 0.6);
         liqCol = clamp(liqCol, 0.0, 1.0);
-        liqCol *= (1.0 - depth * 0.35);
-        liqCol += float3(0.08) * causticBrightness(depth, uv, t, energy);
+        liqCol *= (1.0 - depth * 0.5);
+        liqCol += float3(0.12) * causticBrightness(depth, uv, t, energy);
 
-        float absorption = exp(-depth * 4.0);
+        float absorption = exp(-depth * 2.5);
         splashCol = mix(liqCol, content, absorption);
     }
 
@@ -586,12 +586,12 @@ fragment float4 glassFragment(
         float3 reflected = decodeHDR(clearTex.sample(samp, reflectUV).rgb, u.isHDR);
         float fresnel = pow(1.0 - saturate(surfDist * 60.0), 3.0);
 
-        col = mix(col, reflected, fresnel * 0.4 * energy);
-        col += float3(0.8, 0.8, 0.85) * specular * nearSurface * energy;
+        col = mix(col, reflected, fresnel * 0.6 * energy);
+        col += float3(0.9, 0.9, 0.95) * specular * nearSurface * energy;
 
         // Bright edge line at surface
-        float edgeLine = exp(-surfDist * 250.0);
-        col += float3(0.7, 0.7, 0.75) * edgeLine * 0.6 * energy;
+        float edgeLine = exp(-surfDist * 200.0);
+        col += float3(0.85, 0.85, 0.9) * edgeLine * 0.8 * energy;
     }
 
     // ── Alpha ──
@@ -615,9 +615,9 @@ fragment float4 glassFragment(
         col = mix(float3(luma), col, 1.5);
         col += float3(0.08) * thinness * nearSurface;
     } else {
-        float st = smoothstep(0.0, 0.2, surfDist);
-        float gradualFade = st * st * 0.97;
-        float sharpFade = smoothstep(0.0, 0.005, surfDist);
+        float st = smoothstep(0.0, 0.1, surfDist);
+        float gradualFade = st * 0.98;
+        float sharpFade = smoothstep(0.0, 0.003, surfDist);
         alpha = mix(gradualFade, sharpFade, energy);
     }
 
