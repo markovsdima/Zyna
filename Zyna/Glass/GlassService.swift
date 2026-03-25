@@ -31,7 +31,7 @@ final class GlassRegistration {
 /// Capture is driven by explicit triggers, not continuous:
 /// - `setNeedsCapture()` — one-shot (scroll, layout change, new message)
 /// - `GlassCaptureSource` — continuous while animating (Lottie, GIF)
-/// - Idle = 0% CPU (display link still ticks but skips capture+render)
+/// - Idle = ~0% CPU (display link stops, watchdog timer detects animations)
 final class GlassService {
 
     static let shared = GlassService()
@@ -256,10 +256,25 @@ final class GlassService {
             if anchorMoving {
                 waveEnergy = min(waveEnergy + dt * 5.0, 1.0)
                 waveTime += dt
+                #if DEBUG
+                if waveEnergy == dt * 5.0 { print("[glass] liquid pool ON — keyboard moving") }
+                #endif
             } else {
                 waveEnergy = max(waveEnergy - dt * 0.35, 0)
                 if waveEnergy > 0.001 {
                     waveTime += dt * waveEnergy
+                } else if waveEnergy <= 0.001 {
+                    // Waves fully decayed — shrink capture back to glass rect
+                    var didDisable = false
+                    for (_, reg) in registrations {
+                        if reg.anchor?.extendsCaptureToScreenBottom == true {
+                            reg.anchor?.extendsCaptureToScreenBottom = false
+                            didDisable = true
+                        }
+                    }
+                    #if DEBUG
+                    if didDisable { print("[glass] liquid pool OFF — waves decayed") }
+                    #endif
                 }
             }
         }
@@ -637,10 +652,12 @@ final class GlassService {
         let target = sourceView ?? window
         let targetLayer = target.layer.presentation() ?? target.layer
 
-        // Convert capture frame from window coords to source view's layer coords
+        // Convert capture frame from window coords to source view's layer coords.
+        // Use presentation layer for mid-animation accuracy (navigation gestures).
         let frameInTarget: CGRect
         if sourceView != nil {
-            frameInTarget = target.layer.convert(frame, from: window.layer)
+            let windowPresentation = window.layer.presentation() ?? window.layer
+            frameInTarget = targetLayer.convert(frame, from: windowPresentation)
         } else {
             frameInTarget = frame
         }

@@ -142,6 +142,9 @@ final class GlassInputBar: UIView {
         let safeBottom = superview.safeAreaInsets.bottom
         keyboardHeight = max(0, newKeyboardH - safeBottom)
 
+        // Enable liquid pool for keyboard animation splash
+        anchor.extendsCaptureToScreenBottom = true
+
         GlassService.shared.captureFor(duration: duration + 0.1)
 
         UIView.animate(
