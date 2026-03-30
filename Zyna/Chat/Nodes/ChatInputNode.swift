@@ -40,6 +40,7 @@ final class ChatInputNode: ASDisplayNode {
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
     var onAttachTapped: (() -> Void)?
     var onSizeChanged: (() -> Void)?
+    var onWaveformUpdate: (([Float]) -> Void)?
 
     override init() {
         super.init()
@@ -49,28 +50,29 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func setupNodes() {
-        separatorNode.style.height = ASDimension(unit: .points, value: 0.5)
-        separatorNode.backgroundColor = .separator
+        separatorNode.style.height = ASDimension(unit: .points, value: 0)
+        separatorNode.backgroundColor = .clear
 
         textInputNode.typingAttributes = [
-            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16)
+            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
+            NSAttributedString.Key.foregroundColor.rawValue: UIColor.white
         ]
         textInputNode.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
         textInputNode.style.flexGrow = 1
         textInputNode.style.flexShrink = 1
-        textInputNode.style.minHeight = ASDimension(unit: .points, value: 36)
+        textInputNode.style.minHeight = ASDimension(unit: .points, value: 48)
         textInputNode.style.maxHeight = ASDimension(unit: .points, value: 120)
         textInputNode.scrollEnabled = true
-        textInputNode.backgroundColor = .secondarySystemBackground
+        textInputNode.backgroundColor = .clear
 
-        attachButtonNode.setImage(AppIcon.attach.rendered(size: 22, color: .gray), for: .normal)
-        attachButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
+        attachButtonNode.setImage(AppIcon.attach.rendered(size: 24, color: .gray), for: .normal)
+        attachButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
 
-        sendButtonNode.setImage(AppIcon.send.rendered(size: 22, weight: .semibold, color: .systemBlue), for: .normal)
-        sendButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
+        sendButtonNode.setImage(AppIcon.send.rendered(size: 24, weight: .semibold, color: .systemBlue), for: .normal)
+        sendButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
 
-        micButtonNode.setImage(AppIcon.mic.rendered(size: 22, color: .gray), for: .normal)
-        micButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
+        micButtonNode.setImage(AppIcon.mic.rendered(size: 24, color: .gray), for: .normal)
+        micButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
 
         overlayNode.alpha = 0
         overlayNode.isUserInteractionEnabled = false
@@ -83,9 +85,9 @@ final class ChatInputNode: ASDisplayNode {
 
     override func didLoad() {
         super.didLoad()
-        backgroundColor = .systemBackground
+        backgroundColor = .clear
         textInputNode.delegate = self
-        textInputNode.view.layer.cornerRadius = 18
+        textInputNode.view.layer.cornerRadius = 24
         textInputNode.view.clipsToBounds = true
         sendButtonNode.addTarget(self, action: #selector(sendTapped), forControlEvents: .touchUpInside)
         attachButtonNode.addTarget(self, action: #selector(attachTapped), forControlEvents: .touchUpInside)
@@ -127,7 +129,7 @@ final class ChatInputNode: ASDisplayNode {
         )
 
         let paddedRow = ASInsetLayoutSpec(
-            insets: UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8),
+            insets: UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14),
             child: inputRow
         )
 
@@ -137,7 +139,7 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func recordingLayout(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        overlayNode.style.height = ASDimension(unit: .points, value: 48)
+        overlayNode.style.height = ASDimension(unit: .points, value: 60)
 
         let paddedOverlay = ASInsetLayoutSpec(
             insets: UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0),
@@ -150,7 +152,7 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func previewLayout(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        previewNode.style.height = ASDimension(unit: .points, value: 48)
+        previewNode.style.height = ASDimension(unit: .points, value: 60)
 
         let paddedPreview = ASInsetLayoutSpec(
             insets: UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0),
@@ -185,7 +187,9 @@ final class ChatInputNode: ASDisplayNode {
             break
         case .recording(let duration, let waveform):
             overlayNode.update(state: gestureState, duration: duration, waveform: waveform)
+            onWaveformUpdate?(waveform)
         case .finished(let fileURL, let duration, let waveform):
+            onWaveformUpdate?([])
             if gestureState == .locked {
                 showVoicePreview(VoicePreviewData(fileURL: fileURL, duration: duration, waveform: waveform))
             } else {
@@ -193,8 +197,10 @@ final class ChatInputNode: ASDisplayNode {
                 hideRecording()
             }
         case .cancelled:
+            onWaveformUpdate?([])
             hideRecording()
         case .error:
+            onWaveformUpdate?([])
             hideRecording()
         }
     }
