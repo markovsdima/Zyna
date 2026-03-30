@@ -222,6 +222,9 @@ final class GlassService {
         let inBurst = CACurrentMediaTime() < continuousCaptureUntil
         let hasActiveSources = hasActiveSourceUnderGlass()
         if anyAnimating || inBurst || needsCapture || hasActiveSources {
+            // Sustain: keep display link alive for at least 0.5s after detection.
+            // Avoids rapid start/stop cycles during interactive gestures.
+            continuousCaptureUntil = max(continuousCaptureUntil, CACurrentMediaTime() + 0.5)
             ensureRunning()
         }
     }
@@ -312,7 +315,7 @@ final class GlassService {
             if shouldCapture {
                 // ── Capture new frame ──
                 let windowBounds = sourceWindow.bounds
-                let sidePadding: CGFloat = 20
+                let sidePadding: CGFloat = 50
                 // Liquid mode: more top padding to capture cells approaching the surface
                 // Bars mode: extend upward to capture environment for chrome reflections
                 let anchorHasBars = anchor.hasBars

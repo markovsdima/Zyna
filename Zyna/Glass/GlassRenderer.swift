@@ -22,10 +22,13 @@ final class GlassRenderer: UIView {
 
     // MARK: - Init
 
+    /// ── Tuning ──
+    static let blurSigma: Float = 4.0      // MPS Gaussian blur radius (3=light, 6=default, 12=frosted)
+
     init() {
         let ctx = MetalContext.shared
         uniformsBuffer = ctx.device.makeBuffer(length: 512, options: [])!
-        gaussianBlur = MPSImageGaussianBlur(device: ctx.device, sigma: 6.0)
+        gaussianBlur = MPSImageGaussianBlur(device: ctx.device, sigma: Self.blurSigma)
         gaussianBlur.edgeMode = .clamp
         super.init(frame: .zero)
 
@@ -120,10 +123,11 @@ final class GlassRenderer: UIView {
             var aspect: Float
             var shape0: SIMD4<Float>
             var shape0cornerR: Float
+            var bezelWidth: Float
             var shape1: SIMD4<Float>
             var shape2: SIMD4<Float>
             var shapeCount: Float
-            var screenResY: Float
+            var glassThickness: Float
             var liquidTop: Float
             var liquidBottom: Float
             var hasLiquid: Float
@@ -137,7 +141,10 @@ final class GlassRenderer: UIView {
             var barActive: Float = 0
         }
 
-        let screenResY = Float(UIScreen.main.bounds.height * UIScreen.main.scale)
+        // Bevel & thickness in capture-frame UV (bounds = captureFrame)
+        let captureH = max(bounds.height, 1)
+        let bezelW = Float(12.0 / captureH)       // 12pt bevel zone
+        let glassThick = Float(40.0 / captureH)   // 40pt displacement strength
 
         var u = Uniforms(
             resolution: res,
@@ -145,10 +152,11 @@ final class GlassRenderer: UIView {
             aspect: aspect,
             shape0: shapes.shape0,
             shape0cornerR: shapes.shape0cornerR,
+            bezelWidth: bezelW,
             shape1: shapes.shape1,
             shape2: shapes.shape2,
             shapeCount: shapes.shapeCount,
-            screenResY: screenResY,
+            glassThickness: glassThick,
             liquidTop: liquidZone?.top ?? 0,
             liquidBottom: liquidZone?.bottom ?? 1,
             hasLiquid: liquidZone != nil ? 1.0 : 0.0,

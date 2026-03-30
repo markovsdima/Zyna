@@ -19,6 +19,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var batchFetchCancellable: AnyCancellable?
     private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
+    /// Flip to `true` to show Apple vs Custom glass comparison overlay.
+    private static let showGlassComparison = false
+    private lazy var glassComparison = GlassComparisonView()
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactedIds: [String] = []
@@ -75,6 +78,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassNavBar.sourceView = node.tableNode.view
         glassInputBar.sourceView = node.tableNode.view
 
+        if Self.showGlassComparison {
+            glassComparison.sourceView = node.tableNode.view
+            view.addSubview(glassComparison)
+        }
+
 
         // Pre-set inset
         let estimatedBarHeight: CGFloat = 49 + DeviceInsets.bottom
@@ -86,6 +94,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         super.viewDidLayoutSubviews()
 
         glassNavBar.updateLayout(in: view)
+        if Self.showGlassComparison { glassComparison.updateLayout(in: view) }
         node.tableNode.contentInset.bottom = glassNavBar.coveredHeight
 
         glassInputBar.updateLayout(in: view)
