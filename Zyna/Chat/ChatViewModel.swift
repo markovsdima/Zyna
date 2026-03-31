@@ -18,9 +18,6 @@ final class ChatViewModel {
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate) -> Void)?
 
-    /// Called after a jump to scroll the table to a specific message.
-    var onScrollToMessage: ((String) -> Void)?
-
     /// Called when messages become redacted (from any source). Passes message IDs.
     var onRedactedDetected: (([String]) -> Void)?
 
@@ -220,9 +217,6 @@ final class ChatViewModel {
 
     func jumpToMessage(eventId: String) {
         window.jumpTo(eventId: eventId)
-        DispatchQueue.main.async { [weak self] in
-            self?.onScrollToMessage?(eventId)
-        }
     }
 
     func jumpToLive() {
@@ -231,6 +225,10 @@ final class ChatViewModel {
 
     func jumpToOldest() {
         window.jumpToOldest()
+    }
+
+    func indexOfMessage(eventId: String) -> Int? {
+        messages.firstIndex { $0.eventId == eventId }
     }
 
     // MARK: - Reply

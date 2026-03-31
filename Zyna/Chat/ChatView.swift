@@ -28,6 +28,24 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactedIds: [String] = []
+    private var isTeleporting = false
+
+    private lazy var scrollToTopButton: UIButton = {
+        let btn = UIButton(type: .system)
+        let config = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        btn.setImage(UIImage(systemName: "arrow.down.to.line", withConfiguration: config), for: .normal)
+        btn.tintColor = .label
+        btn.backgroundColor = .systemBackground.withAlphaComponent(0.85)
+        btn.layer.cornerRadius = 18
+        btn.layer.shadowColor = UIColor.black.cgColor
+        btn.layer.shadowOpacity = 0.15
+        btn.layer.shadowRadius = 4
+        btn.layer.shadowOffset = CGSize(width: 0, height: 2)
+        btn.frame.size = CGSize(width: 36, height: 36)
+        btn.alpha = 0
+        btn.addTarget(self, action: #selector(scrollToTopTapped), for: .touchUpInside)
+        return btn
+    }()
     private var isPickerPresented = false
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
@@ -81,6 +99,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassNavBar.sourceView = node.tableNode.view
         glassInputBar.sourceView = node.tableNode.view
 
+        view.addSubview(scrollToTopButton)
+
         if Self.showGlassComparison {
             glassComparison.sourceView = node.tableNode.view
             view.addSubview(glassComparison)
@@ -108,6 +128,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             )
         }
         node.tableNode.contentInset.bottom = glassNavBar.coveredHeight
+
+        // Scroll-to-top button: right side, above input bar
+        scrollToTopButton.frame.origin = CGPoint(
+            x: view.bounds.width - scrollToTopButton.frame.width - 16,
+            y: glassInputBar.frame.minY - scrollToTopButton.frame.height - 12
+        )
 
         glassInputBar.updateLayout(in: view)
         node.tableNode.contentInset.top = glassInputBar.coveredHeight
@@ -164,17 +190,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.handleRedactedMessages(messageIds)
         }
 
-        viewModel.onScrollToMessage = { [weak self] eventId in
-            guard let self else { return }
-            if let idx = self.viewModel.messages.firstIndex(where: { $0.eventId == eventId }) {
-                self.node.tableNode.scrollToRow(
-                    at: IndexPath(row: idx, section: 0),
-                    at: .middle,
-                    animated: true
-                )
-            }
-        }
-
         viewModel.$replyingTo
             .receive(on: DispatchQueue.main)
             .sink { [weak self] message in
@@ -188,6 +203,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func applyTableUpdate(_ update: TableUpdate) {
+        if isTeleporting {
+            // During teleportation: silent reload, no animations
+            node.tableNode.reloadData()
+            return
+        }
         switch update {
         case .reload:
             node.tableNode.reloadData()
@@ -266,7 +286,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
 
             cellNode.onReplyHeaderTapped = { [weak self] eventId in
-                self?.viewModel.jumpToMessage(eventId: eventId)
+                self?.navigateToMessage(eventId: eventId)
             }
 
             return cellNode
@@ -376,11 +396,142 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         GlassService.shared.setNeedsCapture()
+        guard !isTeleporting else { return }
 
         // Load newer messages when scrolling toward bottom (inverted: small contentOffset.y)
         if !viewModel.isAtLiveEdge && scrollView.contentOffset.y < 200 {
             viewModel.loadNewerMessages()
         }
+
+        // Show scroll-to-top button when scrolled far from bottom (inverted: large contentOffset.y)
+        let scrolledFar = scrollView.contentOffset.y > scrollView.bounds.height * 1.5
+        let shouldShow = scrolledFar && viewModel.messages.count > 20
+        updateScrollToTopButton(visible: shouldShow)
+    }
+
+    private func updateScrollToTopButton(visible: Bool) {
+        let targetAlpha: CGFloat = visible ? 1 : 0
+        guard scrollToTopButton.alpha != targetAlpha else { return }
+        UIView.animate(withDuration: 0.25) {
+            self.scrollToTopButton.alpha = targetAlpha
+        }
+    }
+
+    @objc private func scrollToTopTapped() {
+        navigateToLive()
+        updateScrollToTopButton(visible: false)
+    }
+
+    // MARK: - Smart Navigation (Journey / Teleportation)
+
+    private func navigateToMessage(eventId: String) {
+        // If message is visible on screen — smooth scroll (journey)
+        if let idx = viewModel.indexOfMessage(eventId: eventId) {
+            let targetIP = IndexPath(row: idx, section: 0)
+            let visibleRect = node.tableNode.view.bounds
+            if let cell = node.tableNode.view.cellForRow(at: targetIP),
+               visibleRect.intersects(cell.frame) {
+                print("[nav] journey — already visible at idx=\(idx)")
+                node.tableNode.scrollToRow(at: targetIP, at: .middle, animated: true)
+                return
+            }
+        }
+        // Otherwise — teleport (Telegram-style snapshot slide)
+        // Inverted table: higher row = older. Jumping to older → content slides down, to newer → up.
+        let currentFirst = node.tableNode.view.indexPathsForVisibleRows?.first?.row ?? 0
+        let targetIdx = viewModel.indexOfMessage(eventId: eventId)
+        let direction: TeleportDirection = (targetIdx ?? Int.max) > currentFirst ? .up : .down
+
+        teleport(direction: direction) {
+            self.viewModel.jumpToMessage(eventId: eventId)
+        } scrollAfter: {
+            if let idx = self.viewModel.indexOfMessage(eventId: eventId) {
+                self.node.tableNode.scrollToRow(at: IndexPath(row: idx, section: 0), at: .middle, animated: false)
+            }
+        }
+    }
+
+    private func navigateToLive() {
+        if viewModel.isAtLiveEdge {
+            node.tableNode.scrollToRow(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
+            return
+        }
+        // Jumping to live (newest) → content slides up
+        teleport(direction: .down) {
+            self.viewModel.jumpToLive()
+        } scrollAfter: {
+            self.node.tableNode.contentOffset = CGPoint(x: 0, y: -self.node.tableNode.contentInset.top)
+        }
+    }
+
+    /// Snapshot-based teleportation (Telegram approach).
+    /// Direction: which way new content arrives FROM (visually).
+    /// `.up` = jumping to older messages: snapshot slides down, new content enters from top.
+    /// `.down` = jumping to newer messages: snapshot slides up, new content enters from bottom.
+    private func teleport(direction: TeleportDirection, swapData: () -> Void, scrollAfter: () -> Void) {
+        let tableView = node.tableNode.view
+        guard let snapshot = tableView.snapshotView(afterScreenUpdates: false) else {
+            swapData()
+            return
+        }
+
+        isTeleporting = true
+        // Inverted table: jump-to-older → content slides DOWN (camera pans up)
+        //                  jump-to-newer → content slides UP (camera pans down)
+        let sign: CGFloat = direction == .up ? 1 : -1
+
+        let slideHeight = view.bounds.height
+
+        // 1. Overlay snapshot in a container (clips to table bounds)
+        let snapshotContainer = UIView(frame: tableView.frame)
+        snapshotContainer.clipsToBounds = true
+        snapshot.frame = snapshotContainer.bounds
+        snapshotContainer.addSubview(snapshot)
+        view.insertSubview(snapshotContainer, aboveSubview: tableView)
+
+        // 2. Swap data under snapshot (invisible)
+        swapData()
+        node.tableNode.reloadData()
+        node.tableNode.view.layoutIfNeeded()
+        scrollAfter()
+
+        // 3. Animate with spring: snapshot exits one way, new content enters from the other
+        let tableLayer = tableView.layer
+        let originalPosition = tableLayer.position
+
+        // New content starts offset in the opposite direction from snapshot exit
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        tableLayer.position = CGPoint(x: originalPosition.x, y: originalPosition.y - sign * slideHeight)
+        CATransaction.commit()
+
+        let springTiming = CASpringAnimation(keyPath: "position.y")
+        springTiming.damping = 500
+        springTiming.stiffness = 1000
+        springTiming.mass = 3
+        springTiming.initialVelocity = 0
+        springTiming.duration = springTiming.settlingDuration
+
+        // Snapshot exits in `sign` direction
+        let snapshotAnim = springTiming.copy() as! CASpringAnimation
+        snapshotAnim.fromValue = snapshotContainer.layer.position.y
+        snapshotAnim.toValue = snapshotContainer.layer.position.y + sign * slideHeight
+        snapshotAnim.isRemovedOnCompletion = false
+        snapshotAnim.fillMode = .forwards
+        snapshotContainer.layer.add(snapshotAnim, forKey: "teleportOut")
+
+        // Table slides from offset to original position
+        let tableAnim = springTiming.copy() as! CASpringAnimation
+        tableAnim.fromValue = originalPosition.y - sign * slideHeight
+        tableAnim.toValue = originalPosition.y
+        tableAnim.isRemovedOnCompletion = false
+        tableAnim.fillMode = .forwards
+        tableLayer.position = originalPosition
+        tableAnim.delegate = TeleportAnimationDelegate { [weak self, weak snapshotContainer] in
+            snapshotContainer?.removeFromSuperview()
+            self?.isTeleporting = false
+        }
+        tableLayer.add(tableAnim, forKey: "teleportIn")
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -496,4 +647,19 @@ extension ChatViewController: PHPickerViewControllerDelegate {
             }
         }
     }
+}
+
+// MARK: - Teleport Direction
+
+private enum TeleportDirection {
+    case up    // jumping to older — snapshot exits down, new content enters from top
+    case down  // jumping to newer — snapshot exits up, new content enters from bottom
+}
+
+// MARK: - Teleport Animation Delegate
+
+private final class TeleportAnimationDelegate: NSObject, CAAnimationDelegate {
+    private let completion: () -> Void
+    init(_ completion: @escaping () -> Void) { self.completion = completion }
+    func animationDidStop(_ anim: CAAnimation, finished flag: Bool) { completion() }
 }
