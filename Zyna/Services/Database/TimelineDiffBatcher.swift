@@ -15,6 +15,7 @@ final class TimelineDiffBatcher {
     private let roomId: String
     private let dbQueue: DatabaseQueue
     private let log = ScopedLog(.database)
+    private let writeQueue = DispatchQueue(label: "com.zyna.db.write", qos: .userInitiated)
 
     // MARK: - Shadow array
 
@@ -31,6 +32,9 @@ final class TimelineDiffBatcher {
     private var pendingOps: [DiffOp] = []
     private var debounceWork: DispatchWorkItem?
     private static let debounceInterval: TimeInterval = 0.05
+
+    /// Called on main queue after each successful flush.
+    var onFlush: (() -> Void)?
 
     // MARK: - Init
 
@@ -86,31 +90,44 @@ final class TimelineDiffBatcher {
         pendingOps.removeAll()
         guard !ops.isEmpty else { return }
 
-        do {
-            try dbQueue.write { db in
-                for op in ops {
-                    switch op {
-                    case .upsert(let record):
-                        if let eventId = record.eventId {
-                            try StoredMessage
-                                .filter(Column("eventId") == eventId && Column("id") != record.id)
-                                .deleteAll(db)
+        let roomId = self.roomId
+        let dbQueue = self.dbQueue
+
+        writeQueue.async { [weak self] in
+            do {
+                try dbQueue.write { db in
+                    for op in ops {
+                        switch op {
+                        case .upsert(let record):
+                            if let eventId = record.eventId {
+                                try StoredMessage
+                                    .filter(Column("eventId") == eventId && Column("id") != record.id)
+                                    .deleteAll(db)
+                            }
+                            try record.save(db)
+                        case .delete(let id):
+                            _ = try StoredMessage.deleteOne(db, key: id)
                         }
-                        try record.save(db)
-                    case .delete(let id):
-                        _ = try StoredMessage.deleteOne(db, key: id)
                     }
                 }
-            }
 
-            let total = try dbQueue.read { db in
-                try StoredMessage.filter(Column("roomId") == self.roomId).fetchCount(db)
+                let total = try dbQueue.read { db in
+                    try StoredMessage.filter(Column("roomId") == roomId).fetchCount(db)
+                }
+
+                let upserts = ops.filter { if case .upsert = $0 { return true }; return false }.count
+                let deletes = ops.count - upserts
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.onFlush?()
+                    self.log("Flushed \(ops.count) ops (\(upserts)↑ \(deletes)↓) for room \(roomId) — \(total) stored")
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.log("Flush failed: \(error)")
+                }
             }
-            let upserts = ops.filter { if case .upsert = $0 { return true }; return false }.count
-            let deletes = ops.count - upserts
-            log("Flushed \(ops.count) ops (\(upserts)↑ \(deletes)↓) for room \(roomId) — \(total) stored")
-        } catch {
-            log("Flush failed: \(error)")
         }
     }
 

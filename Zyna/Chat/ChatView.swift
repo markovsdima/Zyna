@@ -321,7 +321,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
-        viewModel.loadOlderMessages()
+        // Try GRDB first (synchronous)
+        let loadedFromDB = viewModel.loadOlderFromDB()
+        if loadedFromDB {
+            context.completeBatchFetching(true)
+            return
+        }
+
+        // Fall back to SDK pagination (async)
+        viewModel.loadOlderFromServer()
 
         batchFetchCancellable = viewModel.$isPaginating
             .dropFirst()
@@ -338,6 +346,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         GlassService.shared.setNeedsCapture()
+
+        // Load newer messages when scrolling toward bottom (inverted: small contentOffset.y)
+        if !viewModel.isAtLiveEdge && scrollView.contentOffset.y < 200 {
+            viewModel.loadNewerMessages()
+        }
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {

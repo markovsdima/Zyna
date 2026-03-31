@@ -34,10 +34,13 @@ final class ChatViewModel {
 
     let timelineService: TimelineService
     private let diffBatcher: TimelineDiffBatcher
-    private let observer: RoomMessageObserver
+    private let window: MessageWindow
     private var hiddenIds = Set<String>()
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
+
+    /// Whether the window is at the live edge (newest messages visible).
+    var isAtLiveEdge: Bool { window.isAtLiveEdge }
 
     init(room: Room) {
         self.roomName = room.displayName() ?? "Chat"
@@ -46,7 +49,7 @@ final class ChatViewModel {
             roomId: room.id(),
             dbQueue: DatabaseService.shared.dbQueue
         )
-        self.observer = RoomMessageObserver(
+        self.window = MessageWindow(
             roomId: room.id(),
             dbQueue: DatabaseService.shared.dbQueue
         )
@@ -61,11 +64,19 @@ final class ChatViewModel {
             batcher.receive(diffs: diffs)
         }
 
-        // Read path: GRDB observation → UI
-        observer.onChange = { [weak self] newStored, prevStored in
+        // Bridge: batcher flush → window refresh
+        let win = window
+        diffBatcher.onFlush = { [weak win] in
+            win?.refresh()
+        }
+
+        // Read path: window changes → UI
+        window.onChange = { [weak self] newStored, prevStored in
             self?.handleObservationChange(newStored: newStored, prevStored: prevStored)
         }
-        observer.start()
+
+        // Initial load from GRDB cache
+        window.loadInitial()
 
         Task { [weak self] in
             await self?.timelineService.startListening()
@@ -87,7 +98,7 @@ final class ChatViewModel {
         }
     }
 
-    // MARK: - GRDB Observation
+    // MARK: - Window Change Handling
 
     private func handleObservationChange(newStored: [StoredMessage], prevStored: [StoredMessage]?) {
         // 1. Detect newly redacted messages
@@ -143,9 +154,9 @@ final class ChatViewModel {
             onTableUpdate?(tableUpdate)
         }
 
-        // 6. Auto-paginate
-        if newMessages.count < 20 && !isPaginating {
-            loadOlderMessages()
+        // 6. Auto-paginate if too few messages and GRDB + SDK both need more
+        if newMessages.count < 20 && !isPaginating && !window.hasOlderInDB {
+            loadOlderFromServer()
         }
     }
 
@@ -168,7 +179,6 @@ final class ChatViewModel {
             }
         }
 
-        // Content updates: messages present in both old and new where content changed
         let newById = Dictionary(new.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { _, last in last })
         var updates: [IndexPath] = []
         for (oldIdx, oldMsg) in old.enumerated() {
@@ -180,6 +190,40 @@ final class ChatViewModel {
 
         let animated = deletions.isEmpty && insertions.count == 1 && updates.isEmpty
         return .batch(deletions: deletions, insertions: insertions, updates: updates, animated: animated)
+    }
+
+    // MARK: - Pagination
+
+    /// Load older messages from GRDB. Returns true if data was available.
+    func loadOlderFromDB() -> Bool {
+        window.loadOlder()
+    }
+
+    /// Paginate from server when GRDB is exhausted.
+    func loadOlderFromServer() {
+        guard !isPaginating else { return }
+        Task {
+            await timelineService.paginateBackwards()
+        }
+    }
+
+    /// Load newer messages from GRDB (when scrolling back down after jump).
+    func loadNewerMessages() {
+        window.loadNewer()
+    }
+
+    // MARK: - Jump
+
+    func jumpToMessage(eventId: String) {
+        window.jumpTo(eventId: eventId)
+    }
+
+    func jumpToLive() {
+        window.jumpToLive()
+    }
+
+    func jumpToOldest() {
+        window.jumpToOldest()
     }
 
     // MARK: - Actions
@@ -241,17 +285,10 @@ final class ChatViewModel {
         ))
     }
 
-    func loadOlderMessages() {
-        guard !isPaginating else { return }
-        Task {
-            await timelineService.paginateBackwards()
-        }
-    }
-
     func cleanup() {
         PresenceTracker.shared.unregister(for: "chat")
         timelineService.onDiffs = nil
-        observer.stop()
+        diffBatcher.onFlush = nil
         timelineService.stopListening()
     }
 
