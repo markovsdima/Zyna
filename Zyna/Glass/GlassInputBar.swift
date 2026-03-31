@@ -322,9 +322,10 @@ final class GlassInputBar: UIView {
     private func observeInputSize() {
         inputNode.onSizeChanged = { [weak self] in
             guard let self, let superview = self.superview else { return }
-            GlassService.shared.setNeedsCapture()
             self.updateLayout(in: superview)
             superview.setNeedsLayout()
+            // Sustain capture while layout settles (reply show/hide, text grow/shrink)
+            GlassService.shared.captureFor(duration: 0.5)
         }
     }
 

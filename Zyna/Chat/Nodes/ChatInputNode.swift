@@ -45,6 +45,7 @@ final class ChatInputNode: ASDisplayNode {
 
     // MARK: - Reply Preview
 
+    private let replyBackgroundNode = ASDisplayNode()
     private let replyBarNode = ASDisplayNode()
     private let replyNameNode = ASTextNode()
     private let replyBodyNode = ASTextNode()
@@ -100,6 +101,10 @@ final class ChatInputNode: ASDisplayNode {
     private func setupNodes() {
         separatorNode.style.height = ASDimension(unit: .points, value: 0)
         separatorNode.backgroundColor = .clear
+
+        replyBackgroundNode.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+        replyBackgroundNode.cornerRadius = 20
+        replyBackgroundNode.clipsToBounds = true
 
         replyBarNode.backgroundColor = .systemBlue
         replyBarNode.cornerRadius = 1
@@ -184,17 +189,8 @@ final class ChatInputNode: ASDisplayNode {
             children: [rightButton]
         )
 
-        let inputRow = ASStackLayoutSpec(
-            direction: .horizontal, spacing: 8, justifyContent: .start, alignItems: .end,
-            children: [attachSpec, textInputNode, rightSpec]
-        )
-
-        let paddedRow = ASInsetLayoutSpec(
-            insets: UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14),
-            child: inputRow
-        )
-
-        let fullStack = ASStackLayoutSpec.vertical()
+        // Reply preview: inside the text input area with dark background
+        var inputChild: ASLayoutElement = textInputNode
         if isShowingReply {
             let textColumn = ASStackLayoutSpec(
                 direction: .vertical, spacing: 1, justifyContent: .start, alignItems: .start,
@@ -207,13 +203,36 @@ final class ChatInputNode: ASDisplayNode {
                 children: [replyBarNode, textColumn, replyCancelNode]
             )
             let replyInset = ASInsetLayoutSpec(
-                insets: UIEdgeInsets(top: 8, left: 14, bottom: 4, right: 14),
+                insets: UIEdgeInsets(top: 8, left: 12, bottom: 4, right: 8),
                 child: replyRow
             )
-            fullStack.children = [separatorNode, replyInset, paddedRow]
-        } else {
-            fullStack.children = [separatorNode, paddedRow]
+            let replyWithBg = ASBackgroundLayoutSpec(child: replyInset, background: replyBackgroundNode)
+            let replyPadded = ASInsetLayoutSpec(
+                insets: UIEdgeInsets(top: 4, left: 4, bottom: 0, right: 4),
+                child: replyWithBg
+            )
+
+            let inputColumn = ASStackLayoutSpec(
+                direction: .vertical, spacing: 0, justifyContent: .start, alignItems: .stretch,
+                children: [replyPadded, textInputNode]
+            )
+            inputColumn.style.flexGrow = 1
+            inputColumn.style.flexShrink = 1
+            inputChild = inputColumn
         }
+
+        let inputRow = ASStackLayoutSpec(
+            direction: .horizontal, spacing: 8, justifyContent: .start, alignItems: .end,
+            children: [attachSpec, inputChild, rightSpec]
+        )
+
+        let paddedRow = ASInsetLayoutSpec(
+            insets: UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14),
+            child: inputRow
+        )
+
+        let fullStack = ASStackLayoutSpec.vertical()
+        fullStack.children = [separatorNode, paddedRow]
         return fullStack
     }
 
