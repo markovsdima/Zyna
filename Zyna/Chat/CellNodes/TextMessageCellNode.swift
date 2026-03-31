@@ -4,6 +4,7 @@
 //
 
 import AsyncDisplayKit
+import CoreText
 
 final class TextMessageCellNode: MessageCellNode {
 
@@ -14,6 +15,7 @@ final class TextMessageCellNode: MessageCellNode {
     // MARK: - Constants
 
     private static let bubbleInsets = UIEdgeInsets(top: 7, left: 12, bottom: 7, right: 12)
+    private static let timeSpacing: CGFloat = 6
 
     // MARK: - Init
 
@@ -46,43 +48,126 @@ final class TextMessageCellNode: MessageCellNode {
                 .foregroundColor: isOutgoing ? UIColor.white : UIColor.label
             ]
         )
-        textNode.style.maxWidth = ASDimension(
-            unit: .points,
-            value: ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio - Self.bubbleInsets.left - Self.bubbleInsets.right - 50
-        )
+
+        let maxContentWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
+            - Self.bubbleInsets.left - Self.bubbleInsets.right
+        textNode.style.maxWidth = ASDimension(unit: .points, value: maxContentWidth)
 
         // Bubble layout
         bubbleNode.layoutSpecBlock = { [weak self] _, _ in
-            guard let self else { return ASLayoutSpec() }
-            let timeSpec = ASStackLayoutSpec(
-                direction: .vertical,
-                spacing: 0,
-                justifyContent: .end,
-                alignItems: .end,
-                children: [self.timeNode]
-            )
-            let textTimeRow = ASStackLayoutSpec(
-                direction: .horizontal,
-                spacing: 6,
-                justifyContent: .start,
-                alignItems: .end,
-                children: [self.textNode, timeSpec]
-            )
+            guard let self,
+                  let attributedText = self.textNode.attributedText,
+                  let timeText = self.timeNode.attributedText
+            else { return ASLayoutSpec() }
 
-            let content: ASLayoutElement
-            if let replyHeader = self.replyHeaderNode {
-                content = ASStackLayoutSpec(
+            let metrics = Self.textMetrics(for: attributedText, maxWidth: maxContentWidth)
+            let timeSize = Self.singleLineSize(for: timeText)
+
+            let fitsInline = metrics.trailingLineWidth + Self.timeSpacing + timeSize.width
+                <= maxContentWidth
+
+            // Build text element — add height placeholder when time goes below
+            let textElement: ASLayoutElement
+            if fitsInline {
+                textElement = self.textNode
+            } else {
+                let timePlaceholder = ASLayoutSpec()
+                timePlaceholder.style.preferredSize = CGSize(
+                    width: timeSize.width, height: timeSize.height + 2
+                )
+                let placeholderRow = ASStackLayoutSpec.horizontal()
+                placeholderRow.justifyContent = .end
+                placeholderRow.children = [timePlaceholder]
+
+                textElement = ASStackLayoutSpec(
                     direction: .vertical,
                     spacing: 0,
                     justifyContent: .start,
                     alignItems: .stretch,
-                    children: [replyHeader, textTimeRow]
+                    children: [self.textNode, placeholderRow]
                 )
-            } else {
-                content = textTimeRow
             }
 
-            return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: content)
+            // Add reply header if present
+            let mainContent: ASLayoutElement
+            if let replyHeader = self.replyHeaderNode {
+                mainContent = ASStackLayoutSpec(
+                    direction: .vertical,
+                    spacing: 0,
+                    justifyContent: .start,
+                    alignItems: .stretch,
+                    children: [replyHeader, textElement]
+                )
+            } else {
+                mainContent = textElement
+            }
+
+            // Ensure minimum width so time doesn't overflow
+            let minWidth = fitsInline
+                ? metrics.trailingLineWidth + Self.timeSpacing + timeSize.width
+                : timeSize.width
+            mainContent.style.minWidth = ASDimension(unit: .points, value: minWidth)
+
+            // Overlay time at bottom-right of entire content
+            let timeCorner = ASRelativeLayoutSpec(
+                horizontalPosition: .end,
+                verticalPosition: .end,
+                sizingOption: [],
+                child: self.timeNode
+            )
+            let result = ASOverlayLayoutSpec(child: mainContent, overlay: timeCorner)
+
+            return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: result)
         }
+    }
+
+    // MARK: - CoreText Measurement
+
+    private struct TextMetrics {
+        let size: CGSize
+        let trailingLineWidth: CGFloat
+    }
+
+    private static func textMetrics(
+        for attributedText: NSAttributedString,
+        maxWidth: CGFloat
+    ) -> TextMetrics {
+        let framesetter = CTFramesetterCreateWithAttributedString(attributedText)
+
+        let suggestedSize = CTFramesetterSuggestFrameSizeWithConstraints(
+            framesetter,
+            CFRange(location: 0, length: attributedText.length),
+            nil,
+            CGSize(width: maxWidth, height: .greatestFiniteMagnitude),
+            nil
+        )
+
+        let path = CGMutablePath()
+        path.addRect(CGRect(x: 0, y: 0, width: maxWidth, height: 100_000))
+        let frame = CTFramesetterCreateFrame(
+            framesetter, CFRange(location: 0, length: attributedText.length), path, nil
+        )
+
+        var trailingWidth: CGFloat = 0
+        if let lines = CTFrameGetLines(frame) as? [CTLine], let lastLine = lines.last {
+            trailingWidth = CGFloat(CTLineGetTypographicBounds(lastLine, nil, nil, nil))
+        }
+
+        return TextMetrics(
+            size: CGSize(width: ceil(suggestedSize.width), height: ceil(suggestedSize.height)),
+            trailingLineWidth: ceil(trailingWidth)
+        )
+    }
+
+    private static func singleLineSize(for attributedText: NSAttributedString) -> CGSize {
+        let framesetter = CTFramesetterCreateWithAttributedString(attributedText)
+        let size = CTFramesetterSuggestFrameSizeWithConstraints(
+            framesetter,
+            CFRange(location: 0, length: attributedText.length),
+            nil,
+            CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude),
+            nil
+        )
+        return CGSize(width: ceil(size.width), height: ceil(size.height))
     }
 }
