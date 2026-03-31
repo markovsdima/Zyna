@@ -68,6 +68,9 @@ final class GlassRenderer: UIView {
         var shape1: SIMD4<Float> = .zero
         /// Shape 2: circle (centerX, centerY, radius, 0) in normalized capture coords
         var shape2: SIMD4<Float> = .zero
+        /// Shape 3: scroll button circle (centerX, centerY, radius, 0) — metaball with shape2
+        var shape3: SIMD4<Float> = .zero
+        var scrollButtonVisible: Float = 0
         var shapeCount: Float = 1
     }
 
@@ -126,6 +129,8 @@ final class GlassRenderer: UIView {
             var bezelWidth: Float
             var shape1: SIMD4<Float>
             var shape2: SIMD4<Float>
+            var shape3: SIMD4<Float>
+            var scrollButtonVisible: Float
             var shapeCount: Float
             var glassThickness: Float
             var liquidTop: Float
@@ -159,6 +164,8 @@ final class GlassRenderer: UIView {
             bezelWidth: bezelW,
             shape1: shapes.shape1,
             shape2: shapes.shape2,
+            shape3: shapes.shape3,
+            scrollButtonVisible: shapes.scrollButtonVisible,
             shapeCount: shapes.shapeCount,
             glassThickness: glassThick,
             liquidTop: liquidZone?.top ?? 0,

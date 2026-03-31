@@ -310,7 +310,7 @@ final class GlassService {
             let wantsLiquid = anchor.extendsCaptureToScreenBottom
 
             // Skip if nothing to do
-            guard shouldCapture || (shouldRender && (wantsLiquid || anchor.hasBars)) else { continue }
+            guard shouldCapture || (shouldRender && (wantsLiquid || anchor.hasBars || anchor.hasScrollButton)) else { continue }
 
             if shouldCapture {
                 // ── Capture new frame ──
@@ -319,7 +319,8 @@ final class GlassService {
                 // Liquid mode: more top padding to capture cells approaching the surface
                 // Bars mode: extend upward to capture environment for chrome reflections
                 let anchorHasBars = anchor.hasBars
-                let topPadding: CGFloat = wantsLiquid ? 80 : (anchorHasBars ? 100 : 20)
+                let anchorHasScrollButton = anchor.hasScrollButton
+                let topPadding: CGFloat = wantsLiquid ? 80 : ((anchorHasBars || anchorHasScrollButton) ? 100 : 20)
                 let captureY = max(glassFrame.origin.y - topPadding, 0)
                 let captureFrame: CGRect
                 if wantsLiquid {
@@ -351,6 +352,7 @@ final class GlassService {
 
                 reg.renderer.frame = captureFrame
                 reg.renderer.contentScaleFactor = scale
+                reg.renderer.layoutIfNeeded()  // sync drawableSize before render
                 reg.contentView?.frame = glassFrame
 
                 let shapes: GlassRenderer.ShapeParams

@@ -29,23 +29,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactedIds: [String] = []
     private var isTeleporting = false
-
-    private lazy var scrollToTopButton: UIButton = {
-        let btn = UIButton(type: .system)
-        let config = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-        btn.setImage(UIImage(systemName: "arrow.down.to.line", withConfiguration: config), for: .normal)
-        btn.tintColor = .label
-        btn.backgroundColor = .systemBackground.withAlphaComponent(0.85)
-        btn.layer.cornerRadius = 18
-        btn.layer.shadowColor = UIColor.black.cgColor
-        btn.layer.shadowOpacity = 0.15
-        btn.layer.shadowRadius = 4
-        btn.layer.shadowOffset = CGSize(width: 0, height: 2)
-        btn.frame.size = CGSize(width: 36, height: 36)
-        btn.alpha = 0
-        btn.addTarget(self, action: #selector(scrollToTopTapped), for: .touchUpInside)
-        return btn
-    }()
     private var isPickerPresented = false
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
@@ -99,8 +82,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassNavBar.sourceView = node.tableNode.view
         glassInputBar.sourceView = node.tableNode.view
 
-        view.addSubview(scrollToTopButton)
-
         if Self.showGlassComparison {
             glassComparison.sourceView = node.tableNode.view
             view.addSubview(glassComparison)
@@ -129,12 +110,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
         node.tableNode.contentInset.bottom = glassNavBar.coveredHeight
 
-        // Scroll-to-top button: right side, above input bar
-        scrollToTopButton.frame.origin = CGPoint(
-            x: view.bounds.width - scrollToTopButton.frame.width - 16,
-            y: glassInputBar.frame.minY - scrollToTopButton.frame.height - 12
-        )
-
         glassInputBar.updateLayout(in: view)
         node.tableNode.contentInset.top = glassInputBar.coveredHeight
         node.tableNode.view.verticalScrollIndicatorInsets.top = glassInputBar.coveredHeight
@@ -142,11 +117,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        // TEST: portal + mesh transform refraction (zero-capture)
-        // if let w = view.window { MeshPortalTest.install(in: view, sourceWindow: w) }
-
-        // TEST: 3D ray-traced glass
-        // if let w = view.window { Glass3DTest.install(in: view, sourceWindow: w) }
+        // Force glass recapture after navigation push completes
+        GlassService.shared.setNeedsCapture()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -237,6 +209,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         glassInputBar.inputNode.onReplyCancelled = { [weak self] in
             self?.viewModel.setReplyTarget(nil)
+        }
+
+        glassInputBar.onScrollToLive = { [weak self] in
+            self?.navigateToLive()
+            self?.glassInputBar.scrollButtonVisible = false
         }
     }
 
@@ -403,23 +380,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             viewModel.loadNewerMessages()
         }
 
-        // Show scroll-to-top button when scrolled far from bottom (inverted: large contentOffset.y)
+        // Show scroll-to-live button when scrolled far from bottom (inverted: large contentOffset.y)
         let scrolledFar = scrollView.contentOffset.y > scrollView.bounds.height * 1.5
         let shouldShow = scrolledFar && viewModel.messages.count > 20
-        updateScrollToTopButton(visible: shouldShow)
-    }
-
-    private func updateScrollToTopButton(visible: Bool) {
-        let targetAlpha: CGFloat = visible ? 1 : 0
-        guard scrollToTopButton.alpha != targetAlpha else { return }
-        UIView.animate(withDuration: 0.25) {
-            self.scrollToTopButton.alpha = targetAlpha
-        }
-    }
-
-    @objc private func scrollToTopTapped() {
-        navigateToLive()
-        updateScrollToTopButton(visible: false)
+        glassInputBar.scrollButtonVisible = shouldShow
     }
 
     // MARK: - Smart Navigation (Journey / Teleportation)
