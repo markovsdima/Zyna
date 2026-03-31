@@ -32,6 +32,11 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
 
     var onReactionTapped: ((String) -> Void)?
 
+    // MARK: - Reply
+
+    var onReplyHeaderTapped: ((String) -> Void)?
+    private(set) var replyHeaderNode: ReplyHeaderNode?
+
     // MARK: - Subnodes
 
     let bubbleNode = ASDisplayNode()
@@ -87,6 +92,22 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
                     .foregroundColor: MessageCellHelpers.senderColors[colorIndex]
                 ]
             )
+        }
+
+        // Reply header
+        if let replyInfo = message.replyInfo {
+            let rh = ReplyHeaderNode(replyInfo: replyInfo, isOutgoing: isOutgoing)
+            self.replyHeaderNode = rh
+
+            // Handle quick taps on reply header via ContextSourceNode
+            contextSourceNode.onQuickTap = { [weak self] point in
+                guard let self, self.isNodeLoaded,
+                      let replyView = self.replyHeaderNode?.view else { return }
+                let replyPoint = self.contextSourceNode.view.convert(point, to: replyView)
+                if replyView.bounds.contains(replyPoint) {
+                    self.onReplyHeaderTapped?(replyInfo.eventId)
+                }
+            }
         }
 
         // Reactions

@@ -13,9 +13,13 @@ final class ChatViewModel {
 
     private(set) var messages: [ChatMessage] = []
     @Published private(set) var isPaginating: Bool = false
+    @Published private(set) var replyingTo: ChatMessage?
 
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate) -> Void)?
+
+    /// Called after a jump to scroll the table to a specific message.
+    var onScrollToMessage: ((String) -> Void)?
 
     /// Called when messages become redacted (from any source). Passes message IDs.
     var onRedactedDetected: (([String]) -> Void)?
@@ -216,6 +220,9 @@ final class ChatViewModel {
 
     func jumpToMessage(eventId: String) {
         window.jumpTo(eventId: eventId)
+        DispatchQueue.main.async { [weak self] in
+            self?.onScrollToMessage?(eventId)
+        }
     }
 
     func jumpToLive() {
@@ -226,11 +233,20 @@ final class ChatViewModel {
         window.jumpToOldest()
     }
 
+    // MARK: - Reply
+
+    func setReplyTarget(_ message: ChatMessage?) {
+        replyingTo = message
+    }
+
     // MARK: - Actions
 
     func sendMessage(_ text: String) {
-        Task {
-            await timelineService.sendMessage(text)
+        if let replyTarget = replyingTo, let eventId = replyTarget.eventId {
+            replyingTo = nil
+            Task { await timelineService.sendReply(text, to: eventId) }
+        } else {
+            Task { await timelineService.sendMessage(text) }
         }
     }
 

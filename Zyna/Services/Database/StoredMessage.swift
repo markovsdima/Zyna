@@ -28,6 +28,10 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var contentVoiceWaveform: Data?
     var reactionsJSON: String
     var sendStatus: String
+    var replyEventId: String?
+    var replySenderId: String?
+    var replySenderName: String?
+    var replyBody: String?
 }
 
 // MARK: - ChatMessage → StoredMessage
@@ -84,6 +88,13 @@ extension StoredMessage {
         case .redacted:
             contentType = "redacted"
         }
+
+        if let reply = msg.replyInfo {
+            self.replyEventId = reply.eventId
+            self.replySenderId = reply.senderId
+            self.replySenderName = reply.senderDisplayName
+            self.replyBody = reply.body
+        }
     }
 }
 
@@ -103,6 +114,18 @@ extension StoredMessage {
             itemIdentifier = nil
         }
 
+        let replyInfo: ReplyInfo?
+        if let replyEventId, let replySenderId {
+            replyInfo = ReplyInfo(
+                eventId: replyEventId,
+                senderId: replySenderId,
+                senderDisplayName: replySenderName,
+                body: replyBody ?? ""
+            )
+        } else {
+            replyInfo = nil
+        }
+
         return ChatMessage(
             id: id,
             eventId: eventId,
@@ -112,7 +135,8 @@ extension StoredMessage {
             isOutgoing: isOutgoing,
             timestamp: Date(timeIntervalSince1970: timestamp),
             content: content,
-            reactions: Self.decodeReactions(reactionsJSON)
+            reactions: Self.decodeReactions(reactionsJSON),
+            replyInfo: replyInfo
         )
     }
 

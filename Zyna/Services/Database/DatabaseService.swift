@@ -91,6 +91,15 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v3_replyColumns") { db in
+            try db.alter(table: "storedMessage") { t in
+                t.add(column: "replyEventId", .text)
+                t.add(column: "replySenderId", .text)
+                t.add(column: "replySenderName", .text)
+                t.add(column: "replyBody", .text)
+            }
+        }
+
         return migrator
     }
 }

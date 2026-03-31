@@ -163,6 +163,28 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.onRedactedDetected = { [weak self] messageIds in
             self?.handleRedactedMessages(messageIds)
         }
+
+        viewModel.onScrollToMessage = { [weak self] eventId in
+            guard let self else { return }
+            if let idx = self.viewModel.messages.firstIndex(where: { $0.eventId == eventId }) {
+                self.node.tableNode.scrollToRow(
+                    at: IndexPath(row: idx, section: 0),
+                    at: .middle,
+                    animated: true
+                )
+            }
+        }
+
+        viewModel.$replyingTo
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] message in
+                guard let self else { return }
+                self.glassInputBar.inputNode.setReplyPreview(
+                    senderName: message?.senderDisplayName ?? message?.senderId,
+                    body: message?.content.textPreview
+                )
+            }
+            .store(in: &cancellables)
     }
 
     private func applyTableUpdate(_ update: TableUpdate) {
@@ -191,6 +213,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         glassInputBar.inputNode.onAttachTapped = { [weak self] in
             self?.presentPhotoPicker()
+        }
+
+        glassInputBar.inputNode.onReplyCancelled = { [weak self] in
+            self?.viewModel.setReplyTarget(nil)
         }
     }
 
@@ -239,6 +265,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self?.viewModel.toggleReaction(key, for: message)
             }
 
+            cellNode.onReplyHeaderTapped = { [weak self] eventId in
+                self?.viewModel.jumpToMessage(eventId: eventId)
+            }
+
             return cellNode
         }
     }
@@ -253,7 +283,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             ContextMenuAction(
                 title: "Reply",
                 image: UIImage(systemName: "arrowshape.turn.up.left"),
-                handler: { print("[context-menu] Reply tapped: \(message.id)") }
+                handler: { [weak self] in self?.viewModel.setReplyTarget(message) }
             )
         ]
 

@@ -10,6 +10,9 @@ final class ContextSourceNode: ASDisplayNode {
     var activated: ((CGPoint) -> Void)?
     var shouldBegin: ((CGPoint) -> Bool)?
 
+    /// Called with the location (in self coordinates) when a quick tap ends before activation.
+    var onQuickTap: ((CGPoint) -> Void)?
+
     /// Called with screen-space point while finger drags after activation.
     var onDragChanged: ((CGPoint) -> Void)?
     /// Called with screen-space point when finger lifts after activation.
@@ -100,7 +103,11 @@ final class ContextSourceNode: ASDisplayNode {
                 let screenPoint = gesture.location(in: nil)
                 onDragEnded?(screenPoint)
             } else {
+                let wasQuickTap = shrinkAnimator == nil && activationTimer != nil
                 cancelShrink()
+                if wasQuickTap && gesture.state == .ended {
+                    onQuickTap?(location)
+                }
             }
             didActivate = false
 

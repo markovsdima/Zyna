@@ -68,7 +68,21 @@ final class TextMessageCellNode: MessageCellNode {
                 alignItems: .end,
                 children: [self.textNode, timeSpec]
             )
-            return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: textTimeRow)
+
+            let content: ASLayoutElement
+            if let replyHeader = self.replyHeaderNode {
+                content = ASStackLayoutSpec(
+                    direction: .vertical,
+                    spacing: 0,
+                    justifyContent: .start,
+                    alignItems: .stretch,
+                    children: [replyHeader, textTimeRow]
+                )
+            } else {
+                content = textTimeRow
+            }
+
+            return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: content)
         }
     }
 }
