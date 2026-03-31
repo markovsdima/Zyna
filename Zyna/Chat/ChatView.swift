@@ -532,6 +532,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.isTeleporting = false
         }
         tableLayer.add(tableAnim, forKey: "teleportIn")
+
+        // Sustain glass capture for the full spring animation
+        GlassService.shared.captureFor(duration: springTiming.settlingDuration)
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
