@@ -71,6 +71,26 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v2_storedRoom") { db in
+            try db.create(table: "storedRoom") { t in
+                t.primaryKey("id", .text)
+                t.column("displayName", .text).notNull()
+                t.column("avatarURL", .text)
+                t.column("lastMessage", .text)
+                t.column("lastMessageTimestamp", .double)
+                t.column("unreadCount", .integer).notNull().defaults(to: 0)
+                t.column("isEncrypted", .boolean).notNull().defaults(to: false)
+                t.column("directUserId", .text)
+                t.column("sortOrder", .integer).notNull()
+            }
+
+            try db.create(
+                index: "idx_storedRoom_sortOrder",
+                on: "storedRoom",
+                columns: ["sortOrder"]
+            )
+        }
+
         return migrator
     }
 }

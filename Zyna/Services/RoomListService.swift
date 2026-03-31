@@ -6,6 +6,7 @@
 import Foundation
 import Combine
 import MatrixRustSDK
+import GRDB
 
 // MARK: - Room Summary (UI-friendly model)
 
@@ -43,9 +44,23 @@ final class ZynaRoomListService: NSObject {
     }
     private var cancellables = Set<AnyCancellable>()
 
+    private static let writeQueue = DispatchQueue(label: "com.zyna.db.rooms", qos: .userInitiated)
+
     override init() {
         super.init()
+        loadCachedRooms()
         observeClientState()
+    }
+
+    private func loadCachedRooms() {
+        let dbQueue = DatabaseService.shared.dbQueue
+        guard let stored = try? dbQueue.read({ db in
+            try StoredRoom.order(Column("sortOrder").asc).fetchAll(db)
+        }), !stored.isEmpty else { return }
+
+        let summaries = stored.map { $0.toRoomSummary() }
+        roomsSubject.send(summaries)
+        logRooms("Loaded \(summaries.count) cached rooms from GRDB")
     }
 
     private func observeClientState() {
@@ -150,6 +165,8 @@ final class ZynaRoomListService: NSObject {
                 ))
             }
 
+            Self.writeRoomsToGRDB(summaries)
+
             await MainActor.run { [weak self] in
                 self?.roomsSubject.send(summaries)
             }
@@ -187,6 +204,25 @@ final class ZynaRoomListService: NSObject {
             rooms = Array(rooms.prefix(Int(length)))
         case .clear:
             rooms = []
+        }
+    }
+
+    // MARK: - GRDB Persistence
+
+    private static func writeRoomsToGRDB(_ summaries: [RoomSummary]) {
+        let dbQueue = DatabaseService.shared.dbQueue
+        writeQueue.async {
+            do {
+                try dbQueue.write { db in
+                    try StoredRoom.deleteAll(db)
+                    for (index, summary) in summaries.enumerated() {
+                        try StoredRoom(from: summary, sortOrder: index).insert(db)
+                    }
+                }
+                logRooms("Persisted \(summaries.count) rooms to GRDB")
+            } catch {
+                logRooms("Failed to persist rooms: \(error)")
+            }
         }
     }
 
