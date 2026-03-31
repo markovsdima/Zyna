@@ -16,7 +16,7 @@ final class TimelineService {
     let isPaginatingSubject = CurrentValueSubject<Bool, Never>(false)
     let rawTimelineItemsSubject = PassthroughSubject<[TimelineItem], Never>()
 
-    /// Raw SDK diffs forwarded to the coalescer.
+    /// Raw SDK diffs forwarded to the diff batcher.
     var onDiffs: (([TimelineDiff]) -> Void)?
 
     private let room: Room
@@ -83,7 +83,7 @@ final class TimelineService {
             rawTimelineItemsSubject.send(allItems)
         }
 
-        // Forward raw diffs to the coalescer
+        // Forward raw diffs to the batcher
         onDiffs?(diffs)
 
         logTimeline("Timeline diffs forwarded: \(diffs.count) diffs")
