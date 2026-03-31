@@ -10,6 +10,13 @@
 #include "LiquidHelpers.h"
 using namespace metal;
 
+// GLASS PARAMS
+// bevel 36
+// thick 55
+// IOR 1.5
+// squN 6
+// scale 1.1
+
 // ─── Types ───────────────────────────────────────────────────────────
 
 struct VertexOut {
@@ -42,14 +49,11 @@ struct GlassUniforms {
     float  barCount;
     float4 barZone;
     float  barActive;
+    // Tunable refraction parameters (set from CPU)
+    float  ior;             // index of refraction (1.5=glass, 3-4=crystal)
+    float  squircleN;       // profile exponent (2=hemisphere, 3=steep)
+    float  refractScale;    // displacement multiplier
 };
-
-// ─── Glass refraction constants ─────────────────────────────────────
-
-constant float SQUIRCLE_N       = 2.5;   // profile exponent (2=hemisphere, 3=steep, 2.5=balanced)
-constant float IOR              = 4;   // index of refraction (glass 1.5)
-constant float ETA              = 1.0 / IOR;
-constant float REFRACT_SCALE    = 1.0;   // fine-tune multiplier on displacement
 
 // ─── Glass appearance constants ─────────────────────────────────────
 
@@ -288,15 +292,16 @@ fragment float4 glassFragment(
         float normDist = saturate(distFromEdge / bw);  // 0=edge, 1=plateau
 
         // Surface slope from squircle profile derivative
-        float slope = squircleSlope(normDist, SQUIRCLE_N);
+        float slope = squircleSlope(normDist, u.squircleN);
 
-        // Snell's law: slope → physically bounded lateral displacement [0, ~0.745]
+        // Snell's law: slope → physically bounded lateral displacement
+        float eta    = 1.0 / u.ior;
         float s2     = slope * slope;
         float invL   = rsqrt(1.0 + s2);
         float cosI   = invL;
         float sinI   = slope * invL;
-        float cosT   = sqrt(max(1.0 - ETA * ETA * sinI * sinI, 0.0));
-        float T_lat  = sinI * (cosT - ETA * cosI);
+        float cosT   = sqrt(max(1.0 - eta * eta * sinI * sinI, 0.0));
+        float T_lat  = sinI * (cosT - eta * cosI);
 
         // Direction: SDF gradient → UV space (NOT normalized).
         // The 1/aspect factor compensates for non-square capture frame,
@@ -304,7 +309,7 @@ fragment float4 glassFragment(
         float2 refractDir = float2(edgeNormal.x / aspect, edgeNormal.y);
 
         // offset = direction × deflection × glass_thickness × scale
-        float2 offset = refractDir * T_lat * u.glassThickness * REFRACT_SCALE;
+        float2 offset = refractDir * T_lat * u.glassThickness * u.refractScale;
 
         // ── 3. Sample with chromatic aberration ──
         //  Apple model: blur FIRST (uniform frosted glass), then refract.

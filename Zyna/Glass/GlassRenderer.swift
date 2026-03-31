@@ -139,12 +139,16 @@ final class GlassRenderer: UIView {
             var barCount: Float = 0
             var barZone: SIMD4<Float> = .zero
             var barActive: Float = 0
+            // Tunable refraction
+            var ior: Float = 0
+            var squircleN: Float = 0
+            var refractScale: Float = 0
         }
 
-        // Bevel & thickness in capture-frame UV (bounds = captureFrame)
+        let t = GlassTuning.shared
         let captureH = max(bounds.height, 1)
-        let bezelW = Float(12.0 / captureH)       // 12pt bevel zone
-        let glassThick = Float(40.0 / captureH)   // 40pt displacement strength
+        let bezelW = Float(t.bezelPt / captureH)
+        let glassThick = Float(t.glassThickPt / captureH)
 
         var u = Uniforms(
             resolution: res,
@@ -163,6 +167,10 @@ final class GlassRenderer: UIView {
             time: time,
             waveEnergy: liquidZone?.waveEnergy ?? 0
         )
+
+        u.ior = t.ior
+        u.squircleN = t.squircleN
+        u.refractScale = t.refractScale
 
         if let bd = barData {
             u.barActive = 1.0
