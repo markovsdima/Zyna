@@ -30,7 +30,7 @@ final class DatabaseService {
 
         migrator.eraseDatabaseOnSchemaChange = true
 
-        migrator.registerMigration("v1_storedMessage_v4") { db in
+        migrator.registerMigration("v1_initial") { db in
             try db.create(table: "storedMessage") { t in
                 t.primaryKey("id", .text)
                 t.column("roomId", .text).notNull()
@@ -50,6 +50,10 @@ final class DatabaseService {
                 t.column("contentVoiceWaveform", .blob)
                 t.column("reactionsJSON", .text).notNull().defaults(to: "[]")
                 t.column("sendStatus", .text).notNull().defaults(to: "synced")
+                t.column("replyEventId", .text)
+                t.column("replySenderId", .text)
+                t.column("replySenderName", .text)
+                t.column("replyBody", .text)
             }
 
             try db.create(
@@ -69,9 +73,7 @@ final class DatabaseService {
                 columns: ["transactionId"],
                 condition: Column("transactionId") != nil
             )
-        }
 
-        migrator.registerMigration("v2_storedRoom") { db in
             try db.create(table: "storedRoom") { t in
                 t.primaryKey("id", .text)
                 t.column("displayName", .text).notNull()
@@ -89,15 +91,6 @@ final class DatabaseService {
                 on: "storedRoom",
                 columns: ["sortOrder"]
             )
-        }
-
-        migrator.registerMigration("v3_replyColumns") { db in
-            try db.alter(table: "storedMessage") { t in
-                t.add(column: "replyEventId", .text)
-                t.add(column: "replySenderId", .text)
-                t.add(column: "replySenderName", .text)
-                t.add(column: "replyBody", .text)
-            }
         }
 
         return migrator
