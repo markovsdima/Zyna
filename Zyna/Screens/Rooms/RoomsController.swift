@@ -52,6 +52,20 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
                 self?.tableNode.reloadData()
             }
             .store(in: &cancellables)
+
+        MatrixClientService.shared.stateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                switch state {
+                case .syncing:
+                    self?.title = "Chats"
+                case .error:
+                    self?.title = "Connection error"
+                default:
+                    self?.title = "Connecting..."
+                }
+            }
+            .store(in: &cancellables)
     }
 
     @objc private func handleRefresh() {
