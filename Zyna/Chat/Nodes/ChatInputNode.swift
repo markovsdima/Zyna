@@ -123,12 +123,12 @@ final class ChatInputNode: ASDisplayNode {
             NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
             NSAttributedString.Key.foregroundColor.rawValue: UIColor.white
         ]
-        textInputNode.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        textInputNode.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
         textInputNode.style.flexGrow = 1
         textInputNode.style.flexShrink = 1
         textInputNode.style.minHeight = ASDimension(unit: .points, value: 48)
-        textInputNode.style.maxHeight = ASDimension(unit: .points, value: 120)
-        textInputNode.scrollEnabled = true
+        textInputNode.style.maxHeight = ASDimension(unit: .points, value: 220)
+        textInputNode.scrollEnabled = false
         textInputNode.backgroundColor = .clear
 
         attachButtonNode.setImage(AppIcon.attach.rendered(size: 24, color: .gray), for: .normal)
@@ -572,6 +572,14 @@ extension ChatInputNode: UIGestureRecognizerDelegate {
 extension ChatInputNode: ASEditableTextNodeDelegate {
     func editableTextNodeDidUpdateText(_ editableTextNode: ASEditableTextNode) {
         updateTextEmptyState()
+        invalidateCalculatedLayout()
+        // Enable scroll when content exceeds maxHeight, disable to allow growth
+        let contentH = editableTextNode.textView.contentSize.height
+        let maxH: CGFloat = 220
+        let needsScroll = contentH > maxH
+        if editableTextNode.scrollEnabled != needsScroll {
+            editableTextNode.scrollEnabled = needsScroll
+        }
         onSizeChanged?()
     }
 }
