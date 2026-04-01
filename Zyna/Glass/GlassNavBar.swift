@@ -16,11 +16,11 @@ final class GlassNavBar: UIView {
     var onTitleTapped: (() -> Void)?
 
     var name: String = "" {
-        didSet { titleView.name = name }
+        didSet { titleView.name = name; setNeedsLayout() }
     }
 
     var presence: UserPresence? {
-        didSet { titleView.presence = presence }
+        didSet { titleView.presence = presence; setNeedsLayout() }
     }
 
     var isTappable: Bool = false {
@@ -52,6 +52,8 @@ final class GlassNavBar: UIView {
     private let btnSize: CGFloat = 36
     private let btnPad: CGFloat = 8
     private let cornerR: CGFloat = 20
+    private let titleHPad: CGFloat = 12
+    private var cachedTitleW: CGFloat = 0
 
     // MARK: - Init
 
@@ -139,10 +141,18 @@ final class GlassNavBar: UIView {
             height: btnSize
         )
 
-        // Title (center, between buttons)
-        let titleX = btnPad + btnSize + btnPad
-        let titleW = rect.width - titleX * 2
+        // Title (center, fitted to content)
+        let maxTitleW = rect.width - (btnPad + btnSize + btnPad) * 2
+        cachedTitleW = fittedTitleWidth(maxWidth: maxTitleW)
+        let titleW = cachedTitleW
+        let titleX = (rect.width - titleW) / 2
         titleView.frame = CGRect(x: titleX, y: 0, width: titleW, height: rect.height)
+    }
+
+    private func fittedTitleWidth(maxWidth: CGFloat) -> CGFloat {
+        let fitWidth = titleView.contentWidth
+        guard fitWidth > 0 else { return maxWidth }
+        return min(fitWidth + titleHPad * 2, maxWidth)
     }
 
     // MARK: - Actions
@@ -170,9 +180,10 @@ final class GlassNavBar: UIView {
         let callCY = cy
         let callR = btnSize / 2
 
-        // Title (rounded rect, center)
-        let titleX = glassFrame.origin.x + btnPad + btnSize + btnPad
-        let titleW = glassFrame.width - (btnPad + btnSize + btnPad) * 2
+        // Title (rounded rect, center — use cached width from layoutContent)
+        let maxTitleW = glassFrame.width - (btnPad + btnSize + btnPad) * 2
+        let titleW = cachedTitleW > 0 ? cachedTitleW : fittedTitleWidth(maxWidth: maxTitleW)
+        let titleX = glassFrame.origin.x + (glassFrame.width - titleW) / 2
         let titleY = glassFrame.origin.y
         let titleH = glassFrame.height
 

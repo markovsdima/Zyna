@@ -19,6 +19,10 @@ final class PresenceTitleView: UIView {
         didSet { tapRecognizer.isEnabled = isTappable }
     }
 
+    var contentWidth: CGFloat {
+        stack.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width
+    }
+
     var onTapped: (() -> Void)?
 
     private lazy var tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap))
