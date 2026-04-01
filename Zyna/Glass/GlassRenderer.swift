@@ -68,6 +68,9 @@ final class GlassRenderer: UIView {
         var shape1: SIMD4<Float> = .zero
         /// Shape 2: circle (centerX, centerY, radius, 0) in normalized capture coords
         var shape2: SIMD4<Float> = .zero
+        /// Shape 3: scroll button circle (centerX, centerY, radius, 0) — metaball with shape2
+        var shape3: SIMD4<Float> = .zero
+        var scrollButtonVisible: Float = 0
         var shapeCount: Float = 1
     }
 
@@ -126,6 +129,8 @@ final class GlassRenderer: UIView {
             var bezelWidth: Float
             var shape1: SIMD4<Float>
             var shape2: SIMD4<Float>
+            var shape3: SIMD4<Float>
+            var scrollButtonVisible: Float
             var shapeCount: Float
             var glassThickness: Float
             var liquidTop: Float
@@ -139,12 +144,16 @@ final class GlassRenderer: UIView {
             var barCount: Float = 0
             var barZone: SIMD4<Float> = .zero
             var barActive: Float = 0
+            // Tunable refraction
+            var ior: Float = 0
+            var squircleN: Float = 0
+            var refractScale: Float = 0
         }
 
-        // Bevel & thickness in capture-frame UV (bounds = captureFrame)
+        let t = GlassTuning.shared
         let captureH = max(bounds.height, 1)
-        let bezelW = Float(12.0 / captureH)       // 12pt bevel zone
-        let glassThick = Float(40.0 / captureH)   // 40pt displacement strength
+        let bezelW = Float(t.bezelPt / captureH)
+        let glassThick = Float(t.glassThickPt / captureH)
 
         var u = Uniforms(
             resolution: res,
@@ -155,6 +164,8 @@ final class GlassRenderer: UIView {
             bezelWidth: bezelW,
             shape1: shapes.shape1,
             shape2: shapes.shape2,
+            shape3: shapes.shape3,
+            scrollButtonVisible: shapes.scrollButtonVisible,
             shapeCount: shapes.shapeCount,
             glassThickness: glassThick,
             liquidTop: liquidZone?.top ?? 0,
@@ -163,6 +174,10 @@ final class GlassRenderer: UIView {
             time: time,
             waveEnergy: liquidZone?.waveEnergy ?? 0
         )
+
+        u.ior = t.ior
+        u.squircleN = t.squircleN
+        u.refractScale = t.refractScale
 
         if let bd = barData {
             u.barActive = 1.0

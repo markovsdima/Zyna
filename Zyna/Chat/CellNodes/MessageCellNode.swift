@@ -32,6 +32,11 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
 
     var onReactionTapped: ((String) -> Void)?
 
+    // MARK: - Reply
+
+    var onReplyHeaderTapped: ((String) -> Void)?
+    private(set) var replyHeaderNode: ReplyHeaderNode?
+
     // MARK: - Subnodes
 
     let bubbleNode = ASDisplayNode()
@@ -87,6 +92,22 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
                     .foregroundColor: MessageCellHelpers.senderColors[colorIndex]
                 ]
             )
+        }
+
+        // Reply header
+        if let replyInfo = message.replyInfo {
+            let rh = ReplyHeaderNode(replyInfo: replyInfo, isOutgoing: isOutgoing)
+            self.replyHeaderNode = rh
+
+            // Handle quick taps on reply header via ContextSourceNode
+            contextSourceNode.onQuickTap = { [weak self] point in
+                guard let self, self.isNodeLoaded,
+                      let replyView = self.replyHeaderNode?.view else { return }
+                let replyPoint = self.contextSourceNode.view.convert(point, to: replyView)
+                if replyView.bounds.contains(replyPoint) {
+                    self.onReplyHeaderTapped?(replyInfo.eventId)
+                }
+            }
         }
 
         // Reactions
@@ -147,6 +168,34 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
             : [column, spacer]
 
         return ASInsetLayoutSpec(insets: MessageCellHelpers.cellInsets, child: hStack)
+    }
+
+    // MARK: - Highlight
+
+    func highlightBubble() {
+        guard isNodeLoaded else { return }
+        let highlight = CALayer()
+        highlight.frame = bubbleNode.bounds
+        highlight.cornerRadius = bubbleNode.cornerRadius
+        highlight.backgroundColor = (isOutgoing ? UIColor.white : UIColor.label)
+            .withAlphaComponent(0.3).cgColor
+        highlight.opacity = 0
+        bubbleNode.layer.addSublayer(highlight)
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak highlight] in
+            highlight?.removeFromSuperlayer()
+        }
+
+        let anim = CAKeyframeAnimation(keyPath: "opacity")
+        anim.values = [0, 1, 1, 0]
+        anim.keyTimes = [0, 0.2, 0.6, 1.0]
+        anim.duration = 0.8
+        anim.isRemovedOnCompletion = false
+        anim.fillMode = .forwards
+        highlight.add(anim, forKey: "highlight")
+
+        CATransaction.commit()
     }
 
     // MARK: - Context Menu Reparenting

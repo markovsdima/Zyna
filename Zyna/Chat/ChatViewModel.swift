@@ -13,6 +13,7 @@ final class ChatViewModel {
 
     private(set) var messages: [ChatMessage] = []
     @Published private(set) var isPaginating: Bool = false
+    @Published private(set) var replyingTo: ChatMessage?
 
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate) -> Void)?
@@ -26,6 +27,7 @@ final class ChatViewModel {
     let roomName: String
     @Published private(set) var partnerPresence: UserPresence?
     @Published private(set) var partnerUserId: String?
+    @Published private(set) var memberCount: Int?
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -33,63 +35,50 @@ final class ChatViewModel {
     // MARK: - Private
 
     let timelineService: TimelineService
-    private let coalescer = TimelineCoalescer()
+    private let diffBatcher: TimelineDiffBatcher
+    private let window: MessageWindow
+    private var hiddenIds = Set<String>()
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
+
+    /// Whether the window is at the live edge (newest messages visible).
+    var isAtLiveEdge: Bool { window.isAtLiveEdge }
 
     init(room: Room) {
         self.roomName = room.displayName() ?? "Chat"
         self.timelineService = TimelineService(room: room)
+        self.diffBatcher = TimelineDiffBatcher(
+            roomId: room.id(),
+            dbQueue: DatabaseService.shared.dbQueue
+        )
+        self.window = MessageWindow(
+            roomId: room.id(),
+            dbQueue: DatabaseService.shared.dbQueue
+        )
 
         timelineService.isPaginatingSubject
             .receive(on: DispatchQueue.main)
             .assign(to: &$isPaginating)
 
-        // Wire SDK diffs → coalescer
-        timelineService.onDiffs = { [weak self] diffs in
-            self?.coalescer.receive(diffs: diffs)
+        // Write path: SDK diffs → GRDB
+        let batcher = diffBatcher
+        timelineService.onDiffs = { diffs in
+            batcher.receive(diffs: diffs)
         }
 
-        // Coalescer output → UI
-        coalescer.onBatchReady = { [weak self] newMessages, tableUpdate in
-            guard let self else { return }
-            Self.prefetchImages(newMessages)
-
-            // Detect newly redacted messages in updates
-            let redactedIds: [String]
-            if case .batch(_, _, let updates, _) = tableUpdate, !updates.isEmpty {
-                redactedIds = updates.compactMap { ip -> String? in
-                    guard ip.row < newMessages.count else { return nil }
-                    let msg = newMessages[ip.row]
-                    return msg.content.isRedacted ? msg.id : nil
-                }
-            } else {
-                redactedIds = []
-            }
-
-            self.messages = newMessages
-
-            if !redactedIds.isEmpty {
-                // Filter redacted from normal table update (controller handles them via animation)
-                if case .batch(let del, let ins, let upd, let anim) = tableUpdate {
-                    let filtered = upd.filter { ip in
-                        guard ip.row < newMessages.count else { return true }
-                        return !newMessages[ip.row].content.isRedacted
-                    }
-                    self.onTableUpdate?(.batch(deletions: del, insertions: ins, updates: filtered, animated: anim))
-                } else {
-                    self.onTableUpdate?(tableUpdate)
-                }
-                self.onRedactedDetected?(redactedIds)
-            } else {
-                self.onTableUpdate?(tableUpdate)
-            }
-
-            // Auto-paginate when SDK delivers fewer messages than one page
-            if newMessages.count < 20 && !self.isPaginating {
-                self.loadOlderMessages()
-            }
+        // Bridge: batcher flush → window refresh
+        let win = window
+        diffBatcher.onFlush = { [weak win] in
+            win?.refresh()
         }
+
+        // Read path: window changes → UI
+        window.onChange = { [weak self] newStored, prevStored in
+            self?.handleObservationChange(newStored: newStored, prevStored: prevStored)
+        }
+
+        // Initial load from GRDB cache
+        window.loadInitial()
 
         Task { [weak self] in
             await self?.timelineService.startListening()
@@ -98,24 +87,172 @@ final class ChatViewModel {
         Task { [weak self] in
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
-            guard info.isDirect, let userId = info.heroes.first?.userId else { return }
-            await MainActor.run {
-                self.directUserId = userId
-                self.partnerUserId = userId
+
+            if info.isDirect, let userId = info.heroes.first?.userId {
+                await MainActor.run {
+                    self.directUserId = userId
+                    self.partnerUserId = userId
+                }
+                PresenceTracker.shared.register(userIds: [userId], for: "chat")
+                PresenceTracker.shared.$statuses
+                    .map { $0[userId] }
+                    .receive(on: DispatchQueue.main)
+                    .assign(to: &self.$partnerPresence)
+            } else {
+                let count = Int(info.joinedMembersCount)
+                await MainActor.run {
+                    self.memberCount = count
+                }
             }
-            PresenceTracker.shared.register(userIds: [userId], for: "chat")
-            PresenceTracker.shared.$statuses
-                .map { $0[userId] }
-                .receive(on: DispatchQueue.main)
-                .assign(to: &self.$partnerPresence)
         }
+    }
+
+    // MARK: - Window Change Handling
+
+    private func handleObservationChange(newStored: [StoredMessage], prevStored: [StoredMessage]?) {
+        // 1. Detect newly redacted messages
+        let newlyRedactedIds: [String]
+        if let prevStored {
+            let prevById = Dictionary(prevStored.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            newlyRedactedIds = newStored.compactMap { msg in
+                guard msg.contentType == "redacted" else { return nil }
+                guard let prev = prevById[msg.id], prev.contentType != "redacted" else { return nil }
+                return msg.id
+            }
+        } else {
+            newlyRedactedIds = []
+        }
+
+        // 2. Build display array: filter hidden and already-redacted (keep newly-redacted for animation)
+        let newlyRedactedSet = Set(newlyRedactedIds)
+        let displayStored = newStored.filter { msg in
+            if hiddenIds.contains(msg.id) { return false }
+            if msg.contentType == "redacted" && !newlyRedactedSet.contains(msg.id) { return false }
+            return true
+        }
+
+        let newMessages = displayStored.compactMap { $0.toChatMessage() }
+
+        // 3. Prefetch images
+        Self.prefetchImages(newMessages)
+
+        // 4. Compute table update
+        let oldMessages = self.messages
+        self.messages = newMessages
+
+        let tableUpdate: TableUpdate
+        if prevStored == nil {
+            tableUpdate = .reload
+        } else {
+            tableUpdate = Self.computeTableUpdate(old: oldMessages, new: newMessages)
+        }
+
+        // 5. Emit (filter redacted from normal updates, send separately for animation)
+        if !newlyRedactedIds.isEmpty {
+            if case .batch(let del, let ins, let upd, let anim) = tableUpdate {
+                let filtered = upd.filter { ip in
+                    guard ip.row < newMessages.count else { return true }
+                    return !newMessages[ip.row].content.isRedacted
+                }
+                onTableUpdate?(.batch(deletions: del, insertions: ins, updates: filtered, animated: anim))
+            } else {
+                onTableUpdate?(tableUpdate)
+            }
+            onRedactedDetected?(newlyRedactedIds)
+        } else {
+            onTableUpdate?(tableUpdate)
+        }
+
+        // 6. Auto-paginate if too few messages and GRDB + SDK both need more
+        if newMessages.count < 20 && !isPaginating && !window.hasOlderInDB {
+            loadOlderFromServer()
+        }
+    }
+
+    private static func computeTableUpdate(old: [ChatMessage], new: [ChatMessage]) -> TableUpdate {
+        let oldIDs = old.map(\.id)
+        let newIDs = new.map(\.id)
+        let idDiff = newIDs.difference(from: oldIDs)
+
+        var deletions: [IndexPath] = []
+        var insertions: [IndexPath] = []
+        var removedOldOffsets = Set<Int>()
+
+        for change in idDiff {
+            switch change {
+            case .remove(let offset, _, _):
+                deletions.append(IndexPath(row: offset, section: 0))
+                removedOldOffsets.insert(offset)
+            case .insert(let offset, _, _):
+                insertions.append(IndexPath(row: offset, section: 0))
+            }
+        }
+
+        let newById = Dictionary(new.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { _, last in last })
+        var updates: [IndexPath] = []
+        for (oldIdx, oldMsg) in old.enumerated() {
+            guard !removedOldOffsets.contains(oldIdx) else { continue }
+            if let newIdx = newById[oldMsg.id], old[oldIdx] != new[newIdx] {
+                updates.append(IndexPath(row: oldIdx, section: 0))
+            }
+        }
+
+        let animated = deletions.isEmpty && insertions.count == 1 && updates.isEmpty
+        return .batch(deletions: deletions, insertions: insertions, updates: updates, animated: animated)
+    }
+
+    // MARK: - Pagination
+
+    /// Load older messages from GRDB. Returns true if data was available.
+    func loadOlderFromDB() -> Bool {
+        window.loadOlder()
+    }
+
+    /// Paginate from server when GRDB is exhausted.
+    func loadOlderFromServer() {
+        guard !isPaginating else { return }
+        Task {
+            await timelineService.paginateBackwards()
+        }
+    }
+
+    /// Load newer messages from GRDB (when scrolling back down after jump).
+    func loadNewerMessages() {
+        window.loadNewer()
+    }
+
+    // MARK: - Jump
+
+    func jumpToMessage(eventId: String) {
+        window.jumpTo(eventId: eventId)
+    }
+
+    func jumpToLive() {
+        window.jumpToLive()
+    }
+
+    func jumpToOldest() {
+        window.jumpToOldest()
+    }
+
+    func indexOfMessage(eventId: String) -> Int? {
+        messages.firstIndex { $0.eventId == eventId }
+    }
+
+    // MARK: - Reply
+
+    func setReplyTarget(_ message: ChatMessage?) {
+        replyingTo = message
     }
 
     // MARK: - Actions
 
     func sendMessage(_ text: String) {
-        Task {
-            await timelineService.sendMessage(text)
+        if let replyTarget = replyingTo, let eventId = replyTarget.eventId {
+            replyingTo = nil
+            Task { await timelineService.sendReply(text, to: eventId) }
+        } else {
+            Task { await timelineService.sendMessage(text) }
         }
     }
 
@@ -159,20 +296,21 @@ final class ChatViewModel {
     }
 
     func hideMessage(_ messageId: String) {
-        coalescer.hide(messageId)
-    }
-
-    func loadOlderMessages() {
-        guard !isPaginating else { return }
-        Task {
-            await timelineService.paginateBackwards()
-        }
+        hiddenIds.insert(messageId)
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        messages.remove(at: idx)
+        onTableUpdate?(.batch(
+            deletions: [IndexPath(row: idx, section: 0)],
+            insertions: [],
+            updates: [],
+            animated: false
+        ))
     }
 
     func cleanup() {
         PresenceTracker.shared.unregister(for: "chat")
         timelineService.onDiffs = nil
-        coalescer.onBatchReady = nil
+        diffBatcher.onFlush = nil
         timelineService.stopListening()
     }
 

@@ -10,6 +10,13 @@
 #include "LiquidHelpers.h"
 using namespace metal;
 
+// GLASS PARAMS
+// bevel 36
+// thick 55
+// IOR 1.5
+// squN 6
+// scale 1.1
+
 // ─── Types ───────────────────────────────────────────────────────────
 
 struct VertexOut {
@@ -29,6 +36,9 @@ struct GlassUniforms {
     float4 shape1;
     // Shape 2: circle (centerX, centerY, radius, 0) normalized
     float4 shape2;
+    // Shape 3: scroll button circle — metaball with shape2 (mic)
+    float4 shape3;
+    float  scrollButtonVisible;  // 0 or 1
     float  shapeCount;      // 1, 2, or 3
     float  glassThickness;  // displacement strength in capture-frame UV (thickPt / captureH)
     // Liquid pool
@@ -42,14 +52,11 @@ struct GlassUniforms {
     float  barCount;
     float4 barZone;
     float  barActive;
+    // Tunable refraction parameters (set from CPU)
+    float  ior;             // index of refraction (1.5=glass, 3-4=crystal)
+    float  squircleN;       // profile exponent (2=hemisphere, 3=steep)
+    float  refractScale;    // displacement multiplier
 };
-
-// ─── Glass refraction constants ─────────────────────────────────────
-
-constant float SQUIRCLE_N       = 2.5;   // profile exponent (2=hemisphere, 3=steep, 2.5=balanced)
-constant float IOR              = 4;   // index of refraction (glass 1.5)
-constant float ETA              = 1.0 / IOR;
-constant float REFRACT_SCALE    = 1.0;   // fine-tune multiplier on displacement
 
 // ─── Glass appearance constants ─────────────────────────────────────
 
@@ -83,6 +90,22 @@ inline float sdRoundedRect(float2 p, float2 halfSize, float r) {
 inline float sdCircle(float2 p, float r) {
     return length(p) - r;
 }
+
+// Smooth minimum with sharpness control for metaball blending.
+// k = blend radius, power = transition sharpness (higher = sharper near, softer far).
+inline float sminSharp(float a, float b, float k, float power) {
+    float h = max(k - abs(a - b), 0.0) / k;
+    float blend = pow(h, power);
+    return min(a, b) - blend * k * 0.25;
+}
+
+// ─── Metaball / light bridge constants ─────────────────────────────
+
+constant float METABALL_BLEND_K    = 0.5;
+constant float METABALL_SHARPNESS  = 3.0;
+constant float BRIDGE_INTENSITY    = 0.4;
+constant float BRIDGE_WIDTH_SCALE  = 0.12;
+constant float3 BRIDGE_COLOR       = float3(0.7, 0.85, 1.0);
 
 inline float sdCapsuleV(float2 p, float2 c, float hh, float r) {
     float2 d = p - c;
@@ -210,7 +233,7 @@ fragment float4 glassFragment(
         sdf1 = sdCircle(p1, s1radius);
     }
 
-    // Shape 2: circle
+    // Shape 2: circle (mic)
     float sdf2 = 10000.0;
     float2 p2 = float2(0.0);
     float s2radius = 0.0;
@@ -221,11 +244,29 @@ fragment float4 glassFragment(
         sdf2 = sdCircle(p2, s2radius);
     }
 
+    // Shape 3: scroll button (circle) — metaball with shape2 (mic)
+    float sdf3 = 10000.0;
+    float2 p3 = float2(0.0);
+    float s3radius = 0.0;
+    if (u.scrollButtonVisible > 0.5) {
+        float2 s3center = float2(u.shape3.x * aspect, u.shape3.y);
+        s3radius = u.shape3.z;
+        p3 = p - s3center;
+        sdf3 = sdCircle(p3, s3radius);
+    }
+
     // Chrome
     float chromeSdf = chromeMetaballField(p, aspect, u);
 
-    // Combined SDF
-    float sdf = min(sdf0, min(sdf1, sdf2));
+    // Combined SDF: mic + scroll blend via sminSharp, rest via min
+    float sdfMicScroll;
+    if (u.scrollButtonVisible > 0.5) {
+        float blendK = METABALL_BLEND_K * s0size.y;
+        sdfMicScroll = sminSharp(sdf2, sdf3, blendK, METABALL_SHARPNESS);
+    } else {
+        sdfMicScroll = sdf2;
+    }
+    float sdf = min(sdf0, min(sdf1, sdfMicScroll));
 
     // ────────────────────────────────────────────────────────────────
     //  Masks
@@ -260,10 +301,13 @@ fragment float4 glassFragment(
         float2 edgeNormal;     // points outward from shape center
         float  localSdf;
 
-        if (sdf1 < sdf0 && sdf1 < sdf2) {
+        if (sdf3 < sdf0 && sdf3 < sdf1 && sdf3 < sdf2) {
+            localSdf = sdf3;
+            edgeNormal = length(p3) > 1e-5 ? normalize(p3) : float2(0.0);
+        } else if (sdf1 < sdf0 && sdf1 < sdf2 && sdf1 < sdf3) {
             localSdf = sdf1;
             edgeNormal = length(p1) > 1e-5 ? normalize(p1) : float2(0.0);
-        } else if (sdf2 < sdf0 && sdf2 < sdf1) {
+        } else if (sdf2 < sdf0 && sdf2 < sdf1 && sdf2 < sdf3) {
             localSdf = sdf2;
             edgeNormal = length(p2) > 1e-5 ? normalize(p2) : float2(0.0);
         } else {
@@ -288,15 +332,16 @@ fragment float4 glassFragment(
         float normDist = saturate(distFromEdge / bw);  // 0=edge, 1=plateau
 
         // Surface slope from squircle profile derivative
-        float slope = squircleSlope(normDist, SQUIRCLE_N);
+        float slope = squircleSlope(normDist, u.squircleN);
 
-        // Snell's law: slope → physically bounded lateral displacement [0, ~0.745]
+        // Snell's law: slope → physically bounded lateral displacement
+        float eta    = 1.0 / u.ior;
         float s2     = slope * slope;
         float invL   = rsqrt(1.0 + s2);
         float cosI   = invL;
         float sinI   = slope * invL;
-        float cosT   = sqrt(max(1.0 - ETA * ETA * sinI * sinI, 0.0));
-        float T_lat  = sinI * (cosT - ETA * cosI);
+        float cosT   = sqrt(max(1.0 - eta * eta * sinI * sinI, 0.0));
+        float T_lat  = sinI * (cosT - eta * cosI);
 
         // Direction: SDF gradient → UV space (NOT normalized).
         // The 1/aspect factor compensates for non-square capture frame,
@@ -304,7 +349,7 @@ fragment float4 glassFragment(
         float2 refractDir = float2(edgeNormal.x / aspect, edgeNormal.y);
 
         // offset = direction × deflection × glass_thickness × scale
-        float2 offset = refractDir * T_lat * u.glassThickness * REFRACT_SCALE;
+        float2 offset = refractDir * T_lat * u.glassThickness * u.refractScale;
 
         // ── 3. Sample with chromatic aberration ──
         //  Apple model: blur FIRST (uniform frosted glass), then refract.
@@ -380,7 +425,19 @@ fragment float4 glassFragment(
                                BORDER_COLOR_MIX);
         col += borderCol * borderMask * bBright;
 
-        // ── 10. Final tint ──
+        // ── 10. Light bridge: mic ↔ scroll button ──
+
+        if (u.scrollButtonVisible > 0.5) {
+            float bridgeWidth = BRIDGE_WIDTH_SCALE * s0size.y;
+            float scrollMicGap = sdf3 + sdf2;
+            float bridgeZone = smoothstep(bridgeWidth, 0.0, scrollMicGap);
+            float inBetween = smoothstep(-bridgeWidth * 0.5, 0.0, sdf3)
+                            * smoothstep(-bridgeWidth * 0.5, 0.0, sdf2);
+            float bridgeIntensity = bridgeZone * inBetween * BRIDGE_INTENSITY;
+            col += BRIDGE_COLOR * bridgeIntensity;
+        }
+
+        // ── 11. Final tint ──
 
         col *= GLASS_TINT;
 

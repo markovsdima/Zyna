@@ -19,12 +19,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var batchFetchCancellable: AnyCancellable?
     private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
-    /// Flip to `true` to show Apple vs Custom glass comparison overlay.
+    
+    /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
+    
     private lazy var glassComparison = GlassComparisonView()
+    private lazy var glassTuning = GlassTuningView()
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactedIds: [String] = []
+    private var isTeleporting = false
     private var isPickerPresented = false
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
@@ -81,6 +85,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if Self.showGlassComparison {
             glassComparison.sourceView = node.tableNode.view
             view.addSubview(glassComparison)
+            view.addSubview(glassTuning)
         }
 
 
@@ -94,7 +99,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         super.viewDidLayoutSubviews()
 
         glassNavBar.updateLayout(in: view)
-        if Self.showGlassComparison { glassComparison.updateLayout(in: view) }
+        if Self.showGlassComparison {
+            glassComparison.updateLayout(in: view)
+            glassTuning.frame = CGRect(
+                x: 12,
+                y: glassComparison.frame.maxY + 8,
+                width: 170,
+                height: CGFloat(5 * 32 + 16)
+            )
+        }
         node.tableNode.contentInset.bottom = glassNavBar.coveredHeight
 
         glassInputBar.updateLayout(in: view)
@@ -104,11 +117,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        // TEST: portal + mesh transform refraction (zero-capture)
-        // if let w = view.window { MeshPortalTest.install(in: view, sourceWindow: w) }
-
-        // TEST: 3D ray-traced glass
-        // if let w = view.window { Glass3DTest.install(in: view, sourceWindow: w) }
+        // Force glass recapture after navigation push completes
+        GlassService.shared.setNeedsCapture()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -138,6 +148,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self?.glassNavBar.isTappable = userId != nil
             }
             .store(in: &cancellables)
+
+        viewModel.$memberCount
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] count in
+                self?.glassNavBar.memberCount = count
+            }
+            .store(in: &cancellables)
     }
 
 
@@ -151,9 +168,25 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.onRedactedDetected = { [weak self] messageIds in
             self?.handleRedactedMessages(messageIds)
         }
+
+        viewModel.$replyingTo
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] message in
+                guard let self else { return }
+                self.glassInputBar.inputNode.setReplyPreview(
+                    senderName: message?.senderDisplayName ?? message?.senderId,
+                    body: message?.content.textPreview
+                )
+            }
+            .store(in: &cancellables)
     }
 
     private func applyTableUpdate(_ update: TableUpdate) {
+        if isTeleporting {
+            // During teleportation: silent reload, no animations
+            node.tableNode.reloadData()
+            return
+        }
         switch update {
         case .reload:
             node.tableNode.reloadData()
@@ -179,6 +212,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         glassInputBar.inputNode.onAttachTapped = { [weak self] in
             self?.presentPhotoPicker()
+        }
+
+        glassInputBar.inputNode.onReplyCancelled = { [weak self] in
+            self?.viewModel.setReplyTarget(nil)
+        }
+
+        glassInputBar.onScrollToLive = { [weak self] in
+            self?.navigateToLive()
+            self?.glassInputBar.scrollButtonVisible = false
         }
     }
 
@@ -227,6 +269,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self?.viewModel.toggleReaction(key, for: message)
             }
 
+            cellNode.onReplyHeaderTapped = { [weak self] eventId in
+                self?.navigateToMessage(eventId: eventId)
+            }
+
             return cellNode
         }
     }
@@ -241,7 +287,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             ContextMenuAction(
                 title: "Reply",
                 image: UIImage(systemName: "arrowshape.turn.up.left"),
-                handler: { print("[context-menu] Reply tapped: \(message.id)") }
+                handler: { [weak self] in self?.viewModel.setReplyTarget(message) }
             )
         ]
 
@@ -309,7 +355,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
-        viewModel.loadOlderMessages()
+        // Try GRDB first (synchronous)
+        let loadedFromDB = viewModel.loadOlderFromDB()
+        if loadedFromDB {
+            context.completeBatchFetching(true)
+            return
+        }
+
+        // Fall back to SDK pagination (async)
+        viewModel.loadOlderFromServer()
 
         batchFetchCancellable = viewModel.$isPaginating
             .dropFirst()
@@ -326,6 +380,145 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         GlassService.shared.setNeedsCapture()
+        guard !isTeleporting else { return }
+
+        // Load newer messages when scrolling toward bottom (inverted: small contentOffset.y)
+        if !viewModel.isAtLiveEdge && scrollView.contentOffset.y < 200 {
+            viewModel.loadNewerMessages()
+        }
+
+        // Show scroll-to-live button when scrolled far from bottom (inverted: large contentOffset.y)
+        let scrolledFar = scrollView.contentOffset.y > scrollView.bounds.height * 1.5
+        let shouldShow = scrolledFar && viewModel.messages.count > 20
+        glassInputBar.scrollButtonVisible = shouldShow
+    }
+
+    // MARK: - Smart Navigation (Journey / Teleportation)
+
+    private func navigateToMessage(eventId: String) {
+        // If message is visible on screen — smooth scroll (journey)
+        if let idx = viewModel.indexOfMessage(eventId: eventId) {
+            let targetIP = IndexPath(row: idx, section: 0)
+            let visibleRect = node.tableNode.view.bounds
+            if let cell = node.tableNode.view.cellForRow(at: targetIP),
+               visibleRect.intersects(cell.frame) {
+                print("[nav] journey — already visible at idx=\(idx)")
+                node.tableNode.scrollToRow(at: targetIP, at: .middle, animated: true)
+                highlightMessage(eventId: eventId, delay: 0.3)
+                return
+            }
+        }
+        // Otherwise — teleport (Telegram-style snapshot slide)
+        // Inverted table: higher row = older. Jumping to older → content slides down, to newer → up.
+        let currentFirst = node.tableNode.view.indexPathsForVisibleRows?.first?.row ?? 0
+        let targetIdx = viewModel.indexOfMessage(eventId: eventId)
+        let direction: TeleportDirection = (targetIdx ?? Int.max) > currentFirst ? .up : .down
+
+        teleport(direction: direction) {
+            self.viewModel.jumpToMessage(eventId: eventId)
+        } scrollAfter: {
+            if let idx = self.viewModel.indexOfMessage(eventId: eventId) {
+                self.node.tableNode.scrollToRow(at: IndexPath(row: idx, section: 0), at: .middle, animated: false)
+            }
+            self.highlightMessage(eventId: eventId, delay: 0.1)
+        }
+    }
+
+    private func highlightMessage(eventId: String, delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self,
+                  let idx = self.viewModel.messages.firstIndex(where: { $0.eventId == eventId }),
+                  let cellNode = self.node.tableNode.nodeForRow(at: IndexPath(row: idx, section: 0))
+                      as? MessageCellNode
+            else { return }
+            cellNode.highlightBubble()
+        }
+    }
+
+    private func navigateToLive() {
+        if viewModel.isAtLiveEdge {
+            node.tableNode.scrollToRow(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
+            return
+        }
+        // Jumping to live (newest) → content slides up
+        teleport(direction: .down) {
+            self.viewModel.jumpToLive()
+        } scrollAfter: {
+            self.node.tableNode.contentOffset = CGPoint(x: 0, y: -self.node.tableNode.contentInset.top)
+        }
+    }
+
+    /// Snapshot-based teleportation (Telegram approach).
+    /// Direction: which way new content arrives FROM (visually).
+    /// `.up` = jumping to older messages: snapshot slides down, new content enters from top.
+    /// `.down` = jumping to newer messages: snapshot slides up, new content enters from bottom.
+    private func teleport(direction: TeleportDirection, swapData: () -> Void, scrollAfter: () -> Void) {
+        let tableView = node.tableNode.view
+        guard let snapshot = tableView.snapshotView(afterScreenUpdates: false) else {
+            swapData()
+            return
+        }
+
+        isTeleporting = true
+        // Inverted table: jump-to-older → content slides DOWN (camera pans up)
+        //                  jump-to-newer → content slides UP (camera pans down)
+        let sign: CGFloat = direction == .up ? 1 : -1
+
+        let slideHeight = view.bounds.height
+
+        // 1. Overlay snapshot in a container (clips to table bounds)
+        let snapshotContainer = UIView(frame: tableView.frame)
+        snapshotContainer.clipsToBounds = true
+        snapshot.frame = snapshotContainer.bounds
+        snapshotContainer.addSubview(snapshot)
+        view.insertSubview(snapshotContainer, aboveSubview: tableView)
+
+        // 2. Swap data under snapshot (invisible)
+        swapData()
+        node.tableNode.reloadData()
+        node.tableNode.view.layoutIfNeeded()
+        scrollAfter()
+
+        // 3. Animate with spring: snapshot exits one way, new content enters from the other
+        let tableLayer = tableView.layer
+        let originalPosition = tableLayer.position
+
+        // New content starts offset in the opposite direction from snapshot exit
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        tableLayer.position = CGPoint(x: originalPosition.x, y: originalPosition.y - sign * slideHeight)
+        CATransaction.commit()
+
+        let springTiming = CASpringAnimation(keyPath: "position.y")
+        springTiming.damping = 500
+        springTiming.stiffness = 1000
+        springTiming.mass = 3
+        springTiming.initialVelocity = 0
+        springTiming.duration = springTiming.settlingDuration
+
+        // Snapshot exits in `sign` direction
+        let snapshotAnim = springTiming.copy() as! CASpringAnimation
+        snapshotAnim.fromValue = snapshotContainer.layer.position.y
+        snapshotAnim.toValue = snapshotContainer.layer.position.y + sign * slideHeight
+        snapshotAnim.isRemovedOnCompletion = false
+        snapshotAnim.fillMode = .forwards
+        snapshotContainer.layer.add(snapshotAnim, forKey: "teleportOut")
+
+        // Table slides from offset to original position
+        let tableAnim = springTiming.copy() as! CASpringAnimation
+        tableAnim.fromValue = originalPosition.y - sign * slideHeight
+        tableAnim.toValue = originalPosition.y
+        tableAnim.isRemovedOnCompletion = false
+        tableAnim.fillMode = .forwards
+        tableLayer.position = originalPosition
+        tableAnim.delegate = TeleportAnimationDelegate { [weak self, weak snapshotContainer] in
+            snapshotContainer?.removeFromSuperview()
+            self?.isTeleporting = false
+        }
+        tableLayer.add(tableAnim, forKey: "teleportIn")
+
+        // Sustain glass capture for the full spring animation
+        GlassService.shared.captureFor(duration: springTiming.settlingDuration)
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -441,4 +634,19 @@ extension ChatViewController: PHPickerViewControllerDelegate {
             }
         }
     }
+}
+
+// MARK: - Teleport Direction
+
+private enum TeleportDirection {
+    case up    // jumping to older — snapshot exits down, new content enters from top
+    case down  // jumping to newer — snapshot exits up, new content enters from bottom
+}
+
+// MARK: - Teleport Animation Delegate
+
+private final class TeleportAnimationDelegate: NSObject, CAAnimationDelegate {
+    private let completion: () -> Void
+    init(_ completion: @escaping () -> Void) { self.completion = completion }
+    func animationDidStop(_ anim: CAAnimation, finished flag: Bool) { completion() }
 }

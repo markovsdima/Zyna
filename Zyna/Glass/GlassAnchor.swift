@@ -36,6 +36,10 @@ final class GlassAnchor: UIView {
     /// Used by GlassService to expand capture frame upward.
     var hasBars: Bool = false
 
+    /// True when scroll-to-live button is visible above the input bar.
+    /// Used by GlassService to expand capture frame upward.
+    var hasScrollButton: Bool = false
+
     /// The view whose layer tree to capture as glass background.
     /// Only this view's content is rendered — glass UI is excluded automatically.
     /// If nil, falls back to the anchor's window.
