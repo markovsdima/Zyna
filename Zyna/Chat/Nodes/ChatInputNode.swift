@@ -40,37 +40,105 @@ final class ChatInputNode: ASDisplayNode {
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
     var onAttachTapped: (() -> Void)?
     var onSizeChanged: (() -> Void)?
+    var onWaveformUpdate: (([Float]) -> Void)?
+    var onReplyCancelled: (() -> Void)?
+
+    // MARK: - Reply Preview
+
+    private let replyBackgroundNode = ASDisplayNode()
+    private let replyBarNode = ASDisplayNode()
+    private let replyNameNode = ASTextNode()
+    private let replyBodyNode = ASTextNode()
+    private let replyCancelNode = ASButtonNode()
+    private var isShowingReply = false
+
+    func setReplyPreview(senderName: String?, body: String?) {
+        let showing = senderName != nil
+        guard showing != isShowingReply else {
+            if showing {
+                updateReplyText(senderName: senderName, body: body)
+            }
+            return
+        }
+        isShowingReply = showing
+        if showing {
+            updateReplyText(senderName: senderName, body: body)
+        }
+        setNeedsLayout()
+        onSizeChanged?()
+    }
+
+    private func updateReplyText(senderName: String?, body: String?) {
+        replyNameNode.attributedText = NSAttributedString(
+            string: senderName ?? "",
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: UIColor.systemBlue
+            ]
+        )
+        replyBodyNode.attributedText = NSAttributedString(
+            string: body ?? "",
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 13),
+                .foregroundColor: UIColor.secondaryLabel
+            ]
+        )
+    }
 
     override init() {
         super.init()
         automaticallyManagesSubnodes = true
         setupNodes()
         bindRecorder()
+
+        replyCancelNode.addTarget(self, action: #selector(replyCancelTapped), forControlEvents: .touchUpInside)
+    }
+
+    @objc private func replyCancelTapped() {
+        onReplyCancelled?()
     }
 
     private func setupNodes() {
-        separatorNode.style.height = ASDimension(unit: .points, value: 0.5)
-        separatorNode.backgroundColor = .separator
+        separatorNode.style.height = ASDimension(unit: .points, value: 0)
+        separatorNode.backgroundColor = .clear
+
+        replyBackgroundNode.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+        replyBackgroundNode.cornerRadius = 20
+        replyBackgroundNode.clipsToBounds = true
+
+        replyBarNode.backgroundColor = .systemBlue
+        replyBarNode.cornerRadius = 1
+        replyBarNode.style.width = ASDimension(unit: .points, value: 2)
+        replyNameNode.maximumNumberOfLines = 1
+        replyBodyNode.maximumNumberOfLines = 1
+        replyBodyNode.truncationMode = .byTruncatingTail
+        replyCancelNode.setImage(
+            UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium))?
+                .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal),
+            for: .normal
+        )
+        replyCancelNode.style.preferredSize = CGSize(width: 30, height: 30)
 
         textInputNode.typingAttributes = [
-            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16)
+            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
+            NSAttributedString.Key.foregroundColor.rawValue: UIColor.white
         ]
-        textInputNode.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        textInputNode.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
         textInputNode.style.flexGrow = 1
         textInputNode.style.flexShrink = 1
-        textInputNode.style.minHeight = ASDimension(unit: .points, value: 36)
-        textInputNode.style.maxHeight = ASDimension(unit: .points, value: 120)
-        textInputNode.scrollEnabled = true
-        textInputNode.backgroundColor = .secondarySystemBackground
+        textInputNode.style.minHeight = ASDimension(unit: .points, value: 48)
+        textInputNode.style.maxHeight = ASDimension(unit: .points, value: 220)
+        textInputNode.scrollEnabled = false
+        textInputNode.backgroundColor = .clear
 
-        attachButtonNode.setImage(AppIcon.attach.rendered(size: 22, color: .gray), for: .normal)
-        attachButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
+        attachButtonNode.setImage(AppIcon.attach.rendered(size: 24, color: .gray), for: .normal)
+        attachButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
 
-        sendButtonNode.setImage(AppIcon.send.rendered(size: 22, weight: .semibold, color: .systemBlue), for: .normal)
-        sendButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
+        sendButtonNode.setImage(AppIcon.send.rendered(size: 24, weight: .semibold, color: .systemBlue), for: .normal)
+        sendButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
 
-        micButtonNode.setImage(AppIcon.mic.rendered(size: 22, color: .gray), for: .normal)
-        micButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
+        micButtonNode.setImage(AppIcon.mic.rendered(size: 24, color: .gray), for: .normal)
+        micButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
 
         overlayNode.alpha = 0
         overlayNode.isUserInteractionEnabled = false
@@ -83,9 +151,9 @@ final class ChatInputNode: ASDisplayNode {
 
     override func didLoad() {
         super.didLoad()
-        backgroundColor = .systemBackground
+        backgroundColor = .clear
         textInputNode.delegate = self
-        textInputNode.view.layer.cornerRadius = 18
+        textInputNode.view.layer.cornerRadius = 24
         textInputNode.view.clipsToBounds = true
         sendButtonNode.addTarget(self, action: #selector(sendTapped), forControlEvents: .touchUpInside)
         attachButtonNode.addTarget(self, action: #selector(attachTapped), forControlEvents: .touchUpInside)
@@ -121,13 +189,45 @@ final class ChatInputNode: ASDisplayNode {
             children: [rightButton]
         )
 
+        // Reply preview: inside the text input area with dark background
+        var inputChild: ASLayoutElement = textInputNode
+        if isShowingReply {
+            let textColumn = ASStackLayoutSpec(
+                direction: .vertical, spacing: 1, justifyContent: .start, alignItems: .start,
+                children: [replyNameNode, replyBodyNode]
+            )
+            textColumn.style.flexShrink = 1
+            textColumn.style.flexGrow = 1
+            let replyRow = ASStackLayoutSpec(
+                direction: .horizontal, spacing: 6, justifyContent: .start, alignItems: .center,
+                children: [replyBarNode, textColumn, replyCancelNode]
+            )
+            let replyInset = ASInsetLayoutSpec(
+                insets: UIEdgeInsets(top: 8, left: 12, bottom: 4, right: 8),
+                child: replyRow
+            )
+            let replyWithBg = ASBackgroundLayoutSpec(child: replyInset, background: replyBackgroundNode)
+            let replyPadded = ASInsetLayoutSpec(
+                insets: UIEdgeInsets(top: 4, left: 4, bottom: 0, right: 4),
+                child: replyWithBg
+            )
+
+            let inputColumn = ASStackLayoutSpec(
+                direction: .vertical, spacing: 0, justifyContent: .start, alignItems: .stretch,
+                children: [replyPadded, textInputNode]
+            )
+            inputColumn.style.flexGrow = 1
+            inputColumn.style.flexShrink = 1
+            inputChild = inputColumn
+        }
+
         let inputRow = ASStackLayoutSpec(
             direction: .horizontal, spacing: 8, justifyContent: .start, alignItems: .end,
-            children: [attachSpec, textInputNode, rightSpec]
+            children: [attachSpec, inputChild, rightSpec]
         )
 
         let paddedRow = ASInsetLayoutSpec(
-            insets: UIEdgeInsets(top: 6, left: 8, bottom: 6, right: 8),
+            insets: UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14),
             child: inputRow
         )
 
@@ -137,7 +237,7 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func recordingLayout(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        overlayNode.style.height = ASDimension(unit: .points, value: 48)
+        overlayNode.style.height = ASDimension(unit: .points, value: 60)
 
         let paddedOverlay = ASInsetLayoutSpec(
             insets: UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0),
@@ -150,7 +250,7 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func previewLayout(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        previewNode.style.height = ASDimension(unit: .points, value: 48)
+        previewNode.style.height = ASDimension(unit: .points, value: 60)
 
         let paddedPreview = ASInsetLayoutSpec(
             insets: UIEdgeInsets(top: 6, left: 0, bottom: 6, right: 0),
@@ -185,7 +285,9 @@ final class ChatInputNode: ASDisplayNode {
             break
         case .recording(let duration, let waveform):
             overlayNode.update(state: gestureState, duration: duration, waveform: waveform)
+            onWaveformUpdate?(waveform)
         case .finished(let fileURL, let duration, let waveform):
+            onWaveformUpdate?([])
             if gestureState == .locked {
                 showVoicePreview(VoicePreviewData(fileURL: fileURL, duration: duration, waveform: waveform))
             } else {
@@ -193,8 +295,10 @@ final class ChatInputNode: ASDisplayNode {
                 hideRecording()
             }
         case .cancelled:
+            onWaveformUpdate?([])
             hideRecording()
         case .error:
+            onWaveformUpdate?([])
             hideRecording()
         }
     }
@@ -468,6 +572,14 @@ extension ChatInputNode: UIGestureRecognizerDelegate {
 extension ChatInputNode: ASEditableTextNodeDelegate {
     func editableTextNodeDidUpdateText(_ editableTextNode: ASEditableTextNode) {
         updateTextEmptyState()
+        invalidateCalculatedLayout()
+        // Enable scroll when content exceeds maxHeight, disable to allow growth
+        let contentH = editableTextNode.textView.contentSize.height
+        let maxH: CGFloat = 220
+        let needsScroll = contentH > maxH
+        if editableTextNode.scrollEnabled != needsScroll {
+            editableTextNode.scrollEnabled = needsScroll
+        }
         onSizeChanged?()
     }
 }

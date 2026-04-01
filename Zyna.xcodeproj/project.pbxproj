@@ -142,7 +142,6 @@
 			buildRules = (
 			);
 			dependencies = (
-				32F7D2FF2E3D3EDD009282C3 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				32ED2CC32F58F2580080ED2A /* Zyna */,
@@ -185,7 +184,6 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				326865372E17643900A407FD /* XCRemoteSwiftPackageReference "GRDB.swift" */,
-				32F7D2FC2E3D35AC009282C3 /* XCRemoteSwiftPackageReference "SwiftLintPlugins" */,
 				32F7D3002E3D59B3009282C3 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */,
 				32F7D3182E3EE41A009282C3 /* XCRemoteSwiftPackageReference "KeychainAccess" */,
 				32ED2F0C2F59FA7E0080ED2A /* XCRemoteSwiftPackageReference "WebRTC" */,
@@ -219,13 +217,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin PBXTargetDependency section */
-		32F7D2FF2E3D3EDD009282C3 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			productRef = 32F7D2FE2E3D3EDD009282C3 /* SwiftLintBuildToolPlugin */;
-		};
-/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		324E196A2DAD578C00CB5769 /* Debug */ = {
@@ -456,14 +447,6 @@
 				minimumVersion = 138.0.0;
 			};
 		};
-		32F7D2FC2E3D35AC009282C3 /* XCRemoteSwiftPackageReference "SwiftLintPlugins" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/SimplyDanny/SwiftLintPlugins";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.59.1;
-			};
-		};
 		32F7D3002E3D59B3009282C3 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/matrix-org/matrix-rust-components-swift";
@@ -492,11 +475,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 32ED2F0C2F59FA7E0080ED2A /* XCRemoteSwiftPackageReference "WebRTC" */;
 			productName = WebRTC;
-		};
-		32F7D2FE2E3D3EDD009282C3 /* SwiftLintBuildToolPlugin */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 32F7D2FC2E3D35AC009282C3 /* XCRemoteSwiftPackageReference "SwiftLintPlugins" */;
-			productName = "plugin:SwiftLintBuildToolPlugin";
 		};
 		32F7D3012E3D59B3009282C3 /* MatrixRustSDK */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -12,7 +12,12 @@ final class AppCoordinator {
     private var mainCoordinator: MainCoordinator?
 
     func start() {
-        showAuth()
+        if MatrixClientService.shared.hasStoredSession {
+            showMain()
+            restoreSessionInBackground()
+        } else {
+            showAuth()
+        }
     }
 
     // MARK: - Navigation
@@ -27,18 +32,48 @@ final class AppCoordinator {
         window?.rootViewController = vc
     }
 
-    private func showVerificationIfNeeded() {
+    private func restoreSessionInBackground() {
+        Task {
+            do {
+                try await MatrixClientService.shared.restoreSession()
+                await MainActor.run { [weak self] in
+                    self?.resumeHeartbeatIfNeeded()
+                    self?.showVerificationIfNeeded(modal: true)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.showAuth()
+                }
+            }
+        }
+    }
+
+    private func showVerificationIfNeeded(modal: Bool = false) {
         let service = SessionVerificationService()
         if service.isVerified {
-            showMain()
+            if !modal { showMain() }
             return
         }
 
         let viewModel = SessionVerificationViewModel()
-        viewModel.onVerified = { [weak self] in self?.showMain() }
-        viewModel.onSkipped = { [weak self] in self?.showMain() }
-        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
-        window?.rootViewController = vc
+
+        if modal {
+            // Present over existing main screen
+            viewModel.onVerified = { [weak self] in
+                self?.window?.rootViewController?.dismiss(animated: true)
+            }
+            viewModel.onSkipped = { [weak self] in
+                self?.window?.rootViewController?.dismiss(animated: true)
+            }
+            let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+            vc.modalPresentationStyle = .fullScreen
+            window?.rootViewController?.present(vc, animated: true)
+        } else {
+            viewModel.onVerified = { [weak self] in self?.showMain() }
+            viewModel.onSkipped = { [weak self] in self?.showMain() }
+            let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+            window?.rootViewController = vc
+        }
     }
 
     private func showMain() {

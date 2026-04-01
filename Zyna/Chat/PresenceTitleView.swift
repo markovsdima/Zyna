@@ -15,8 +15,16 @@ final class PresenceTitleView: UIView {
         didSet { updateStatus() }
     }
 
+    var memberCount: Int? {
+        didSet { updateStatus() }
+    }
+
     var isTappable = false {
         didSet { tapRecognizer.isEnabled = isTappable }
+    }
+
+    var contentWidth: CGFloat {
+        stack.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width
     }
 
     var onTapped: (() -> Void)?
@@ -69,23 +77,33 @@ final class PresenceTitleView: UIView {
     }
 
     private func updateStatus() {
-        guard let presence else {
-            statusLabel.text = nil
-            statusLabel.isHidden = true
+        // DM: show presence
+        if let presence {
+            statusLabel.isHidden = false
+            if presence.online {
+                statusLabel.text = "online"
+                statusLabel.textColor = .systemGreen
+            } else if let lastSeen = presence.lastSeen {
+                statusLabel.text = lastSeen.presenceLastSeenString
+                statusLabel.textColor = .secondaryLabel
+            } else {
+                statusLabel.text = nil
+                statusLabel.isHidden = true
+            }
             return
         }
 
-        statusLabel.isHidden = false
-        if presence.online {
-            statusLabel.text = "online"
-            statusLabel.textColor = .systemGreen
-        } else if let lastSeen = presence.lastSeen {
-            statusLabel.text = lastSeen.presenceLastSeenString
+        // Group: show member count
+        if let memberCount {
+            statusLabel.isHidden = false
+            // TODO: Replace with stringsdict plural rules when adding localization
+            statusLabel.text = "\(memberCount) member\(memberCount == 1 ? "" : "s")"
             statusLabel.textColor = .secondaryLabel
-        } else {
-            statusLabel.text = nil
-            statusLabel.isHidden = true
+            return
         }
+
+        statusLabel.text = nil
+        statusLabel.isHidden = true
     }
 
     override var intrinsicContentSize: CGSize {

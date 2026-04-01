@@ -10,6 +10,9 @@ final class ContextSourceNode: ASDisplayNode {
     var activated: ((CGPoint) -> Void)?
     var shouldBegin: ((CGPoint) -> Bool)?
 
+    /// Called with the location (in self coordinates) when a quick tap ends before activation.
+    var onQuickTap: ((CGPoint) -> Void)?
+
     /// Called with screen-space point while finger drags after activation.
     var onDragChanged: ((CGPoint) -> Void)?
     /// Called with screen-space point when finger lifts after activation.
@@ -100,7 +103,11 @@ final class ContextSourceNode: ASDisplayNode {
                 let screenPoint = gesture.location(in: nil)
                 onDragEnded?(screenPoint)
             } else {
+                let wasQuickTap = shrinkAnimator == nil && activationTimer != nil
                 cancelShrink()
+                if wasQuickTap && gesture.state == .ended {
+                    onQuickTap?(location)
+                }
             }
             didActivate = false
 
@@ -123,6 +130,7 @@ final class ContextSourceNode: ASDisplayNode {
 
     private func beginShrinkAnimation() {
         onInteractionLockChanged?(true)
+        GlassService.shared.captureFor(duration: 0.3)
         let targetScale: CGFloat = 0.92
 
         shrinkAnimator = UIViewPropertyAnimator(
@@ -165,6 +173,7 @@ final class ContextSourceNode: ASDisplayNode {
         shrinkAnimator = nil
         onInteractionLockChanged?(false)
 
+        GlassService.shared.captureFor(duration: 0.25)
         UIView.animate(withDuration: 0.2) {
             self.contentNode.view.transform = .identity
         }

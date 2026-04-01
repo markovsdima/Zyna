@@ -71,7 +71,23 @@ final class ImageMessageCellNode: MessageCellNode {
                 )
             )
 
-            return ASOverlayLayoutSpec(child: self.imageNode, overlay: timeOverlay)
+            let imageWithTime = ASOverlayLayoutSpec(child: self.imageNode, overlay: timeOverlay)
+
+            if let replyHeader = self.replyHeaderNode {
+                let replyInset = ASInsetLayoutSpec(
+                    insets: UIEdgeInsets(top: 7, left: 12, bottom: 4, right: 12),
+                    child: replyHeader
+                )
+                return ASStackLayoutSpec(
+                    direction: .vertical,
+                    spacing: 0,
+                    justifyContent: .start,
+                    alignItems: .stretch,
+                    children: [replyInset, imageWithTime]
+                )
+            }
+
+            return imageWithTime
         }
 
         // Time badge

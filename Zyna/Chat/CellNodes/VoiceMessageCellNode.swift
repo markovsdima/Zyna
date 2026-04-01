@@ -157,12 +157,19 @@ final class VoiceMessageCellNode: MessageCellNode {
             children: [timeNode]
         )
 
+        var stackChildren: [ASLayoutElement] = []
+        if let replyHeader = replyHeaderNode {
+            stackChildren.append(replyHeader)
+        }
+        stackChildren.append(contentRow)
+        stackChildren.append(timeSpec)
+
         let fullStack = ASStackLayoutSpec(
             direction: .vertical,
             spacing: 2,
             justifyContent: .start,
             alignItems: .stretch,
-            children: [contentRow, timeSpec]
+            children: stackChildren
         )
 
         return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: fullStack)

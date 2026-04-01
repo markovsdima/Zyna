@@ -6,6 +6,7 @@
 import Foundation
 import Combine
 import MatrixRustSDK
+import GRDB
 
 private let logTimeline = ScopedLog(.timeline)
 
@@ -16,7 +17,7 @@ final class TimelineService {
     let isPaginatingSubject = CurrentValueSubject<Bool, Never>(false)
     let rawTimelineItemsSubject = PassthroughSubject<[TimelineItem], Never>()
 
-    /// Raw SDK diffs forwarded to the coalescer.
+    /// Raw SDK diffs forwarded to the diff batcher.
     var onDiffs: (([TimelineDiff]) -> Void)?
 
     private let room: Room
@@ -83,7 +84,7 @@ final class TimelineService {
             rawTimelineItemsSubject.send(allItems)
         }
 
-        // Forward raw diffs to the coalescer
+        // Forward raw diffs to the batcher
         onDiffs?(diffs)
 
         logTimeline("Timeline diffs forwarded: \(diffs.count) diffs")
@@ -117,6 +118,7 @@ final class TimelineService {
         }()
 
         let reactions = buildReactions(from: event)
+        let replyInfo = buildReplyInfo(from: event)
 
         let itemIdentifier: ChatItemIdentifier? = {
             switch event.eventOrTransactionId {
@@ -134,7 +136,8 @@ final class TimelineService {
             isOutgoing: event.isOwn,
             timestamp: timestamp,
             content: content,
-            reactions: reactions
+            reactions: reactions,
+            replyInfo: replyInfo
         )
     }
 
@@ -150,6 +153,56 @@ final class TimelineService {
                 )
             }
             .sorted { $0.count > $1.count }
+    }
+
+    private static func buildReplyInfo(from event: EventTimelineItem) -> ReplyInfo? {
+        guard case .msgLike(let msgContent) = event.content,
+              let inReplyTo = msgContent.inReplyTo else { return nil }
+
+        let replyEventId = inReplyTo.eventId()
+        switch inReplyTo.event() {
+        case .ready(let content, let sender, let senderProfile, _, _):
+            let name: String?
+            if case .ready(let displayName, _, _) = senderProfile {
+                name = displayName
+            } else {
+                name = nil
+            }
+            let body = bodyFromTimelineContent(content) ?? ""
+            return ReplyInfo(eventId: replyEventId, senderId: sender, senderDisplayName: name, body: body)
+        default:
+            // SDK details not ready — try local GRDB cache
+            if let stored = try? DatabaseService.shared.dbQueue.read({ db in
+                try StoredMessage.filter(Column("eventId") == replyEventId).fetchOne(db)
+            }) {
+                return ReplyInfo(
+                    eventId: replyEventId,
+                    senderId: stored.senderId,
+                    senderDisplayName: stored.senderDisplayName,
+                    body: stored.contentBody ?? stored.contentType
+                )
+            }
+            return ReplyInfo(eventId: replyEventId, senderId: "", senderDisplayName: nil, body: "")
+        }
+    }
+
+    private static func bodyFromTimelineContent(_ content: TimelineItemContent) -> String? {
+        guard case .msgLike(let msgContent) = content else { return nil }
+        switch msgContent.kind {
+        case .message(let msg):
+            switch msg.msgType {
+            case .text(let t): return t.body
+            case .image: return "Photo"
+            case .video: return "Video"
+            case .audio: return "Voice message"
+            case .file: return "File"
+            case .notice(let t): return t.body
+            case .emote(let t): return t.body
+            default: return "Message"
+            }
+        case .redacted: return "Deleted message"
+        default: return nil
+        }
     }
 
     private static func contentFromEvent(_ event: EventTimelineItem) -> ChatMessageContent? {
@@ -223,6 +276,16 @@ final class TimelineService {
             logTimeline("Message sent")
         } catch {
             logTimeline("Send failed: \(error)")
+        }
+    }
+
+    func sendReply(_ text: String, to eventId: String) async {
+        guard let timeline else { return }
+        do {
+            try await timeline.sendReply(msg: messageEventContentFromMarkdown(md: text), eventId: eventId)
+            logTimeline("Reply sent to \(eventId)")
+        } catch {
+            logTimeline("Reply send failed: \(error)")
         }
     }
 

@@ -22,6 +22,18 @@ enum ChatMessageContent: Equatable {
         return false
     }
 
+    var textPreview: String {
+        switch self {
+        case .text(let body): return body
+        case .image: return "Photo"
+        case .voice: return "Voice message"
+        case .notice(let body): return body
+        case .emote(let body): return body
+        case .unsupported: return "Message"
+        case .redacted: return "Deleted message"
+        }
+    }
+
     static func == (lhs: ChatMessageContent, rhs: ChatMessageContent) -> Bool {
         switch (lhs, rhs) {
         case (.text(let a), .text(let b)):
@@ -42,6 +54,15 @@ enum ChatMessageContent: Equatable {
             return false
         }
     }
+}
+
+// MARK: - Reply Info
+
+struct ReplyInfo: Equatable {
+    let eventId: String
+    let senderId: String
+    let senderDisplayName: String?
+    let body: String
 }
 
 // MARK: - Reaction
@@ -78,6 +99,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     let timestamp: Date
     let content: ChatMessageContent
     let reactions: [MessageReaction]
+    let replyInfo: ReplyInfo?
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         lhs.id == rhs.id
@@ -88,6 +110,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.timestamp == rhs.timestamp
             && lhs.content == rhs.content
             && lhs.reactions == rhs.reactions
+            && lhs.replyInfo == rhs.replyInfo
     }
 
     func hash(into hasher: inout Hasher) {
