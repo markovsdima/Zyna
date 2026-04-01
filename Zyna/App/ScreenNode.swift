@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-class BaseNode: ASDisplayNode {
+class ScreenNode: ASDisplayNode {
     
     override init() {
         super.init()

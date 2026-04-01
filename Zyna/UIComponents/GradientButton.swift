@@ -5,14 +5,15 @@
 
 import AsyncDisplayKit
 
-final class GradientButton: BaseNode {
+final class GradientButton: ASDisplayNode {
     let button: ButtonNode
     private let gradient: GradientNode
-    
+
     init(title: String, gradientStyle: GradientNodeStyle) {
         self.button = ButtonNode(title: title)
         self.gradient = GradientNode(nodeStyle: gradientStyle)
         super.init()
+        automaticallyManagesSubnodes = true
         self.cornerRadius = 16
         self.cornerRoundingType = .clipping
     }

@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-final class RoomDetailsNode: BaseNode {
+final class RoomDetailsNode: ScreenNode {
 
     var onSearchTapped: (() -> Void)?
 

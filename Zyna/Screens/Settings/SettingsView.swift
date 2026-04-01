@@ -10,7 +10,7 @@ final class SettingsViewController: ASDKViewController<ASDisplayNode> {
     private let textNode = ASTextNode()
 
     override init() {
-        super.init(node: BaseNode())
+        super.init(node: ScreenNode())
 
         textNode.attributedText = NSAttributedString(
             string: "Настройки",

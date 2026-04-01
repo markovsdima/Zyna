@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-final class SelectMembersNode: BaseNode {
+final class SelectMembersNode: ScreenNode {
 
     let tableNode = ASTableNode()
 

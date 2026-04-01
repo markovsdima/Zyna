@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-final class CreateGroupNode: BaseNode {
+final class CreateGroupNode: ScreenNode {
 
     let nameInputNode = ASEditableTextNode()
     let topicInputNode = ASEditableTextNode()

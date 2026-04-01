@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-final class ProfileNode: BaseNode {
+final class ProfileNode: ScreenNode {
 
     // MARK: - Callbacks
 
