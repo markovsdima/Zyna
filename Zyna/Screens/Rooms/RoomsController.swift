@@ -68,13 +68,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
             .store(in: &cancellables)
     }
 
-    @objc private func handleRefresh() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            self.tableNode.view.refreshControl?.endRefreshing()
-        }
-    }
-
-    override func viewWillAppear(_ animated: Bool) {
+override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         viewModel.registerPresence()
     }
@@ -89,9 +83,6 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
         // UIKit view access — safe in viewDidLoad (main thread, view loaded)
         tableNode.view.separatorStyle = .none
-        tableNode.view.refreshControl = UIRefreshControl()
-        tableNode.view.refreshControl?.addTarget(self, action: #selector(handleRefresh), for: .valueChanged)
-
         let composeButton = UIBarButtonItem(
             barButtonSystemItem: .compose,
             target: self,
