@@ -13,6 +13,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
     var onTitleTapped: ((String) -> Void)?
+    var onRoomDetailsTapped: (() -> Void)?
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -70,8 +71,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassNavBar.onBack = { [weak self] in self?.onBack?() }
         glassNavBar.onCall = { [weak self] in self?.onCallTapped?() }
         glassNavBar.onTitleTapped = { [weak self] in
-            guard let userId = self?.viewModel.partnerUserId else { return }
-            self?.onTitleTapped?(userId)
+            guard let self else { return }
+            if let userId = self.viewModel.partnerUserId {
+                self.onTitleTapped?(userId)
+            } else {
+                self.onRoomDetailsTapped?()
+            }
         }
         view.addSubview(glassNavBar)
 
@@ -145,7 +150,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.$partnerUserId
             .receive(on: DispatchQueue.main)
             .sink { [weak self] userId in
-                self?.glassNavBar.isTappable = userId != nil
+                if userId != nil { self?.glassNavBar.isTappable = true }
             }
             .store(in: &cancellables)
 
@@ -153,6 +158,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .receive(on: DispatchQueue.main)
             .sink { [weak self] count in
                 self?.glassNavBar.memberCount = count
+                if count != nil { self?.glassNavBar.isTappable = true }
             }
             .store(in: &cancellables)
     }

@@ -12,6 +12,7 @@ final class ProfileNode: BaseNode {
     var onAvatarTapped: (() -> Void)?
     var onLogoutTapped: (() -> Void)?
     var onSettingsTapped: (() -> Void)?
+    var onSearchTapped: (() -> Void)?
 
     // MARK: - Nodes
 
@@ -28,6 +29,7 @@ final class ProfileNode: BaseNode {
 
     private let presenceNode = ASTextNode()
 
+    private let searchButtonNode = ASButtonNode()
     private let settingsButtonNode = ASButtonNode()
     private let logoutButtonNode = ASButtonNode()
 
@@ -182,6 +184,19 @@ final class ProfileNode: BaseNode {
         copyButtonNode.imageNode.tintColor = .secondaryLabel
         copyButtonNode.addTarget(self, action: #selector(copyUserId), forControlEvents: .touchUpInside)
 
+        // Search messages
+        let searchIcon = UIImage(
+            systemName: "magnifyingglass",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
+        )
+        searchButtonNode.setImage(searchIcon, for: .normal)
+        searchButtonNode.setAttributedTitle(NSAttributedString(
+            string: "  Search Messages",
+            attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
+        ), for: .normal)
+        searchButtonNode.contentHorizontalAlignment = .middle
+        searchButtonNode.addTarget(self, action: #selector(searchTapped), forControlEvents: .touchUpInside)
+
         // Settings (own only)
         settingsButtonNode.setAttributedTitle(NSAttributedString(
             string: "Settings",
@@ -252,10 +267,14 @@ final class ProfileNode: BaseNode {
         spacer.style.flexGrow = 1
 
         var bottomChildren: [ASLayoutElement] = []
+        if case .other = mode {
+            searchButtonNode.style.alignSelf = .stretch
+            bottomChildren.append(searchButtonNode)
+        }
         if case .own = mode {
             settingsButtonNode.style.alignSelf = .stretch
             logoutButtonNode.style.alignSelf = .stretch
-            bottomChildren = [settingsButtonNode, logoutButtonNode]
+            bottomChildren.append(contentsOf: [settingsButtonNode, logoutButtonNode])
         }
 
         let bottomStack = ASStackLayoutSpec(
@@ -289,6 +308,10 @@ final class ProfileNode: BaseNode {
 
     @objc private func settingsTapped() {
         onSettingsTapped?()
+    }
+
+    @objc private func searchTapped() {
+        onSearchTapped?()
     }
 
     @objc private func logoutTapped() {
