@@ -404,6 +404,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                visibleRect.intersects(cell.frame) {
                 print("[nav] journey — already visible at idx=\(idx)")
                 node.tableNode.scrollToRow(at: targetIP, at: .middle, animated: true)
+                highlightMessage(eventId: eventId, delay: 0.3)
                 return
             }
         }
@@ -419,6 +420,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             if let idx = self.viewModel.indexOfMessage(eventId: eventId) {
                 self.node.tableNode.scrollToRow(at: IndexPath(row: idx, section: 0), at: .middle, animated: false)
             }
+            self.highlightMessage(eventId: eventId, delay: 0.1)
+        }
+    }
+
+    private func highlightMessage(eventId: String, delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self,
+                  let idx = self.viewModel.messages.firstIndex(where: { $0.eventId == eventId }),
+                  let cellNode = self.node.tableNode.nodeForRow(at: IndexPath(row: idx, section: 0))
+                      as? MessageCellNode
+            else { return }
+            cellNode.highlightBubble()
         }
     }
 

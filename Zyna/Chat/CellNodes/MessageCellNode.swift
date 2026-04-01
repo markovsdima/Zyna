@@ -170,6 +170,34 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         return ASInsetLayoutSpec(insets: MessageCellHelpers.cellInsets, child: hStack)
     }
 
+    // MARK: - Highlight
+
+    func highlightBubble() {
+        guard isNodeLoaded else { return }
+        let highlight = CALayer()
+        highlight.frame = bubbleNode.bounds
+        highlight.cornerRadius = bubbleNode.cornerRadius
+        highlight.backgroundColor = (isOutgoing ? UIColor.white : UIColor.label)
+            .withAlphaComponent(0.3).cgColor
+        highlight.opacity = 0
+        bubbleNode.layer.addSublayer(highlight)
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak highlight] in
+            highlight?.removeFromSuperlayer()
+        }
+
+        let anim = CAKeyframeAnimation(keyPath: "opacity")
+        anim.values = [0, 1, 1, 0]
+        anim.keyTimes = [0, 0.2, 0.6, 1.0]
+        anim.duration = 0.8
+        anim.isRemovedOnCompletion = false
+        anim.fillMode = .forwards
+        highlight.add(anim, forKey: "highlight")
+
+        CATransaction.commit()
+    }
+
     // MARK: - Context Menu Reparenting
 
     func extractBubbleForMenu(in coordinateSpace: UICoordinateSpace) -> (node: ASDisplayNode, frame: CGRect)? {
