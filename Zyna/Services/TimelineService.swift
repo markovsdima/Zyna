@@ -252,13 +252,13 @@ final class TimelineService {
 
     // MARK: - Pagination
 
-    func paginateBackwards() async {
+    func paginateBackwards(numEvents: UInt16 = 20) async {
         guard let timeline, !isPaginatingSubject.value else { return }
 
         await MainActor.run { isPaginatingSubject.send(true) }
 
         do {
-            try await timeline.paginateBackwards(numEvents: 20)
+            try await timeline.paginateBackwards(numEvents: numEvents)
             logTimeline("Paginated backwards successfully")
         } catch {
             logTimeline("Pagination failed: \(error)")

@@ -5,6 +5,7 @@
 
 import UIKit
 import Combine
+import GRDB
 import MatrixRustSDK
 
 final class ChatViewModel {
@@ -37,22 +38,26 @@ final class ChatViewModel {
     let timelineService: TimelineService
     private let diffBatcher: TimelineDiffBatcher
     private let window: MessageWindow
+    private let roomId: String
     private var hiddenIds = Set<String>()
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
+    private var historySyncTask: Task<Void, Never>?
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
 
     init(room: Room) {
+        let roomId = room.id()
+        self.roomId = roomId
         self.roomName = room.displayName() ?? "Chat"
         self.timelineService = TimelineService(room: room)
         self.diffBatcher = TimelineDiffBatcher(
-            roomId: room.id(),
+            roomId: roomId,
             dbQueue: DatabaseService.shared.dbQueue
         )
         self.window = MessageWindow(
-            roomId: room.id(),
+            roomId: roomId,
             dbQueue: DatabaseService.shared.dbQueue
         )
 
@@ -104,6 +109,13 @@ final class ChatViewModel {
                     self.memberCount = count
                 }
             }
+        }
+
+        // Background sync: paginate full history into GRDB
+        historySyncTask = Task { [weak self] in
+            // Let initial load and listener settle first
+            try? await Task.sleep(for: .seconds(1))
+            await self?.syncFullHistory()
         }
     }
 
@@ -308,10 +320,33 @@ final class ChatViewModel {
     }
 
     func cleanup() {
+        historySyncTask?.cancel()
         PresenceTracker.shared.unregister(for: "chat")
         timelineService.onDiffs = nil
         diffBatcher.onFlush = nil
         timelineService.stopListening()
+    }
+
+    // MARK: - Background History Sync
+
+    private func syncFullHistory() async {
+        while !Task.isCancelled {
+            let countBefore = storedMessageCount()
+            await timelineService.paginateBackwards(numEvents: 50)
+            // Wait for batcher debounce (50ms) + margin
+            try? await Task.sleep(for: .milliseconds(150))
+            let countAfter = storedMessageCount()
+            if countAfter <= countBefore { break }
+        }
+    }
+
+    private func storedMessageCount() -> Int {
+        let rid = roomId
+        return (try? DatabaseService.shared.dbQueue.read { db in
+            try StoredMessage
+                .filter(Column("roomId") == rid)
+                .fetchCount(db)
+        }) ?? 0
     }
 
     // MARK: - Prefetch
