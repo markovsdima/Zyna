@@ -23,6 +23,10 @@ final class GlassNavBar: UIView {
         didSet { titleView.presence = presence; setNeedsLayout() }
     }
 
+    var memberCount: Int? {
+        didSet { titleView.memberCount = memberCount; setNeedsLayout() }
+    }
+
     var isTappable: Bool = false {
         didSet { titleView.isTappable = isTappable }
     }

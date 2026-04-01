@@ -27,6 +27,7 @@ final class ChatViewModel {
     let roomName: String
     @Published private(set) var partnerPresence: UserPresence?
     @Published private(set) var partnerUserId: String?
+    @Published private(set) var memberCount: Int?
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -86,16 +87,23 @@ final class ChatViewModel {
         Task { [weak self] in
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
-            guard info.isDirect, let userId = info.heroes.first?.userId else { return }
-            await MainActor.run {
-                self.directUserId = userId
-                self.partnerUserId = userId
+
+            if info.isDirect, let userId = info.heroes.first?.userId {
+                await MainActor.run {
+                    self.directUserId = userId
+                    self.partnerUserId = userId
+                }
+                PresenceTracker.shared.register(userIds: [userId], for: "chat")
+                PresenceTracker.shared.$statuses
+                    .map { $0[userId] }
+                    .receive(on: DispatchQueue.main)
+                    .assign(to: &self.$partnerPresence)
+            } else {
+                let count = Int(info.joinedMembersCount)
+                await MainActor.run {
+                    self.memberCount = count
+                }
             }
-            PresenceTracker.shared.register(userIds: [userId], for: "chat")
-            PresenceTracker.shared.$statuses
-                .map { $0[userId] }
-                .receive(on: DispatchQueue.main)
-                .assign(to: &self.$partnerPresence)
         }
     }
 

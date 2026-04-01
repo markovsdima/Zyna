@@ -148,6 +148,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self?.glassNavBar.isTappable = userId != nil
             }
             .store(in: &cancellables)
+
+        viewModel.$memberCount
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] count in
+                self?.glassNavBar.memberCount = count
+            }
+            .store(in: &cancellables)
     }
 
 
