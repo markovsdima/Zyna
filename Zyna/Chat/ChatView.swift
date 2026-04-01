@@ -20,6 +20,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var batchFetchCancellable: AnyCancellable?
     private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
+    private let searchBar = SearchBarView()
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
@@ -80,6 +81,24 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
         view.addSubview(glassNavBar)
 
+        // Search bar (hidden by default)
+        searchBar.isHidden = true
+        searchBar.onQueryChanged = { [weak self] text in
+            self?.viewModel.updateSearchQuery(text)
+        }
+        searchBar.onNext = { [weak self] in
+            self?.viewModel.nextSearchResult()
+            self?.navigateToCurrentSearchResult()
+        }
+        searchBar.onPrevious = { [weak self] in
+            self?.viewModel.previousSearchResult()
+            self?.navigateToCurrentSearchResult()
+        }
+        searchBar.onCancel = { [weak self] in
+            self?.deactivateSearch()
+        }
+        view.addSubview(searchBar)
+
         // Glass input bar
         view.addSubview(glassInputBar)
 
@@ -104,6 +123,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         super.viewDidLayoutSubviews()
 
         glassNavBar.updateLayout(in: view)
+        searchBar.frame = CGRect(
+            x: 0, y: glassNavBar.coveredHeight,
+            width: view.bounds.width, height: 44
+        )
         if Self.showGlassComparison {
             glassComparison.updateLayout(in: view)
             glassTuning.frame = CGRect(
@@ -161,8 +184,33 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 if count != nil { self?.glassNavBar.isTappable = true }
             }
             .store(in: &cancellables)
+
+        viewModel.$searchState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                guard let self, let state else { return }
+                self.searchBar.updateStatus(state.statusText, hasResults: !state.results.isEmpty)
+            }
+            .store(in: &cancellables)
     }
 
+    // MARK: - Search
+
+    func activateSearch() {
+        viewModel.activateSearch()
+        searchBar.isHidden = false
+        searchBar.activate()
+    }
+
+    private func deactivateSearch() {
+        viewModel.deactivateSearch()
+        searchBar.isHidden = true
+    }
+
+    private func navigateToCurrentSearchResult() {
+        guard let result = viewModel.searchState?.currentResult else { return }
+        navigateToMessage(eventId: result.eventId)
+    }
 
     // MARK: - Bindings
 

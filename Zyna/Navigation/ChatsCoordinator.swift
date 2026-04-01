@@ -105,8 +105,7 @@ final class ChatsCoordinator {
     private func showProfile(userId: String) {
         let vc = ProfileViewController(mode: .other(userId: userId))
         vc.onSearchTapped = { [weak self] in
-            self?.navigationController.popViewController(animated: true)
-            // TODO: activate search mode in chat
+            self?.popAndActivateSearch()
         }
         navigationController.pushViewController(vc, animated: true)
     }
@@ -114,10 +113,17 @@ final class ChatsCoordinator {
     private func showRoomDetails(room: Room, memberCount: Int?) {
         let vc = RoomDetailsViewController(room: room, memberCount: memberCount)
         vc.onSearchTapped = { [weak self] in
-            self?.navigationController.popViewController(animated: true)
-            // TODO: activate search mode in chat
+            self?.popAndActivateSearch()
         }
         navigationController.pushViewController(vc, animated: true)
+    }
+
+    private func popAndActivateSearch() {
+        navigationController.popViewController(animated: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let chatVC = self?.navigationController.topViewController as? ChatViewController else { return }
+            chatVC.activateSearch()
+        }
     }
 
     // MARK: - Calls

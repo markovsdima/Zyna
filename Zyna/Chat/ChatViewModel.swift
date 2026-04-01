@@ -29,6 +29,7 @@ final class ChatViewModel {
     @Published private(set) var partnerPresence: UserPresence?
     @Published private(set) var partnerUserId: String?
     @Published private(set) var memberCount: Int?
+    @Published private(set) var searchState: ChatSearchState?
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -317,6 +318,56 @@ final class ChatViewModel {
             updates: [],
             animated: false
         ))
+    }
+
+    // MARK: - Search
+
+    func activateSearch() {
+        searchState = ChatSearchState()
+    }
+
+    func deactivateSearch() {
+        searchState = nil
+    }
+
+    func updateSearchQuery(_ text: String) {
+        guard searchState != nil else { return }
+        searchState?.query = text
+
+        guard !text.isEmpty else {
+            searchState?.results = []
+            searchState?.currentIndex = 0
+            return
+        }
+
+        let rid = roomId
+        let pattern = "%\(text)%"
+        let results: [ChatSearchResult] = (try? DatabaseService.shared.dbQueue.read { db in
+            try StoredMessage
+                .filter(Column("roomId") == rid)
+                .filter(Column("contentBody").like(pattern))
+                .order(Column("timestamp").desc)
+                .fetchAll(db)
+                .compactMap { msg -> ChatSearchResult? in
+                    guard let eventId = msg.eventId, let body = msg.contentBody else { return nil }
+                    return ChatSearchResult(eventId: eventId, body: body)
+                }
+        }) ?? []
+
+        searchState?.results = results
+        searchState?.currentIndex = 0
+    }
+
+    func nextSearchResult() {
+        guard var state = searchState, !state.results.isEmpty else { return }
+        state.currentIndex = (state.currentIndex + 1) % state.results.count
+        searchState = state
+    }
+
+    func previousSearchResult() {
+        guard var state = searchState, !state.results.isEmpty else { return }
+        state.currentIndex = (state.currentIndex - 1 + state.results.count) % state.results.count
+        searchState = state
     }
 
     func cleanup() {
