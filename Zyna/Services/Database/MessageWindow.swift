@@ -59,32 +59,56 @@ final class MessageWindow {
 
     // MARK: - Load Older (scroll up)
 
-    /// Returns true if messages were loaded from GRDB.
-    @discardableResult
-    func loadOlder(count: Int = pageSize) -> Bool {
-        guard let oldestTs = oldestTimestamp else { return false }
+    /// Result of an older-page GRDB query, ready to be applied on main.
+    struct OlderPage {
+        let merged: [StoredMessage]
+        let fetchedCount: Int
+        let trimmed: Bool
+    }
+
+    /// Pure GRDB read + merge/sort. Safe to call from any queue.
+    /// Returns nil when there's nothing to load.
+    func queryOlder(count: Int = pageSize) -> OlderPage? {
+        guard let oldestTs = oldestTimestamp else { return nil }
 
         let older = queryOlderThan(timestamp: oldestTs, limit: count)
-        guard !older.isEmpty else {
-            hasOlderInDB = false
-            return false
-        }
+        guard !older.isEmpty else { return nil }
 
-        // Build new window: existing + older
         var all = (previousStored ?? []) + older
         all.sort { $0.timestamp > $1.timestamp }
 
-        // Trim newest end if too large
         let maxSize = Self.windowSize + Self.trimThreshold
+        var trimmed = false
         if all.count > maxSize {
             all = Array(all.suffix(Self.windowSize))
-            hasNewerInDB = true
+            trimmed = true
         }
+        return OlderPage(
+            merged: all, fetchedCount: older.count, trimmed: trimmed
+        )
+    }
 
-        updateCursors(from: all)
+    /// Apply a pre-computed older page on the main thread. Mutates
+    /// cursors, flags, and fires onChange.
+    func applyOlder(_ page: OlderPage) {
+        if page.trimmed { hasNewerInDB = true }
+        updateCursors(from: page.merged)
         hasOlderInDB = checkHasOlderInDB()
-        emitChange(all)
-        log("loadOlder: +\(older.count), window=\(all.count)")
+        emitChange(page.merged)
+        log("loadOlder: +\(page.fetchedCount), window=\(page.merged.count)")
+    }
+
+    /// Legacy single-shot helper — performs both query and apply
+    /// synchronously on the caller's thread. Use for code paths
+    /// that are already on main. For bg-queue entry points, call
+    /// `queryOlder` then marshal `applyOlder` to main.
+    @discardableResult
+    func loadOlder(count: Int = pageSize) -> Bool {
+        guard let page = queryOlder(count: count) else {
+            if oldestTimestamp != nil { hasOlderInDB = false }
+            return false
+        }
+        applyOlder(page)
         return true
     }
 

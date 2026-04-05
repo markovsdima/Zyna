@@ -221,6 +221,19 @@ final class ChatViewModel {
         window.loadOlder()
     }
 
+    /// Query-only part of older-page load. Safe to call from any
+    /// thread; returns merged+sorted rows or nil when exhausted.
+    /// Caller is expected to pair this with `applyOlderPageFromDB`
+    /// on the main thread.
+    func queryOlderFromDB() -> MessageWindow.OlderPage? {
+        window.queryOlder()
+    }
+
+    /// Main-thread apply step paired with `queryOlderFromDB`.
+    func applyOlderPageFromDB(_ page: MessageWindow.OlderPage) {
+        window.applyOlder(page)
+    }
+
     /// Paginate from server when GRDB is exhausted.
     func loadOlderFromServer() {
         guard !isPaginating else { return }

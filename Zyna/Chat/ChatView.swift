@@ -409,14 +409,26 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
-        // Try GRDB first (synchronous)
-        let loadedFromDB = viewModel.loadOlderFromDB()
-        if loadedFromDB {
-            context.completeBatchFetching(true)
+        // Texture invokes this hook on a background queue — use it!
+        // The GRDB query + merge/sort stays on bg; we only marshal
+        // the UI-mutating apply step back to main.
+        if let page = viewModel.queryOlderFromDB() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.viewModel.applyOlderPageFromDB(page)
+                context.completeBatchFetching(true)
+            }
             return
         }
 
-        // Fall back to SDK pagination (async)
+        // No GRDB data available — fall back to SDK pagination.
+        // These methods already manage their own threading.
+        DispatchQueue.main.async { [weak self] in
+            self?.runServerBatchFetch(context: context)
+        }
+    }
+
+    private func runServerBatchFetch(context: ASBatchContext) {
         viewModel.loadOlderFromServer()
 
         batchFetchCancellable = viewModel.$isPaginating
