@@ -256,8 +256,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func bindInput() {
-        glassInputBar.inputNode.onSend = { [weak self] text in
-            self?.viewModel.sendMessage(text)
+        glassInputBar.inputNode.onSend = { [weak self] text, color in
+            self?.viewModel.sendMessage(text, color: color)
         }
 
         glassInputBar.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in

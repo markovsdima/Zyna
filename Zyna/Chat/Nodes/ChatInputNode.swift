@@ -36,7 +36,14 @@ final class ChatInputNode: ASDisplayNode {
     private let lockSlideDistance: CGFloat = 80
     private let slideDeadZone: CGFloat = 15
 
-    var onSend: ((String) -> Void)?
+    // MARK: - Send-colour palette
+
+    private var colorPalette: SendColorPaletteView?
+    private var colorPaletteLongPress: UILongPressGestureRecognizer?
+    private var pendingFlashTask: DispatchWorkItem?
+    private static let sendButtonDefaultTint: UIColor = .systemBlue
+
+    var onSend: ((String, UIColor?) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
     var onAttachTapped: (() -> Void)?
     var onSizeChanged: (() -> Void)?
@@ -163,6 +170,15 @@ final class ChatInputNode: ASDisplayNode {
         longPress.allowableMovement = 20
         longPress.delegate = self
         view.addGestureRecognizer(longPress)
+
+        let colorPress = UILongPressGestureRecognizer(
+            target: self, action: #selector(handleSendColorGesture(_:))
+        )
+        colorPress.minimumPressDuration = 0.3
+        colorPress.allowableMovement = .greatestFiniteMagnitude
+        colorPress.delegate = self
+        view.addGestureRecognizer(colorPress)
+        self.colorPaletteLongPress = colorPress
     }
 
     // MARK: - Layout
@@ -535,13 +551,103 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     @objc private func sendTapped() {
+        sendCurrentText(color: nil)
+    }
+
+    private func sendCurrentText(color: UIColor?) {
         let text = textInputNode.textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        onSend?(text)
+        onSend?(text, color)
         textInputNode.textView.text = ""
         updateTextEmptyState()
         setNeedsLayout()
         onSizeChanged?()
+    }
+
+    // MARK: - Send Colour Palette
+
+    @objc private func handleSendColorGesture(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            presentColorPalette()
+        case .changed:
+            guard let palette = colorPalette, let window = view.window else { return }
+            let pointInPalette = gesture.location(in: window)
+            let color = palette.updateHighlight(forPoint: pointInPalette)
+            applySendButtonTint(color ?? Self.sendButtonDefaultTint)
+        case .ended:
+            guard let palette = colorPalette, let window = view.window else { return }
+            let pointInPalette = gesture.location(in: window)
+            if let color = palette.colorAt(point: pointInPalette) {
+                // Released on a colour — send with that colour.
+                commitSendWithColor(color)
+            } else {
+                // Drag-off: enter sticky mode. Palette stays, waits
+                // for tap-on-color or tap-outside.
+                palette.updateHighlight(forPoint: nil)
+                applySendButtonTint(Self.sendButtonDefaultTint)
+            }
+        case .cancelled, .failed:
+            dismissColorPalette()
+        default:
+            break
+        }
+    }
+
+    private func presentColorPalette() {
+        guard colorPalette == nil, let window = view.window else { return }
+        let palette = SendColorPaletteView()
+        palette.onColorTapped = { [weak self] color in
+            self?.commitSendWithColor(color)
+        }
+        palette.onDismissTapped = { [weak self] in
+            self?.dismissColorPalette()
+        }
+        let sendCenter = window.convert(sendButtonNode.view.center,
+                                        from: sendButtonNode.view.superview)
+        palette.present(inWindow: window, pivotInWindow: sendCenter)
+        colorPalette = palette
+    }
+
+    private func dismissColorPalette() {
+        colorPalette?.dismiss { [weak self] in
+            self?.colorPalette = nil
+        }
+        applySendButtonTint(Self.sendButtonDefaultTint)
+    }
+
+    private func commitSendWithColor(_ color: UIColor) {
+        applySendButtonTint(color)
+        dismissColorPalette()
+        sendCurrentText(color: color)
+        scheduleSendButtonFlashBack()
+    }
+
+    private func applySendButtonTint(_ color: UIColor) {
+        sendButtonNode.setImage(
+            AppIcon.send.rendered(size: 24, weight: .semibold, color: color),
+            for: .normal
+        )
+    }
+
+    private func scheduleSendButtonFlashBack() {
+        pendingFlashTask?.cancel()
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            UIView.transition(
+                with: self.sendButtonNode.view,
+                duration: SendColorPaletteConfig.sendFlashFadeOut,
+                options: [.transitionCrossDissolve],
+                animations: {
+                    self.applySendButtonTint(Self.sendButtonDefaultTint)
+                },
+                completion: nil
+            )
+        }
+        pendingFlashTask = task
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + SendColorPaletteConfig.sendFlashHold, execute: task
+        )
     }
 
     private func updateTextEmptyState() {
@@ -559,11 +665,25 @@ final class ChatInputNode: ASDisplayNode {
 
 extension ChatInputNode: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        guard isTextEmpty, !isRecording, voicePreview == nil else { return false }
         let point = touch.location(in: view)
+
+        // Send-colour palette long-press: only when text is non-empty and
+        // the touch is over the Send button.
+        if gestureRecognizer === colorPaletteLongPress {
+            guard !isTextEmpty, !isRecording, voicePreview == nil else { return false }
+            return sendButtonHitRect.contains(point)
+        }
+
+        // Mic recording long-press: only when text is empty.
+        guard isTextEmpty, !isRecording, voicePreview == nil else { return false }
         let micFrame = micButtonNode.view.frame.insetBy(dx: -20, dy: -20)
         let micFrameInSelf = view.convert(micFrame, from: micButtonNode.supernode?.view ?? view)
         return micFrameInSelf.contains(point)
+    }
+
+    private var sendButtonHitRect: CGRect {
+        let frame = sendButtonNode.view.frame.insetBy(dx: -12, dy: -12)
+        return view.convert(frame, from: sendButtonNode.supernode?.view ?? view)
     }
 }
 

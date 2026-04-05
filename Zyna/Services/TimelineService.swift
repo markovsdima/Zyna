@@ -155,11 +155,29 @@ final class TimelineService {
         // matrix-rust-sdk's typed path runs formatted_body through an HTML
         // sanitiser that drops unknown attributes (including our data-zyna).
         // Read the raw event JSON and extract formatted_body ourselves.
-        guard let rawJSON = event.lazyProvider.debugInfo().originalJson,
-              let formattedBody = Self.extractFormattedBodyFromRawEvent(rawJSON)
+        // Primary path: parse raw event JSON (unmodified by SDK sanitiser).
+        if let rawJSON = event.lazyProvider.debugInfo().originalJson,
+           let formatted = Self.extractFormattedBodyFromRawEvent(rawJSON) {
+            return ZynaHTMLCodec.decode(htmlBody: formatted)
+        }
+
+        // Fallback for our own just-sent messages: during the brief
+        // window where the local-echo and first sync diffs arrive
+        // without the prepared rawJSON, the bubble would flash default
+        // blue. Look up the colour we just stashed in the cache.
+        guard event.isOwn,
+              case .msgLike(let c) = event.content,
+              case .message(let m) = c.kind,
+              case .text(let t) = m.msgType
         else { return ZynaMessageAttributes() }
 
-        return ZynaHTMLCodec.decode(htmlBody: formattedBody)
+        if let cached = OutgoingAttributesCache.shared.peek(
+            body: t.body,
+            senderId: event.sender
+        ) {
+            return cached
+        }
+        return ZynaMessageAttributes()
     }
 
     private static func extractFormattedBodyFromRawEvent(_ json: String) -> String? {
@@ -319,6 +337,17 @@ final class TimelineService {
             userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(text),
             attributes: zynaAttributes
         )
+
+        // Optimistic cache so the local echo / pre-rawJSON timeline
+        // updates can render the bubble with the right color instead
+        // of flashing through the default blue first.
+        let senderId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        OutgoingAttributesCache.shared.remember(
+            attributes: zynaAttributes,
+            body: text,
+            senderId: senderId
+        )
+
         do {
             try await timeline.send(msg: messageEventContentFromHtml(
                 body: text, htmlBody: htmlBody
