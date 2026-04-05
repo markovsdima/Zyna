@@ -13,8 +13,8 @@ import UIKit
 /// a `CABasicAnimation` on the clock-hand layer, which runs entirely
 /// on the GPU compositor.
 ///
-/// Cells reusing this node pay no CPU cost at scroll time: image
-/// contents are shared CGImages across every chat bubble.
+/// New cell nodes created by Texture pay no CPU cost: image contents
+/// are shared CGImages across every chat bubble.
 final class MessageStatusIconNode: ASDisplayNode {
 
     // MARK: - Public

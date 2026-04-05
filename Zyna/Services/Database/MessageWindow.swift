@@ -8,7 +8,9 @@ import GRDB
 
 /// Manages a cursor-based sliding window of messages for a single room.
 /// Queries GRDB on demand instead of observing all rows.
-/// All methods must be called on the main queue.
+/// Most methods mutate state and emit UI updates — call them on
+/// main. The `queryOlder()` read-only method is thread-safe and
+/// designed for use from Texture's background batch-fetch queue.
 final class MessageWindow {
 
     // MARK: - Configuration

@@ -6,15 +6,15 @@
 import UIKit
 
 /// Shared `UIImage` bank for message status indicators. Each image
-/// is rendered once with Core Graphics at app startup and reused by
-/// every message cell. Images are authored in black and always
+/// is rendered once with Core Graphics at app startup and shared by
+/// every message cell's `ASImageNode`. Images are authored in black and always
 /// returned with `.alwaysTemplate` rendering mode so callers can
 /// tint them per-bubble via `tintColor` on an `ASImageNode`.
 ///
-/// Why a shared bank (vs per-cell `draw(_:)`): cells in a chat list
-/// reuse aggressively; generating CGImages per-cell wastes CPU on
-/// scroll and balloons memory. A pool of four-to-five shared images
-/// costs ~1 KB total and lets every cell be a no-op `ASImageNode`.
+/// Why a shared bank (vs per-cell `draw(_:)`): Texture creates a
+/// new ASCellNode per index path; a custom `draw()` fires on each.
+/// A pool of shared UIImages costs ~1 KB total and lets every
+/// cell use a no-op `ASImageNode` with zero rendering overhead.
 enum MessageStatusIconImages {
 
     // MARK: - Public
