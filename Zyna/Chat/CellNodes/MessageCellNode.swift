@@ -42,6 +42,7 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
     let bubbleNode = ASDisplayNode()
     let contextSourceNode: ContextSourceNode
     let timeNode = ASTextNode()
+    let statusIconNode: MessageStatusIconNode?
     let senderNameNode = ASTextNode()
     private(set) var reactionsNode: ReactionsNode?
 
@@ -56,6 +57,18 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         self.isOutgoing = message.isOutgoing
         self.showSenderName = !message.isOutgoing && isGroupChat
         self.contextSourceNode = ContextSourceNode(contentNode: bubbleNode)
+
+        // Status icon only on the sender's own bubbles. For incoming
+        // messages it carries no information and would just clutter.
+        if message.isOutgoing,
+           let iconState = MessageStatusIcon.from(sendStatus: message.sendStatus) {
+            let node = MessageStatusIconNode()
+            node.icon = iconState
+            node.tintColour = UIColor.white.withAlphaComponent(0.7)
+            self.statusIconNode = node
+        } else {
+            self.statusIconNode = nil
+        }
         super.init()
 
         contextSourceNode.activated = { [weak self] _ in

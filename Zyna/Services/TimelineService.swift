@@ -139,7 +139,8 @@ final class TimelineService {
             content: content,
             reactions: reactions,
             replyInfo: replyInfo,
-            zynaAttributes: zynaAttributes
+            zynaAttributes: zynaAttributes,
+            sendStatus: "synced"
         )
     }
 

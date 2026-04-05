@@ -145,7 +145,8 @@ extension StoredMessage {
             content: content,
             reactions: Self.decodeReactions(reactionsJSON),
             replyInfo: replyInfo,
-            zynaAttributes: Self.decodeZynaAttributes(zynaAttributesJSON)
+            zynaAttributes: Self.decodeZynaAttributes(zynaAttributesJSON),
+            sendStatus: sendStatus
         )
     }
 
