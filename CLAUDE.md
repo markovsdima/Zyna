@@ -24,12 +24,14 @@ precious budget — spend it only on the actual UI mutation step.
 Texture-way is the default for anything rendered in cells:
 - Prefer `ASImageNode` with shared cached `UIImage`s over per-cell
   `draw(_:withParameters:)` Core Graphics. Texture does not recycle
-  cells like UIKit — it creates a new ASCellNode per index path,
-  and recreates them on batch updates / reloads. A custom `draw()`
-  fires on every new node, which adds up during rapid scrolling.
-  A shared `UIImage` costs zero per node: just a pointer to the
-  same CGImage. Tint via `imageModificationBlock` or template-
-  rendering + `tintColor` for per-cell colour variations.
+  cells like UIKit — it creates a new ASCellNode per index path
+  and does not recycle them. Nodes are deallocated only when
+  removed from the container (via deletion or reloadData). A
+  custom `draw()` fires on every new node, which adds up during
+  rapid scrolling. A shared `UIImage` costs zero per node: just
+  a pointer to the same CGImage. Tint via `imageModificationBlock`
+  or template-rendering + `tintColor` for per-cell colour
+  variations.
 - `draw(_:withParameters:isCancelled:isRasterizing:)` is a valid
   Texture API for async rendering, but it's the right tool only
   when the drawing is genuinely per-instance (unique content).
@@ -66,6 +68,10 @@ the work instead: bg query → (result) → main apply.
   loops** to "wait until X is ready". They burn CPU if the
   condition never flips. Use proper lifecycle hooks instead
   (`didLoad()`, observation, closures called by framework).
+- **ASDisplayNode `init()` runs off-main**; `didLoad()` fires
+  when the backing UIView/CALayer is loaded. Put gesture
+  recognisers, `view`/`layer` configuration, and anything
+  that touches UIKit into `didLoad()`, never `init()`.
 - **`SDK uniqueId` is not stable across Timeline recreation**
   (opening/closing a chat gives the same event a new
   `uniqueId`). TimelineDiffBatcher relies on collision
