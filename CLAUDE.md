@@ -23,10 +23,13 @@ precious budget — spend it only on the actual UI mutation step.
 
 Texture-way is the default for anything rendered in cells:
 - Prefer `ASImageNode` with shared cached `UIImage`s over per-cell
-  `draw(_:withParameters:)` Core Graphics. Cell reuse is
-  aggressive; regenerating CGImages per reuse costs CPU. Render
-  once into a shared image, tint via `imageModificationBlock` or
-  template-rendering + `tintColor` for per-cell variations.
+  `draw(_:withParameters:)` Core Graphics. Texture does not recycle
+  cells like UIKit — it creates a new ASCellNode per index path,
+  and recreates them on batch updates / reloads. A custom `draw()`
+  fires on every new node, which adds up during rapid scrolling.
+  A shared `UIImage` costs zero per node: just a pointer to the
+  same CGImage. Tint via `imageModificationBlock` or template-
+  rendering + `tintColor` for per-cell colour variations.
 - `draw(_:withParameters:isCancelled:isRasterizing:)` is a valid
   Texture API for async rendering, but it's the right tool only
   when the drawing is genuinely per-instance (unique content).
@@ -75,6 +78,16 @@ the work instead: bg query → (result) → main apply.
 - Prefer small pure functions + enums over class hierarchies
 - Tests: Swift Testing framework in ZynaTests target
 
+## Git / PR conventions
+- Commit messages: conventional style (`feat:`, `fix:`, `chore:`,
+  `refactor:`, `perf:`, `docs:`)
+- Commit title ≤ 72 chars; body optional but welcome for context
+- PR titles do NOT use conventional prefixes — just a clear
+  human-readable title (GitHub categorises PRs via labels/status)
+- PR descriptions are markdown rendered by GitHub — do NOT wrap
+  paragraphs at 72 chars there. Let GitHub handle reflow.
+  (The 72-char rule is for source-file comments only.)
+
 ## Matrix SDK constraints
 - Using typed `timeline.send(msg:)` path — gives SendHandle with
   `.abort()` and SDK-native retry/queue for free
@@ -92,10 +105,7 @@ the work instead: bg query → (result) → main apply.
 - `Services/` — SDK-facing services (MatrixClient, Timeline, Rooms)
 - `Services/Database/` — GRDB layer
 
-## Git / commits
-- Commit messages: conventional style (`feat:`, `fix:`, `chore:`,
-  `refactor:`)
-- Commit title ≤ 72 chars; body optional but welcome for context
+## Git behaviour
 - User commits manually; Claude does NOT commit unless asked
 
 ## On breaking these rules
