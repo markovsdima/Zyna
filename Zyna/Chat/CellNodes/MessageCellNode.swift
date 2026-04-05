@@ -65,8 +65,10 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         automaticallyManagesSubnodes = true
         selectionStyle = .none
 
-        // Bubble defaults
-        bubbleNode.backgroundColor = isOutgoing ? .systemBlue : .systemGray5
+        // Bubble defaults — custom color from Zyna attributes wins if set.
+        let customColor = message.zynaAttributes.color
+        bubbleNode.backgroundColor = customColor
+            ?? (isOutgoing ? .systemBlue : .systemGray5)
         bubbleNode.cornerRadius = 18
         bubbleNode.clipsToBounds = true
         bubbleNode.automaticallyManagesSubnodes = true

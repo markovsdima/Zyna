@@ -264,9 +264,38 @@ final class ChatViewModel {
         if let replyTarget = replyingTo, let eventId = replyTarget.eventId {
             replyingTo = nil
             Task { await timelineService.sendReply(text, to: eventId) }
-        } else {
-            Task { await timelineService.sendMessage(text) }
+            return
         }
+
+        // Debug: "!<colorName> text" → send with Zyna color attribute.
+        // Temporary until we have a proper color picker UI.
+        if let (body, color) = Self.parseDebugColorPrefix(text) {
+            let attrs = ZynaMessageAttributes(color: color)
+            Task { await timelineService.sendMessage(body, zynaAttributes: attrs) }
+            return
+        }
+
+        Task { await timelineService.sendMessage(text) }
+    }
+
+    private static func parseDebugColorPrefix(_ text: String) -> (String, UIColor)? {
+        let palette: [String: UIColor] = [
+            "red":    .systemRed,
+            "green":  .systemGreen,
+            "blue":   .systemBlue,
+            "orange": .systemOrange,
+            "purple": .systemPurple,
+            "pink":   .systemPink,
+            "yellow": .systemYellow
+        ]
+        guard text.hasPrefix("!") else { return nil }
+        let afterBang = text.dropFirst()
+        guard let spaceIdx = afterBang.firstIndex(of: " ") else { return nil }
+        let name = String(afterBang[..<spaceIdx]).lowercased()
+        guard let color = palette[name] else { return nil }
+        let body = String(afterBang[afterBang.index(after: spaceIdx)...])
+        guard !body.isEmpty else { return nil }
+        return (body, color)
     }
 
     func sendVoiceMessage(fileURL: URL, duration: TimeInterval, waveform: [Float]) {

@@ -119,6 +119,7 @@ final class TimelineService {
 
         let reactions = buildReactions(from: event)
         let replyInfo = buildReplyInfo(from: event)
+        let zynaAttributes = extractZynaAttributes(from: event)
 
         let itemIdentifier: ChatItemIdentifier? = {
             switch event.eventOrTransactionId {
@@ -137,8 +138,36 @@ final class TimelineService {
             timestamp: timestamp,
             content: content,
             reactions: reactions,
-            replyInfo: replyInfo
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes
         )
+    }
+
+    /// Extracts Zyna-specific attributes embedded in the event's
+    /// `formatted_body` HTML. Returns empty attributes for non-text
+    /// content or when no carrier span is present.
+    private static func extractZynaAttributes(from event: EventTimelineItem) -> ZynaMessageAttributes {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let message) = msgContent.kind,
+              case .text = message.msgType
+        else { return ZynaMessageAttributes() }
+
+        // matrix-rust-sdk's typed path runs formatted_body through an HTML
+        // sanitiser that drops unknown attributes (including our data-zyna).
+        // Read the raw event JSON and extract formatted_body ourselves.
+        guard let rawJSON = event.lazyProvider.debugInfo().originalJson,
+              let formattedBody = Self.extractFormattedBodyFromRawEvent(rawJSON)
+        else { return ZynaMessageAttributes() }
+
+        return ZynaHTMLCodec.decode(htmlBody: formattedBody)
+    }
+
+    private static func extractFormattedBodyFromRawEvent(_ json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = root["content"] as? [String: Any]
+        else { return nil }
+        return content["formatted_body"] as? String
     }
 
     private static func buildReactions(from event: EventTimelineItem) -> [MessageReaction] {
@@ -274,6 +303,27 @@ final class TimelineService {
         do {
             try await timeline.send(msg: messageEventContentFromMarkdown(md: text))
             logTimeline("Message sent")
+        } catch {
+            logTimeline("Send failed: \(error)")
+        }
+    }
+
+    /// Sends a text message with a Zyna-specific HTML carrier that embeds
+    /// `ZynaMessageAttributes` (custom color, future checklist, etc.).
+    /// The plain `body` remains clean text for foreign clients.
+    func sendMessage(_ text: String, zynaAttributes: ZynaMessageAttributes) async {
+        guard let timeline else { return }
+        // Foreign clients will show `text` verbatim; Zyna reads the
+        // data-zyna span out of formatted_body on receive.
+        let htmlBody = ZynaHTMLCodec.encode(
+            userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(text),
+            attributes: zynaAttributes
+        )
+        do {
+            try await timeline.send(msg: messageEventContentFromHtml(
+                body: text, htmlBody: htmlBody
+            ))
+            logTimeline("Message sent with Zyna attrs")
         } catch {
             logTimeline("Send failed: \(error)")
         }
