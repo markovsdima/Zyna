@@ -77,8 +77,9 @@ final class GlassService {
     private var waveEnergy: Float = 0
     private var lastTickTime: CFTimeInterval = 0
 
-    #if DEBUG
     private var tickCount = 0
+    
+    #if DEBUG
     private var statsTimestamp: CFTimeInterval = 0
     private var perGlassStats: [UUID: (cap: Double, ren: Double, count: Int, label: String)] = [:]
     #endif
