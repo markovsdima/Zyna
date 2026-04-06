@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import UIKit
 import GRDB
 import MatrixRustSDK
 
@@ -32,6 +33,11 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var replySenderId: String?
     var replySenderName: String?
     var replyBody: String?
+
+    /// Serialised Zyna-specific message attributes (color, checklist,
+    /// callSignal etc.) extracted from the event's `formatted_body` HTML.
+    /// NULL when no attributes present.
+    var zynaAttributesJSON: String?
 }
 
 // MARK: - ChatMessage → StoredMessage
@@ -95,6 +101,8 @@ extension StoredMessage {
             self.replySenderName = reply.senderDisplayName
             self.replyBody = reply.body
         }
+
+        self.zynaAttributesJSON = Self.encodeZynaAttributes(msg.zynaAttributes)
     }
 }
 
@@ -136,7 +144,9 @@ extension StoredMessage {
             timestamp: Date(timeIntervalSince1970: timestamp),
             content: content,
             reactions: Self.decodeReactions(reactionsJSON),
-            replyInfo: replyInfo
+            replyInfo: replyInfo,
+            zynaAttributes: Self.decodeZynaAttributes(zynaAttributesJSON),
+            sendStatus: sendStatus
         )
     }
 
@@ -198,5 +208,40 @@ private extension StoredMessage {
         guard let data = json.data(using: .utf8),
               let items = try? JSONDecoder().decode([ReactionJSON].self, from: data) else { return [] }
         return items.map { MessageReaction(key: $0.key, count: $0.count, isOwn: $0.isOwn) }
+    }
+}
+
+// MARK: - Zyna attributes JSON
+
+private extension StoredMessage {
+
+    struct ZynaAttributesJSON: Codable {
+        let color: String?
+        let checklist: [ChecklistItem]?
+        let callSignal: CallSignalData?
+    }
+
+    static func encodeZynaAttributes(_ attrs: ZynaMessageAttributes) -> String? {
+        guard !attrs.isEmpty else { return nil }
+        let payload = ZynaAttributesJSON(
+            color: attrs.color?.hexString,
+            checklist: attrs.checklist,
+            callSignal: attrs.callSignal
+        )
+        guard let data = try? JSONEncoder().encode(payload),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        return json
+    }
+
+    static func decodeZynaAttributes(_ json: String?) -> ZynaMessageAttributes {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(ZynaAttributesJSON.self, from: data)
+        else { return ZynaMessageAttributes() }
+        return ZynaMessageAttributes(
+            color: payload.color.flatMap(UIColor.fromHexString),
+            checklist: payload.checklist,
+            callSignal: payload.callSignal
+        )
     }
 }

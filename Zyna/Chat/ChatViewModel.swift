@@ -5,6 +5,7 @@
 
 import UIKit
 import Combine
+import GRDB
 import MatrixRustSDK
 
 final class ChatViewModel {
@@ -28,6 +29,7 @@ final class ChatViewModel {
     @Published private(set) var partnerPresence: UserPresence?
     @Published private(set) var partnerUserId: String?
     @Published private(set) var memberCount: Int?
+    @Published private(set) var searchState: ChatSearchState?
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -37,22 +39,26 @@ final class ChatViewModel {
     let timelineService: TimelineService
     private let diffBatcher: TimelineDiffBatcher
     private let window: MessageWindow
+    private let roomId: String
     private var hiddenIds = Set<String>()
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
+    private var historySyncTask: Task<Void, Never>?
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
 
     init(room: Room) {
+        let roomId = room.id()
+        self.roomId = roomId
         self.roomName = room.displayName() ?? "Chat"
         self.timelineService = TimelineService(room: room)
         self.diffBatcher = TimelineDiffBatcher(
-            roomId: room.id(),
+            roomId: roomId,
             dbQueue: DatabaseService.shared.dbQueue
         )
         self.window = MessageWindow(
-            roomId: room.id(),
+            roomId: roomId,
             dbQueue: DatabaseService.shared.dbQueue
         )
 
@@ -104,6 +110,13 @@ final class ChatViewModel {
                     self.memberCount = count
                 }
             }
+        }
+
+        // Background sync: paginate full history into GRDB
+        historySyncTask = Task { [weak self] in
+            // Let initial load and listener settle first
+            try? await Task.sleep(for: .seconds(1))
+            await self?.syncFullHistory()
         }
     }
 
@@ -208,6 +221,19 @@ final class ChatViewModel {
         window.loadOlder()
     }
 
+    /// Query-only part of older-page load. Safe to call from any
+    /// thread; returns merged+sorted rows or nil when exhausted.
+    /// Caller is expected to pair this with `applyOlderPageFromDB`
+    /// on the main thread.
+    func queryOlderFromDB() -> MessageWindow.OlderPage? {
+        window.queryOlder()
+    }
+
+    /// Main-thread apply step paired with `queryOlderFromDB`.
+    func applyOlderPageFromDB(_ page: MessageWindow.OlderPage) {
+        window.applyOlder(page)
+    }
+
     /// Paginate from server when GRDB is exhausted.
     func loadOlderFromServer() {
         guard !isPaginating else { return }
@@ -247,13 +273,21 @@ final class ChatViewModel {
 
     // MARK: - Actions
 
-    func sendMessage(_ text: String) {
+    func sendMessage(_ text: String, color: UIColor? = nil) {
         if let replyTarget = replyingTo, let eventId = replyTarget.eventId {
             replyingTo = nil
+            // TODO: thread color through sendReply once we want coloured replies.
             Task { await timelineService.sendReply(text, to: eventId) }
-        } else {
-            Task { await timelineService.sendMessage(text) }
+            return
         }
+
+        if let color {
+            let attrs = ZynaMessageAttributes(color: color)
+            Task { await timelineService.sendMessage(text, zynaAttributes: attrs) }
+            return
+        }
+
+        Task { await timelineService.sendMessage(text) }
     }
 
     func sendVoiceMessage(fileURL: URL, duration: TimeInterval, waveform: [Float]) {
@@ -307,11 +341,84 @@ final class ChatViewModel {
         ))
     }
 
+    // MARK: - Search
+
+    func activateSearch() {
+        searchState = ChatSearchState()
+    }
+
+    func deactivateSearch() {
+        searchState = nil
+    }
+
+    func updateSearchQuery(_ text: String) {
+        guard searchState != nil else { return }
+        searchState?.query = text
+
+        guard !text.isEmpty else {
+            searchState?.results = []
+            searchState?.currentIndex = 0
+            return
+        }
+
+        let rid = roomId
+        let pattern = "%\(text)%"
+        let results: [ChatSearchResult] = (try? DatabaseService.shared.dbQueue.read { db in
+            try StoredMessage
+                .filter(Column("roomId") == rid)
+                .filter(Column("contentBody").like(pattern))
+                .order(Column("timestamp").desc)
+                .fetchAll(db)
+                .compactMap { msg -> ChatSearchResult? in
+                    guard let eventId = msg.eventId, let body = msg.contentBody else { return nil }
+                    return ChatSearchResult(eventId: eventId, body: body)
+                }
+        }) ?? []
+
+        searchState?.results = results
+        searchState?.currentIndex = 0
+    }
+
+    func nextSearchResult() {
+        guard var state = searchState, !state.results.isEmpty else { return }
+        state.currentIndex = (state.currentIndex + 1) % state.results.count
+        searchState = state
+    }
+
+    func previousSearchResult() {
+        guard var state = searchState, !state.results.isEmpty else { return }
+        state.currentIndex = (state.currentIndex - 1 + state.results.count) % state.results.count
+        searchState = state
+    }
+
     func cleanup() {
+        historySyncTask?.cancel()
         PresenceTracker.shared.unregister(for: "chat")
         timelineService.onDiffs = nil
         diffBatcher.onFlush = nil
         timelineService.stopListening()
+    }
+
+    // MARK: - Background History Sync
+
+    private func syncFullHistory() async {
+        while !Task.isCancelled {
+            let countBefore = storedMessageCount()
+            await timelineService.paginateBackwards(numEvents: 50)
+            // Wait for batcher debounce (50ms) + margin
+            try? await Task.sleep(for: .milliseconds(150))
+            let countAfter = storedMessageCount()
+            if countAfter <= countBefore { break }
+        }
+    }
+
+    private func storedMessageCount() -> Int {
+        let rid = roomId
+        return (try? DatabaseService.shared.dbQueue.read { db in
+            try StoredMessage
+                .filter(Column("roomId") == rid)
+                .fetchCount(db)
+        }) ?? 0
     }
 
     // MARK: - Prefetch

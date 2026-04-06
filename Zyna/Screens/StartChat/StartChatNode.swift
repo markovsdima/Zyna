@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-final class StartChatNode: BaseNode {
+final class StartChatNode: ScreenNode {
 
     let tableNode = ASTableNode()
 

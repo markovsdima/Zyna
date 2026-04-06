@@ -13,12 +13,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
     var onTitleTapped: ((String) -> Void)?
+    var onRoomDetailsTapped: (() -> Void)?
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
     private var batchFetchCancellable: AnyCancellable?
     private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
+    private let searchBar = SearchBarView()
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
@@ -70,10 +72,32 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassNavBar.onBack = { [weak self] in self?.onBack?() }
         glassNavBar.onCall = { [weak self] in self?.onCallTapped?() }
         glassNavBar.onTitleTapped = { [weak self] in
-            guard let userId = self?.viewModel.partnerUserId else { return }
-            self?.onTitleTapped?(userId)
+            guard let self else { return }
+            if let userId = self.viewModel.partnerUserId {
+                self.onTitleTapped?(userId)
+            } else {
+                self.onRoomDetailsTapped?()
+            }
         }
         view.addSubview(glassNavBar)
+
+        // Search bar (hidden by default)
+        searchBar.isHidden = true
+        searchBar.onQueryChanged = { [weak self] text in
+            self?.viewModel.updateSearchQuery(text)
+        }
+        searchBar.onNext = { [weak self] in
+            self?.viewModel.nextSearchResult()
+            self?.navigateToCurrentSearchResult()
+        }
+        searchBar.onPrevious = { [weak self] in
+            self?.viewModel.previousSearchResult()
+            self?.navigateToCurrentSearchResult()
+        }
+        searchBar.onCancel = { [weak self] in
+            self?.deactivateSearch()
+        }
+        view.addSubview(searchBar)
 
         // Glass input bar
         view.addSubview(glassInputBar)
@@ -99,6 +123,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         super.viewDidLayoutSubviews()
 
         glassNavBar.updateLayout(in: view)
+        searchBar.frame = CGRect(
+            x: 0, y: glassNavBar.coveredHeight,
+            width: view.bounds.width, height: 44
+        )
         if Self.showGlassComparison {
             glassComparison.updateLayout(in: view)
             glassTuning.frame = CGRect(
@@ -145,7 +173,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.$partnerUserId
             .receive(on: DispatchQueue.main)
             .sink { [weak self] userId in
-                self?.glassNavBar.isTappable = userId != nil
+                if userId != nil { self?.glassNavBar.isTappable = true }
             }
             .store(in: &cancellables)
 
@@ -153,10 +181,36 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .receive(on: DispatchQueue.main)
             .sink { [weak self] count in
                 self?.glassNavBar.memberCount = count
+                if count != nil { self?.glassNavBar.isTappable = true }
+            }
+            .store(in: &cancellables)
+
+        viewModel.$searchState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                guard let self, let state else { return }
+                self.searchBar.updateStatus(state.statusText, hasResults: !state.results.isEmpty)
             }
             .store(in: &cancellables)
     }
 
+    // MARK: - Search
+
+    func activateSearch() {
+        viewModel.activateSearch()
+        searchBar.isHidden = false
+        searchBar.activate()
+    }
+
+    private func deactivateSearch() {
+        viewModel.deactivateSearch()
+        searchBar.isHidden = true
+    }
+
+    private func navigateToCurrentSearchResult() {
+        guard let result = viewModel.searchState?.currentResult else { return }
+        navigateToMessage(eventId: result.eventId)
+    }
 
     // MARK: - Bindings
 
@@ -202,8 +256,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func bindInput() {
-        glassInputBar.inputNode.onSend = { [weak self] text in
-            self?.viewModel.sendMessage(text)
+        glassInputBar.inputNode.onSend = { [weak self] text, color in
+            self?.viewModel.sendMessage(text, color: color)
         }
 
         glassInputBar.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
@@ -355,14 +409,26 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
-        // Try GRDB first (synchronous)
-        let loadedFromDB = viewModel.loadOlderFromDB()
-        if loadedFromDB {
-            context.completeBatchFetching(true)
+        // Texture invokes this hook on a background queue — use it!
+        // The GRDB query + merge/sort stays on bg; we only marshal
+        // the UI-mutating apply step back to main.
+        if let page = viewModel.queryOlderFromDB() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.viewModel.applyOlderPageFromDB(page)
+                context.completeBatchFetching(true)
+            }
             return
         }
 
-        // Fall back to SDK pagination (async)
+        // No GRDB data available — fall back to SDK pagination.
+        // These methods already manage their own threading.
+        DispatchQueue.main.async { [weak self] in
+            self?.runServerBatchFetch(context: context)
+        }
+    }
+
+    private func runServerBatchFetch(context: ASBatchContext) {
         viewModel.loadOlderFromServer()
 
         batchFetchCancellable = viewModel.$isPaginating

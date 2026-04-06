@@ -119,6 +119,7 @@ final class TimelineService {
 
         let reactions = buildReactions(from: event)
         let replyInfo = buildReplyInfo(from: event)
+        let zynaAttributes = extractZynaAttributes(from: event)
 
         let itemIdentifier: ChatItemIdentifier? = {
             switch event.eventOrTransactionId {
@@ -137,8 +138,55 @@ final class TimelineService {
             timestamp: timestamp,
             content: content,
             reactions: reactions,
-            replyInfo: replyInfo
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes,
+            sendStatus: "synced"
         )
+    }
+
+    /// Extracts Zyna-specific attributes embedded in the event's
+    /// `formatted_body` HTML. Returns empty attributes for non-text
+    /// content or when no carrier span is present.
+    private static func extractZynaAttributes(from event: EventTimelineItem) -> ZynaMessageAttributes {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let message) = msgContent.kind,
+              case .text = message.msgType
+        else { return ZynaMessageAttributes() }
+
+        // matrix-rust-sdk's typed path runs formatted_body through an HTML
+        // sanitiser that drops unknown attributes (including our data-zyna).
+        // Read the raw event JSON and extract formatted_body ourselves.
+        // Primary path: parse raw event JSON (unmodified by SDK sanitiser).
+        if let rawJSON = event.lazyProvider.debugInfo().originalJson,
+           let formatted = Self.extractFormattedBodyFromRawEvent(rawJSON) {
+            return ZynaHTMLCodec.decode(htmlBody: formatted)
+        }
+
+        // Fallback for our own just-sent messages: during the brief
+        // window where the local-echo and first sync diffs arrive
+        // without the prepared rawJSON, the bubble would flash default
+        // blue. Look up the colour we just stashed in the cache.
+        guard event.isOwn,
+              case .msgLike(let c) = event.content,
+              case .message(let m) = c.kind,
+              case .text(let t) = m.msgType
+        else { return ZynaMessageAttributes() }
+
+        if let cached = OutgoingAttributesCache.shared.peek(
+            body: t.body,
+            senderId: event.sender
+        ) {
+            return cached
+        }
+        return ZynaMessageAttributes()
+    }
+
+    private static func extractFormattedBodyFromRawEvent(_ json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = root["content"] as? [String: Any]
+        else { return nil }
+        return content["formatted_body"] as? String
     }
 
     private static func buildReactions(from event: EventTimelineItem) -> [MessageReaction] {
@@ -252,13 +300,13 @@ final class TimelineService {
 
     // MARK: - Pagination
 
-    func paginateBackwards() async {
+    func paginateBackwards(numEvents: UInt16 = 20) async {
         guard let timeline, !isPaginatingSubject.value else { return }
 
         await MainActor.run { isPaginatingSubject.send(true) }
 
         do {
-            try await timeline.paginateBackwards(numEvents: 20)
+            try await timeline.paginateBackwards(numEvents: numEvents)
             logTimeline("Paginated backwards successfully")
         } catch {
             logTimeline("Pagination failed: \(error)")
@@ -274,6 +322,38 @@ final class TimelineService {
         do {
             try await timeline.send(msg: messageEventContentFromMarkdown(md: text))
             logTimeline("Message sent")
+        } catch {
+            logTimeline("Send failed: \(error)")
+        }
+    }
+
+    /// Sends a text message with a Zyna-specific HTML carrier that embeds
+    /// `ZynaMessageAttributes` (custom color, future checklist, etc.).
+    /// The plain `body` remains clean text for foreign clients.
+    func sendMessage(_ text: String, zynaAttributes: ZynaMessageAttributes) async {
+        guard let timeline else { return }
+        // Foreign clients will show `text` verbatim; Zyna reads the
+        // data-zyna span out of formatted_body on receive.
+        let htmlBody = ZynaHTMLCodec.encode(
+            userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(text),
+            attributes: zynaAttributes
+        )
+
+        // Optimistic cache so the local echo / pre-rawJSON timeline
+        // updates can render the bubble with the right color instead
+        // of flashing through the default blue first.
+        let senderId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        OutgoingAttributesCache.shared.remember(
+            attributes: zynaAttributes,
+            body: text,
+            senderId: senderId
+        )
+
+        do {
+            try await timeline.send(msg: messageEventContentFromHtml(
+                body: text, htmlBody: htmlBody
+            ))
+            logTimeline("Message sent with Zyna attrs")
         } catch {
             logTimeline("Send failed: \(error)")
         }
