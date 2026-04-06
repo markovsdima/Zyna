@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-final class TextInputNode: BaseNode {
+final class TextInputNode: ASDisplayNode {
     
     enum FieldType {
         case regular
@@ -28,6 +28,7 @@ final class TextInputNode: BaseNode {
         self.placeholder = placeholder
         self.type = type
         super.init()
+        automaticallyManagesSubnodes = true
         setupUI()
     }
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {

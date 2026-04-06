@@ -61,7 +61,14 @@ final class TextMessageCellNode: MessageCellNode {
             else { return ASLayoutSpec() }
 
             let metrics = Self.textMetrics(for: attributedText, maxWidth: maxContentWidth)
-            let timeSize = Self.singleLineSize(for: timeText)
+            let timeTextSize = Self.singleLineSize(for: timeText)
+            let statusIconWidth: CGFloat = self.statusIconNode.map {
+                $0.iconSize + 4  // 4pt gap between time and icon
+            } ?? 0
+            let timeSize = CGSize(
+                width: timeTextSize.width + statusIconWidth,
+                height: timeTextSize.height
+            )
 
             let fitsInline = metrics.trailingLineWidth + Self.timeSpacing + timeSize.width
                 <= maxContentWidth
@@ -108,12 +115,26 @@ final class TextMessageCellNode: MessageCellNode {
                 : timeSize.width
             mainContent.style.minWidth = ASDimension(unit: .points, value: minWidth)
 
+            // Time + optional status icon glued together as a row.
+            let timeGroup: ASLayoutElement
+            if let iconNode = self.statusIconNode {
+                timeGroup = ASStackLayoutSpec(
+                    direction: .horizontal,
+                    spacing: 4,
+                    justifyContent: .end,
+                    alignItems: .center,
+                    children: [self.timeNode, iconNode]
+                )
+            } else {
+                timeGroup = self.timeNode
+            }
+
             // Overlay time at bottom-right of entire content
             let timeCorner = ASRelativeLayoutSpec(
                 horizontalPosition: .end,
                 verticalPosition: .end,
                 sizingOption: [],
-                child: self.timeNode
+                child: timeGroup
             )
             let result = ASOverlayLayoutSpec(child: mainContent, overlay: timeCorner)
 

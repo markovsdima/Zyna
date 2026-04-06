@@ -100,6 +100,14 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     let content: ChatMessageContent
     let reactions: [MessageReaction]
     let replyInfo: ReplyInfo?
+    /// Zyna-specific attributes decoded from formatted_body. Always
+    /// present (empty struct if none) so UI code has no optional
+    /// unwrap noise.
+    let zynaAttributes: ZynaMessageAttributes
+    /// Delivery pipeline status. For now populated as "synced" for
+    /// every message that comes off the SDK timeline; proper
+    /// per-stage tracking lands once we wire SendHandle observation.
+    let sendStatus: String
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         lhs.id == rhs.id
@@ -111,6 +119,8 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.content == rhs.content
             && lhs.reactions == rhs.reactions
             && lhs.replyInfo == rhs.replyInfo
+            && lhs.zynaAttributes == rhs.zynaAttributes
+            && lhs.sendStatus == rhs.sendStatus
     }
 
     func hash(into hasher: inout Hasher) {

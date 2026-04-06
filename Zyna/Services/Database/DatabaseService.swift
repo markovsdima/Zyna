@@ -93,6 +93,12 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v2_zynaAttributes") { db in
+            try db.alter(table: "storedMessage") { t in
+                t.add(column: "zynaAttributesJSON", .text)
+            }
+        }
+
         return migrator
     }
 }

@@ -22,7 +22,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     var onComposeTapped: (() -> Void)?
 
     override init() {
-        super.init(node: BaseNode())
+        super.init(node: ScreenNode())
 
         setupTableNode()
         bindViewModel()

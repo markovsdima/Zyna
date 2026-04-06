@@ -95,13 +95,35 @@ final class ChatsCoordinator {
         vc.onTitleTapped = { [weak self] userId in
             self?.showProfile(userId: userId)
         }
+        vc.onRoomDetailsTapped = { [weak self] in
+            self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
+        }
         navigationController.pushViewController(vc, animated: true)
         navigationController.enableFullScreenPopGesture()
     }
 
     private func showProfile(userId: String) {
         let vc = ProfileViewController(mode: .other(userId: userId))
+        vc.onSearchTapped = { [weak self] in
+            self?.popAndActivateSearch()
+        }
         navigationController.pushViewController(vc, animated: true)
+    }
+
+    private func showRoomDetails(room: Room, memberCount: Int?) {
+        let vc = RoomDetailsViewController(room: room, memberCount: memberCount)
+        vc.onSearchTapped = { [weak self] in
+            self?.popAndActivateSearch()
+        }
+        navigationController.pushViewController(vc, animated: true)
+    }
+
+    private func popAndActivateSearch() {
+        navigationController.popViewController(animated: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let chatVC = self?.navigationController.topViewController as? ChatViewController else { return }
+            chatVC.activateSearch()
+        }
     }
 
     // MARK: - Calls

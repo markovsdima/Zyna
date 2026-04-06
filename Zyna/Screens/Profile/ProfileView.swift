@@ -10,6 +10,7 @@ import PhotosUI
 final class ProfileViewController: ASDKViewController<ProfileNode> {
 
     var onLogout: (() -> Void)?
+    var onSearchTapped: (() -> Void)?
 
     private let viewModel: ProfileViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -115,6 +116,9 @@ final class ProfileViewController: ASDKViewController<ProfileNode> {
         }
         node.onAvatarTapped = { [weak self] in
             self?.presentAvatarPicker()
+        }
+        node.onSearchTapped = { [weak self] in
+            self?.onSearchTapped?()
         }
     }
 
