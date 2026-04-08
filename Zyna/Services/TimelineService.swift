@@ -148,7 +148,7 @@ final class TimelineService {
     /// Extracts Zyna-specific attributes embedded in the event's
     /// `formatted_body` HTML. Returns empty attributes for non-text
     /// content or when no carrier span is present.
-    private static func extractZynaAttributes(from event: EventTimelineItem) -> ZynaMessageAttributes {
+    static func extractZynaAttributes(from event: EventTimelineItem) -> ZynaMessageAttributes {
         guard case .msgLike(let msgContent) = event.content,
               case .message(let message) = msgContent.kind,
               case .text = message.msgType
@@ -300,10 +300,8 @@ final class TimelineService {
     }
 
     private static func isCallSignalingMessage(_ event: EventTimelineItem) -> Bool {
-        guard case .msgLike(let msgContent) = event.content,
-              case .message(let message) = msgContent.kind,
-              case .text(let text) = message.msgType else { return false }
-        return text.body.hasPrefix(CallSignalingService.signalingPrefix)
+        guard case .msgLike = event.content else { return false }
+        return extractZynaAttributes(from: event).callSignal != nil
     }
 
     // MARK: - Pagination
@@ -468,11 +466,20 @@ final class TimelineService {
         }
     }
 
-    /// Send call signaling data through the timeline's encrypted send pipeline.
-    func sendCallSignaling(_ text: String) async {
+    /// Send call signaling data through the timeline's encrypted
+    /// send pipeline, wrapped in a Zyna HTML span carrier.
+    func sendCallSignaling(_ attrs: ZynaMessageAttributes) async {
         guard let timeline else { return }
+        let body = "\u{200B}"   // zero-width space — invisible in foreign clients
+        let htmlBody = ZynaHTMLCodec.encode(
+            userHTML: body,
+            attributes: attrs
+        )
         do {
-            _ = try await timeline.send(msg: messageEventContentFromMarkdown(md: text))
+            _ = try await timeline.send(msg: messageEventContentFromHtml(
+                body: body, htmlBody: htmlBody
+            ))
+            logTimeline("Call signaling sent via span")
         } catch {
             logTimeline("Call signaling send failed: \(error)")
         }
