@@ -83,7 +83,7 @@ final class ChatsCoordinator {
             .store(in: &cancellables)
     }
 
-    private func showChat(_ room: Room) {
+    func showChat(_ room: Room) {
         let viewModel = ChatViewModel(room: room)
         let vc = ChatViewController(viewModel: viewModel)
         vc.onBack = { [weak self] in

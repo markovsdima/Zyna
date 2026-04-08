@@ -4,6 +4,7 @@
 //
 
 import AsyncDisplayKit
+import MatrixRustSDK
 
 final class MainCoordinator {
 
@@ -11,6 +12,7 @@ final class MainCoordinator {
     var onLogout: (() -> Void)?
 
     private var chatsCoordinator: ChatsCoordinator?
+    private var contactsCoordinator: ContactsCoordinator?
     private var callsCoordinator: CallsCoordinator?
     private var profileCoordinator: ProfileCoordinator?
     private var settingsCoordinator: SettingsCoordinator?
@@ -21,6 +23,14 @@ final class MainCoordinator {
         chats.navigationController.tabBarItem = UITabBarItem(
             title: "Чаты",
             image: UIImage(systemName: "message"),
+            selectedImage: nil
+        )
+
+        let contacts = ContactsCoordinator()
+        contacts.start()
+        contacts.navigationController.tabBarItem = UITabBarItem(
+            title: "Контакты",
+            image: UIImage(systemName: "person.2"),
             selectedImage: nil
         )
 
@@ -52,19 +62,40 @@ final class MainCoordinator {
         )
 
         tabBarController.setViewControllers(
-            [settings.navigationController, chats.navigationController, calls.navigationController, profile.navigationController],
+            [settings.navigationController, chats.navigationController, contacts.navigationController, calls.navigationController, profile.navigationController],
             animated: false
         )
         tabBarController.selectedIndex = 1
 
         self.chatsCoordinator = chats
+        self.contactsCoordinator = contacts
         self.callsCoordinator = calls
         self.profileCoordinator = profile
         self.settingsCoordinator = settings
 
+        contacts.onOpenChat = { [weak self] room in
+            self?.switchToChat(room: room)
+        }
+        contacts.onStartCall = { [weak self] room in
+            self?.switchToChatAndCall(room: room)
+        }
+
         calls.onRoomSelected = { [weak self] roomId in
             self?.callFromHistory(roomId: roomId)
         }
+    }
+
+    private func switchToChat(room: Room) {
+        guard let chats = chatsCoordinator else { return }
+        tabBarController.selectedViewController = chats.navigationController
+        chats.navigationController.popToRootViewController(animated: false)
+        chats.showChat(room)
+    }
+
+    private func switchToChatAndCall(room: Room) {
+        guard let chats = chatsCoordinator else { return }
+        tabBarController.selectedViewController = chats.navigationController
+        chats.showChatAndCall(room: room)
     }
 
     private func callFromHistory(roomId: String) {

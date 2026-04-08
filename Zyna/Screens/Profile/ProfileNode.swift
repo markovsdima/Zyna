@@ -13,6 +13,17 @@ final class ProfileNode: ScreenNode {
     var onLogoutTapped: (() -> Void)?
     var onSettingsTapped: (() -> Void)?
     var onSearchTapped: (() -> Void)?
+    var onMessageTapped: (() -> Void)?
+    var messageButtonTitle: String? {
+        didSet {
+            guard let title = messageButtonTitle else { return }
+            messageButtonNode.setAttributedTitle(NSAttributedString(
+                string: title,
+                attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .semibold), .foregroundColor: UIColor.white]
+            ), for: .normal)
+            setNeedsLayout()
+        }
+    }
 
     // MARK: - Nodes
 
@@ -29,6 +40,7 @@ final class ProfileNode: ScreenNode {
 
     private let presenceNode = ASTextNode()
 
+    private let messageButtonNode = ASButtonNode()
     private let searchButtonNode = ASButtonNode()
     private let settingsButtonNode = ASButtonNode()
     private let logoutButtonNode = ASButtonNode()
@@ -62,6 +74,8 @@ final class ProfileNode: ScreenNode {
         avatarImageNode.clipsToBounds = true
         editAvatarOverlayNode.cornerRadius = 50
         editAvatarOverlayNode.clipsToBounds = true
+        messageButtonNode.cornerRadius = 12
+        messageButtonNode.clipsToBounds = true
         logoutButtonNode.cornerRadius = 12
         logoutButtonNode.clipsToBounds = true
 
@@ -184,6 +198,15 @@ final class ProfileNode: ScreenNode {
         copyButtonNode.imageNode.tintColor = .secondaryLabel
         copyButtonNode.addTarget(self, action: #selector(copyUserId), forControlEvents: .touchUpInside)
 
+        // Message button (visible only when onMessageTapped is set)
+        messageButtonNode.setAttributedTitle(NSAttributedString(
+            string: "Message",
+            attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .semibold), .foregroundColor: UIColor.white]
+        ), for: .normal)
+        messageButtonNode.backgroundColor = .systemBlue
+        messageButtonNode.contentEdgeInsets = UIEdgeInsets(top: 14, left: 32, bottom: 14, right: 32)
+        messageButtonNode.addTarget(self, action: #selector(messageTapped), forControlEvents: .touchUpInside)
+
         // Search messages
         let searchIcon = UIImage(
             systemName: "magnifyingglass",
@@ -268,6 +291,10 @@ final class ProfileNode: ScreenNode {
 
         var bottomChildren: [ASLayoutElement] = []
         if case .other = mode {
+            if onMessageTapped != nil {
+                messageButtonNode.style.alignSelf = .stretch
+                bottomChildren.append(messageButtonNode)
+            }
             searchButtonNode.style.alignSelf = .stretch
             bottomChildren.append(searchButtonNode)
         }
@@ -312,6 +339,10 @@ final class ProfileNode: ScreenNode {
 
     @objc private func searchTapped() {
         onSearchTapped?()
+    }
+
+    @objc private func messageTapped() {
+        onMessageTapped?()
     }
 
     @objc private func logoutTapped() {
