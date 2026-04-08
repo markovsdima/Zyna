@@ -297,6 +297,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let message = messages[indexPath.row]
         let audioPlayer = self.audioPlayer
         return { [weak self] in
+
+            // Call events use a standalone centered cell, not a MessageCellNode
+            if case .callEvent = message.content {
+                return CallEventCellNode(message: message)
+            }
+
             let cellNode: MessageCellNode
             switch message.content {
             case .voice:

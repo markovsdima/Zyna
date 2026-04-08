@@ -88,6 +88,8 @@ the work instead: bg query → (result) → main apply.
 - Commit messages: conventional style (`feat:`, `fix:`, `chore:`,
   `refactor:`, `perf:`, `docs:`)
 - Commit title ≤ 72 chars; body optional but welcome for context
+- Commit body: do NOT hard-wrap at 72 chars. Break lines naturally
+  at sentence boundaries for readability, not at a fixed column.
 - PR titles do NOT use conventional prefixes — just a clear
   human-readable title (GitHub categorises PRs via labels/status)
 - PR descriptions are markdown rendered by GitHub — do NOT wrap

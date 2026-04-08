@@ -96,9 +96,6 @@ final class TimelineService {
     static func mapTimelineItem(_ item: TimelineItem) -> ChatMessage? {
         guard let event = item.asEvent() else { return nil }
 
-        // Filter out wrapped call signaling messages
-        if isCallSignalingMessage(event) { return nil }
-
         let timestamp = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
 
         let senderName: String?
@@ -255,22 +252,62 @@ final class TimelineService {
     }
 
     private static func contentFromEvent(_ event: EventTimelineItem) -> ChatMessageContent? {
-        guard case .msgLike(let msgContent) = event.content else { return nil }
+        switch event.content {
+        case .callInvite:
+            guard let callId = extractCallId(from: event) else { return nil }
+            return .callEvent(type: .invited, callId: callId, reason: nil)
 
-        switch msgContent.kind {
-        case .message(let messageContent):
-            return contentFromMessageType(messageContent.msgType)
-        case .sticker:
-            return .unsupported(typeName: "sticker")
-        case .poll:
-            return .unsupported(typeName: "poll")
-        case .redacted:
-            return .redacted
-        case .unableToDecrypt:
-            return .text(body: "Encrypted message")
-        case .other:
+        case .msgLike(let msgContent):
+            // Check for span-based call signaling
+            let attrs = extractZynaAttributes(from: event)
+            if let signal = attrs.callSignal {
+                return callContentFromSignal(signal)
+            }
+
+            switch msgContent.kind {
+            case .message(let messageContent):
+                return contentFromMessageType(messageContent.msgType)
+            case .sticker:
+                return .unsupported(typeName: "sticker")
+            case .poll:
+                return .unsupported(typeName: "poll")
+            case .redacted:
+                return .redacted
+            case .unableToDecrypt:
+                return .text(body: "Encrypted message")
+            case .other:
+                return nil
+            }
+
+        default:
             return nil
         }
+    }
+
+    /// Maps a span-based call signal to content. Returns nil for
+    /// signaling-only events (answer, candidates) that shouldn't
+    /// appear in the chat.
+    private static func callContentFromSignal(_ signal: CallSignalData) -> ChatMessageContent? {
+        guard signal.type == "m.call.hangup" else {
+            // answer, candidates — pure signaling, filter out
+            return nil
+        }
+
+        guard let data = signal.payload.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let callId = dict["call_id"] as? String else { return nil }
+        let reason = dict["reason"] as? String
+        return .callEvent(type: .ended, callId: callId, reason: reason)
+    }
+
+    /// Extracts call_id from a native m.call.invite event's raw JSON.
+    private static func extractCallId(from event: EventTimelineItem) -> String? {
+        guard let json = event.lazyProvider.debugInfo().originalJson,
+              let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = root["content"] as? [String: Any],
+              let callId = content["call_id"] as? String else { return nil }
+        return callId
     }
 
     private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent {
@@ -297,11 +334,6 @@ final class TimelineService {
         default:
             return .unsupported(typeName: "message")
         }
-    }
-
-    private static func isCallSignalingMessage(_ event: EventTimelineItem) -> Bool {
-        guard case .msgLike = event.content else { return false }
-        return extractZynaAttributes(from: event).callSignal != nil
     }
 
     // MARK: - Pagination

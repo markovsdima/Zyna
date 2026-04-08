@@ -97,6 +97,11 @@ extension StoredMessage {
             contentFilename = filename
             contentMimetype = mimetype
             contentFileSize = size.map(Int64.init)
+        case .callEvent(let type, let callId, let reason):
+            contentType = "call"
+            contentBody = callId
+            contentCaption = type.rawValue
+            contentMimetype = reason
         case .unsupported(let typeName):
             contentType = "unsupported"
             contentBody = typeName
@@ -195,6 +200,11 @@ extension StoredMessage {
                 mimetype: contentMimetype,
                 size: contentFileSize.map(UInt64.init)
             )
+        case "call":
+            guard let callId = contentBody,
+                  let typeRaw = contentCaption,
+                  let type = CallEventType(rawValue: typeRaw) else { return nil }
+            return .callEvent(type: type, callId: callId, reason: contentMimetype)
         case "unsupported":
             return .unsupported(typeName: contentBody ?? "unknown")
         case "redacted":
