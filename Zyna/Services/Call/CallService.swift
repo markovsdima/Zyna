@@ -48,6 +48,9 @@ final class CallService {
     private var cancellables = Set<AnyCancellable>()
     private var ringTimeoutTask: Task<Void, Never>?
     private var currentCallIsOutgoing = false
+    /// Holds a TimelineService created for calls detected globally
+    /// (outside an open chat). Released when the call ends.
+    private var ownedTimelineService: TimelineService?
 
     private let webRTCClient = WebRTCClient()
 
@@ -172,6 +175,9 @@ final class CallService {
             signalingService = nil
         }
 
+        ownedTimelineService?.stopListening()
+        ownedTimelineService = nil
+
         delegate?.callService(self, didEndCall: callId, reason: reason)
         deactivateAudioSession()
 
@@ -193,7 +199,13 @@ final class CallService {
         }
     }
 
-    // MARK: - Handle Incoming Call (called by TimelineService or push)
+    /// Holds a TimelineService reference for calls detected outside
+    /// an open chat. The service stays alive until the call ends.
+    func attachTimelineService(_ service: TimelineService) {
+        ownedTimelineService = service
+    }
+
+    // MARK: - Handle Incoming Call (called by notification listener or TimelineService)
 
     func handleIncomingCall(room: Room, callId: String, callerName: String?, offerSDP: String?, timelineService: TimelineService) {
         guard !state.isActive else {

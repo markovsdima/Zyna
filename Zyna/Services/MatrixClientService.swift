@@ -180,6 +180,8 @@ final class MatrixClientService {
         self.syncService = syncService
         self.roomListService = roomListService
 
+        await client.registerNotificationHandler(listener: CallNotificationListener())
+
         await syncService.start()
         stateSubject.send(.syncing)
         logSync("Sync started")

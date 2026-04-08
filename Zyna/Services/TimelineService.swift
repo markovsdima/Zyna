@@ -54,16 +54,13 @@ final class TimelineService {
 
     private func handleDiffs(_ diffs: [TimelineDiff]) {
         var allItems: [TimelineItem] = []
-        var liveItems: [TimelineItem] = []
 
         for diff in diffs {
             switch diff {
             case .append(let items):
                 allItems.append(contentsOf: items)
-                liveItems.append(contentsOf: items)
             case .pushBack(let item):
                 allItems.append(item)
-                liveItems.append(item)
             case .pushFront(let item):
                 allItems.append(item)
             case .insert(_, let item):
@@ -76,9 +73,6 @@ final class TimelineService {
                 break
             }
         }
-
-        // Only check LIVE events for call invites (not pagination history)
-        checkForCallInvite(liveItems)
 
         // Publish raw items for call signaling (deduplication happens in CallSignalingService)
         if !allItems.isEmpty {
@@ -487,64 +481,6 @@ final class TimelineService {
             logTimeline("Call signaling sent via span")
         } catch {
             logTimeline("Call signaling send failed: \(error)")
-        }
-    }
-
-    // MARK: - Incoming Call Detection
-
-    private func checkForCallInvite(_ items: [TimelineItem]) {
-        for item in items {
-            guard let event = item.asEvent(),
-                  !event.isOwn,
-                  case .callInvite = event.content else { continue }
-
-            // Ignore old invites (e.g. from history pagination)
-            let eventTime = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
-            guard abs(eventTime.timeIntervalSinceNow) < 60 else { continue }
-
-            // Don't trigger if already in a call
-            guard !CallService.shared.state.isActive else { continue }
-
-            // Extract callId and SDP from raw event JSON
-            let debugInfo = event.lazyProvider.debugInfo()
-            guard let json = debugInfo.originalJson,
-                  let data = json.data(using: .utf8),
-                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let content = dict["content"] as? [String: Any],
-                  let callId = content["call_id"] as? String else {
-                logTimeline("Call invite detected but failed to extract callId")
-                continue
-            }
-
-            // Extract SDP offer directly — can't rely on signaling receiving it later
-            let offerSDP: String? = {
-                if let offer = content["offer"] as? [String: Any],
-                   let sdp = offer["sdp"] as? String {
-                    return sdp
-                }
-                return nil
-            }()
-
-            let callerName: String? = {
-                if case .ready(let name, _, _) = event.senderProfile { return name }
-                return nil
-            }()
-
-            logTimeline("Incoming call invite detected: callId=\(callId) from \(callerName ?? event.sender), sdp=\(offerSDP?.count ?? 0) bytes")
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                CallService.shared.handleIncomingCall(
-                    room: self.room,
-                    callId: callId,
-                    callerName: callerName,
-                    offerSDP: offerSDP,
-                    timelineService: self
-                )
-            }
-
-            // Only handle the first invite
-            break
         }
     }
 
