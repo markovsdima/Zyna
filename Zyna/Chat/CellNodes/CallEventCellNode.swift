@@ -5,24 +5,20 @@
 
 import AsyncDisplayKit
 
-/// Centered system-message style cell for call events
+/// Centered system cell for call events
 /// (e.g. "Call", "Call ended", "Missed call").
-final class CallEventCellNode: ASCellNode {
-
-    private let labelNode = ASTextNode()
+final class CallEventCellNode: SystemEventCellNode {
 
     init(message: ChatMessage) {
         super.init()
-        automaticallyManagesSubnodes = true
-        selectionStyle = .none
 
         let text: String
         let icon: String
 
         if case .callEvent(let type, _, let reason) = message.content {
-            let displayText = type.displayText(reason: reason)
-            icon = (reason == "timeout" || reason == "declined") ? "phone.arrow.down.left" : "phone"
-            text = displayText
+            text = type.displayText(reason: reason)
+            icon = (reason == "timeout" || reason == "declined")
+                ? "phone.arrow.down.left" : "phone"
         } else {
             icon = "phone"
             text = "Call"
@@ -47,20 +43,5 @@ final class CallEventCellNode: ASCellNode {
         ))
 
         labelNode.attributedText = result
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        let centered = ASCenterLayoutSpec(
-            centeringOptions: .XY,
-            sizingOptions: .minimumXY,
-            child: labelNode
-        )
-        return ASInsetLayoutSpec(
-            insets: UIEdgeInsets(top: 4, left: 16, bottom: 4, right: 16),
-            child: centered
-        )
     }
 }
