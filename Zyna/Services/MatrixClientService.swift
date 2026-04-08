@@ -205,6 +205,8 @@ final class MatrixClientService {
             logAuth("Logged out")
         }
 
+        FileCacheService.shared.clearAll()
+
         self.client = nil
         stateSubject.send(.loggedOut)
     }

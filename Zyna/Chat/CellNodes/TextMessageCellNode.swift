@@ -35,6 +35,8 @@ final class TextMessageCellNode: MessageCellNode {
             bodyText = "📷 Photo"
         case .voice:
             bodyText = "🎤 Voice message"
+        case .file(_, let filename, _, _):
+            bodyText = "📎 \(filename)"
         case .unsupported(let typeName):
             bodyText = "[\(typeName)]"
         case .redacted:

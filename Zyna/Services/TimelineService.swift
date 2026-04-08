@@ -5,6 +5,7 @@
 
 import Foundation
 import Combine
+import UniformTypeIdentifiers
 import MatrixRustSDK
 import GRDB
 
@@ -286,6 +287,13 @@ final class TimelineService {
             let duration = content.audio?.duration ?? content.info?.duration ?? 0
             let waveform = content.audio?.waveform ?? []
             return .voice(source: content.source, duration: duration, waveform: waveform)
+        case .file(let content):
+            return .file(
+                source: content.source,
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                size: content.info?.size
+            )
         default:
             return .unsupported(typeName: "message")
         }
@@ -410,6 +418,37 @@ final class TimelineService {
             logTimeline("Image sent via sendFile, \(width)×\(height)")
         } catch {
             logTimeline("Image send failed: \(error)")
+        }
+    }
+
+    func sendFile(url: URL) async {
+        guard let timeline else { return }
+
+        let filename = url.lastPathComponent
+        let fileSize = (try? FileManager.default.attributesOfItem(
+            atPath: url.path)[.size] as? UInt64) ?? 0
+
+        let mimetype: String
+        if let utType = UTType(filenameExtension: url.pathExtension),
+           let preferred = utType.preferredMIMEType {
+            mimetype = preferred
+        } else {
+            mimetype = "application/octet-stream"
+        }
+
+        let fileInfo = FileInfo(
+            mimetype: mimetype, size: fileSize,
+            thumbnailInfo: nil, thumbnailSource: nil
+        )
+        let params = UploadParameters(
+            source: .file(filename: url.path(percentEncoded: false)),
+            caption: nil, formattedCaption: nil, mentions: nil, inReplyTo: nil
+        )
+        do {
+            _ = try timeline.sendFile(params: params, fileInfo: fileInfo)
+            logTimeline("File sent: \(filename), \(fileSize) bytes")
+        } catch {
+            logTimeline("File send failed: \(error)")
         }
     }
 

@@ -27,6 +27,9 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var contentCaption: String?
     var contentVoiceDuration: TimeInterval?
     var contentVoiceWaveform: Data?
+    var contentFilename: String?
+    var contentMimetype: String?
+    var contentFileSize: Int64?
     var reactionsJSON: String
     var sendStatus: String
     var replyEventId: String?
@@ -88,6 +91,12 @@ extension StoredMessage {
         case .emote(let body):
             contentType = "emote"
             contentBody = body
+        case .file(let source, let filename, let mimetype, let size):
+            contentType = "file"
+            contentMediaJSON = source.toJson()
+            contentFilename = filename
+            contentMimetype = mimetype
+            contentFileSize = size.map(Int64.init)
         case .unsupported(let typeName):
             contentType = "unsupported"
             contentBody = typeName
@@ -177,6 +186,15 @@ extension StoredMessage {
             return .notice(body: contentBody ?? "")
         case "emote":
             return .emote(body: contentBody ?? "")
+        case "file":
+            guard let json = contentMediaJSON,
+                  let source = try? MediaSource.fromJson(json: json) else { return nil }
+            return .file(
+                source: source,
+                filename: contentFilename ?? "file",
+                mimetype: contentMimetype,
+                size: contentFileSize.map(UInt64.init)
+            )
         case "unsupported":
             return .unsupported(typeName: contentBody ?? "unknown")
         case "redacted":

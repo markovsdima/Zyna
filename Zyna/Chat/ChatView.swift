@@ -6,7 +6,8 @@
 import AsyncDisplayKit
 import Combine
 import PhotosUI
-//import UniformTypeIdentifiers
+import UniformTypeIdentifiers
+import QuickLook
 
 final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
@@ -265,7 +266,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         glassInputBar.inputNode.onAttachTapped = { [weak self] in
-            self?.presentPhotoPicker()
+            self?.presentAttachmentSheet()
         }
 
         glassInputBar.inputNode.onReplyCancelled = { [weak self] in
@@ -302,6 +303,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 cellNode = VoiceMessageCellNode(message: message, audioPlayer: audioPlayer)
             case .image:
                 cellNode = ImageMessageCellNode(message: message)
+            case .file:
+                let fileCell = FileCellNode(message: message)
+                fileCell.onFileTapped = { [weak self] in
+                    guard let self else { return }
+                    self.handleFileTap(message: message, cellNode: fileCell)
+                }
+                cellNode = fileCell
             default:
                 cellNode = TextMessageCellNode(message: message)
             }
@@ -645,6 +653,22 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         return IndexPath(row: row, section: 0)
     }
 
+    // MARK: - Attachment Sheet
+
+    private func presentAttachmentSheet() {
+        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+
+        sheet.addAction(UIAlertAction(title: "Photos", style: .default) { [weak self] _ in
+            self?.presentPhotoPicker()
+        })
+        sheet.addAction(UIAlertAction(title: "Files", style: .default) { [weak self] _ in
+            self?.presentDocumentPicker()
+        })
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+
+        present(sheet, animated: true)
+    }
+
     // MARK: - Photo Picker
 
     private func presentPhotoPicker() {
@@ -655,6 +679,67 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = self
         present(picker, animated: true)
+    }
+
+    // MARK: - Document Picker
+
+    private func presentDocumentPicker() {
+        isPickerPresented = true
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.data],
+            asCopy: true
+        )
+        picker.allowsMultipleSelection = true
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+
+    // MARK: - File Tap → Download + Quick Look
+
+    private func handleFileTap(message: ChatMessage, cellNode: FileCellNode) {
+        guard case .file(let source, let filename, let mimetype, _) = message.content
+        else { return }
+
+        // Already cached — show immediately
+        if let cachedURL = FileCacheService.shared.cachedURL(for: source) {
+            presentQuickLook(url: cachedURL)
+            return
+        }
+
+        // Download
+        cellNode.setDownloadState(.downloading(progress: -1))
+
+        Task {
+            do {
+                let localURL = try await FileCacheService.shared.downloadFile(
+                    source: source,
+                    filename: filename,
+                    mimetype: mimetype
+                ) { [weak cellNode] progress in
+                    cellNode?.setDownloadState(.downloading(progress: progress))
+                }
+                await MainActor.run { [weak cellNode] in
+                    cellNode?.setDownloadState(.downloaded)
+                    self.presentQuickLook(url: localURL)
+                }
+            } catch {
+                await MainActor.run { [weak cellNode] in
+                    cellNode?.setDownloadState(.idle)
+                }
+            }
+        }
+    }
+
+    // MARK: - Quick Look
+
+    private var quickLookURL: URL?
+
+    private func presentQuickLook(url: URL) {
+        quickLookURL = url
+        let ql = QLPreviewController()
+        ql.dataSource = self
+        ql.delegate = self
+        present(ql, animated: true)
     }
 }
 
@@ -699,6 +784,54 @@ extension ChatViewController: PHPickerViewControllerDelegate {
                 continuation.resume(returning: data)
             }
         }
+    }
+}
+
+// MARK: - UIDocumentPickerDelegate
+
+extension ChatViewController: UIDocumentPickerDelegate {
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        isPickerPresented = false
+        for url in urls.prefix(10) {
+            viewModel.sendFile(url: url)
+        }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        isPickerPresented = false
+    }
+}
+
+// MARK: - QLPreviewControllerDataSource
+
+extension ChatViewController: QLPreviewControllerDataSource {
+    func numberOfPreviewItems(in controller: QLPreviewController) -> Int {
+        quickLookURL != nil ? 1 : 0
+    }
+
+    func previewController(
+        _ controller: QLPreviewController,
+        previewItemAt index: Int
+    ) -> QLPreviewItem {
+        (quickLookURL ?? URL(fileURLWithPath: "")) as NSURL
+    }
+}
+
+// MARK: - QLPreviewControllerDelegate
+
+extension ChatViewController: QLPreviewControllerDelegate {
+    func previewController(
+        _ controller: QLPreviewController,
+        editingModeFor previewItem: QLPreviewItem
+    ) -> QLPreviewItemEditingMode {
+        .updateContents
+    }
+
+    func previewController(
+        _ controller: QLPreviewController,
+        didUpdateContentsOf previewItem: QLPreviewItem
+    ) {
+        // Markup edits saved to the cached file — no action needed.
     }
 }
 

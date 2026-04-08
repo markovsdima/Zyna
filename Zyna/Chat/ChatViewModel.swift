@@ -297,6 +297,12 @@ final class ChatViewModel {
         }
     }
 
+    func sendFile(url: URL) {
+        Task {
+            await timelineService.sendFile(url: url)
+        }
+    }
+
     func sendImages(_ images: [ProcessedImage], caption: String?) {
         for (i, image) in images.enumerated() {
             let cap = (i == 0) ? caption : nil
