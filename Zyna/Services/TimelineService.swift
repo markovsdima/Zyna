@@ -252,17 +252,16 @@ final class TimelineService {
     }
 
     private static func contentFromEvent(_ event: EventTimelineItem) -> ChatMessageContent? {
+        // Call events: invite is native SDK, signaling rides in span.
+        // CallService writes call events to GRDB directly — skip here.
         switch event.content {
         case .callInvite:
-            guard let callId = extractCallId(from: event) else { return nil }
-            return .callEvent(type: .invited, callId: callId, reason: nil)
+            return nil
 
         case .msgLike(let msgContent):
-            // Check for span-based call signaling
+            // Filter span-based call signaling (answer, candidates, hangup)
             let attrs = extractZynaAttributes(from: event)
-            if let signal = attrs.callSignal {
-                return callContentFromSignal(signal)
-            }
+            if attrs.callSignal != nil { return nil }
 
             switch msgContent.kind {
             case .message(let messageContent):
@@ -282,32 +281,6 @@ final class TimelineService {
         default:
             return nil
         }
-    }
-
-    /// Maps a span-based call signal to content. Returns nil for
-    /// signaling-only events (answer, candidates) that shouldn't
-    /// appear in the chat.
-    private static func callContentFromSignal(_ signal: CallSignalData) -> ChatMessageContent? {
-        guard signal.type == "m.call.hangup" else {
-            // answer, candidates — pure signaling, filter out
-            return nil
-        }
-
-        guard let data = signal.payload.data(using: .utf8),
-              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let callId = dict["call_id"] as? String else { return nil }
-        let reason = dict["reason"] as? String
-        return .callEvent(type: .ended, callId: callId, reason: reason)
-    }
-
-    /// Extracts call_id from a native m.call.invite event's raw JSON.
-    private static func extractCallId(from event: EventTimelineItem) -> String? {
-        guard let json = event.lazyProvider.debugInfo().originalJson,
-              let data = json.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = root["content"] as? [String: Any],
-              let callId = content["call_id"] as? String else { return nil }
-        return callId
     }
 
     private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent {

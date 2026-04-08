@@ -11,6 +11,7 @@ final class MainCoordinator {
     var onLogout: (() -> Void)?
 
     private var chatsCoordinator: ChatsCoordinator?
+    private var callsCoordinator: CallsCoordinator?
     private var profileCoordinator: ProfileCoordinator?
     private var settingsCoordinator: SettingsCoordinator?
 
@@ -20,6 +21,14 @@ final class MainCoordinator {
         chats.navigationController.tabBarItem = UITabBarItem(
             title: "Чаты",
             image: UIImage(systemName: "message"),
+            selectedImage: nil
+        )
+
+        let calls = CallsCoordinator()
+        calls.start()
+        calls.navigationController.tabBarItem = UITabBarItem(
+            title: "Звонки",
+            image: UIImage(systemName: "phone"),
             selectedImage: nil
         )
 
@@ -43,12 +52,13 @@ final class MainCoordinator {
         )
 
         tabBarController.setViewControllers(
-            [settings.navigationController, chats.navigationController, profile.navigationController],
+            [settings.navigationController, chats.navigationController, calls.navigationController, profile.navigationController],
             animated: false
         )
         tabBarController.selectedIndex = 1
 
         self.chatsCoordinator = chats
+        self.callsCoordinator = calls
         self.profileCoordinator = profile
         self.settingsCoordinator = settings
     }
