@@ -15,7 +15,6 @@ final class MainCoordinator {
     private var contactsCoordinator: ContactsCoordinator?
     private var callsCoordinator: CallsCoordinator?
     private var profileCoordinator: ProfileCoordinator?
-    private var settingsCoordinator: SettingsCoordinator?
 
     func start() {
         let chats = ChatsCoordinator()
@@ -53,25 +52,21 @@ final class MainCoordinator {
             selectedImage: nil
         )
 
-        let settings = SettingsCoordinator()
-        settings.start()
-        settings.navigationController.tabBarItem = UITabBarItem(
-            title: "Настройки",
-            image: UIImage(systemName: "gear"),
-            selectedImage: nil
-        )
-
         tabBarController.setViewControllers(
-            [settings.navigationController, chats.navigationController, contacts.navigationController, calls.navigationController, profile.navigationController],
+            [
+                contacts.navigationController,
+                calls.navigationController,
+                chats.navigationController,
+                profile.navigationController
+            ],
             animated: false
         )
-        tabBarController.selectedIndex = 1
+        tabBarController.selectedIndex = 2
 
         self.chatsCoordinator = chats
         self.contactsCoordinator = contacts
         self.callsCoordinator = calls
         self.profileCoordinator = profile
-        self.settingsCoordinator = settings
 
         contacts.onOpenChat = { [weak self] room in
             self?.switchToChat(room: room)
