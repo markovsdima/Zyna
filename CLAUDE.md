@@ -64,6 +64,13 @@ the work instead: bg query → (result) → main apply.
 
 ## Pitfalls / lessons learned
 
+- **`UIImage(systemName:)` returns nil off-main.** Texture
+  creates cell nodes on background threads, so SF Symbol
+  images built inline in `init()` will silently be nil. Use
+  `AppIcon` (pre-rendered `static let` via
+  `UIGraphicsImageRenderer`) to create images once on main
+  and share them across cells. Same applies to any UIKit API
+  that requires main thread.
 - **Never use self-rescheduling `DispatchQueue.main.async`
   loops** to "wait until X is ready". They burn CPU if the
   condition never flips. Use proper lifecycle hooks instead

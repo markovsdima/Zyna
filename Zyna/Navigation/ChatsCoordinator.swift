@@ -126,6 +126,27 @@ final class ChatsCoordinator {
         }
     }
 
+    /// Opens a chat and immediately starts a call. Used by the Calls tab.
+    func showChatAndCall(room: Room) {
+        navigationController.popToRootViewController(animated: false)
+        let viewModel = ChatViewModel(room: room)
+        let vc = ChatViewController(viewModel: viewModel)
+        vc.onBack = { [weak self] in
+            self?.navigationController.popViewController(animated: true)
+        }
+        vc.onCallTapped = { [weak self] in
+            self?.startCall(in: room, timelineService: viewModel.timelineService)
+        }
+        vc.onTitleTapped = { [weak self] userId in
+            self?.showProfile(userId: userId)
+        }
+        vc.onRoomDetailsTapped = { [weak self] in
+            self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
+        }
+        navigationController.pushViewController(vc, animated: false)
+        startCall(in: room, timelineService: viewModel.timelineService)
+    }
+
     // MARK: - Calls
 
     private func startCall(in room: Room, timelineService: TimelineService) {

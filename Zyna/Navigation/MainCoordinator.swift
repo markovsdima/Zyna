@@ -61,5 +61,19 @@ final class MainCoordinator {
         self.callsCoordinator = calls
         self.profileCoordinator = profile
         self.settingsCoordinator = settings
+
+        calls.onRoomSelected = { [weak self] roomId in
+            self?.callFromHistory(roomId: roomId)
+        }
+    }
+
+    private func callFromHistory(roomId: String) {
+        guard let client = MatrixClientService.shared.client,
+              let room = try? client.getRoom(roomId: roomId) else { return }
+
+        // Switch to Chats tab and open the chat
+        guard let chats = chatsCoordinator else { return }
+        tabBarController.selectedViewController = chats.navigationController
+        chats.showChatAndCall(room: room)
     }
 }

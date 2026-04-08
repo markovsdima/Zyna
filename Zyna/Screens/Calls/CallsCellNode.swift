@@ -18,6 +18,8 @@ final class CallsCellNode: ASCellNode {
     private let callButtonNode = ASButtonNode()
     private let separatorNode = ASDisplayNode()
 
+    private static let callIcon = AppIcon.phone.rendered(size: 18, color: .systemBlue)
+
     private let model: CallHistoryModel
 
     init(model: CallHistoryModel) {
@@ -95,11 +97,7 @@ final class CallsCellNode: ASCellNode {
         )
 
         // Call button
-        let buttonIcon = UIImage(
-            systemName: "phone.fill",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)
-        )?.withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
-        callButtonNode.setImage(buttonIcon, for: .normal)
+        callButtonNode.setImage(Self.callIcon, for: .normal)
         callButtonNode.addTarget(
             self, action: #selector(callButtonPressed),
             forControlEvents: .touchUpInside
