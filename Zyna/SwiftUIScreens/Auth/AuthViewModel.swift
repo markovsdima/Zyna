@@ -23,7 +23,7 @@ final class AuthViewModel: ObservableObject {
 
     // MARK: - Password Login
 
-    func login(username: String, password: String, homeserver: String = "matrix.org") {
+    func login(username: String, password: String, homeserver: String = Brand.current.defaultHomeserver) {
         guard !username.isEmpty, !password.isEmpty else {
             errorMessage = "Enter username and password"
             return
