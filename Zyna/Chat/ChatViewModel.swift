@@ -15,6 +15,7 @@ final class ChatViewModel {
     private(set) var messages: [ChatMessage] = []
     @Published private(set) var isPaginating: Bool = false
     @Published private(set) var replyingTo: ChatMessage?
+    @Published private(set) var isInvited: Bool = false
 
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate) -> Void)?
@@ -39,6 +40,7 @@ final class ChatViewModel {
     let timelineService: TimelineService
     private let diffBatcher: TimelineDiffBatcher
     private let window: MessageWindow
+    private let room: Room
     private let roomId: String
     private var hiddenIds = Set<String>()
     private var cancellables = Set<AnyCancellable>()
@@ -50,8 +52,10 @@ final class ChatViewModel {
 
     init(room: Room) {
         let roomId = room.id()
+        self.room = room
         self.roomId = roomId
         self.roomName = room.displayName() ?? "Chat"
+        self.isInvited = room.membership() == .invited
         self.timelineService = TimelineService(room: room)
         self.diffBatcher = TimelineDiffBatcher(
             roomId: roomId,
@@ -83,11 +87,9 @@ final class ChatViewModel {
             self?.handleObservationChange(newStored: newStored, prevStored: prevStored)
         }
 
-        // Initial load from GRDB cache
-        window.loadInitial()
-
-        Task { [weak self] in
-            await self?.timelineService.startListening()
+        // Defer timeline setup until invite is accepted
+        if !isInvited {
+            startTimelineAndHistory()
         }
 
         Task { [weak self] in
@@ -111,12 +113,37 @@ final class ChatViewModel {
                 }
             }
         }
+    }
 
-        // Background sync: paginate full history into GRDB
+    // MARK: - Timeline Bootstrap
+
+    private func startTimelineAndHistory() {
+        window.loadInitial()
+
+        Task { [weak self] in
+            await self?.timelineService.startListening()
+        }
+
         historySyncTask = Task { [weak self] in
-            // Let initial load and listener settle first
             try? await Task.sleep(for: .seconds(1))
             await self?.syncFullHistory()
+        }
+    }
+
+    // MARK: - Invite
+
+    func acceptInvite() {
+        guard isInvited else { return }
+        Task {
+            do {
+                try await room.join()
+                await MainActor.run { [weak self] in
+                    self?.isInvited = false
+                }
+                startTimelineAndHistory()
+            } catch {
+                ScopedLog(.rooms)("Failed to accept invite: \(error)")
+            }
         }
     }
 

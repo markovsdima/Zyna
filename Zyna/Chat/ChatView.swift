@@ -22,6 +22,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
     private let searchBar = SearchBarView()
+    private let inviteBanner = InviteBannerView()
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
@@ -100,7 +101,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
         view.addSubview(searchBar)
 
+        // Invite banner (hidden by default)
+        inviteBanner.isHidden = !viewModel.isInvited
+        inviteBanner.onAccept = { [weak self] in
+            self?.viewModel.acceptInvite()
+        }
+        view.addSubview(inviteBanner)
+
         // Glass input bar
+        glassInputBar.isHidden = viewModel.isInvited
         view.addSubview(glassInputBar)
 
         // Both glass bars capture from the table — no self-capture
@@ -125,6 +134,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         glassNavBar.updateLayout(in: view)
         searchBar.frame = CGRect(
+            x: 0, y: glassNavBar.coveredHeight,
+            width: view.bounds.width, height: 44
+        )
+        inviteBanner.frame = CGRect(
             x: 0, y: glassNavBar.coveredHeight,
             width: view.bounds.width, height: 44
         )
@@ -223,6 +236,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.onRedactedDetected = { [weak self] messageIds in
             self?.handleRedactedMessages(messageIds)
         }
+
+        viewModel.$isInvited
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] invited in
+                guard let self else { return }
+                self.inviteBanner.isHidden = !invited
+                self.glassInputBar.isHidden = invited
+            }
+            .store(in: &cancellables)
 
         viewModel.$replyingTo
             .receive(on: DispatchQueue.main)
