@@ -21,9 +21,18 @@ extension UINavigationController {
             return
         }
 
-        let selector = NSSelectorFromString(
-            ["handle", "Navigation", "Transition:"].joined()
-        )
+        guard let selector = DynamicAction.resolve(
+            bytes: [
+                0xCF, 0xC6, 0xC9, 0xC3, 0xCB, 0xC2, 0xE9, 0xC6,
+                0xD1, 0xCE, 0xC0, 0xC6, 0xD3, 0xCE, 0xC8, 0xC9,
+                0xF3, 0xD5, 0xC6, 0xC9, 0xD4, 0xCE, 0xD3, 0xCE,
+                0xC8, 0xC9, 0x9D
+            ],
+            mask: 0xA7
+        ) else {
+            print("[pop-gesture] failed to resolve selector")
+            return
+        }
         guard target.responds(to: selector) else {
             print("[pop-gesture] target does not respond to selector")
             return

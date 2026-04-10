@@ -11,6 +11,13 @@ final class ProfileViewController: ASDKViewController<ProfileNode> {
 
     var onLogout: (() -> Void)?
     var onSearchTapped: (() -> Void)?
+    var onMessageTapped: (() -> Void)? {
+        didSet { node.onMessageTapped = onMessageTapped }
+    }
+
+    var messageButtonTitle: String? {
+        didSet { node.messageButtonTitle = messageButtonTitle }
+    }
 
     private let viewModel: ProfileViewModel
     private var cancellables = Set<AnyCancellable>()

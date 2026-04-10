@@ -10,7 +10,7 @@ struct AuthView: View {
 
     @State private var username: String = ""
     @State private var password: String = ""
-    @State private var homeserver: String = "matrix.org"
+    @State private var homeserver: String = Brand.current.defaultHomeserver
     @State private var showPassword = false
 
     var body: some View {

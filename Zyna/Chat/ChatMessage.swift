@@ -14,6 +14,8 @@ enum ChatMessageContent: Equatable {
     case notice(body: String)
     case emote(body: String)
     case voice(source: MediaSource, duration: TimeInterval, waveform: [UInt16])
+    case file(source: MediaSource, filename: String, mimetype: String?, size: UInt64?)
+    case callEvent(type: CallEventType, callId: String, reason: String?)
     case unsupported(typeName: String)
     case redacted
 
@@ -27,6 +29,8 @@ enum ChatMessageContent: Equatable {
         case .text(let body): return body
         case .image: return "Photo"
         case .voice: return "Voice message"
+        case .file(_, let filename, _, _): return filename
+        case .callEvent(let type, _, let reason): return type.displayText(reason: reason)
         case .notice(let body): return body
         case .emote(let body): return body
         case .unsupported: return "Message"
@@ -42,6 +46,10 @@ enum ChatMessageContent: Equatable {
             return s1.url() == s2.url() && w1 == w2 && h1 == h2 && c1 == c2
         case (.voice(let s1, let d1, let w1), .voice(let s2, let d2, let w2)):
             return s1.url() == s2.url() && d1 == d2 && w1 == w2
+        case (.file(let s1, let f1, let m1, let sz1), .file(let s2, let f2, let m2, let sz2)):
+            return s1.url() == s2.url() && f1 == f2 && m1 == m2 && sz1 == sz2
+        case (.callEvent(let t1, let c1, let r1), .callEvent(let t2, let c2, let r2)):
+            return t1 == t2 && c1 == c2 && r1 == r2
         case (.notice(let a), .notice(let b)):
             return a == b
         case (.emote(let a), .emote(let b)):
@@ -52,6 +60,27 @@ enum ChatMessageContent: Equatable {
             return true
         default:
             return false
+        }
+    }
+}
+
+// MARK: - Call Event Type
+
+enum CallEventType: String, Codable, Equatable {
+    case invited    // call was initiated
+    case ended      // call ended (reason in separate field)
+
+    func displayText(reason: String?) -> String {
+        switch self {
+        case .invited:
+            return "Call"
+        case .ended:
+            switch reason {
+            case "timeout":   return "Missed call"
+            case "declined":  return "Declined call"
+            case "busy":      return "Busy"
+            default:          return "Call ended"
+            }
         }
     }
 }

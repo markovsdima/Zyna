@@ -99,6 +99,14 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v3_fileSupport") { db in
+            try db.alter(table: "storedMessage") { t in
+                t.add(column: "contentFilename", .text)
+                t.add(column: "contentMimetype", .text)
+                t.add(column: "contentFileSize", .integer)
+            }
+        }
+
         return migrator
     }
 }

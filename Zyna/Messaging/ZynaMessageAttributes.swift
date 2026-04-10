@@ -27,7 +27,9 @@ struct ZynaMessageAttributes: Equatable {
     /// Checklist items (future feature).
     var checklist: [ChecklistItem]?
 
-    /// Call signalling payload (future feature — replaces `ZYNA_CALL:` prefix).
+    /// Call signalling payload. Carries the event type (e.g.
+    /// "m.call.answer") and opaque JSON content that
+    /// CallSignalingService decodes into the concrete struct.
     var callSignal: CallSignalData?
 
     init(
@@ -63,10 +65,13 @@ struct ChecklistItem: Codable, Equatable {
 }
 
 struct CallSignalData: Codable, Equatable {
-    var type: String          // "offer" / "answer" / "ice-candidate" / "hangup"
-    var callId: String
-    var sdp: String?
-    var candidate: String?
+    /// Matrix event type, e.g. "m.call.answer", "m.call.candidates",
+    /// "m.call.hangup".
+    var type: String
+    /// JSON-encoded event content (CallAnswerContent,
+    /// CallCandidatesContent, etc.). Opaque to the codec —
+    /// CallSignalingService decodes the concrete type.
+    var payload: String
 }
 
 // MARK: - UIColor hex helper

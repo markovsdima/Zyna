@@ -7,6 +7,7 @@ import Foundation
 import Combine
 import MatrixRustSDK
 import AVFoundation
+import GRDB
 
 private let logCall = ScopedLog(.call)
 
@@ -46,6 +47,10 @@ final class CallService {
     private var signalingService: CallSignalingService?
     private var cancellables = Set<AnyCancellable>()
     private var ringTimeoutTask: Task<Void, Never>?
+    private var currentCallIsOutgoing = false
+    /// Holds a TimelineService created for calls detected globally
+    /// (outside an open chat). Released when the call ends.
+    private var ownedTimelineService: TimelineService?
 
     private let webRTCClient = WebRTCClient()
 
@@ -74,10 +79,12 @@ final class CallService {
         subscribeToSignalingEvents(signaling)
         signaling.subscribe(to: timelineService)
 
+        currentCallIsOutgoing = true
         configureAudioSession()
         stateSubject.send(.outgoingRinging(callId: callId, roomId: room.id()))
         logCall("Starting outgoing call \(callId) in room \(room.id())")
 
+        storeCallEvent(type: .invited, callId: callId, roomId: room.id(), isOutgoing: true)
         startRingTimeout(callId: callId)
     }
 
@@ -168,8 +175,18 @@ final class CallService {
             signalingService = nil
         }
 
+        ownedTimelineService?.stopListening()
+        ownedTimelineService = nil
+
         delegate?.callService(self, didEndCall: callId, reason: reason)
         deactivateAudioSession()
+
+        if let roomId = state.roomId {
+            storeCallEvent(
+                type: .ended, callId: callId, roomId: roomId,
+                isOutgoing: currentCallIsOutgoing, reason: reason.rawValue
+            )
+        }
 
         stateSubject.send(.ended(callId: callId, reason: reason))
         logCall("Call \(callId) ended: \(reason.rawValue)")
@@ -182,7 +199,13 @@ final class CallService {
         }
     }
 
-    // MARK: - Handle Incoming Call (called by TimelineService or push)
+    /// Holds a TimelineService reference for calls detected outside
+    /// an open chat. The service stays alive until the call ends.
+    func attachTimelineService(_ service: TimelineService) {
+        ownedTimelineService = service
+    }
+
+    // MARK: - Handle Incoming Call (called by notification listener or TimelineService)
 
     func handleIncomingCall(room: Room, callId: String, callerName: String?, offerSDP: String?, timelineService: TimelineService) {
         guard !state.isActive else {
@@ -199,8 +222,11 @@ final class CallService {
         subscribeToSignalingEvents(signaling)
         signaling.subscribe(to: timelineService)
 
+        currentCallIsOutgoing = false
         stateSubject.send(.incomingRinging(callId: callId, roomId: room.id(), callerName: callerName))
         logCall("Incoming call \(callId) from \(callerName ?? "unknown") in room \(room.id())")
+
+        storeCallEvent(type: .invited, callId: callId, roomId: room.id(), isOutgoing: false)
 
         // Deliver offer SDP directly — the invite event was already published
         // before signaling subscribed (PassthroughSubject race condition)
@@ -270,6 +296,56 @@ final class CallService {
     private func cancelRingTimeout() {
         ringTimeoutTask?.cancel()
         ringTimeoutTask = nil
+    }
+
+    // MARK: - GRDB Call Events
+
+    private func storeCallEvent(
+        type: CallEventType,
+        callId: String,
+        roomId: String,
+        isOutgoing: Bool,
+        reason: String? = nil
+    ) {
+        let senderId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        let record = StoredMessage(
+            id: "call-\(callId)-\(type.rawValue)",
+            roomId: roomId,
+            eventId: nil,
+            transactionId: nil,
+            senderId: senderId,
+            senderDisplayName: nil,
+            isOutgoing: isOutgoing,
+            timestamp: Date().timeIntervalSince1970,
+            contentType: "call",
+            contentBody: callId,
+            contentMediaJSON: nil,
+            contentImageWidth: nil,
+            contentImageHeight: nil,
+            contentCaption: type.rawValue,
+            contentVoiceDuration: nil,
+            contentVoiceWaveform: nil,
+            contentFilename: nil,
+            contentMimetype: reason,
+            contentFileSize: nil,
+            reactionsJSON: "[]",
+            sendStatus: "synced",
+            replyEventId: nil,
+            replySenderId: nil,
+            replySenderName: nil,
+            replyBody: nil,
+            zynaAttributesJSON: nil
+        )
+
+        let dbQueue = DatabaseService.shared.dbQueue
+        do {
+            try dbQueue.write { db in
+                try record.save(db)
+            }
+            logCall("Stored call event: \(type.rawValue) for \(callId)")
+        } catch {
+            logCall("Failed to store call event: \(error)")
+        }
     }
 
     // MARK: - Audio Session

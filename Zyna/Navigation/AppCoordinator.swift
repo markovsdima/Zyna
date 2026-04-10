@@ -25,7 +25,7 @@ final class AppCoordinator {
     private func showAuth() {
         let viewModel = AuthViewModel()
         viewModel.onAuthenticated = { [weak self] in
-            self?.showVerificationIfNeeded()
+            Task { await self?.showVerificationIfNeeded() }
         }
         let authView = AuthView(viewModel: viewModel)
         let vc = authView.wrapped()
@@ -38,8 +38,8 @@ final class AppCoordinator {
                 try await MatrixClientService.shared.restoreSession()
                 await MainActor.run { [weak self] in
                     self?.resumeHeartbeatIfNeeded()
-                    self?.showVerificationIfNeeded(modal: true)
                 }
+                await self.showVerificationIfNeeded(modal: true)
             } catch {
                 await MainActor.run { [weak self] in
                     self?.showAuth()
@@ -48,9 +48,17 @@ final class AppCoordinator {
         }
     }
 
-    private func showVerificationIfNeeded(modal: Bool = false) {
+    private func showVerificationIfNeeded(modal: Bool = false) async {
         let service = SessionVerificationService()
-        if service.isVerified {
+        let verified = await service.awaitVerificationState()
+        await MainActor.run { [weak self] in
+            self?.presentVerification(verified: verified, modal: modal)
+        }
+    }
+
+    @MainActor
+    private func presentVerification(verified: Bool, modal: Bool) {
+        if verified {
             if !modal { showMain() }
             return
         }
