@@ -32,6 +32,14 @@ final class MatrixClientService {
     let stateSubject = CurrentValueSubject<MatrixClientState, Never>(.loggedOut)
     var state: MatrixClientState { stateSubject.value }
 
+    /// Live encryption state from SDK listeners. `.unknown` until
+    /// the SDK fires the first event after listener attach (which
+    /// happens shortly after sync starts). `SessionVerificationService`
+    /// reads from these to decide whether to show the verification
+    /// screen on launch.
+    let verificationStateSubject = CurrentValueSubject<VerificationState, Never>(.unknown)
+    let recoveryStateSubject = CurrentValueSubject<RecoveryState, Never>(.unknown)
+
     // MARK: - SDK Objects
 
     private(set) var client: Client?
@@ -43,6 +51,8 @@ final class MatrixClientService {
     private let sessionDelegate = DefaultSessionDelegate()
     private let passphrase: String
     private var syncStateHandle: TaskHandle?
+    private var verificationStateHandle: TaskHandle?
+    private var recoveryStateHandle: TaskHandle?
 
     private let userIdKey = "com.zyna.matrix.lastUserId"
     private static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
@@ -175,6 +185,10 @@ final class MatrixClientService {
     private func startSync() async throws {
         guard let client else { return }
 
+        // Attach encryption state listeners *before* sync starts so
+        // we don't miss the first state delivery from the SDK.
+        attachEncryptionListeners()
+
         let syncService = try await client.syncService().finish()
         let roomListService = syncService.roomListService()
 
@@ -195,15 +209,53 @@ final class MatrixClientService {
         logSync("Sync stopped")
     }
 
+    // MARK: - Encryption State Listeners
+
+    /// Attaches verification + recovery state listeners on the
+    /// client's encryption module. Both listeners deliver an
+    /// initial value shortly after attach. Stored TaskHandles
+    /// keep them alive; tearing them down releases the SDK side.
+    private func attachEncryptionListeners() {
+        guard let client else { return }
+        let encryption = client.encryption()
+
+        let vSync = encryption.verificationState()
+        let rSync = encryption.recoveryState()
+        logSync("Encryption listeners attaching; sync v=\(vSync) r=\(rSync)")
+        verificationStateSubject.send(vSync)
+        recoveryStateSubject.send(rSync)
+
+        let vListener = ZynaVerificationStateListener { [weak self] state in
+            logSync("verificationState changed: \(state)")
+            self?.verificationStateSubject.send(state)
+        }
+        verificationStateHandle = encryption.verificationStateListener(listener: vListener)
+
+        let rListener = ZynaRecoveryStateListener { [weak self] state in
+            logSync("recoveryState changed: \(state)")
+            self?.recoveryStateSubject.send(state)
+        }
+        recoveryStateHandle = encryption.recoveryStateListener(listener: rListener)
+    }
+
+    private func detachEncryptionListeners() {
+        verificationStateHandle = nil
+        recoveryStateHandle = nil
+        verificationStateSubject.send(.unknown)
+        recoveryStateSubject.send(.unknown)
+    }
+
     // MARK: - Logout
 
     func logout() async {
         await stopSync()
+        detachEncryptionListeners()
 
         if let client {
             let userId = (try? client.userId()) ?? ""
             try? await client.logout()
             sessionDelegate.clearSession(userId: userId)
+            SessionVerificationService.clearLocalSecretsFlag(userId: userId)
             UserDefaults.standard.removeObject(forKey: userIdKey)
             logAuth("Logged out")
         }
@@ -284,4 +336,18 @@ final class MatrixClientService {
     var hasStoredSession: Bool {
         UserDefaults.standard.string(forKey: userIdKey) != nil
     }
+}
+
+// MARK: - SDK Listener Adapters
+
+private final class ZynaVerificationStateListener: VerificationStateListener {
+    private let handler: (VerificationState) -> Void
+    init(handler: @escaping (VerificationState) -> Void) { self.handler = handler }
+    func onUpdate(status: VerificationState) { handler(status) }
+}
+
+private final class ZynaRecoveryStateListener: RecoveryStateListener {
+    private let handler: (RecoveryState) -> Void
+    init(handler: @escaping (RecoveryState) -> Void) { self.handler = handler }
+    func onUpdate(status: RecoveryState) { handler(status) }
 }

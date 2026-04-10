@@ -97,6 +97,11 @@ the work instead: bg query → (result) → main apply.
 - Commit title ≤ 72 chars; body optional but welcome for context
 - Commit body: do NOT hard-wrap at 72 chars. Break lines naturally
   at sentence boundaries for readability, not at a fixed column.
+- Commit body length follows the work, not a quota: include every
+  load-bearing piece of context (the *why*, the non-obvious trade-offs,
+  the edge cases that motivated a design) but no filler. The diff
+  shows *what* changed — the body explains what the diff can't.
+  A two-line tweak gets two lines; a subtle refactor gets a long body.
 - PR titles do NOT use conventional prefixes — just a clear
   human-readable title (GitHub categorises PRs via labels/status)
 - PR descriptions are markdown rendered by GitHub — do NOT wrap
