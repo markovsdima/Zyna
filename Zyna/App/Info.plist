@@ -20,6 +20,8 @@
 	</dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Zyna needs access to your camera for video calls and sharing photos.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Zyna needs access to your microphone for voice calls.</string>
 	<key>UIBackgroundModes</key>
