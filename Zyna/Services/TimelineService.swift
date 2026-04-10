@@ -5,6 +5,7 @@
 
 import Foundation
 import Combine
+import UniformTypeIdentifiers
 import MatrixRustSDK
 import GRDB
 
@@ -53,16 +54,13 @@ final class TimelineService {
 
     private func handleDiffs(_ diffs: [TimelineDiff]) {
         var allItems: [TimelineItem] = []
-        var liveItems: [TimelineItem] = []
 
         for diff in diffs {
             switch diff {
             case .append(let items):
                 allItems.append(contentsOf: items)
-                liveItems.append(contentsOf: items)
             case .pushBack(let item):
                 allItems.append(item)
-                liveItems.append(item)
             case .pushFront(let item):
                 allItems.append(item)
             case .insert(_, let item):
@@ -75,9 +73,6 @@ final class TimelineService {
                 break
             }
         }
-
-        // Only check LIVE events for call invites (not pagination history)
-        checkForCallInvite(liveItems)
 
         // Publish raw items for call signaling (deduplication happens in CallSignalingService)
         if !allItems.isEmpty {
@@ -94,9 +89,6 @@ final class TimelineService {
 
     static func mapTimelineItem(_ item: TimelineItem) -> ChatMessage? {
         guard let event = item.asEvent() else { return nil }
-
-        // Filter out wrapped call signaling messages
-        if isCallSignalingMessage(event) { return nil }
 
         let timestamp = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
 
@@ -147,7 +139,7 @@ final class TimelineService {
     /// Extracts Zyna-specific attributes embedded in the event's
     /// `formatted_body` HTML. Returns empty attributes for non-text
     /// content or when no carrier span is present.
-    private static func extractZynaAttributes(from event: EventTimelineItem) -> ZynaMessageAttributes {
+    static func extractZynaAttributes(from event: EventTimelineItem) -> ZynaMessageAttributes {
         guard case .msgLike(let msgContent) = event.content,
               case .message(let message) = msgContent.kind,
               case .text = message.msgType
@@ -254,20 +246,33 @@ final class TimelineService {
     }
 
     private static func contentFromEvent(_ event: EventTimelineItem) -> ChatMessageContent? {
-        guard case .msgLike(let msgContent) = event.content else { return nil }
+        // Call events: invite is native SDK, signaling rides in span.
+        // CallService writes call events to GRDB directly — skip here.
+        switch event.content {
+        case .callInvite:
+            return nil
 
-        switch msgContent.kind {
-        case .message(let messageContent):
-            return contentFromMessageType(messageContent.msgType)
-        case .sticker:
-            return .unsupported(typeName: "sticker")
-        case .poll:
-            return .unsupported(typeName: "poll")
-        case .redacted:
-            return .redacted
-        case .unableToDecrypt:
-            return .text(body: "Encrypted message")
-        case .other:
+        case .msgLike(let msgContent):
+            // Filter span-based call signaling (answer, candidates, hangup)
+            let attrs = extractZynaAttributes(from: event)
+            if attrs.callSignal != nil { return nil }
+
+            switch msgContent.kind {
+            case .message(let messageContent):
+                return contentFromMessageType(messageContent.msgType)
+            case .sticker:
+                return .unsupported(typeName: "sticker")
+            case .poll:
+                return .unsupported(typeName: "poll")
+            case .redacted:
+                return .redacted
+            case .unableToDecrypt:
+                return .text(body: "Encrypted message")
+            case .other:
+                return nil
+            }
+
+        default:
             return nil
         }
     }
@@ -286,16 +291,16 @@ final class TimelineService {
             let duration = content.audio?.duration ?? content.info?.duration ?? 0
             let waveform = content.audio?.waveform ?? []
             return .voice(source: content.source, duration: duration, waveform: waveform)
+        case .file(let content):
+            return .file(
+                source: content.source,
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                size: content.info?.size
+            )
         default:
             return .unsupported(typeName: "message")
         }
-    }
-
-    private static func isCallSignalingMessage(_ event: EventTimelineItem) -> Bool {
-        guard case .msgLike(let msgContent) = event.content,
-              case .message(let message) = msgContent.kind,
-              case .text(let text) = message.msgType else { return false }
-        return text.body.hasPrefix(CallSignalingService.signalingPrefix)
     }
 
     // MARK: - Pagination
@@ -413,6 +418,37 @@ final class TimelineService {
         }
     }
 
+    func sendFile(url: URL) async {
+        guard let timeline else { return }
+
+        let filename = url.lastPathComponent
+        let fileSize = (try? FileManager.default.attributesOfItem(
+            atPath: url.path)[.size] as? UInt64) ?? 0
+
+        let mimetype: String
+        if let utType = UTType(filenameExtension: url.pathExtension),
+           let preferred = utType.preferredMIMEType {
+            mimetype = preferred
+        } else {
+            mimetype = "application/octet-stream"
+        }
+
+        let fileInfo = FileInfo(
+            mimetype: mimetype, size: fileSize,
+            thumbnailInfo: nil, thumbnailSource: nil
+        )
+        let params = UploadParameters(
+            source: .file(filename: url.path(percentEncoded: false)),
+            caption: nil, formattedCaption: nil, mentions: nil, inReplyTo: nil
+        )
+        do {
+            _ = try timeline.sendFile(params: params, fileInfo: fileInfo)
+            logTimeline("File sent: \(filename), \(fileSize) bytes")
+        } catch {
+            logTimeline("File send failed: \(error)")
+        }
+    }
+
     func redactEvent(_ itemId: ChatItemIdentifier, reason: String? = nil) async throws {
         guard let timeline else { return }
         try await timeline.redactEvent(eventOrTransactionId: itemId.toSDK(), reason: reason)
@@ -429,71 +465,22 @@ final class TimelineService {
         }
     }
 
-    /// Send call signaling data through the timeline's encrypted send pipeline.
-    func sendCallSignaling(_ text: String) async {
+    /// Send call signaling data through the timeline's encrypted
+    /// send pipeline, wrapped in a Zyna HTML span carrier.
+    func sendCallSignaling(_ attrs: ZynaMessageAttributes) async {
         guard let timeline else { return }
+        let body = "\u{200B}"   // zero-width space — invisible in foreign clients
+        let htmlBody = ZynaHTMLCodec.encode(
+            userHTML: body,
+            attributes: attrs
+        )
         do {
-            _ = try await timeline.send(msg: messageEventContentFromMarkdown(md: text))
+            _ = try await timeline.send(msg: messageEventContentFromHtml(
+                body: body, htmlBody: htmlBody
+            ))
+            logTimeline("Call signaling sent via span")
         } catch {
             logTimeline("Call signaling send failed: \(error)")
-        }
-    }
-
-    // MARK: - Incoming Call Detection
-
-    private func checkForCallInvite(_ items: [TimelineItem]) {
-        for item in items {
-            guard let event = item.asEvent(),
-                  !event.isOwn,
-                  case .callInvite = event.content else { continue }
-
-            // Ignore old invites (e.g. from history pagination)
-            let eventTime = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
-            guard abs(eventTime.timeIntervalSinceNow) < 60 else { continue }
-
-            // Don't trigger if already in a call
-            guard !CallService.shared.state.isActive else { continue }
-
-            // Extract callId and SDP from raw event JSON
-            let debugInfo = event.lazyProvider.debugInfo()
-            guard let json = debugInfo.originalJson,
-                  let data = json.data(using: .utf8),
-                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let content = dict["content"] as? [String: Any],
-                  let callId = content["call_id"] as? String else {
-                logTimeline("Call invite detected but failed to extract callId")
-                continue
-            }
-
-            // Extract SDP offer directly — can't rely on signaling receiving it later
-            let offerSDP: String? = {
-                if let offer = content["offer"] as? [String: Any],
-                   let sdp = offer["sdp"] as? String {
-                    return sdp
-                }
-                return nil
-            }()
-
-            let callerName: String? = {
-                if case .ready(let name, _, _) = event.senderProfile { return name }
-                return nil
-            }()
-
-            logTimeline("Incoming call invite detected: callId=\(callId) from \(callerName ?? event.sender), sdp=\(offerSDP?.count ?? 0) bytes")
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                CallService.shared.handleIncomingCall(
-                    room: self.room,
-                    callId: callId,
-                    callerName: callerName,
-                    offerSDP: offerSDP,
-                    timelineService: self
-                )
-            }
-
-            // Only handle the first invite
-            break
         }
     }
 

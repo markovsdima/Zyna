@@ -17,6 +17,7 @@ enum AppIcon {
     case lockClosed
     case chevronUp
     case chevronDown
+    case phone
 
     var systemName: String {
         switch self {
@@ -31,6 +32,7 @@ enum AppIcon {
         case .lockClosed: return "lock.fill"
         case .chevronUp:   return "chevron.up"
         case .chevronDown: return "chevron.down"
+        case .phone:       return "phone.fill"
         }
     }
 

@@ -48,6 +48,7 @@ enum CallState: Equatable {
             return roomId
         }
     }
+
 }
 
 // MARK: - Call Hangup Reason

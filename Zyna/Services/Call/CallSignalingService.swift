@@ -13,13 +13,11 @@ private let logCall = ScopedLog(.call)
 
 /// Handles sending and receiving call signaling events for VoIP.
 /// Sends m.call.invite natively (SDK delivers it as .callInvite).
-/// Sends answer/candidates/hangup as text messages through the timeline's
-/// encrypted send pipeline, with a marker prefix for identification.
+/// Sends answer/candidates/hangup via the Zyna HTML span carrier
+/// (`data-zyna` attribute with `callSignal` payload) through the
+/// timeline's encrypted send pipeline.
 /// Receives timeline items from TimelineService (not its own listener).
 final class CallSignalingService {
-
-    /// Prefix used to identify call signaling messages in text bodies.
-    static let signalingPrefix = "ZYNA_CALL:"
 
     // MARK: - Incoming Events
 
@@ -92,12 +90,16 @@ final class CallSignalingService {
 
     // MARK: - Private — Send
 
-    /// Sends call signaling data as an encrypted text message through the timeline.
-    /// Format: "ZYNA_CALL:m.call.answer:{json_data}"
+    /// Sends call signaling data as a Zyna-attributed message through
+    /// the timeline. The signaling payload rides in the hidden
+    /// `<span data-zyna="...">` carrier; `body` shows a neutral
+    /// placeholder for foreign clients.
     private func sendViaTimeline<T: Encodable>(type: String, content: T) async throws {
-        guard let innerJSON = CallEventJSON.encode(content) else { return }
-        let body = "\(Self.signalingPrefix)\(type):\(innerJSON)"
-        await timelineService?.sendCallSignaling(body)
+        guard let payload = CallEventJSON.encode(content) else { return }
+        let attrs = ZynaMessageAttributes(
+            callSignal: CallSignalData(type: type, payload: payload)
+        )
+        await timelineService?.sendCallSignaling(attrs)
     }
 
     // MARK: - Private — Receive
@@ -123,16 +125,11 @@ final class CallSignalingService {
         case .callInvite:
             handleCallInvite(event)
 
-        case .msgLike(let msgContent):
-            // Check for signaling messages in text content
-            if case .message(let message) = msgContent.kind,
-               case .text(let text) = message.msgType,
-               text.body.hasPrefix(Self.signalingPrefix) {
-                handleTextSignaling(text.body)
+        case .msgLike:
+            let attrs = TimelineService.extractZynaAttributes(from: event)
+            if let signal = attrs.callSignal {
+                handleSpanSignaling(signal)
             }
-
-        case .failedToParseMessageLike(let eventType, _) where eventType.hasPrefix("m.call."):
-            handleLegacyCallEvent(event, eventType: eventType)
 
         default:
             break
@@ -157,25 +154,10 @@ final class CallSignalingService {
         incomingEventSubject.send(.invite(content))
     }
 
-    /// Handle call signaling encoded in text message body.
-    /// Format: "ZYNA_CALL:m.call.answer:{json_data}"
-    private func handleTextSignaling(_ body: String) {
-        let payload = String(body.dropFirst(Self.signalingPrefix.count))
-
-        // Split into type and JSON data at the first ":"
-        guard let colonIndex = payload.firstIndex(of: ":") else { return }
-        let type = String(payload[payload.startIndex..<colonIndex])
-        let jsonString = String(payload[payload.index(after: colonIndex)...])
-
-        logCall("Received signaling via text: \(type)")
-        parseCallData(type: type, jsonString: jsonString)
-    }
-
-    /// Handle legacy/failedToParse call events (from other clients using VoIP v1, etc.)
-    private func handleLegacyCallEvent(_ event: EventTimelineItem, eventType: String) {
-        guard let contentDict = extractEventContent(event) else { return }
-        logCall("Parsed legacy call event type: \(eventType)")
-        parseCallData(type: eventType, dict: contentDict)
+    /// Handle call signaling from Zyna span carrier.
+    private func handleSpanSignaling(_ signal: CallSignalData) {
+        logCall("Received signaling via span: \(signal.type)")
+        parseCallData(type: signal.type, jsonString: signal.payload)
     }
 
     // MARK: - Shared Parsing

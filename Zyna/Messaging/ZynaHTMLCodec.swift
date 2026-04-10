@@ -86,10 +86,10 @@ enum ZynaHTMLCodec {
         }
 
         if let signal = attrs.callSignal {
-            var s: [String: Any] = ["type": signal.type, "callId": signal.callId]
-            if let sdp = signal.sdp { s["sdp"] = sdp }
-            if let candidate = signal.candidate { s["candidate"] = candidate }
-            obj[JSONKey.callSignal] = s
+            obj[JSONKey.callSignal] = [
+                "type": signal.type,
+                "payload": signal.payload
+            ] as [String: Any]
         }
 
         guard let data = try? JSONSerialization.data(
@@ -115,13 +115,8 @@ enum ZynaHTMLCodec {
 
         if let s = obj[JSONKey.callSignal] as? [String: Any],
            let type = s["type"] as? String,
-           let callId = s["callId"] as? String {
-            result.callSignal = CallSignalData(
-                type: type,
-                callId: callId,
-                sdp: s["sdp"] as? String,
-                candidate: s["candidate"] as? String
-            )
+           let payload = s["payload"] as? String {
+            result.callSignal = CallSignalData(type: type, payload: payload)
         }
 
         return result
