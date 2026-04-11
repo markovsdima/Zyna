@@ -41,7 +41,7 @@ final class ChatInputNode: ASDisplayNode {
     private var colorPalette: SendColorPaletteView?
     private var colorPaletteLongPress: UILongPressGestureRecognizer?
     private var pendingFlashTask: DispatchWorkItem?
-    private static let sendButtonDefaultTint: UIColor = .systemBlue
+    private static let sendButtonDefaultTint: UIColor = AppColor.accent
 
     var onSend: ((String, UIColor?) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
@@ -80,7 +80,7 @@ final class ChatInputNode: ASDisplayNode {
             string: senderName ?? "",
             attributes: [
                 .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
-                .foregroundColor: UIColor.systemBlue
+                .foregroundColor: AppColor.accent
             ]
         )
         replyBodyNode.attributedText = NSAttributedString(
@@ -109,11 +109,11 @@ final class ChatInputNode: ASDisplayNode {
         separatorNode.style.height = ASDimension(unit: .points, value: 0)
         separatorNode.backgroundColor = .clear
 
-        replyBackgroundNode.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+        replyBackgroundNode.backgroundColor = AppColor.inputReplyBackground
         replyBackgroundNode.cornerRadius = 20
         replyBackgroundNode.clipsToBounds = true
 
-        replyBarNode.backgroundColor = .systemBlue
+        replyBarNode.backgroundColor = AppColor.accent
         replyBarNode.cornerRadius = 1
         replyBarNode.style.width = ASDimension(unit: .points, value: 2)
         replyNameNode.maximumNumberOfLines = 1
@@ -141,7 +141,7 @@ final class ChatInputNode: ASDisplayNode {
         attachButtonNode.setImage(AppIcon.attach.rendered(size: 24, color: .gray), for: .normal)
         attachButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
 
-        sendButtonNode.setImage(AppIcon.send.rendered(size: 24, weight: .semibold, color: .systemBlue), for: .normal)
+        sendButtonNode.setImage(AppIcon.send.rendered(size: 24, weight: .semibold, color: AppColor.accent), for: .normal)
         sendButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
 
         micButtonNode.setImage(AppIcon.mic.rendered(size: 24, color: .gray), for: .normal)
@@ -420,7 +420,7 @@ final class ChatInputNode: ASDisplayNode {
             y: micCenter.y - size / 2,
             width: size, height: size
         ))
-        pulse.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.25)
+        pulse.backgroundColor = AppColor.accent.withAlphaComponent(0.25)
         pulse.layer.cornerRadius = size / 2
         pulse.alpha = 0
         view.addSubview(pulse)

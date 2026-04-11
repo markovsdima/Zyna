@@ -19,4 +19,11 @@ enum Brand {
         case .sds:  return ""
         }
     }
+
+    var theme: AppTheme {
+        switch self {
+        case .zyna: return ZynaTheme()
+        case .sds:  return SDSTheme()
+        }
+    }
 }

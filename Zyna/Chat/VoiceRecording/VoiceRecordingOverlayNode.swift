@@ -32,7 +32,7 @@ final class VoiceRecordingOverlayNode: ASDisplayNode {
     override init() {
         super.init()
         automaticallyManagesSubnodes = true
-        backgroundColor = .systemBackground
+        backgroundColor = AppColor.voiceRecordingBackground
         setupNodes()
     }
 
@@ -43,7 +43,7 @@ final class VoiceRecordingOverlayNode: ASDisplayNode {
         timerNode.attributedText = Self.timerString("0:00")
 
         // Recording dot
-        recordingDotNode.backgroundColor = .systemRed
+        recordingDotNode.backgroundColor = AppColor.destructive
         recordingDotNode.style.preferredSize = CGSize(width: 8, height: 8)
         recordingDotNode.cornerRadius = 4
 
@@ -64,17 +64,17 @@ final class VoiceRecordingOverlayNode: ASDisplayNode {
         chevronNode.style.preferredSize = CGSize(width: 12, height: 14)
 
         // Stop button (locked mode)
-        stopButtonNode.setImage(AppIcon.stop.rendered(size: 28, color: .systemBlue), for: .normal)
+        stopButtonNode.setImage(AppIcon.stop.rendered(size: 28, color: AppColor.accent), for: .normal)
         stopButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
         // Cancel button (locked mode)
-        cancelButtonNode.setImage(AppIcon.trash.rendered(size: 28, color: .systemRed), for: .normal)
+        cancelButtonNode.setImage(AppIcon.trash.rendered(size: 28, color: AppColor.destructive), for: .normal)
         cancelButtonNode.style.preferredSize = CGSize(width: 36, height: 36)
 
         // Waveform bars
         for _ in 0..<maxVisibleBars {
             let bar = ASDisplayNode()
-            bar.backgroundColor = .systemBlue
+            bar.backgroundColor = AppColor.accent
             bar.cornerRadius = 1.5
             bar.style.width = ASDimension(unit: .points, value: 3)
             waveformBars.append(bar)

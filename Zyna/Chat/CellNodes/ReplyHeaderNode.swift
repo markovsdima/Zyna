@@ -17,7 +17,7 @@ final class ReplyHeaderNode: ASDisplayNode {
         super.init()
         automaticallyManagesSubnodes = true
 
-        barNode.backgroundColor = isOutgoing ? UIColor.white.withAlphaComponent(0.6) : .systemBlue
+        barNode.backgroundColor = isOutgoing ? AppColor.replyBarOutgoing : AppColor.replyBarIncoming
         barNode.cornerRadius = 1
         barNode.style.width = ASDimension(unit: .points, value: 2)
         barNode.style.minHeight = ASDimension(unit: .points, value: 16)
@@ -34,7 +34,7 @@ final class ReplyHeaderNode: ASDisplayNode {
             string: senderText.isEmpty ? "Unknown" : senderText,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
-                .foregroundColor: isOutgoing ? UIColor.white.withAlphaComponent(0.9) : UIColor.systemBlue
+                .foregroundColor: isOutgoing ? AppColor.replySenderOutgoing : AppColor.replySenderIncoming
             ]
         )
 
@@ -48,8 +48,8 @@ final class ReplyHeaderNode: ASDisplayNode {
             attributes: [
                 .font: UIFont.systemFont(ofSize: 12),
                 .foregroundColor: isOutgoing
-                    ? UIColor.white.withAlphaComponent(0.7)
-                    : UIColor.secondaryLabel
+                    ? AppColor.replyBodyOutgoing
+                    : AppColor.replyBodyIncoming
             ]
         )
     }

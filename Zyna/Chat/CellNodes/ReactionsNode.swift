@@ -62,15 +62,15 @@ final class ReactionPillNode: ASControlNode {
             string: text,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 14),
-                .foregroundColor: reaction.isOwn ? UIColor.systemBlue : UIColor.label
+                .foregroundColor: reaction.isOwn ? AppColor.reactionForegroundOwn : AppColor.reactionForegroundOther
             ]
         )
 
-        backgroundColor = reaction.isOwn ? UIColor.systemBlue.withAlphaComponent(0.12) : .systemGray5
+        backgroundColor = reaction.isOwn ? AppColor.reactionBackgroundOwn : AppColor.reactionBackgroundOther
         cornerRadius = 13
         if reaction.isOwn {
             borderWidth = 1
-            borderColor = UIColor.systemBlue.withAlphaComponent(0.4).cgColor
+            borderColor = AppColor.reactionBorderOwn.cgColor
         }
 
         style.minHeight = ASDimension(unit: .points, value: 26)

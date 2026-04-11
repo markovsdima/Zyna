@@ -84,7 +84,7 @@ final class FileCellNode: MessageCellNode {
             string: fname,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 15, weight: .medium),
-                .foregroundColor: isOutgoing ? UIColor.white : UIColor.label
+                .foregroundColor: isOutgoing ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming
             ]
         )
 
@@ -94,8 +94,8 @@ final class FileCellNode: MessageCellNode {
             attributes: [
                 .font: UIFont.systemFont(ofSize: 12),
                 .foregroundColor: isOutgoing
-                    ? UIColor.white.withAlphaComponent(0.7)
-                    : UIColor.secondaryLabel
+                    ? AppColor.bubbleTimestampOutgoing
+                    : AppColor.bubbleTimestampIncoming
             ]
         )
 

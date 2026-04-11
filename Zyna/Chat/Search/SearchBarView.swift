@@ -30,7 +30,7 @@ final class SearchBarView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func setup() {
-        backgroundColor = .systemBackground
+        backgroundColor = AppColor.searchBarBackground
 
         textField.placeholder = "Search messages"
         textField.font = .systemFont(ofSize: 16)

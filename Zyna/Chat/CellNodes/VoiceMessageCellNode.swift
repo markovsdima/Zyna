@@ -11,10 +11,12 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     // MARK: - Icons (pre-rendered once, thread-safe)
 
-    private static let playWhite  = AppIcon.play.rendered(color: .white)
-    private static let playBlue   = AppIcon.play.rendered(color: .systemBlue)
-    private static let pauseWhite = AppIcon.pause.rendered(color: .white)
-    private static let pauseBlue  = AppIcon.pause.rendered(color: .systemBlue)
+    // Pre-rendered with the brand's accent / on-accent so the icons
+    // pick up theme overrides without re-rendering at use time.
+    private static let playOnAccent  = AppIcon.play.rendered(color: AppColor.onAccent)
+    private static let playAccent    = AppIcon.play.rendered(color: AppColor.accent)
+    private static let pauseOnAccent = AppIcon.pause.rendered(color: AppColor.onAccent)
+    private static let pauseAccent   = AppIcon.pause.rendered(color: AppColor.accent)
 
     // MARK: - Subnodes
 
@@ -58,10 +60,10 @@ final class VoiceMessageCellNode: MessageCellNode {
         let isOutgoing = message.isOutgoing
         self.waveformNode = WaveformNode(
             samples: samples,
-            filledColor: isOutgoing ? .white : .systemBlue,
+            filledColor: isOutgoing ? AppColor.onAccent : AppColor.accent,
             unfilledColor: isOutgoing
-                ? UIColor.white.withAlphaComponent(0.4)
-                : UIColor.systemBlue.withAlphaComponent(0.3)
+                ? AppColor.onAccent.withAlphaComponent(0.4)
+                : AppColor.accent.withAlphaComponent(0.3)
         )
 
         super.init(message: message, isGroupChat: isGroupChat)
@@ -80,7 +82,7 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     private func setupSubnodes() {
         // Play button
-        playIconNode.image = isOutgoing ? Self.playWhite : Self.playBlue
+        playIconNode.image = isOutgoing ? Self.playOnAccent : Self.playAccent
         playIconNode.contentMode = .center
         playIconNode.isUserInteractionEnabled = false
         playControlNode.automaticallyManagesSubnodes = true
@@ -196,9 +198,9 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     private func updatePlayIcon(playing: Bool) {
         if isOutgoing {
-            playIconNode.image = playing ? Self.pauseWhite : Self.playWhite
+            playIconNode.image = playing ? Self.pauseOnAccent : Self.playOnAccent
         } else {
-            playIconNode.image = playing ? Self.pauseBlue : Self.playBlue
+            playIconNode.image = playing ? Self.pauseAccent : Self.playAccent
         }
     }
 
@@ -220,7 +222,7 @@ final class VoiceMessageCellNode: MessageCellNode {
         let text = String(format: "%d:%02d", minutes, seconds)
         return NSAttributedString(string: text, attributes: [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 14, weight: .medium),
-            .foregroundColor: isOutgoing ? UIColor.white : UIColor.label
+            .foregroundColor: isOutgoing ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming
         ])
     }
 

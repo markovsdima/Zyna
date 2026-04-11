@@ -128,6 +128,12 @@ the work instead: bg query → (result) → main apply.
 - `Services/` — SDK-facing services (MatrixClient, Timeline, Rooms)
 - `Services/Database/` — GRDB layer
 
+**Xcode uses folder references, not groups.** New files added on
+disk are picked up automatically — `Zyna.xcodeproj/project.pbxproj`
+does NOT need to be edited when creating or moving Swift files.
+Don't flag missing pbxproj entries as a build blocker; the project
+discovers files by directory.
+
 ## Git behaviour
 - User commits manually; Claude does NOT commit unless asked
 

@@ -64,7 +64,7 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
            let iconState = MessageStatusIcon.from(sendStatus: message.sendStatus) {
             let node = MessageStatusIconNode()
             node.icon = iconState
-            node.tintColour = UIColor.white.withAlphaComponent(0.7)
+            node.tintColour = AppColor.bubbleTimestampOutgoing
             self.statusIconNode = node
         } else {
             self.statusIconNode = nil
@@ -85,7 +85,8 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         // Bubble defaults — custom color from Zyna attributes wins if set.
         let customColor = message.zynaAttributes.color
         bubbleNode.backgroundColor = customColor
-            ?? (isOutgoing ? .systemBlue : .systemGray5)
+            ?? (isOutgoing ? AppColor.bubbleBackgroundOutgoing
+                           : AppColor.bubbleBackgroundIncoming)
         bubbleNode.cornerRadius = 18
         bubbleNode.clipsToBounds = true
         bubbleNode.automaticallyManagesSubnodes = true
@@ -96,8 +97,8 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
             attributes: [
                 .font: UIFont.systemFont(ofSize: 11),
                 .foregroundColor: isOutgoing
-                    ? UIColor.white.withAlphaComponent(0.7)
-                    : UIColor.secondaryLabel
+                    ? AppColor.bubbleTimestampOutgoing
+                    : AppColor.bubbleTimestampIncoming
             ]
         )
 
@@ -196,7 +197,7 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         let highlight = CALayer()
         highlight.frame = bubbleNode.bounds
         highlight.cornerRadius = bubbleNode.cornerRadius
-        highlight.backgroundColor = (isOutgoing ? UIColor.white : UIColor.label)
+        highlight.backgroundColor = (isOutgoing ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming)
             .withAlphaComponent(0.3).cgColor
         highlight.opacity = 0
         bubbleNode.layer.addSublayer(highlight)

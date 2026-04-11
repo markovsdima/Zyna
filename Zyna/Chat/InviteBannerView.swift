@@ -23,7 +23,7 @@ final class InviteBannerView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func setup() {
-        backgroundColor = .secondarySystemBackground
+        backgroundColor = AppColor.inviteBannerBackground
 
         label.text = "You've been invited to this chat"
         label.font = .systemFont(ofSize: 14)
