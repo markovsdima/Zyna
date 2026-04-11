@@ -15,6 +15,14 @@ enum AppColor {
     
     static let iconWhite = UIColor(hex: 0xF8F9FB)
     
+    /// Chat scroll surface background. Also used as the backdrop fill
+    /// for glass capture (see GlassAnchor.backdropClearColor) so that
+    /// areas without cells sample the same color the user sees.
+    static let chatBackground = UIColor.dynamic(
+        light: UIColor(hex: 0xD5D5D5),
+        dark:  UIColor(hex: 0x141414)
+    )
+    
     static let bubbleForegroundOutgoing = UIColor.dynamic(
         light: .white, dark: gray900
     )

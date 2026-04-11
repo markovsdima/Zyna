@@ -12,6 +12,8 @@ final class ChatNode: ASDisplayNode {
         super.init()
         automaticallyManagesSubnodes = true
         tableNode.inverted = true
+        backgroundColor = AppColor.chatBackground
+        tableNode.backgroundColor = AppColor.chatBackground
     }
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {

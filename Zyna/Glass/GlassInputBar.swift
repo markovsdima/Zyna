@@ -21,6 +21,13 @@ final class GlassInputBar: UIView {
         didSet { anchor.sourceView = sourceView }
     }
 
+    /// Background color the glass should sample where `sourceView`
+    /// has no cells. Defaults to the chat background; override only
+    /// if hosting glass over a non-chat surface.
+    var backdropClearColor: UIColor = AppColor.chatBackground {
+        didSet { anchor.backdropClearColor = backdropClearColor }
+    }
+
     /// Show/hide the scroll-to-live button. Animates from/to mic button.
     var scrollButtonVisible: Bool = false {
         didSet {

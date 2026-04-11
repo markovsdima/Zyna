@@ -86,6 +86,9 @@ the work instead: bg query → (result) → main apply.
 
 ## Code style
 - Documentation comments ~72 chars wide (reads well side-by-side)
+- US English in comments and identifiers (`color`, not `colour`;
+  `optimization`, not `optimisation`). Matches Apple's API spelling
+  so reading doesn't switch dialects mid-line.
 - ScopedLog (ScopedLog.swift) for all logging — pick a scope
   (.timeline, .database, .ui, etc.)
 - Prefer small pure functions + enums over class hierarchies

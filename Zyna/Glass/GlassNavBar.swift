@@ -36,6 +36,13 @@ final class GlassNavBar: UIView {
         didSet { anchor.sourceView = sourceView }
     }
 
+    /// Background color the glass should sample where `sourceView`
+    /// has no cells. Defaults to the chat background; override only
+    /// if hosting glass over a non-chat surface.
+    var backdropClearColor: UIColor = AppColor.chatBackground {
+        didSet { anchor.backdropClearColor = backdropClearColor }
+    }
+
     /// Total height from top of screen (safeArea + bar).
     var coveredHeight: CGFloat {
         guard let superview else { return 0 }

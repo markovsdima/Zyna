@@ -77,6 +77,10 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
 
         automaticallyManagesSubnodes = true
         selectionStyle = .none
+        // ASCellNode is wrapped in a UITableViewCell whose default
+        // backgroundColor (.systemBackground) would otherwise occlude
+        // the table's own background and break glass backdrop sampling.
+        backgroundColor = .clear
 
         // Bubble defaults — custom color from Zyna attributes wins if set.
         let customColor = message.zynaAttributes.color

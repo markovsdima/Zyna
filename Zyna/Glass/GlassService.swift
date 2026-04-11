@@ -345,7 +345,8 @@ final class GlassService {
                 #endif
 
                 guard let texture = captureRegion(captureFrame, from: sourceWindow, scale: scale,
-                                                     sourceView: anchor.sourceView) else { continue }
+                                                     sourceView: anchor.sourceView,
+                                                     clearPattern: anchor.clearPatternBGRA) else { continue }
 
                 #if DEBUG
                 let capTime = CACurrentMediaTime() - capStart
@@ -562,7 +563,8 @@ final class GlassService {
     /// Render source view's layer tree into a texture for the given region.
     /// Zero-copy CPU→GPU on device (CGContext → MTLBuffer → texture view), fallback on Intel simulator.
     private func captureRegion(_ frame: CGRect, from window: UIWindow, scale: CGFloat,
-                                sourceView: UIView? = nil) -> MTLTexture? {
+                                sourceView: UIView? = nil,
+                                clearPattern: UInt32) -> MTLTexture? {
         let renderScale = captureScale
         let w = Int(frame.width * renderScale)
         let h = Int(frame.height * renderScale)
@@ -647,10 +649,19 @@ final class GlassService {
         // Reset transform (CGContext accumulates transforms)
         ctx.saveGState()
 
-        // Zero the backing memory
+        // Pre-fill backing memory with the anchor's backdrop color.
+        // The sublayer-only render below skips sourceView.backgroundColor,
+        // so without this fill, empty regions would read as opaque black.
+        //
+        // memset_pattern4 is NEON-optimized in libc — same cost as the
+        // plain memset(0) it replaces (one pass at memory bandwidth).
+        // Safe to do every frame; do not swap for CGContext fill.
         if let buffer = slot.buffer {
-            memset(buffer.contents(), 0, slot.bytesPerRow * h)
+            var pattern = clearPattern
+            memset_pattern4(buffer.contents(), &pattern, slot.bytesPerRow * h)
         } else {
+            // Intel-simulator fallback (no shared memory). Visually wrong
+            // — clears to transparent black — but never hit on device.
             ctx.clear(CGRect(x: 0, y: 0, width: w, height: h))
         }
 
