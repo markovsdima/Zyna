@@ -6,66 +6,166 @@
 import UIKit
 import MatrixRustSDK
 
+/// Two-tier image cache: NSCache (memory) → Caches/ (disk) → SDK fetch.
+///
+/// Thread-safe: `cachedImage(for:)` returns synchronously from memory
+/// — safe to call from Texture's background node init. Async methods
+/// check disk then network, deduplicating in-flight requests so
+/// multiple cells for the same mxc URL share one fetch Task.
 final class MediaCache {
 
     static let shared = MediaCache()
 
-    private let cache = NSCache<NSString, UIImage>()
+    // MARK: - Memory
+
+    private let memory = NSCache<NSString, UIImage>()
+
+    // MARK: - Disk
+
+    private let diskDir: URL
+    private let ioQueue = DispatchQueue(label: "com.zyna.mediacache.io", qos: .utility)
+
+    // MARK: - Request deduplication
+
+    private let inflightLock = NSLock()
+    private var inflight: [String: Task<UIImage?, Never>] = [:]
+
+    // MARK: - Init
 
     private init() {
-        cache.countLimit = 200
+        memory.countLimit = 300
+
+        let caches = FileManager.default
+            .urls(for: .cachesDirectory, in: .userDomainMask).first!
+        diskDir = caches.appendingPathComponent("zyna-thumbnails", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: diskDir, withIntermediateDirectories: true
+        )
     }
 
-    // MARK: - Public
+    // MARK: - Synchronous (memory only, safe from any thread)
+
+    /// Returns image from memory cache if available. Does not hit
+    /// disk or network. Call from Texture node init for instant
+    /// display without a Task.
+    func cachedImage(for key: String) -> UIImage? {
+        memory.object(forKey: key as NSString)
+    }
 
     func image(for source: MediaSource) -> UIImage? {
-        cache.object(forKey: cacheKey(source))
+        cachedImage(for: source.url())
     }
+
+    // MARK: - Async (memory → disk → network)
 
     func loadThumbnail(
         source: MediaSource,
         width: UInt64,
         height: UInt64
     ) async -> UIImage? {
-        let key = cacheKey(source)
-
-        if let cached = cache.object(forKey: key) {
-            return cached
-        }
-
-        guard let client = MatrixClientService.shared.client else { return nil }
-
-        do {
-            let data = try await client.getMediaThumbnail(
-                mediaSource: source,
-                width: width,
-                height: height
+        let key = source.url()
+        return await load(key: key) { client in
+            try await client.getMediaThumbnail(
+                mediaSource: source, width: width, height: height
             )
-            guard let image = UIImage(data: data) else { return nil }
-            cache.setObject(image, forKey: key)
-            return image
-        } catch {
-            return nil
         }
     }
 
     func loadThumbnail(mxcUrl: String, size: Int) async -> UIImage? {
-        let key = mxcUrl as NSString
+        guard let source = try? MediaSource.fromUrl(url: mxcUrl) else {
+            return nil
+        }
+        let px = UInt64(size)
+        return await load(key: mxcUrl) { client in
+            try await client.getMediaThumbnail(
+                mediaSource: source, width: px, height: px
+            )
+        }
+    }
 
-        if let cached = cache.object(forKey: key) {
+    // MARK: - Core pipeline
+
+    private func load(
+        key: String,
+        fetch: @escaping (Client) async throws -> Data
+    ) async -> UIImage? {
+        let nsKey = key as NSString
+
+        // 1. Memory
+        if let cached = memory.object(forKey: nsKey) {
             return cached
         }
 
-        guard let source = try? MediaSource.fromUrl(url: mxcUrl) else { return nil }
-        let px = UInt64(size)
-        guard let image = await loadThumbnail(source: source, width: px, height: px) else { return nil }
-        cache.setObject(image, forKey: key)
-        return image
+        // 2. Deduplicate: if another cell already started a fetch
+        //    for this key, wait for its result instead of doubling.
+        inflightLock.lock()
+        if let existing = inflight[key] {
+            inflightLock.unlock()
+            return await existing.value
+        }
+
+        let task = Task<UIImage?, Never> {
+            // 3. Disk
+            if let diskImage = await readDisk(key: key) {
+                memory.setObject(diskImage, forKey: nsKey)
+                return diskImage
+            }
+
+            // 4. Network (SDK fetch)
+            guard let client = MatrixClientService.shared.client else {
+                return nil
+            }
+            do {
+                let data = try await fetch(client)
+                guard let image = UIImage(data: data) else { return nil }
+                memory.setObject(image, forKey: nsKey)
+                writeDisk(key: key, data: data)
+                return image
+            } catch {
+                return nil
+            }
+        }
+        inflight[key] = task
+        inflightLock.unlock()
+
+        let result = await task.value
+
+        inflightLock.lock()
+        inflight.removeValue(forKey: key)
+        inflightLock.unlock()
+
+        return result
     }
 
-    // MARK: - Private
+    // MARK: - Disk I/O
 
-    private func cacheKey(_ source: MediaSource) -> NSString {
-        source.url() as NSString
+    private func diskPath(for key: String) -> URL {
+        // SHA256-like short hash from key for safe filenames.
+        let safe = key.data(using: .utf8)!
+            .map { String(format: "%02x", $0) }
+            .joined()
+            .prefix(64)
+        return diskDir.appendingPathComponent(String(safe))
+    }
+
+    private func readDisk(key: String) async -> UIImage? {
+        let path = diskPath(for: key)
+        return await withCheckedContinuation { cont in
+            ioQueue.async {
+                guard let data = try? Data(contentsOf: path),
+                      let image = UIImage(data: data) else {
+                    cont.resume(returning: nil)
+                    return
+                }
+                cont.resume(returning: image)
+            }
+        }
+    }
+
+    private func writeDisk(key: String, data: Data) {
+        let path = diskPath(for: key)
+        ioQueue.async {
+            try? data.write(to: path, options: .atomic)
+        }
     }
 }

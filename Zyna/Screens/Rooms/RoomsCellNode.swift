@@ -47,8 +47,14 @@ class RoomsCellNode: ASCellNode {
         avatarImageNode.clipsToBounds = true
         avatarImageNode.contentMode = .scaleAspectFill
         avatarImageNode.isLayerBacked = true
-        if chat.avatar.mxcAvatarURL != nil {
-            loadAvatarImage()
+        if let mxc = chat.avatar.mxcAvatarURL {
+            // Synchronous memory hit — safe from Texture's bg thread,
+            // node appears with image immediately, no flash.
+            if let cached = MediaCache.shared.cachedImage(for: mxc) {
+                avatarImageNode.image = cached
+            } else {
+                loadAvatarImage()
+            }
         }
 
         // Name
