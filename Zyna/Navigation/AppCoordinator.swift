@@ -96,8 +96,7 @@ final class AppCoordinator {
             PresenceService.shared.startHeartbeatLoop(userId: userId)
         }
 
-        guard let tabBar = coordinator.tabBarController as? UIViewController else { return }
-        window?.rootViewController = tabBar
+        window?.rootViewController = coordinator.tabBarController
     }
 
     func resumeHeartbeatIfNeeded() {

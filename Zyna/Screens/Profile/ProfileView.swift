@@ -25,6 +25,11 @@ final class ProfileViewController: ASDKViewController<ProfileNode> {
     init(mode: ProfileMode) {
         self.viewModel = ProfileViewModel(mode: mode)
         super.init(node: ProfileNode(mode: mode))
+        // .other = pushed sub-screen (from Contacts or Chat title) →
+        // hide tab bar. .own = the Profile tab root → keep tab bar.
+        if case .other = mode {
+            hidesBottomBarWhenPushed = true
+        }
         viewModel.onLogout = { [weak self] in self?.onLogout?() }
         setupCallbacks()
     }

@@ -24,6 +24,11 @@ final class ContextSourceNode: ASDisplayNode {
     private var activationTimer: Timer?
     let contentNode: ASDisplayNode
     private var didActivate = false
+    private var touchStartLocation: CGPoint = .zero
+
+    /// Horizontal pan distance (pt) past which we treat the touch as
+    /// a back-swipe and bow out so the navigation pan can take over.
+    private static let horizontalSwipeCancelThreshold: CGFloat = 8
 
     init(contentNode: ASDisplayNode) {
         self.contentNode = contentNode
@@ -83,6 +88,7 @@ final class ContextSourceNode: ASDisplayNode {
                 gesture.isEnabled = true
                 return
             }
+            touchStartLocation = location
             startShrink()
 
         case .changed:
@@ -90,6 +96,23 @@ final class ContextSourceNode: ASDisplayNode {
                 let screenPoint = gesture.location(in: nil)
                 onDragChanged?(screenPoint)
             } else {
+                // Bail out on a horizontal swipe so the navigation
+                // back-swipe pan can take over (the two gestures
+                // recognize simultaneously by design — see the
+                // delegate below). Skipped after shrink begins,
+                // because then the touch is ours.
+                if shrinkAnimator == nil {
+                    let dx = location.x - touchStartLocation.x
+                    let dy = location.y - touchStartLocation.y
+                    if abs(dx) > Self.horizontalSwipeCancelThreshold,
+                       abs(dx) > abs(dy) {
+                        cancelShrink()
+                        gesture.isEnabled = false
+                        gesture.isEnabled = true
+                        return
+                    }
+                }
+
                 let expandedBounds = view.bounds.insetBy(dx: -40, dy: -40)
                 if !expandedBounds.contains(location) {
                     cancelShrink()
@@ -131,6 +154,9 @@ final class ContextSourceNode: ASDisplayNode {
     private func beginShrinkAnimation() {
         onInteractionLockChanged?(true)
         GlassService.shared.captureFor(duration: 0.3)
+        // The user held past the shrink threshold; the touch is
+        // ours, kill any in-flight back-swipe pan.
+        cancelEnclosingNavigationPopGesture()
         let targetScale: CGFloat = 0.92
 
         shrinkAnimator = UIViewPropertyAnimator(
@@ -162,6 +188,22 @@ final class ContextSourceNode: ASDisplayNode {
             y: bounds.midY
         )
         activated?(location)
+    }
+
+    /// Walk the view chain and cancel the nearest interactive
+    /// back-swipe pan via an `isEnabled` toggle.
+    private func cancelEnclosingNavigationPopGesture() {
+        var current: UIView? = self.view
+        while let v = current {
+            if let recognizers = v.gestureRecognizers {
+                for r in recognizers where r is InteractiveTransitionGestureRecognizer {
+                    r.isEnabled = false
+                    r.isEnabled = true
+                    return
+                }
+            }
+            current = v.superview
+        }
     }
 
     private func cancelShrink() {

@@ -17,6 +17,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         self.room = room
         self.memberCount = memberCount
         super.init(node: RoomDetailsNode())
+        hidesBottomBarWhenPushed = true
     }
 
     required init?(coder: NSCoder) { fatalError() }

@@ -113,25 +113,30 @@ final class GlassAnchor: UIView {
 
     // MARK: - Frame Queries
 
-    /// Frame from presentation layer (in-flight animation state).
+    /// Frame in window coordinates, including any in-flight ancestor
+    /// animation. `CALayer.convert(_:to:)` started from a presentation
+    /// layer already walks ancestor presentation layers, so a plain
+    /// delegation is enough — no manual transform accumulation.
     func presentationFrame() -> CGRect? {
         guard let window else { return nil }
         let currentLayer = layer.presentation() ?? layer
         return currentLayer.convert(currentLayer.bounds, to: window.layer)
     }
 
-    /// Frame from model layer (final/resting state).
-    func modelFrame() -> CGRect? {
-        guard let window else { return nil }
-        return layer.convert(layer.bounds, to: window.layer)
-    }
-
-    /// Whether the anchor is currently being animated (push/pop, keyboard, etc.)
+    /// True if this layer or any ancestor has an active CAAnimation.
+    /// Comparing presentation vs. model frames doesn't work here:
+    /// `convert(_:to:)` walks ancestor presentation layers, so both
+    /// reads return the same animated value and the diff is always
+    /// zero. Walk the chain and check `animationKeys()` directly.
     var isAnimating: Bool {
-        guard let pf = presentationFrame(), let mf = modelFrame() else { return false }
-        return abs(pf.origin.x - mf.origin.x) > 0.5 ||
-               abs(pf.origin.y - mf.origin.y) > 0.5 ||
-               abs(pf.width - mf.width) > 0.5 ||
-               abs(pf.height - mf.height) > 0.5
+        guard let windowLayer = window?.layer else { return false }
+        var current: CALayer? = layer
+        while let l = current, l !== windowLayer {
+            if let keys = l.animationKeys(), !keys.isEmpty {
+                return true
+            }
+            current = l.superlayer
+        }
+        return false
     }
 }

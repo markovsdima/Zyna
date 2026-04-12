@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import AsyncDisplayKit
+import UIKit
 import MatrixRustSDK
 
 final class ContactsCoordinator {
 
-    let navigationController = ASDKNavigationController()
+    let navigationController = ZynaNavigationController()
 
     /// Opens a chat with the selected contact.
     var onOpenChat: ((Room) -> Void)?
@@ -27,7 +27,7 @@ final class ContactsCoordinator {
             self?.callContact(contact)
         }
 
-        navigationController.setViewControllers([vc], animated: false)
+        navigationController.setStack([vc], animated: false)
     }
 
     // MARK: - Private
@@ -38,7 +38,7 @@ final class ContactsCoordinator {
 
         let vc = ProfileViewController(mode: .other(userId: contact.userId))
         vc.onSearchTapped = { [weak self] in
-            self?.navigationController.popViewController(animated: true)
+            self?.navigationController.pop()
         }
         vc.onMessageTapped = { [weak self] in
             self?.openChat(for: contact)
@@ -46,12 +46,12 @@ final class ContactsCoordinator {
         vc.messageButtonTitle = hasDM
             ? "Перейти в чат"
             : "Новый чат с \(contact.displayName)"
-        navigationController.pushViewController(vc, animated: true)
+        navigationController.push(vc)
     }
 
     private func openChat(for contact: ContactModel) {
         resolveRoom(for: contact) { [weak self] room in
-            self?.navigationController.popViewController(animated: false)
+            self?.navigationController.pop(animated: false)
             self?.onOpenChat?(room)
         }
     }

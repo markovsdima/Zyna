@@ -8,7 +8,7 @@ import MatrixRustSDK
 
 final class MainCoordinator {
 
-    let tabBarController: ASTabBarController = MainTabBarController()
+    let tabBarController = ZynaTabBarController()
     var onLogout: (() -> Void)?
 
     private var chatsCoordinator: ChatsCoordinator?
@@ -19,49 +19,36 @@ final class MainCoordinator {
     func start() {
         let chats = ChatsCoordinator()
         chats.start()
-        chats.navigationController.tabBarItem = UITabBarItem(
-            title: "Чаты",
-            image: UIImage(systemName: "message"),
-            selectedImage: nil
-        )
 
         let contacts = ContactsCoordinator()
         contacts.start()
-        contacts.navigationController.tabBarItem = UITabBarItem(
-            title: "Контакты",
-            image: UIImage(systemName: "person.2"),
-            selectedImage: nil
-        )
 
         let calls = CallsCoordinator()
         calls.start()
-        calls.navigationController.tabBarItem = UITabBarItem(
-            title: "Звонки",
-            image: UIImage(systemName: "phone"),
-            selectedImage: nil
-        )
 
         let profile = ProfileCoordinator()
         profile.onLogout = { [weak self] in
             self?.onLogout?()
         }
         profile.start()
-        profile.navigationController.tabBarItem = UITabBarItem(
-            title: "Профиль",
-            image: UIImage(systemName: "person"),
-            selectedImage: nil
-        )
 
-        tabBarController.setViewControllers(
+        let items: [ZynaTabBarItem] = [
+            ZynaTabBarItem(title: "Контакты", icon: UIImage(systemName: "person.2")),
+            ZynaTabBarItem(title: "Звонки",   icon: UIImage(systemName: "phone")),
+            ZynaTabBarItem(title: "Чаты",     icon: UIImage(systemName: "message")),
+            ZynaTabBarItem(title: "Профиль",  icon: UIImage(systemName: "person")),
+        ]
+
+        tabBarController.setControllers(
             [
                 contacts.navigationController,
                 calls.navigationController,
                 chats.navigationController,
-                profile.navigationController
+                profile.navigationController,
             ],
-            animated: false
+            items: items,
+            selectedIndex: 2
         )
-        tabBarController.selectedIndex = 2
 
         self.chatsCoordinator = chats
         self.contactsCoordinator = contacts
@@ -82,14 +69,14 @@ final class MainCoordinator {
 
     private func switchToChat(room: Room) {
         guard let chats = chatsCoordinator else { return }
-        tabBarController.selectedViewController = chats.navigationController
-        chats.navigationController.popToRootViewController(animated: false)
+        selectChatsTab(chats)
+        chats.navigationController.popToRoot(animated: false)
         chats.showChat(room)
     }
 
     private func switchToChatAndCall(room: Room) {
         guard let chats = chatsCoordinator else { return }
-        tabBarController.selectedViewController = chats.navigationController
+        selectChatsTab(chats)
         chats.showChatAndCall(room: room)
     }
 
@@ -99,7 +86,15 @@ final class MainCoordinator {
 
         // Switch to Chats tab and open the chat
         guard let chats = chatsCoordinator else { return }
-        tabBarController.selectedViewController = chats.navigationController
+        selectChatsTab(chats)
         chats.showChatAndCall(room: room)
+    }
+
+    private func selectChatsTab(_ chats: ChatsCoordinator) {
+        if let index = tabBarController.controllers.firstIndex(where: {
+            $0 === chats.navigationController
+        }) {
+            tabBarController.selectedIndex = index
+        }
     }
 }

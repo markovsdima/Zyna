@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import AsyncDisplayKit
+import UIKit
 
 final class ProfileCoordinator {
 
-    let navigationController = ASDKNavigationController()
+    let navigationController = ZynaNavigationController()
     var onLogout: (() -> Void)?
 
     func start() {
@@ -15,6 +15,6 @@ final class ProfileCoordinator {
         vc.onLogout = { [weak self] in
             self?.onLogout?()
         }
-        navigationController.setViewControllers([vc], animated: false)
+        navigationController.setStack([vc], animated: false)
     }
 }

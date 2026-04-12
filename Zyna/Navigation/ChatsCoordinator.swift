@@ -9,7 +9,7 @@ import MatrixRustSDK
 
 final class ChatsCoordinator {
 
-    let navigationController = ASDKNavigationController()
+    let navigationController = ZynaNavigationController()
     private let roomListService = ZynaRoomListService()
     private var cancellables = Set<AnyCancellable>()
 
@@ -21,7 +21,7 @@ final class ChatsCoordinator {
         vc.onComposeTapped = { [weak self] in
             self?.showStartChat()
         }
-        navigationController.setViewControllers([vc], animated: false)
+        navigationController.setStack([vc], animated: false)
         observeIncomingCalls()
     }
 
@@ -31,7 +31,7 @@ final class ChatsCoordinator {
         let vm = StartChatViewModel(roomListService: roomListService)
         let vc = StartChatViewController(viewModel: vm)
 
-        let nav = ASDKNavigationController(rootViewController: vc)
+        let nav = ZynaNavigationController(rootViewController: vc)
 
         vm.onDMReady = { [weak self] room in
             self?.dismissAndShowChat(room: room)
@@ -43,7 +43,7 @@ final class ChatsCoordinator {
         navigationController.present(nav, animated: true)
     }
 
-    private func showSelectMembers(in nav: ASDKNavigationController) {
+    private func showSelectMembers(in nav: ZynaNavigationController) {
         let vm = SelectMembersViewModel()
         let vc = SelectMembersViewController(viewModel: vm)
 
@@ -51,10 +51,10 @@ final class ChatsCoordinator {
             self?.showCreateGroup(members: users, in: nav)
         }
 
-        nav.pushViewController(vc, animated: true)
+        nav.push(vc)
     }
 
-    private func showCreateGroup(members: [UserProfile], in nav: ASDKNavigationController) {
+    private func showCreateGroup(members: [UserProfile], in nav: ZynaNavigationController) {
         let vm = CreateGroupViewModel(members: members, roomListService: roomListService)
         let vc = CreateGroupViewController(viewModel: vm)
 
@@ -62,7 +62,7 @@ final class ChatsCoordinator {
             self?.dismissAndShowChat(room: room)
         }
 
-        nav.pushViewController(vc, animated: true)
+        nav.push(vc)
     }
 
     private func dismissAndShowChat(room: Room) {
@@ -87,7 +87,7 @@ final class ChatsCoordinator {
         let viewModel = ChatViewModel(room: room)
         let vc = ChatViewController(viewModel: viewModel)
         vc.onBack = { [weak self] in
-            self?.navigationController.popViewController(animated: true)
+            self?.navigationController.pop()
         }
         vc.onCallTapped = { [weak self] in
             self?.startCall(in: room, timelineService: viewModel.timelineService)
@@ -98,8 +98,7 @@ final class ChatsCoordinator {
         vc.onRoomDetailsTapped = { [weak self] in
             self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
         }
-        navigationController.pushViewController(vc, animated: true)
-        navigationController.enableFullScreenPopGesture()
+        navigationController.push(vc)
     }
 
     private func showProfile(userId: String) {
@@ -107,7 +106,7 @@ final class ChatsCoordinator {
         vc.onSearchTapped = { [weak self] in
             self?.popAndActivateSearch()
         }
-        navigationController.pushViewController(vc, animated: true)
+        navigationController.push(vc)
     }
 
     private func showRoomDetails(room: Room, memberCount: Int?) {
@@ -115,11 +114,11 @@ final class ChatsCoordinator {
         vc.onSearchTapped = { [weak self] in
             self?.popAndActivateSearch()
         }
-        navigationController.pushViewController(vc, animated: true)
+        navigationController.push(vc)
     }
 
     private func popAndActivateSearch() {
-        navigationController.popViewController(animated: true)
+        navigationController.pop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let chatVC = self?.navigationController.topViewController as? ChatViewController else { return }
             chatVC.activateSearch()
@@ -128,11 +127,11 @@ final class ChatsCoordinator {
 
     /// Opens a chat and immediately starts a call. Used by the Calls tab.
     func showChatAndCall(room: Room) {
-        navigationController.popToRootViewController(animated: false)
+        navigationController.popToRoot(animated: false)
         let viewModel = ChatViewModel(room: room)
         let vc = ChatViewController(viewModel: viewModel)
         vc.onBack = { [weak self] in
-            self?.navigationController.popViewController(animated: true)
+            self?.navigationController.pop()
         }
         vc.onCallTapped = { [weak self] in
             self?.startCall(in: room, timelineService: viewModel.timelineService)
@@ -143,7 +142,7 @@ final class ChatsCoordinator {
         vc.onRoomDetailsTapped = { [weak self] in
             self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
         }
-        navigationController.pushViewController(vc, animated: false)
+        navigationController.push(vc, animated: false)
         startCall(in: room, timelineService: viewModel.timelineService)
     }
 

@@ -61,6 +61,10 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
     private func setupChipsView() {
         chipsScrollView.showsHorizontalScrollIndicator = false
         chipsScrollView.alwaysBounceHorizontal = true
+        // Belt-and-suspenders: the recognizer already auto-detects
+        // horizontally-scrollable UIScrollViews, but pin the flag too
+        // so the intent is explicit at the call site.
+        chipsScrollView.disablesInteractiveTransitionGestureRecognizer = true
 
         chipsStack.axis = .horizontal
         chipsStack.spacing = 8
