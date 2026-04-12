@@ -147,12 +147,10 @@ public class ZynaTabBarController: UIViewController {
         let targetFrame = tabBarRestingFrame()
 
         if animated {
-            // Frame animation, not `layer.transform`: on iOS 26 the
-            // `.systemChromeMaterial` blur sits on a private
-            // `CABackdropLayer` that doesn't follow ancestor transform
-            // animations cleanly — translating the parent left the
-            // blur stranded as a visible "ghost" copy. Same reason
-            // Telegram animates frames here too.
+            // Frame animation, not `layer.transform`:
+            // `.systemChromeMaterial` blur uses a `CABackdropLayer`
+            // that doesn't follow ancestor transform animations —
+            // the blur stays put while the container moves.
             UIView.animate(
                 withDuration: IOS26Spring.duration,
                 delay: 0,
@@ -175,9 +173,7 @@ public class ZynaTabBarController: UIViewController {
 
     private func handleTabTapped(_ index: Int) {
         if index == _selectedIndex {
-            // Tap on selected tab → pop the navigation stack to root
-            // (matches UITabBarController + UINavigationController
-            // behavior). Only meaningful for our nav controllers.
+            // Double-tap → pop to root.
             if let nav = selectedController as? ZynaNavigationController {
                 nav.popToRoot()
             }

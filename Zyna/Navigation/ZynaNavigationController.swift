@@ -63,6 +63,7 @@ public class ZynaNavigationController: UIViewController {
     // MARK: - Interactive pop state
 
     private var activeInteractivePop: InteractivePopTransition?
+    private var fpsBoostToken: DisplayLinkToken?
 
     /// True while the user is dragging the back-swipe gesture or its
     /// finish/cancel animation is still running. Blocks programmatic
@@ -183,8 +184,9 @@ public class ZynaNavigationController: UIViewController {
             springDuration: IOS26Spring.duration
         )
 
-        // Without an active CAAnimation the display link would idle
-        // out and glass would freeze; nudge it on each gesture frame.
+        // Keep ProMotion at 120 Hz while the finger is dragging.
+        fpsBoostToken = DisplayLinkDriver.shared.subscribe(rate: .max) { _ in }
+
         GlassService.shared.setNeedsCapture()
     }
 
@@ -211,6 +213,8 @@ public class ZynaNavigationController: UIViewController {
             topVC.removeFromParent()
             self.activeInteractivePop = nil
             self.isInteractivePopActive = false
+            self.fpsBoostToken?.invalidate()
+            self.fpsBoostToken = nil
             self.setNeedsStatusBarAppearanceUpdate()
         }
     }
@@ -222,6 +226,8 @@ public class ZynaNavigationController: UIViewController {
             transition.tearDown(removeTopFromHierarchy: false)
             self.activeInteractivePop = nil
             self.isInteractivePopActive = false
+            self.fpsBoostToken?.invalidate()
+            self.fpsBoostToken = nil
         }
     }
 
@@ -346,6 +352,8 @@ public class ZynaNavigationController: UIViewController {
     /// the slide. UIKit/Telegram both use ~15%.
     private static let dimAlpha: Float = 0.15
 
+    private static let transitionCornerRadius = IOS26Spring.screenCornerRadius
+
     /// Push: top slides in from the right, bottom parallaxes left,
     /// dim overlay fades to 15 %. Three animations grouped in one
     /// `CATransaction` so the completion fires once.
@@ -358,8 +366,6 @@ public class ZynaNavigationController: UIViewController {
         let width = containerBounds.width
         let parallax = -width * Self.parallaxRatio
 
-        // Position is driven via `transform.translation.x` so layout
-        // passes don't fight us.
         let newView = newTop.view!
         newView.frame = containerBounds
         newView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -374,11 +380,15 @@ public class ZynaNavigationController: UIViewController {
 
         let oldView = oldTop.view!
 
-        // Lock interaction for the duration of the animation.
+        // Round the sliding card to match the display corners.
+        let savedClips = newView.clipsToBounds
+        let savedRadius = newView.layer.cornerRadius
+        newView.layer.cornerRadius = Self.transitionCornerRadius
+        newView.layer.cornerCurve = .continuous
+        newView.clipsToBounds = true
+
         view.isUserInteractionEnabled = false
 
-        // Commit final model state silently; the springs below drive
-        // the presentation layer from the start values up to these.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         oldView.layer.transform = CATransform3DMakeTranslation(parallax, 0, 0)
@@ -388,15 +398,15 @@ public class ZynaNavigationController: UIViewController {
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self] in
             guard let self else { return }
-            // Detach the parallaxed view *before* resetting transform.
-            // Reset-then-remove would briefly snap it back to center
-            // for one frame, flashing the old content.
             oldView.removeFromSuperview()
             dim.removeFromSuperview()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             oldView.layer.transform = CATransform3DIdentity
             CATransaction.commit()
+            newView.layer.cornerRadius = savedRadius
+            newView.layer.cornerCurve = .circular
+            newView.clipsToBounds = savedClips
             self.view.isUserInteractionEnabled = true
             completion()
         }
@@ -455,9 +465,14 @@ public class ZynaNavigationController: UIViewController {
 
         let topView = topVC.view!
 
+        let savedClips = topView.clipsToBounds
+        let savedRadius = topView.layer.cornerRadius
+        topView.layer.cornerRadius = Self.transitionCornerRadius
+        topView.layer.cornerCurve = .continuous
+        topView.clipsToBounds = true
+
         view.isUserInteractionEnabled = false
 
-        // Commit final model state.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         revealedView.layer.transform = CATransform3DIdentity
@@ -468,14 +483,15 @@ public class ZynaNavigationController: UIViewController {
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self] in
             guard let self else { return }
-            // Detach the slid-out view *before* resetting transform —
-            // see `performAnimatedPush` for the same flash-avoidance.
             topView.removeFromSuperview()
             dim.removeFromSuperview()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             topView.layer.transform = CATransform3DIdentity
             CATransaction.commit()
+            topView.layer.cornerRadius = savedRadius
+            topView.layer.cornerCurve = .circular
+            topView.clipsToBounds = savedClips
             self.view.isUserInteractionEnabled = true
             completion()
         }

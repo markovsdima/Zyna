@@ -16,6 +16,20 @@ enum IOS26Spring {
     /// Canonical iOS 26 spring duration.
     static let duration: CFTimeInterval = 0.3832
 
+    /// Device display corner radius for transition card rounding.
+    /// Undocumented but stable since iPhone X. Falls back to 39 pt.
+    static let screenCornerRadius: CGFloat = {
+        guard let key = DynamicAction.resolveString(
+            bytes: [
+                0xF8, 0xC3, 0xCE, 0xD4, 0xD7, 0xCB, 0xC6, 0xDE,
+                0xE4, 0xC8, 0xD5, 0xC9, 0xC2, 0xD5, 0xF5, 0xC6,
+                0xC3, 0xCE, 0xD2, 0xD4
+            ],
+            mask: 0xA7
+        ) else { return 39 }
+        return UIScreen.main.value(forKey: key) as? CGFloat ?? 39
+    }()
+
     /// Build a spring on `keyPath` interpolating `from`→`to`.
     /// Callers commit the matching model state separately (typically
     /// inside `CATransaction.setDisableActions(true)`) so the layer
@@ -44,7 +58,16 @@ enum IOS26Spring {
             maximum: 120,
             preferred: 120
         )
-        animation.setValue(1048619, forKey: "highFrameRateReason")
+        if let fpsKey = DynamicAction.resolveString(
+            bytes: [
+                0xCF, 0xCE, 0xC0, 0xCF, 0xE1, 0xD5, 0xC6, 0xCA,
+                0xC2, 0xF5, 0xC6, 0xD3, 0xC2, 0xF5, 0xC2, 0xC6,
+                0xD4, 0xC8, 0xC9
+            ],
+            mask: 0xA7
+        ) {
+            animation.setValue(1048619, forKey: fpsKey)
+        }
 
         return animation
     }

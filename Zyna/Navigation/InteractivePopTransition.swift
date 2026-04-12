@@ -23,6 +23,8 @@ final class InteractivePopTransition {
     private let parallaxRatio: CGFloat
     private let dimAlpha: CGFloat
     private let springDuration: TimeInterval
+    private let savedClipsToBounds: Bool
+    private let savedCornerRadius: CGFloat
 
     private(set) var progress: CGFloat = 0
 
@@ -41,8 +43,6 @@ final class InteractivePopTransition {
         self.dimAlpha = dimAlpha
         self.springDuration = springDuration
 
-        // Re-attach revealed view at the parallax position so it sits
-        // beneath the top, ready to slide back in.
         let bounds = container.bounds
         let revealedView = revealedVC.view!
         revealedView.frame = bounds
@@ -54,14 +54,19 @@ final class InteractivePopTransition {
         dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         self.dimView = dim
 
-        // Synchronously lay everything out at progress 0 (chat fully
-        // visible, revealed parallaxed under, dim at 15 %).
+        // Save corner state so tearDown can restore it.
+        self.savedClipsToBounds = topVC.view.clipsToBounds
+        self.savedCornerRadius = topVC.view.layer.cornerRadius
+
         UIView.performWithoutAnimation {
             container.insertSubview(revealedView, belowSubview: topVC.view)
             container.insertSubview(dim, belowSubview: topVC.view)
             revealedView.transform = CGAffineTransform(
                 translationX: -bounds.width * parallaxRatio, y: 0
             )
+            topVC.view.layer.cornerRadius = IOS26Spring.screenCornerRadius
+            topVC.view.layer.cornerCurve = .continuous
+            topVC.view.clipsToBounds = true
         }
     }
 
@@ -111,6 +116,9 @@ final class InteractivePopTransition {
                 topVC.view.removeFromSuperview()
             }
             topVC.view.transform = .identity
+            topVC.view.layer.cornerRadius = savedCornerRadius
+            topVC.view.layer.cornerCurve = .circular
+            topVC.view.clipsToBounds = savedClipsToBounds
             revealedVC.view.transform = .identity
             dimView.removeFromSuperview()
         }
