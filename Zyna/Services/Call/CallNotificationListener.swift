@@ -15,9 +15,9 @@ final class CallNotificationListener: SyncNotificationListener {
 
     func onNotification(notification: NotificationItem, roomId: String) {
         guard case .timeline(let event) = notification.event,
-              let eventType = try? event.eventType(),
-              case .messageLike(let content) = eventType,
-              case .callInvite = content
+              let eventContent = try? event.content(),
+              case .messageLike(let msgType) = eventContent,
+              case .callInvite = msgType
         else { return }
 
         let eventTimestamp = Date(
@@ -34,6 +34,15 @@ final class CallNotificationListener: SyncNotificationListener {
         let ownUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         guard senderId != ownUserId else { return }
 
+        // Parse callId and SDP directly from the notification's raw
+        // JSON — more reliable than latestEvent() which may have
+        // already moved on to a newer event.
+        let callData = Self.extractCallData(from: notification.rawEvent)
+        guard let callId = callData.callId else {
+            logCall("Failed to extract callId from invite")
+            return
+        }
+
         logCall("Call invite detected via sync notification in room \(roomId)")
 
         Task { @MainActor in
@@ -44,26 +53,11 @@ final class CallNotificationListener: SyncNotificationListener {
                 return
             }
 
-            // Extract callId and SDP from the room's latest event
-            guard let latestEvent = await room.latestEvent() else {
-                logCall("No latest event for room \(roomId)")
-                return
-            }
-
-            let callData = Self.extractCallData(from: latestEvent)
-            guard let callId = callData.callId else {
-                logCall("Failed to extract callId from invite")
-                return
-            }
-
             let callerName = notification.senderInfo.displayName
 
-            // Create a TimelineService so signaling (answer, candidates,
-            // hangup) can flow through the room's timeline.
             let timelineService = TimelineService(room: room)
             await timelineService.startListening()
 
-            // Hold reference so it survives the call duration
             CallService.shared.attachTimelineService(timelineService)
 
             CallService.shared.handleIncomingCall(
@@ -79,10 +73,9 @@ final class CallNotificationListener: SyncNotificationListener {
     // MARK: - Private
 
     private static func extractCallData(
-        from event: EventTimelineItem
+        from rawJSON: String
     ) -> (callId: String?, offerSDP: String?) {
-        guard let json = event.lazyProvider.debugInfo().originalJson,
-              let data = json.data(using: .utf8),
+        guard let data = rawJSON.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = root["content"] as? [String: Any],
               let callId = content["call_id"] as? String

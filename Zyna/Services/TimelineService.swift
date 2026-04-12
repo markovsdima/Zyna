@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import Foundation
+import UIKit
 import Combine
 import UniformTypeIdentifiers
 import MatrixRustSDK
@@ -271,6 +271,8 @@ final class TimelineService {
                 return .text(body: "Encrypted message")
             case .other:
                 return nil
+            @unknown default:
+                return nil
             }
 
         default:
@@ -407,7 +409,8 @@ final class TimelineService {
             return
         }
 
-        // sendImage throws InvalidAttachmentData — using sendFile as workaround
+        // sendImage throws InvalidAttachmentData — using sendFile
+        // as workaround until SDK issue is resolved.
         let fileInfo = FileInfo(
             mimetype: "image/jpeg", size: UInt64(imageData.count),
             thumbnailInfo: nil, thumbnailSource: nil
@@ -421,6 +424,10 @@ final class TimelineService {
             logTimeline("Image sent via sendFile, \(width)×\(height)")
         } catch {
             logTimeline("Image send failed: \(error)")
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            try? FileManager.default.removeItem(at: imageURL)
         }
     }
 
