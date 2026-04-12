@@ -83,11 +83,6 @@ final class ContextSourceNode: ASDisplayNode {
 
         switch gesture.state {
         case .began:
-            if shouldBegin?(location) == false {
-                gesture.isEnabled = false
-                gesture.isEnabled = true
-                return
-            }
             touchStartLocation = location
             startShrink()
 
@@ -127,8 +122,12 @@ final class ContextSourceNode: ASDisplayNode {
                 onDragEnded?(screenPoint)
             } else {
                 let wasQuickTap = shrinkAnimator == nil && activationTimer != nil
+                let moved = hypot(
+                    location.x - touchStartLocation.x,
+                    location.y - touchStartLocation.y
+                )
                 cancelShrink()
-                if wasQuickTap && gesture.state == .ended {
+                if wasQuickTap && gesture.state == .ended && moved < 8 {
                     onQuickTap?(location)
                 }
             }
@@ -225,6 +224,11 @@ final class ContextSourceNode: ASDisplayNode {
 // MARK: - UIGestureRecognizerDelegate
 
 extension ContextSourceNode: UIGestureRecognizerDelegate {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        let location = gestureRecognizer.location(in: view)
+        return shouldBegin?(location) ?? true
+    }
+
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
