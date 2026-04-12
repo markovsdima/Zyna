@@ -165,6 +165,11 @@ final class ChatInputNode: ASDisplayNode {
         sendButtonNode.addTarget(self, action: #selector(sendTapped), forControlEvents: .touchUpInside)
         attachButtonNode.addTarget(self, action: #selector(attachTapped), forControlEvents: .touchUpInside)
 
+        // Block the navigation back-swipe from this entire area —
+        // the mic long-press and text input both need horizontal
+        // touch freedom.
+        view.disablesInteractiveTransitionGestureRecognizer = true
+
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleMicGesture(_:)))
         longPress.minimumPressDuration = 0.05
         longPress.allowableMovement = 20
