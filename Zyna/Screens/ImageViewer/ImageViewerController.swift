@@ -30,8 +30,13 @@ final class ImageViewerController: UIViewController {
     // MARK: - Private
 
     private let transitionView = UIImageView()
+    private let toolbar = UIView()
+    private let closeButton = UIButton(type: .system)
+    private let shareButton = UIButton(type: .system)
+    private let saveButton = UIButton(type: .system)
     private let mediaSource: MediaSource?
     private var dismissPanStart: CGPoint = .zero
+    private var chromeVisible = true
 
     // MARK: - Init
 
@@ -79,6 +84,7 @@ final class ImageViewerController: UIViewController {
         pan.delegate = self
         view.addGestureRecognizer(pan)
 
+        setupChrome()
         loadFullResolution()
     }
 
@@ -86,6 +92,8 @@ final class ImageViewerController: UIViewController {
         super.viewDidLayoutSubviews()
         scrollView.frame = view.bounds
         layoutImageView()
+        layoutChrome()
+        layoutToolbar()
     }
 
     override var prefersStatusBarHidden: Bool { true }
@@ -121,6 +129,125 @@ final class ImageViewerController: UIViewController {
             self.scrollView.isHidden = false
             self.scrollView.addSubview(self.imageView)
             self.layoutImageView()
+        }
+    }
+
+    // MARK: - Chrome (close button + toolbar)
+
+    private func setupChrome() {
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
+
+        // Close button
+        closeButton.setImage(
+            UIImage(systemName: "xmark", withConfiguration: config),
+            for: .normal
+        )
+        closeButton.tintColor = .white
+        closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        view.addSubview(closeButton)
+
+        // Bottom toolbar
+        toolbar.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+
+        shareButton.setImage(
+            UIImage(systemName: "square.and.arrow.up", withConfiguration: config),
+            for: .normal
+        )
+        shareButton.tintColor = .white
+        shareButton.addTarget(self, action: #selector(shareTapped), for: .touchUpInside)
+
+        saveButton.setImage(
+            UIImage(systemName: "square.and.arrow.down", withConfiguration: config),
+            for: .normal
+        )
+        saveButton.tintColor = .white
+        saveButton.addTarget(self, action: #selector(saveTapped), for: .touchUpInside)
+
+        toolbar.addSubview(shareButton)
+        toolbar.addSubview(saveButton)
+        view.addSubview(toolbar)
+    }
+
+    private func layoutChrome() {
+        let safeTop = view.safeAreaInsets.top
+        closeButton.frame = CGRect(x: 8, y: safeTop + 4, width: 44, height: 44)
+    }
+
+    private func layoutToolbar() {
+        let safeBottom = view.safeAreaInsets.bottom
+        let barHeight: CGFloat = 44
+        let totalHeight = barHeight + safeBottom
+        toolbar.frame = CGRect(
+            x: 0,
+            y: view.bounds.height - totalHeight,
+            width: view.bounds.width,
+            height: totalHeight
+        )
+
+        let btnSize: CGFloat = 44
+        let spacing: CGFloat = 60
+        let centerX = toolbar.bounds.width / 2
+        shareButton.frame = CGRect(
+            x: centerX - spacing - btnSize / 2,
+            y: 0,
+            width: btnSize,
+            height: barHeight
+        )
+        saveButton.frame = CGRect(
+            x: centerX + spacing - btnSize / 2,
+            y: 0,
+            width: btnSize,
+            height: barHeight
+        )
+    }
+
+    private func toggleChrome() {
+        chromeVisible.toggle()
+        UIView.animate(withDuration: 0.2) {
+            let alpha: CGFloat = self.chromeVisible ? 1 : 0
+            self.toolbar.alpha = alpha
+            self.closeButton.alpha = alpha
+        }
+    }
+
+    @objc private func closeTapped() {
+        animateDismiss()
+    }
+
+    @objc private func shareTapped() {
+        guard let image = imageView.image else { return }
+        let sheet = UIActivityViewController(
+            activityItems: [image],
+            applicationActivities: nil
+        )
+        present(sheet, animated: true)
+    }
+
+    @objc private func saveTapped() {
+        guard let image = imageView.image else { return }
+        UIImageWriteToSavedPhotosAlbum(image, self, #selector(imageSaved(_:error:context:)), nil)
+    }
+
+    @objc private func imageSaved(_ image: UIImage, error: Error?, context: UnsafeMutableRawPointer?) {
+        let icon = UIImageView(
+            image: UIImage(systemName: error == nil ? "checkmark.circle.fill" : "xmark.circle.fill")
+        )
+        icon.tintColor = .white
+        icon.contentMode = .scaleAspectFit
+        icon.frame = CGRect(x: 0, y: 0, width: 50, height: 50)
+        icon.center = view.center
+        icon.alpha = 0
+        view.addSubview(icon)
+
+        UIView.animate(withDuration: 0.2, animations: {
+            icon.alpha = 1
+            icon.transform = CGAffineTransform(scaleX: 1.2, y: 1.2)
+        }) { _ in
+            UIView.animate(withDuration: 0.3, delay: 0.5, animations: {
+                icon.alpha = 0
+            }) { _ in
+                icon.removeFromSuperview()
+            }
         }
     }
 
@@ -176,7 +303,7 @@ final class ImageViewerController: UIViewController {
     // MARK: - Gestures
 
     @objc private func handleTap() {
-        animateDismiss()
+        toggleChrome()
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
@@ -228,6 +355,8 @@ final class ImageViewerController: UIViewController {
     // MARK: - Dismiss
 
     private func animateDismiss() {
+        toolbar.alpha = 0
+        closeButton.alpha = 0
         scrollView.setZoomScale(1, animated: false)
 
         // Move image out of scroll view for free positioning
