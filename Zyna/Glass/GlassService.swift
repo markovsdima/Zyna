@@ -41,7 +41,6 @@ final class GlassService {
     private struct Registration {
         weak var anchor: GlassAnchor?
         let renderer: GlassRenderer
-        var contentView: UIView?
         // Cached for render-without-capture (liquid wave animation)
         var lastTexture: MTLTexture?
         var lastCaptureFrame: CGRect?
@@ -88,18 +87,17 @@ final class GlassService {
 
     // MARK: - Public API
 
-    func register(anchor: GlassAnchor) -> GlassRegistration {
+    /// Register a glass anchor with its renderer. The caller owns
+    /// the renderer and is responsible for placing it in the view
+    /// hierarchy; GlassService only drives its frame and content.
+    func register(anchor: GlassAnchor, renderer: GlassRenderer) -> GlassRegistration {
         let id = UUID()
-        let renderer = GlassRenderer()
 
         registrations[id] = Registration(anchor: anchor, renderer: renderer)
 
         if sourceWindow == nil {
             sourceWindow = anchor.window
         }
-
-        // Renderer lives in the main window, above the anchor
-        anchor.window?.addSubview(renderer)
 
         if displayLinkToken == nil {
             startRenderLoop()
@@ -111,30 +109,11 @@ final class GlassService {
     }
 
     func deregister(id: UUID) {
-        guard let reg = registrations.removeValue(forKey: id) else { return }
-        reg.renderer.removeFromSuperview()
-        reg.contentView?.removeFromSuperview()
+        registrations.removeValue(forKey: id)
 
         if registrations.isEmpty {
             tearDown()
         }
-    }
-
-    /// Attach interactive content view on top of the glass renderer.
-    /// Content is placed in the main window, above the renderer.
-    func attachContent(_ contentView: UIView, for anchor: GlassAnchor) {
-        guard let window = anchor.window ?? sourceWindow else { return }
-
-        for (id, reg) in registrations where reg.anchor === anchor {
-            window.addSubview(contentView)
-            registrations[id] = Registration(
-                anchor: reg.anchor,
-                renderer: reg.renderer,
-                contentView: contentView
-            )
-            break
-        }
-        bringGlassToFront()
     }
 
     // MARK: - Capture Triggers
@@ -352,10 +331,21 @@ final class GlassService {
                 let capTime = CACurrentMediaTime() - capStart
                 #endif
 
-                reg.renderer.frame = captureFrame
+                // Renderer lives inside the glass bar now, so its frame
+                // is relative to the anchor's parent. Derive it from
+                // the anchor's local frame + the padding offsets that
+                // captureFrame adds, instead of converting through
+                // window coordinates (which fights keyboard animations).
+                let anchorFrame = anchor.frame
+                let rendererFrame = CGRect(
+                    x: anchorFrame.origin.x + (captureFrame.origin.x - glassFrame.origin.x),
+                    y: anchorFrame.origin.y + (captureFrame.origin.y - glassFrame.origin.y),
+                    width: captureFrame.width,
+                    height: captureFrame.height
+                )
+                reg.renderer.frame = rendererFrame
                 reg.renderer.contentScaleFactor = scale
                 reg.renderer.layoutIfNeeded()  // sync drawableSize before render
-                reg.contentView?.frame = glassFrame
 
                 let shapes: GlassRenderer.ShapeParams
                 if let provider = anchor.shapeProvider {
@@ -725,14 +715,4 @@ final class GlassService {
         return slot.texture
     }
 
-    /// Ensure all renderers and content views are at the front of the window,
-    /// with content above its renderer.
-    private func bringGlassToFront() {
-        for (_, reg) in registrations {
-            reg.renderer.superview?.bringSubviewToFront(reg.renderer)
-            if let content = reg.contentView {
-                content.superview?.bringSubviewToFront(content)
-            }
-        }
-    }
 }

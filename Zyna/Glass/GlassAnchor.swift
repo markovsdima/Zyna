@@ -65,6 +65,11 @@ final class GlassAnchor: UIView {
 
     private var registration: GlassRegistration?
 
+    /// Metal renderer. Created once, owned by the bar that hosts us.
+    /// GlassService drives its content; the bar places it in the
+    /// view hierarchy.
+    let renderer = GlassRenderer()
+
     // MARK: - Init
 
     init() {
@@ -81,9 +86,7 @@ final class GlassAnchor: UIView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil {
-            registration = GlassService.shared.register(anchor: self)
-            // Window gives us a real traitCollection — re-resolve in case
-            // the dynamic color now picks a different shade.
+            registration = GlassService.shared.register(anchor: self, renderer: renderer)
             recomputeClearPattern()
         } else {
             registration = nil

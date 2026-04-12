@@ -6,9 +6,7 @@
 import UIKit
 
 /// A glass effect container with interactive content on top.
-///
-/// Place in the main window like a normal UIView. The glass renderer and
-/// `contentView` are positioned in the main window by GlassService.
+/// Renderer and content live inside this view's own hierarchy.
 ///
 /// Usage:
 ///     let glass = GlassContainerView()
@@ -21,8 +19,7 @@ final class GlassContainerView: UIView {
 
     // MARK: - Public
 
-    /// Add your interactive content here (labels, buttons, text fields).
-    /// Positioned above the glass renderer in the main window.
+    /// Add interactive content here (labels, buttons, text fields).
     let contentView = UIView()
 
     var cornerRadius: CGFloat = 24 {
@@ -38,29 +35,21 @@ final class GlassContainerView: UIView {
     init() {
         super.init(frame: .zero)
         backgroundColor = .clear
-        isUserInteractionEnabled = false // touches go through to content above
+        clipsToBounds = false
 
         anchor.cornerRadius = cornerRadius
         addSubview(anchor)
+        addSubview(anchor.renderer)
 
         contentView.backgroundColor = .clear
+        addSubview(contentView)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    // MARK: - Lifecycle
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            GlassService.shared.attachContent(contentView, for: anchor)
-        } else {
-            contentView.removeFromSuperview()
-        }
-    }
-
     override func layoutSubviews() {
         super.layoutSubviews()
         anchor.frame = bounds
+        contentView.frame = bounds
     }
 }

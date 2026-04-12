@@ -8,7 +8,7 @@ import AsyncDisplayKit
 
 /// Glass input bar with 3 shapes: attach (circle), text field (rounded rect), mic (circle).
 /// Optional 4th shape: scroll-to-live button (metaball with mic).
-/// Lives in the main window, content placed above glass renderer via GlassService.
+/// Renderer and content live inside this view's own hierarchy.
 /// Tracks keyboard position and triggers glass capture on changes.
 final class GlassInputBar: UIView {
 
@@ -65,7 +65,7 @@ final class GlassInputBar: UIView {
     init() {
         super.init(frame: .zero)
         backgroundColor = .clear
-        isUserInteractionEnabled = false
+        clipsToBounds = false
 
         anchor.cornerRadius = 24
         anchor.extendsCaptureToScreenBottom = false
@@ -74,11 +74,13 @@ final class GlassInputBar: UIView {
                 ?? GlassRenderer.ShapeParams()
         }
         addSubview(anchor)
+        addSubview(anchor.renderer)
 
         contentView.backgroundColor = .clear
+        contentView.clipsToBounds = false
         contentView.addSubview(inputNode.view)
+        addSubview(contentView)
 
-        // Remove default background — glass is our background
         inputNode.backgroundColor = .clear
         inputNode.view.backgroundColor = .clear
 
@@ -90,7 +92,6 @@ final class GlassInputBar: UIView {
             self?.updateBarHeights(waveform)
         }
 
-        // Scroll button icon + tap target (in contentView, above glass)
         scrollButtonIcon.image = AppIcon.chevronDown.rendered(size: 24, color: .gray)
         scrollButtonIcon.contentMode = .center
         scrollButtonIcon.alpha = 0
@@ -100,24 +101,28 @@ final class GlassInputBar: UIView {
         scrollButtonTap.addTarget(self, action: #selector(scrollButtonTapped), for: .touchUpInside)
         contentView.addSubview(scrollButtonTap)
 
-        // Allow scroll button to render above contentView bounds
-        contentView.clipsToBounds = false
-
         observeKeyboard()
         observeInputSize()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    // MARK: - Lifecycle
+    // MARK: - Hit testing
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            GlassService.shared.attachContent(contentView, for: anchor)
-        } else {
-            contentView.removeFromSuperview()
+    // Only accept touches that land on interactive subviews
+    // (input node, scroll button). Everything else passes through
+    // to the table underneath.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let contentPoint = contentView.convert(point, from: self)
+        if let hit = contentView.hitTest(contentPoint, with: event) {
+            return hit
         }
+        return nil
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let contentPoint = contentView.convert(point, from: self)
+        return contentView.point(inside: contentPoint, with: event)
     }
 
     // MARK: - Layout
@@ -148,6 +153,7 @@ final class GlassInputBar: UIView {
 
         frame = CGRect(x: insetH, y: barY, width: barWidth, height: fittedSize.height)
         anchor.frame = bounds
+        contentView.frame = bounds
 
         inputNode.frame = CGRect(x: 0, y: 0, width: barWidth, height: fittedSize.height)
     }

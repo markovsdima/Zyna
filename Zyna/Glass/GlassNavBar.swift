@@ -6,7 +6,7 @@
 import UIKit
 
 /// Glass navigation bar with 3 island shapes: back (circle), title (rounded rect), call (circle).
-/// Lives in the main window; interactive content placed above glass renderer via GlassService.
+/// Renderer and content live inside this view's own hierarchy.
 final class GlassNavBar: UIView {
 
     // MARK: - Public
@@ -71,7 +71,7 @@ final class GlassNavBar: UIView {
     init() {
         super.init(frame: .zero)
         backgroundColor = .clear
-        isUserInteractionEnabled = false
+        clipsToBounds = false
 
         anchor.cornerRadius = cornerR
         anchor.shapeProvider = { [weak self] glassFrame, captureFrame, scale in
@@ -79,9 +79,13 @@ final class GlassNavBar: UIView {
                 ?? GlassRenderer.ShapeParams()
         }
         addSubview(anchor)
+        addSubview(anchor.renderer)
 
-        // Content (placed above glass renderer in main window)
         contentView.backgroundColor = .clear
+        contentView.addSubview(backButton)
+        contentView.addSubview(titleView)
+        contentView.addSubview(callButton)
+        addSubview(contentView)
 
         backButton.setImage(
             UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)),
@@ -96,23 +100,26 @@ final class GlassNavBar: UIView {
         callButton.addTarget(self, action: #selector(callTapped), for: .touchUpInside)
 
         titleView.onTapped = { [weak self] in self?.onTitleTapped?() }
-
-        contentView.addSubview(backButton)
-        contentView.addSubview(titleView)
-        contentView.addSubview(callButton)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    // MARK: - Lifecycle
+    // MARK: - Hit testing
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            GlassService.shared.attachContent(contentView, for: anchor)
-        } else {
-            contentView.removeFromSuperview()
+    // Only accept touches that land on interactive content (back,
+    // title, call buttons). Everything else passes through to the
+    // table underneath.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let contentPoint = contentView.convert(point, from: self)
+        if let hit = contentView.hitTest(contentPoint, with: event) {
+            return hit
         }
+        return nil
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let contentPoint = contentView.convert(point, from: self)
+        return contentView.point(inside: contentPoint, with: event)
     }
 
     // MARK: - Layout
@@ -124,10 +131,10 @@ final class GlassNavBar: UIView {
 
         frame = CGRect(x: sideInset, y: safeTop, width: barWidth, height: barHeight)
         anchor.frame = bounds
+        contentView.frame = bounds
     }
 
-    /// Called by GlassService when positioning content above renderer.
-    /// Content frame is set to glassFrame by the service, so we layout relative to bounds.
+    /// Layout buttons within content bounds.
     override func layoutSubviews() {
         super.layoutSubviews()
         layoutContent(in: bounds)

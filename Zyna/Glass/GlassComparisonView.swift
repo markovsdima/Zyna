@@ -103,10 +103,11 @@ final class GlassComparisonView: UIView {
                 ?? GlassRenderer.ShapeParams()
         }
         addSubview(anchor)
+        addSubview(anchor.renderer)
 
         contentView.backgroundColor = .clear
+        addSubview(contentView)
 
-        // Label
         let label = UILabel()
         label.text = "Custom"
         label.font = .systemFont(ofSize: 10, weight: .medium)
@@ -116,15 +117,6 @@ final class GlassComparisonView: UIView {
     }
 
     // MARK: - Lifecycle
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            GlassService.shared.attachContent(contentView, for: anchor)
-        } else {
-            contentView.removeFromSuperview()
-        }
-    }
 
     // MARK: - Layout
 
