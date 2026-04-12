@@ -320,7 +320,14 @@ final class ChatViewModel {
     func sendVoiceMessage(fileURL: URL, duration: TimeInterval, waveform: [Float]) {
         Task {
             await timelineService.sendVoiceMessage(url: fileURL, duration: duration, waveform: waveform)
-            try? FileManager.default.removeItem(at: fileURL)
+            // Suspected mitigation: SDK returns the SendHandle before
+            // the upload finishes; immediate delete may race with the
+            // async read. Was observed on short (~0.2s) and occasional
+            // longer recordings. If voice messages still go missing,
+            // the root cause may be deeper in the SDK send queue.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
         }
     }
 
