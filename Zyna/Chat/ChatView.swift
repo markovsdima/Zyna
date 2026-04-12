@@ -8,6 +8,7 @@ import Combine
 import PhotosUI
 import UniformTypeIdentifiers
 import QuickLook
+import MatrixRustSDK
 
 final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
@@ -330,7 +331,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             case .voice:
                 cellNode = VoiceMessageCellNode(message: message, audioPlayer: audioPlayer)
             case .image:
-                cellNode = ImageMessageCellNode(message: message)
+                let imageCell = ImageMessageCellNode(message: message)
+                imageCell.onImageTapped = { [weak self, weak imageCell] in
+                    guard let self, let imageCell else { return }
+                    self.presentImageViewer(for: message, from: imageCell)
+                }
+                cellNode = imageCell
             case .file:
                 let fileCell = FileCellNode(message: message)
                 fileCell.onFileTapped = { [weak self] in
@@ -763,6 +769,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     cellNode?.setDownloadState(.idle)
                 }
             }
+        }
+    }
+
+    // MARK: - Image Viewer
+
+    private func presentImageViewer(for message: ChatMessage, from cell: ImageMessageCellNode) {
+        guard let image = cell.currentImage else { return }
+
+        var source: MediaSource?
+        if case .image(let src, _, _, _) = message.content {
+            source = src
+        }
+
+        let cellImageView = cell.imageNodeView
+        let sourceFrame = cellImageView.convert(cellImageView.bounds, to: nil)
+
+        let viewer = ImageViewerController(image: image, mediaSource: source)
+        viewer.sourceFrame = sourceFrame
+
+        present(viewer, animated: false) {
+            viewer.animateIn(from: sourceFrame)
         }
     }
 

@@ -8,10 +8,20 @@ import MatrixRustSDK
 
 final class ImageMessageCellNode: MessageCellNode {
 
+    // MARK: - Callbacks
+
+    var onImageTapped: (() -> Void)?
+
     // MARK: - Subnodes
 
     private let imageNode = ASImageNode()
     private let timeBadgeNode = ASDisplayNode()
+
+    /// Current thumbnail for the viewer transition.
+    var currentImage: UIImage? { imageNode.image }
+
+    /// The backing UIView of the image node, for frame conversion.
+    var imageNodeView: UIView { imageNode.view }
 
     // MARK: - State
 
@@ -107,6 +117,11 @@ final class ImageMessageCellNode: MessageCellNode {
                 .foregroundColor: UIColor.white
             ]
         )
+
+        // Tap to open viewer
+        contextSourceNode.onQuickTap = { [weak self] _ in
+            self?.onImageTapped?()
+        }
 
         // Load image
         if let source = mediaSource {
