@@ -14,6 +14,12 @@ final class ChatViewModel {
 
     private(set) var messages: [ChatMessage] = []
     @Published private(set) var isPaginating: Bool = false
+
+    /// True when SDK backward pagination returned no new visible
+    /// messages, meaning we've likely reached the room history start.
+    /// Prevents infinite batch-fetch loops when all remaining events
+    /// are filtered (call signaling, redacted, etc.).
+    var sdkPaginationExhausted = false
     @Published private(set) var replyingTo: ChatMessage?
     @Published private(set) var isInvited: Bool = false
 
@@ -150,13 +156,29 @@ final class ChatViewModel {
     // MARK: - Window Change Handling
 
     private func handleObservationChange(newStored: [StoredMessage], prevStored: [StoredMessage]?) {
-        // 1. Detect newly redacted messages
+        // 1. Detect newly redacted user messages (paint splash).
+        //    Only for content that was a visible message — not call
+        //    signaling carriers (zero-width-space body), system
+        //    notices, or unsupported event types.
+        let splashContentTypes: Set<String> = ["text", "image", "voice", "file", "emote"]
         let newlyRedactedIds: [String]
         if let prevStored {
             let prevById = Dictionary(prevStored.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
             newlyRedactedIds = newStored.compactMap { msg in
                 guard msg.contentType == "redacted" else { return nil }
-                guard let prev = prevById[msg.id], prev.contentType != "redacted" else { return nil }
+                guard let prev = prevById[msg.id],
+                      prev.contentType != "redacted",
+                      splashContentTypes.contains(prev.contentType)
+                else { return nil }
+                // Skip carrier messages stored as "text" with an
+                // invisible body (call signaling, future extensions).
+                if prev.contentType == "text" {
+                    let body = prev.contentBody ?? ""
+                    let visible = body
+                        .replacingOccurrences(of: "\u{200B}", with: "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if visible.isEmpty { return nil }
+                }
                 return msg.id
             }
         } else {

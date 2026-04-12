@@ -259,7 +259,8 @@ final class TimelineService {
 
             switch msgContent.kind {
             case .message(let messageContent):
-                return contentFromMessageType(messageContent.msgType)
+                guard let content = contentFromMessageType(messageContent.msgType) else { return nil }
+                return content
             case .sticker:
                 return .unsupported(typeName: "sticker")
             case .poll:
@@ -277,9 +278,14 @@ final class TimelineService {
         }
     }
 
-    private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent {
+    private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent? {
         switch msgType {
         case .text(let content):
+            // Skip zero-width-space-only bodies — carrier messages
+            // (call signaling) that slipped past the span check.
+            let visible = content.body.replacingOccurrences(of: "\u{200B}", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if visible.isEmpty { return nil }
             return .text(body: content.body)
         case .image(let content):
             return .image(source: content.source, width: content.info?.width, height: content.info?.height, caption: content.caption)

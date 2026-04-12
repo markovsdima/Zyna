@@ -441,7 +441,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - ASTableDelegate — Batch Fetching (Pagination)
 
     func shouldBatchFetch(for tableNode: ASTableNode) -> Bool {
-        !viewModel.isPaginating
+        !viewModel.isPaginating && !viewModel.sdkPaginationExhausted
     }
 
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
@@ -465,6 +465,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func runServerBatchFetch(context: ASBatchContext) {
+        let countBefore = viewModel.messages.count
         viewModel.loadOlderFromServer()
 
         batchFetchCancellable = viewModel.$isPaginating
@@ -473,8 +474,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .first()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
+                guard let self else { return }
+                // If pagination returned but visible count didn't
+                // grow, we've hit the start (or only got filtered
+                // events like call signaling). Stop fetching.
+                if self.viewModel.messages.count <= countBefore {
+                    self.viewModel.sdkPaginationExhausted = true
+                }
                 context.completeBatchFetching(true)
-                self?.batchFetchCancellable = nil
+                self.batchFetchCancellable = nil
             }
     }
 

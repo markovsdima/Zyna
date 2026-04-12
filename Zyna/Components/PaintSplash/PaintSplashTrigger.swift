@@ -15,6 +15,11 @@ enum PaintSplashTrigger {
         at indexPath: IndexPath,
         completion: @escaping () -> Void
     ) {
+        #if DEBUG
+        print("[ZSPLASH-TRIGGER] row=\(indexPath.row)")
+        Thread.callStackSymbols.prefix(8).forEach { print("  \($0)") }
+        #endif
+
         guard let cellNode = tableNode.nodeForRow(at: indexPath) as? MessageCellNode,
               cellNode.isNodeLoaded
         else {
