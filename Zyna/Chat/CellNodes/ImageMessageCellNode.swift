@@ -15,8 +15,10 @@ final class ImageMessageCellNode: MessageCellNode {
 
     // MARK: - State
 
-    private let aspectRatio: CGFloat
+    private var aspectRatio: CGFloat
     private let mediaSource: MediaSource?
+    private let hasSDKDimensions: Bool
+    private let messageId: String
 
     // MARK: - Init
 
@@ -32,11 +34,14 @@ final class ImageMessageCellNode: MessageCellNode {
         }
 
         self.mediaSource = source
+        self.messageId = message.id
 
         if let width = imageWidth, let height = imageHeight, height > 0 {
             self.aspectRatio = CGFloat(width) / CGFloat(height)
+            self.hasSDKDimensions = true
         } else {
             self.aspectRatio = 4.0 / 3.0
+            self.hasSDKDimensions = false
         }
 
         super.init(message: message, isGroupChat: isGroupChat)
@@ -107,6 +112,10 @@ final class ImageMessageCellNode: MessageCellNode {
         if let source = mediaSource {
             if let cached = MediaCache.shared.image(for: source) {
                 imageNode.image = cached
+                if !hasSDKDimensions, cached.size.height > 0 {
+                    aspectRatio = cached.size.width / cached.size.height
+                    persistDimensions(cached.size)
+                }
             } else {
                 loadThumbnailAsync(source: source)
             }
@@ -117,17 +126,57 @@ final class ImageMessageCellNode: MessageCellNode {
 
     private func loadThumbnailAsync(source: MediaSource) {
         let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
-        let thumbWidth = UInt64(maxWidth * UIScreen.main.scale)
-        let thumbHeight = UInt64(maxWidth / aspectRatio * UIScreen.main.scale)
+        let scale = UIScreen.main.scale
+
+        // When SDK didn't provide dimensions, request a large
+        // square thumbnail so the server returns the image at its
+        // natural aspect ratio. Otherwise request the exact size.
+        let thumbWidth: UInt64
+        let thumbHeight: UInt64
+        if hasSDKDimensions {
+            thumbWidth = UInt64(maxWidth * scale)
+            thumbHeight = UInt64(maxWidth / aspectRatio * scale)
+        } else {
+            let dim = UInt64(maxWidth * scale)
+            thumbWidth = dim
+            thumbHeight = dim
+        }
 
         Task { [weak self] in
-            guard let image = await MediaCache.shared.loadThumbnail(
-                source: source,
-                width: thumbWidth,
-                height: thumbHeight
-            ) else { return }
+            guard let self,
+                  let image = await MediaCache.shared.loadThumbnail(
+                    source: source,
+                    width: thumbWidth,
+                    height: thumbHeight
+                  ) else { return }
             await MainActor.run { [weak self] in
-                self?.imageNode.image = image
+                guard let self else { return }
+                self.imageNode.image = image
+                if !self.hasSDKDimensions, image.size.height > 0 {
+                    let realRatio = image.size.width / image.size.height
+                    if abs(realRatio - self.aspectRatio) > 0.01 {
+                        self.aspectRatio = realRatio
+                        self.persistDimensions(image.size)
+                        self.setNeedsLayout()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Write discovered dimensions to GRDB so next time the cell
+    /// is created it gets the correct ratio from the database
+    /// without waiting for the image to load.
+    private func persistDimensions(_ size: CGSize) {
+        let id = messageId
+        let w = Int64(size.width)
+        let h = Int64(size.height)
+        DispatchQueue.global(qos: .utility).async {
+            try? DatabaseService.shared.dbQueue.write { db in
+                try db.execute(
+                    sql: "UPDATE storedMessage SET contentImageWidth = ?, contentImageHeight = ? WHERE id = ?",
+                    arguments: [w, h, id]
+                )
             }
         }
     }
