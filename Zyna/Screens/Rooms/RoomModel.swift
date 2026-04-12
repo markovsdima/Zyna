@@ -7,7 +7,7 @@
 
 import UIKit
 
-struct RoomModel {
+struct RoomModel: Equatable {
     let id: String
     let name: String
     let lastMessage: String

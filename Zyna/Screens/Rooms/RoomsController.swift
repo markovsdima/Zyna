@@ -45,13 +45,9 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     }
 
     private func bindViewModel() {
-        viewModel.$chats
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.tableNode.reloadData()
-            }
-            .store(in: &cancellables)
+        viewModel.onTableUpdate = { [weak self] update in
+            self?.applyTableUpdate(update)
+        }
 
         MatrixClientService.shared.stateSubject
             .receive(on: DispatchQueue.main)
@@ -66,6 +62,29 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    private func applyTableUpdate(_ update: RoomsTableUpdate) {
+        switch update {
+        case .none:
+            break
+        case .reload:
+            tableNode.reloadData()
+        case .batch(let deletions, let insertions, let reloads):
+            tableNode.performBatch(animated: true, updates: {
+                if !deletions.isEmpty {
+                    tableNode.deleteRows(at: deletions, with: .fade)
+                }
+                if !insertions.isEmpty {
+                    tableNode.insertRows(at: insertions, with: .fade)
+                }
+                if !reloads.isEmpty {
+                    tableNode.reloadRows(at: reloads, with: .none)
+                }
+            }, completion: nil)
+        case .partialReload(let indexPaths):
+            tableNode.reloadRows(at: indexPaths, with: .none)
+        }
     }
 
 override func viewWillAppear(_ animated: Bool) {

@@ -40,7 +40,12 @@ final class ZynaRoomListService: NSObject {
     private var isListening = false
 
     func room(for id: String) -> Room? {
-        rooms.first { $0.id() == id }
+        if let cached = rooms.first(where: { $0.id() == id }) {
+            return cached
+        }
+        // Rooms from GRDB cache may be visible before the SDK room
+        // list populates. Fall back to the client directly.
+        return try? MatrixClientService.shared.client?.getRoom(roomId: id)
     }
     private var cancellables = Set<AnyCancellable>()
 

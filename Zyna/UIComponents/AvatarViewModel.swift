@@ -5,7 +5,7 @@
 
 import UIKit
 
-struct AvatarViewModel {
+struct AvatarViewModel: Equatable {
 
     let userId: String
     let displayName: String?

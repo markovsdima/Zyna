@@ -108,6 +108,13 @@ class RoomsCellNode: ASCellNode {
     private func loadAvatarImage() {
         guard let mxc = chat.avatar.mxcAvatarURL else { return }
         Task { @MainActor in
+            if let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: 100) {
+                self.avatarImageNode.image = image
+                return
+            }
+            // Client may not be ready on first attempt (rooms load
+            // from GRDB cache before SDK session restores).
+            try? await Task.sleep(for: .seconds(1))
             guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: 100) else { return }
             self.avatarImageNode.image = image
         }
