@@ -16,6 +16,7 @@ final class ImageMessageCellNode: MessageCellNode {
 
     private let imageNode = ASImageNode()
     private let timeBadgeNode = ASDisplayNode()
+    private let captionNode: ASTextNode?
 
     /// Current thumbnail for the viewer transition.
     var currentImage: UIImage? { imageNode.image }
@@ -36,11 +37,36 @@ final class ImageMessageCellNode: MessageCellNode {
         var source: MediaSource?
         var imageWidth: UInt64?
         var imageHeight: UInt64?
+        var captionText: String?
 
-        if case .image(let src, let width, let height, _) = message.content {
+        if case .image(let src, let width, let height, let caption) = message.content {
             source = src
             imageWidth = width
             imageHeight = height
+            // Filter zero-width caption (carrier for Zyna span)
+            if let c = caption {
+                let visible = c.replacingOccurrences(of: "\u{200B}", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !visible.isEmpty { captionText = visible }
+            }
+        }
+
+        // Caption node
+        if let captionText {
+            let node = ASTextNode()
+            node.attributedText = NSAttributedString(
+                string: captionText,
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 14),
+                    .foregroundColor: message.isOutgoing
+                        ? AppColor.bubbleForegroundOutgoing
+                        : AppColor.bubbleForegroundIncoming
+                ]
+            )
+            node.maximumNumberOfLines = 0
+            self.captionNode = node
+        } else {
+            self.captionNode = nil
         }
 
         self.mediaSource = source
@@ -61,6 +87,25 @@ final class ImageMessageCellNode: MessageCellNode {
         imageNode.cornerRadius = 18
         imageNode.clipsToBounds = true
         imageNode.displaysAsynchronously = true
+
+        // Flatten image corners adjacent to header/caption so
+        // the photo fills the bubble edge-to-edge on those sides.
+        let hasHeader = forwardedHeaderNode != nil || replyHeaderNode != nil
+        let hasCaption = captionNode != nil
+        if hasHeader || hasCaption {
+            imageNode.onDidLoad { node in
+                var corners: CACornerMask = []
+                if !hasHeader {
+                    corners.insert(.layerMinXMinYCorner)
+                    corners.insert(.layerMaxXMinYCorner)
+                }
+                if !hasCaption {
+                    corners.insert(.layerMinXMaxYCorner)
+                    corners.insert(.layerMaxXMaxYCorner)
+                }
+                node.layer.maskedCorners = corners
+            }
+        }
 
         // Bubble layout
         bubbleNode.layoutSpecBlock = { [weak self] _, _ in
@@ -88,17 +133,38 @@ final class ImageMessageCellNode: MessageCellNode {
 
             let imageWithTime = ASOverlayLayoutSpec(child: self.imageNode, overlay: timeOverlay)
 
+            var headerChildren: [ASLayoutElement] = []
+            if let fwd = self.forwardedHeaderNode {
+                headerChildren.append(ASInsetLayoutSpec(
+                    insets: UIEdgeInsets(top: 7, left: 12, bottom: 2, right: 12),
+                    child: fwd
+                ))
+            }
             if let replyHeader = self.replyHeaderNode {
-                let replyInset = ASInsetLayoutSpec(
+                headerChildren.append(ASInsetLayoutSpec(
                     insets: UIEdgeInsets(top: 7, left: 12, bottom: 4, right: 12),
                     child: replyHeader
-                )
+                ))
+            }
+
+            // Build vertical stack: [headers] + image + [caption]
+            var stackChildren: [ASLayoutElement] = headerChildren
+            stackChildren.append(imageWithTime)
+
+            if let captionNode = self.captionNode {
+                stackChildren.append(ASInsetLayoutSpec(
+                    insets: UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12),
+                    child: captionNode
+                ))
+            }
+
+            if stackChildren.count > 1 {
                 return ASStackLayoutSpec(
                     direction: .vertical,
                     spacing: 0,
                     justifyContent: .start,
                     alignItems: .stretch,
-                    children: [replyInset, imageWithTime]
+                    children: stackChildren
                 )
             }
 
@@ -118,9 +184,18 @@ final class ImageMessageCellNode: MessageCellNode {
             ]
         )
 
-        // Tap to open viewer
-        contextSourceNode.onQuickTap = { [weak self] _ in
-            self?.onImageTapped?()
+        // Tap to open viewer (preserving reply header tap from super)
+        contextSourceNode.onQuickTap = { [weak self] point in
+            guard let self else { return }
+            if self.isNodeLoaded,
+               let replyView = self.replyHeaderNode?.view {
+                let converted = self.contextSourceNode.view.convert(point, to: replyView)
+                if replyView.bounds.contains(converted) {
+                    self.onReplyHeaderTapped?(message.replyInfo?.eventId ?? "")
+                    return
+                }
+            }
+            self.onImageTapped?()
         }
 
         // Load image

@@ -174,6 +174,9 @@ final class FileCellNode: MessageCellNode {
 
             var contentChildren: [ASLayoutElement] = []
 
+            if let fwd = self.forwardedHeaderNode {
+                contentChildren.append(fwd)
+            }
             if let replyHeader = self.replyHeaderNode {
                 let replyInset = ASInsetLayoutSpec(
                     insets: UIEdgeInsets(top: 0, left: 0, bottom: 4, right: 0),

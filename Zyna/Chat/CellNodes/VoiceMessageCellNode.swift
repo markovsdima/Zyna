@@ -160,6 +160,9 @@ final class VoiceMessageCellNode: MessageCellNode {
         )
 
         var stackChildren: [ASLayoutElement] = []
+        if let fwd = forwardedHeaderNode {
+            stackChildren.append(fwd)
+        }
         if let replyHeader = replyHeaderNode {
             stackChildren.append(replyHeader)
         }

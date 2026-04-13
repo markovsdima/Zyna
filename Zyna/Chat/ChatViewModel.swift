@@ -337,9 +337,19 @@ final class ChatViewModel {
             pendingForwardContent = nil
             let senderName = forward.preview.senderDisplayName ?? forward.preview.senderId
             let attrs = ZynaMessageAttributes(forwardedFrom: senderName)
+
             if let body = forward.preview.content.textBody {
                 Task { await timelineService.sendMessage(body, zynaAttributes: attrs) }
+            } else if let mediaInfo = forward.preview.content.mediaForwardInfo {
+                let caption = text.isEmpty ? nil : text
+                Task { await timelineService.forwardMedia(
+                    source: mediaInfo.source,
+                    mimetype: mediaInfo.mimetype,
+                    attrs: attrs,
+                    caption: caption
+                )}
             } else {
+                // Fallback: send without attributes
                 Task { await timelineService.sendForwardedContent(forward.content) }
             }
             return

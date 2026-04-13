@@ -140,14 +140,25 @@ final class TimelineService {
     /// content or when no carrier span is present.
     static func extractZynaAttributes(from event: EventTimelineItem) -> ZynaMessageAttributes {
         guard case .msgLike(let msgContent) = event.content,
-              case .message(let message) = msgContent.kind,
-              case .text = message.msgType
+              case .message(let message) = msgContent.kind
         else { return ZynaMessageAttributes() }
 
-        // matrix-rust-sdk's typed path runs formatted_body through an HTML
-        // sanitiser that drops unknown attributes (including our data-zyna).
-        // Read the raw event JSON and extract formatted_body ourselves.
-        // Primary path: parse raw event JSON (unmodified by SDK sanitiser).
+        // For media types: check formattedCaption in raw JSON
+        // (SDK serialises formattedCaption into the same formatted_body field)
+        switch message.msgType {
+        case .image, .audio, .file, .video:
+            if let rawJSON = event.lazyProvider.debugInfo().originalJson,
+               let formatted = Self.extractFormattedBodyFromRawEvent(rawJSON) {
+                return ZynaHTMLCodec.decode(htmlBody: formatted)
+            }
+            return ZynaMessageAttributes()
+        case .text:
+            break
+        default:
+            return ZynaMessageAttributes()
+        }
+
+        // Text messages: extract from formatted_body
         if let rawJSON = event.lazyProvider.debugInfo().originalJson,
            let formatted = Self.extractFormattedBodyFromRawEvent(rawJSON) {
             return ZynaHTMLCodec.decode(htmlBody: formatted)
@@ -252,7 +263,6 @@ final class TimelineService {
             return nil
 
         case .msgLike(let msgContent):
-            // Filter span-based call signaling (answer, candidates, hangup)
             let attrs = extractZynaAttributes(from: event)
             if attrs.callSignal != nil { return nil }
 
@@ -351,6 +361,61 @@ final class TimelineService {
             logTimeline("Forwarded message sent")
         } catch {
             logTimeline("Forward send failed: \(error)")
+        }
+    }
+
+    /// Forward media by downloading from source and re-uploading
+    /// with Zyna attributes in the formattedCaption field.
+    func forwardMedia(source: MediaSource, mimetype: String, attrs: ZynaMessageAttributes, caption: String? = nil) async {
+        guard let timeline,
+              let client = MatrixClientService.shared.client
+        else { return }
+
+        do {
+            let data = try await client.getMediaContent(mediaSource: source)
+
+            let plainCaption = caption ?? "\u{200B}"
+            let encoded = ZynaHTMLCodec.encode(
+                userHTML: plainCaption,
+                attributes: attrs
+            )
+            let formattedCaption = FormattedBody(format: .html, body: encoded)
+
+            let tmpURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + "." + Self.extensionFor(mimetype))
+            try data.write(to: tmpURL)
+
+            let fileInfo = FileInfo(
+                mimetype: mimetype,
+                size: UInt64(data.count),
+                thumbnailInfo: nil,
+                thumbnailSource: nil
+            )
+            let params = UploadParameters(
+                source: .file(filename: tmpURL.path(percentEncoded: false)),
+                caption: plainCaption,
+                formattedCaption: formattedCaption,
+                mentions: nil,
+                inReplyTo: nil
+            )
+            _ = try timeline.sendFile(params: params, fileInfo: fileInfo)
+            logTimeline("Forwarded media sent with attributes")
+
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
+                try? FileManager.default.removeItem(at: tmpURL)
+            }
+        } catch {
+            logTimeline("Forward media failed: \(error)")
+        }
+    }
+
+    private static func extensionFor(_ mimetype: String) -> String {
+        switch mimetype {
+        case "image/jpeg": return "jpg"
+        case "image/png": return "png"
+        case "audio/mp4", "audio/m4a": return "m4a"
+        case "audio/ogg": return "ogg"
+        default: return "bin"
         }
     }
 

@@ -29,8 +29,7 @@ struct ZynaMessageAttributes: Equatable {
 
     var callSignal: CallSignalData?
 
-    /// Display name of the original sender when this message was
-    /// forwarded from another room. Nil for non-forwarded messages.
+    /// Display name of the original sender when forwarded.
     var forwardedFrom: String?
 
     init(
