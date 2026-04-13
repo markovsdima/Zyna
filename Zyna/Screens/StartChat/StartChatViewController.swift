@@ -11,7 +11,6 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
 
     private let viewModel: StartChatViewModel
     private var cancellables = Set<AnyCancellable>()
-    private let searchController = UISearchController(searchResultsController: nil)
 
     init(viewModel: StartChatViewModel) {
         self.viewModel = viewModel
@@ -23,6 +22,8 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
         fatalError("init(coder:) has not been implemented")
     }
 
+    private let headerBar = StartChatHeaderBar()
+
     override func viewDidLoad() {
         super.viewDidLoad()
 
@@ -31,28 +32,37 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
         node.tableNode.view.separatorStyle = .none
         node.tableNode.view.keyboardDismissMode = .onDrag
 
-        setupNavigation()
-        setupSearch()
+        setupHeaderBar()
         bindViewModel()
     }
 
     // MARK: - Setup
 
-    private func setupNavigation() {
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .cancel,
-            target: self,
-            action: #selector(cancelTapped)
-        )
+    private func setupHeaderBar() {
+        headerBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(headerBar)
+
+        NSLayoutConstraint.activate([
+            headerBar.topAnchor.constraint(equalTo: view.topAnchor),
+            headerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            headerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+
+        headerBar.onCancelTapped = { [weak self] in
+            self?.cancelTapped()
+        }
+        headerBar.onSearchQueryChanged = { [weak self] query in
+            self?.viewModel.searchUsers(query)
+        }
     }
 
-    private func setupSearch() {
-        searchController.searchResultsUpdater = self
-        searchController.obscuresBackgroundDuringPresentation = false
-        searchController.searchBar.placeholder = "Search users (@user:server)"
-        navigationItem.searchController = searchController
-        navigationItem.hidesSearchBarWhenScrolling = false
-        definesPresentationContext = true
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let h = headerBar.frame.height
+        if node.tableNode.contentInset.top != h {
+            node.tableNode.contentInset.top = h
+            node.tableNode.view.verticalScrollIndicatorInsets.top = h
+        }
     }
 
     private func bindViewModel() {
@@ -142,10 +152,3 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
     }
 }
 
-// MARK: - UISearchResultsUpdating
-
-extension StartChatViewController: UISearchResultsUpdating {
-    func updateSearchResults(for searchController: UISearchController) {
-        viewModel.searchUsers(searchController.searchBar.text ?? "")
-    }
-}

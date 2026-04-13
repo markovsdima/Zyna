@@ -54,11 +54,11 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
             .sink { [weak self] state in
                 switch state {
                 case .syncing:
-                    self?.title = "Chats"
+                    self?.headerBar.connectionStatus = nil
                 case .error:
-                    self?.title = "Connection error"
+                    self?.headerBar.connectionStatus = "Connection error"
                 default:
-                    self?.title = "Connecting..."
+                    self?.headerBar.connectionStatus = "Connecting..."
                 }
             }
             .store(in: &cancellables)
@@ -99,19 +99,39 @@ override func viewWillAppear(_ animated: Bool) {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-
-        // UIKit view access — safe in viewDidLoad (main thread, view loaded)
         tableNode.view.separatorStyle = .none
-        let composeButton = UIBarButtonItem(
-            barButtonSystemItem: .compose,
-            target: self,
-            action: #selector(composeButtonTapped)
-        )
-        navigationItem.rightBarButtonItem = composeButton
+        setupHeaderBar()
     }
 
-    @objc private func composeButtonTapped() {
-        onComposeTapped?()
+    // MARK: - Header Bar
+
+    private let headerBar = RoomsHeaderBar()
+
+    private func setupHeaderBar() {
+        headerBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(headerBar)
+
+        NSLayoutConstraint.activate([
+            headerBar.topAnchor.constraint(equalTo: view.topAnchor),
+            headerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            headerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+
+        headerBar.onComposeTapped = { [weak self] in
+            self?.onComposeTapped?()
+        }
+        headerBar.onSearchQueryChanged = { [weak self] query in
+            self?.viewModel.filterChats(query: query)
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let headerHeight = headerBar.frame.height
+        if tableNode.contentInset.top != headerHeight {
+            tableNode.contentInset.top = headerHeight
+            tableNode.view.verticalScrollIndicatorInsets.top = headerHeight
+        }
     }
 }
 

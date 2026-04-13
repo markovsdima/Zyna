@@ -58,14 +58,22 @@ final class RoomsViewModel {
             }
         }
 
+        allChats = rooms
+
         if isFirstLoad {
             isFirstLoad = false
-            chats = rooms
-            onTableUpdate?(.reload)
-        } else {
+            if searchQuery.isEmpty {
+                chats = rooms
+                onTableUpdate?(.reload)
+            } else {
+                applyFilter()
+            }
+        } else if searchQuery.isEmpty {
             let update = Self.computeDiff(old: chats, new: rooms)
             chats = rooms
             onTableUpdate?(update)
+        } else {
+            applyFilter()
         }
 
         syncRegistration()
@@ -82,21 +90,29 @@ final class RoomsViewModel {
     }
 
     private func syncRegistration() {
-        let userIds = chats.compactMap { $0.directUserId }
+        let userIds = allChats.compactMap { $0.directUserId }
         PresenceTracker.shared.register(userIds: userIds, for: "rooms")
     }
 
     private func applyPresence(_ statuses: [String: UserPresence]) {
         guard !statuses.isEmpty else { return }
-        var changedRows: [IndexPath] = []
 
+        // Update allChats
+        for (idx, chat) in allChats.enumerated() {
+            guard let userId = chat.directUserId,
+                  let status = statuses[userId],
+                  chat.isOnline != status.online else { continue }
+            allChats[idx].isOnline = status.online
+            allChats[idx].lastSeen = status.lastSeen
+        }
+
+        // Update visible chats
+        var changedRows: [IndexPath] = []
         for (idx, chat) in chats.enumerated() {
             guard let userId = chat.directUserId,
                   let status = statuses[userId] else { continue }
-            let wasOnline = chat.isOnline
-            let nowOnline = status.online
-            if wasOnline != nowOnline {
-                chats[idx].isOnline = nowOnline
+            if chat.isOnline != status.online {
+                chats[idx].isOnline = status.online
                 chats[idx].lastSeen = status.lastSeen
                 changedRows.append(IndexPath(row: idx, section: 0))
             }
@@ -105,6 +121,25 @@ final class RoomsViewModel {
         if !changedRows.isEmpty {
             onTableUpdate?(.partialReload(changedRows))
         }
+    }
+
+    // MARK: - Search
+
+    private var allChats: [RoomModel] = []
+    private var searchQuery: String = ""
+
+    func filterChats(query: String) {
+        searchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        applyFilter()
+    }
+
+    private func applyFilter() {
+        if searchQuery.isEmpty {
+            chats = allChats
+        } else {
+            chats = allChats.filter { $0.name.lowercased().contains(searchQuery) }
+        }
+        onTableUpdate?(.reload)
     }
 
     // MARK: - Actions

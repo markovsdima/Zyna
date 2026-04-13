@@ -11,8 +11,7 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
 
     private let viewModel: SelectMembersViewModel
     private var cancellables = Set<AnyCancellable>()
-    private let searchController = UISearchController(searchResultsController: nil)
-    private var nextButton: UIBarButtonItem!
+    private let headerBar = SelectMembersHeaderBar()
 
     // Chips scroll view for selected users
     private let chipsScrollView = UIScrollView()
@@ -36,26 +35,38 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
         node.tableNode.view.separatorStyle = .none
         node.tableNode.view.keyboardDismissMode = .onDrag
 
-        setupNavigation()
-        setupSearch()
+        setupHeaderBar()
         setupChipsView()
         bindViewModel()
     }
 
     // MARK: - Setup
 
-    private func setupNavigation() {
-        nextButton = UIBarButtonItem(title: "Next", style: .done, target: self, action: #selector(nextTapped))
-        navigationItem.rightBarButtonItem = nextButton
+    private func setupHeaderBar() {
+        headerBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(headerBar)
+
+        NSLayoutConstraint.activate([
+            headerBar.topAnchor.constraint(equalTo: view.topAnchor),
+            headerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            headerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+
+        headerBar.onNextTapped = { [weak self] in
+            self?.viewModel.proceed()
+        }
+        headerBar.onSearchQueryChanged = { [weak self] query in
+            self?.viewModel.searchUsers(query)
+        }
     }
 
-    private func setupSearch() {
-        searchController.searchResultsUpdater = self
-        searchController.obscuresBackgroundDuringPresentation = false
-        searchController.searchBar.placeholder = "Search users"
-        navigationItem.searchController = searchController
-        navigationItem.hidesSearchBarWhenScrolling = false
-        definesPresentationContext = true
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let h = headerBar.frame.height
+        if node.tableNode.contentInset.top != h {
+            node.tableNode.contentInset.top = h
+            node.tableNode.view.verticalScrollIndicatorInsets.top = h
+        }
     }
 
     private func setupChipsView() {
@@ -119,22 +130,16 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
             node.view.addSubview(chipsScrollView)
             chipsScrollView.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
-                chipsScrollView.topAnchor.constraint(equalTo: node.view.safeAreaLayoutGuide.topAnchor),
+                chipsScrollView.topAnchor.constraint(equalTo: headerBar.bottomAnchor),
                 chipsScrollView.leadingAnchor.constraint(equalTo: node.view.leadingAnchor),
                 chipsScrollView.trailingAnchor.constraint(equalTo: node.view.trailingAnchor),
                 chipsScrollView.heightAnchor.constraint(equalToConstant: targetHeight)
             ])
-            node.tableNode.contentInset.top = targetHeight
+            node.tableNode.contentInset.top = headerBar.frame.height + targetHeight
         } else if !hasChips {
             chipsScrollView.removeFromSuperview()
-            node.tableNode.contentInset.top = 0
+            node.tableNode.contentInset.top = headerBar.frame.height
         }
-    }
-
-    // MARK: - Actions
-
-    @objc private func nextTapped() {
-        viewModel.proceed()
     }
 
     // MARK: - ASTableDataSource
@@ -162,10 +167,3 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
     }
 }
 
-// MARK: - UISearchResultsUpdating
-
-extension SelectMembersViewController: UISearchResultsUpdating {
-    func updateSearchResults(for searchController: UISearchController) {
-        viewModel.searchUsers(searchController.searchBar.text ?? "")
-    }
-}
