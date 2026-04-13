@@ -62,7 +62,12 @@ download and re-upload via `sendFile` with span in `formattedCaption`.
 
 **Tradeoffs:** Double homeserver storage, extra bandwidth.
 Acceptable for photos and voice. Revisit for video/large files.
-**Cleaner path:** Fork SDK to expose `formattedCaption` on forward.
+
+**TODO:** Synapse module with a `/zyna/forward` endpoint. The server
+reads the original event, creates a new one in the target room
+referencing the same `mxc://` URL with `formattedCaption` and span.
+Zero re-upload, zero double storage. Simple Python module.
+Eliminates the client-side workaround entirely.
 
 ---
 
