@@ -24,6 +24,16 @@ enum ChatMessageContent: Equatable {
         return false
     }
 
+    /// Returns the text body for text/notice/emote, nil for media.
+    var textBody: String? {
+        switch self {
+        case .text(let body): return body
+        case .notice(let body): return body
+        case .emote(let body): return body
+        default: return nil
+        }
+    }
+
     var textPreview: String {
         switch self {
         case .text(let body): return body
@@ -133,9 +143,6 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     /// present (empty struct if none) so UI code has no optional
     /// unwrap noise.
     let zynaAttributes: ZynaMessageAttributes
-    /// Delivery pipeline status. For now populated as "synced" for
-    /// every message that comes off the SDK timeline; proper
-    /// per-stage tracking lands once we wire SendHandle observation.
     let sendStatus: String
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {

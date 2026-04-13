@@ -37,9 +37,6 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var replySenderName: String?
     var replyBody: String?
 
-    /// Serialised Zyna-specific message attributes (color, checklist,
-    /// callSignal etc.) extracted from the event's `formatted_body` HTML.
-    /// NULL when no attributes present.
     var zynaAttributesJSON: String?
 }
 
@@ -247,6 +244,7 @@ private extension StoredMessage {
         let color: String?
         let checklist: [ChecklistItem]?
         let callSignal: CallSignalData?
+        let forwardedFrom: String?
     }
 
     static func encodeZynaAttributes(_ attrs: ZynaMessageAttributes) -> String? {
@@ -254,7 +252,8 @@ private extension StoredMessage {
         let payload = ZynaAttributesJSON(
             color: attrs.color?.hexString,
             checklist: attrs.checklist,
-            callSignal: attrs.callSignal
+            callSignal: attrs.callSignal,
+            forwardedFrom: attrs.forwardedFrom
         )
         guard let data = try? JSONEncoder().encode(payload),
               let json = String(data: data, encoding: .utf8) else { return nil }
@@ -269,7 +268,8 @@ private extension StoredMessage {
         return ZynaMessageAttributes(
             color: payload.color.flatMap(UIColor.fromHexString),
             checklist: payload.checklist,
-            callSignal: payload.callSignal
+            callSignal: payload.callSignal,
+            forwardedFrom: payload.forwardedFrom
         )
     }
 }

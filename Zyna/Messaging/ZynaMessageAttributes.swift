@@ -27,33 +27,36 @@ struct ZynaMessageAttributes: Equatable {
     /// Checklist items (future feature).
     var checklist: [ChecklistItem]?
 
-    /// Call signalling payload. Carries the event type (e.g.
-    /// "m.call.answer") and opaque JSON content that
-    /// CallSignalingService decodes into the concrete struct.
     var callSignal: CallSignalData?
+
+    /// Display name of the original sender when this message was
+    /// forwarded from another room. Nil for non-forwarded messages.
+    var forwardedFrom: String?
 
     init(
         color: UIColor? = nil,
         checklist: [ChecklistItem]? = nil,
-        callSignal: CallSignalData? = nil
+        callSignal: CallSignalData? = nil,
+        forwardedFrom: String? = nil
     ) {
         self.color = color
         self.checklist = checklist
         self.callSignal = callSignal
+        self.forwardedFrom = forwardedFrom
     }
 
-    /// True when no Zyna attributes are present. Used by the codec
-    /// to skip emitting the hidden span entirely.
     var isEmpty: Bool {
         color == nil
             && (checklist == nil || checklist?.isEmpty == true)
             && callSignal == nil
+            && forwardedFrom == nil
     }
 
     static func == (lhs: ZynaMessageAttributes, rhs: ZynaMessageAttributes) -> Bool {
         lhs.color?.hexString == rhs.color?.hexString
             && lhs.checklist == rhs.checklist
             && lhs.callSignal == rhs.callSignal
+            && lhs.forwardedFrom == rhs.forwardedFrom
     }
 }
 

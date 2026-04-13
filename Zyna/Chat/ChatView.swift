@@ -16,6 +16,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     var onCallTapped: (() -> Void)?
     var onTitleTapped: ((String) -> Void)?
     var onRoomDetailsTapped: (() -> Void)?
+    var onForwardMessage: ((ChatMessage) -> Void)?
 
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -257,6 +258,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 )
             }
             .store(in: &cancellables)
+
+        viewModel.$pendingForwardContent
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] forward in
+                guard let self else { return }
+                if let forward {
+                    self.glassInputBar.inputNode.setForwardPreview(
+                        senderName: forward.preview.senderDisplayName ?? forward.preview.senderId,
+                        body: forward.preview.content.textPreview
+                    )
+                } else {
+                    self.glassInputBar.inputNode.setForwardPreview(senderName: nil, body: nil)
+                }
+            }
+            .store(in: &cancellables)
     }
 
     private func applyTableUpdate(_ update: TableUpdate) {
@@ -294,6 +310,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         glassInputBar.inputNode.onReplyCancelled = { [weak self] in
             self?.viewModel.setReplyTarget(nil)
+            self?.viewModel.clearPendingForward()
         }
 
         glassInputBar.onScrollToLive = { [weak self] in
@@ -386,6 +403,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 handler: { [weak self] in self?.viewModel.setReplyTarget(message) }
             )
         ]
+
+        if !message.content.isRedacted {
+            actions.append(ContextMenuAction(
+                title: "Forward",
+                image: UIImage(systemName: "arrowshape.turn.up.right"),
+                handler: { [weak self] in
+                    self?.onForwardMessage?(message)
+                }
+            ))
+        }
 
         if message.itemIdentifier != nil && !message.content.isRedacted {
             actions.append(ContextMenuAction(

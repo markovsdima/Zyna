@@ -21,6 +21,7 @@ final class ChatViewModel {
     /// are filtered (call signaling, redacted, etc.).
     var sdkPaginationExhausted = false
     @Published private(set) var replyingTo: ChatMessage?
+    @Published private(set) var pendingForwardContent: (preview: ChatMessage, content: RoomMessageEventContentWithoutRelation)?
     @Published private(set) var isInvited: Bool = false
 
     /// Called on the main queue when the table needs updating.
@@ -320,12 +321,32 @@ final class ChatViewModel {
         replyingTo = message
     }
 
+    func setPendingForward(preview: ChatMessage, content: RoomMessageEventContentWithoutRelation) {
+        pendingForwardContent = (preview, content)
+    }
+
+    func clearPendingForward() {
+        pendingForwardContent = nil
+    }
+
     // MARK: - Actions
 
     func sendMessage(_ text: String, color: UIColor? = nil) {
+        // Forward takes priority
+        if let forward = pendingForwardContent {
+            pendingForwardContent = nil
+            let senderName = forward.preview.senderDisplayName ?? forward.preview.senderId
+            let attrs = ZynaMessageAttributes(forwardedFrom: senderName)
+            if let body = forward.preview.content.textBody {
+                Task { await timelineService.sendMessage(body, zynaAttributes: attrs) }
+            } else {
+                Task { await timelineService.sendForwardedContent(forward.content) }
+            }
+            return
+        }
+
         if let replyTarget = replyingTo, let eventId = replyTarget.eventId {
             replyingTo = nil
-            // TODO: thread color through sendReply once we want coloured replies.
             Task { await timelineService.sendReply(text, to: eventId) }
             return
         }

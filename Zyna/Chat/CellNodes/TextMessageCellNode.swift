@@ -99,15 +99,24 @@ final class TextMessageCellNode: MessageCellNode {
                 )
             }
 
-            // Add reply header if present
-            let mainContent: ASLayoutElement
+            // Add forwarded / reply headers if present
+            var headerChildren: [ASLayoutElement] = []
+            if let fwd = self.forwardedHeaderNode {
+                headerChildren.append(fwd)
+            }
             if let replyHeader = self.replyHeaderNode {
+                headerChildren.append(replyHeader)
+            }
+            headerChildren.append(textElement)
+
+            let mainContent: ASLayoutElement
+            if headerChildren.count > 1 {
                 mainContent = ASStackLayoutSpec(
                     direction: .vertical,
                     spacing: 0,
                     justifyContent: .start,
                     alignItems: .stretch,
-                    children: [replyHeader, textElement]
+                    children: headerChildren
                 )
             } else {
                 mainContent = textElement

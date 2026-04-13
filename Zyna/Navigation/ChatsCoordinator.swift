@@ -98,7 +98,76 @@ final class ChatsCoordinator {
         vc.onRoomDetailsTapped = { [weak self] in
             self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
         }
+        vc.onForwardMessage = { [weak self] message in
+            self?.showForwardPicker(message: message, timelineService: viewModel.timelineService)
+        }
         navigationController.push(vc)
+    }
+
+    private func showForwardPicker(message: ChatMessage, timelineService: TimelineService) {
+        guard let eventId = message.eventId else { return }
+
+        Task { @MainActor in
+            guard let content = await timelineService.extractForwardContent(eventId: eventId) else { return }
+            self.presentForwardPicker(message: message, content: content)
+        }
+    }
+
+    private func presentForwardPicker(
+        message: ChatMessage,
+        content: RoomMessageEventContentWithoutRelation
+    ) {
+        let picker = ForwardPickerViewController()
+        let nav = ZynaNavigationController(rootViewController: picker)
+
+        picker.onCancel = { [weak self] in
+            self?.navigationController.dismiss(animated: true)
+        }
+        picker.onRoomSelected = { [weak self] selectedRoom in
+            self?.navigationController.dismiss(animated: true)
+            self?.openChatWithForward(
+                roomId: selectedRoom.id,
+                forwardPreview: message,
+                forwardContent: content
+            )
+        }
+
+        navigationController.present(nav, animated: true)
+    }
+
+    private func openChatWithForward(
+        roomId: String,
+        forwardPreview: ChatMessage,
+        forwardContent: RoomMessageEventContentWithoutRelation
+    ) {
+        // Pop back to root, then open the target chat
+        navigationController.popToRoot(animated: false)
+
+        guard let room = roomListService.room(for: roomId)
+                ?? (try? MatrixClientService.shared.client?.getRoom(roomId: roomId))
+        else { return }
+
+        let viewModel = ChatViewModel(room: room)
+        let vc = ChatViewController(viewModel: viewModel)
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
+        vc.onCallTapped = { [weak self] in
+            self?.startCall(in: room, timelineService: viewModel.timelineService)
+        }
+        vc.onTitleTapped = { [weak self] userId in
+            self?.showProfile(userId: userId)
+        }
+        vc.onRoomDetailsTapped = { [weak self] in
+            self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
+        }
+        vc.onForwardMessage = { [weak self] message in
+            self?.showForwardPicker(message: message, timelineService: viewModel.timelineService)
+        }
+        navigationController.push(vc)
+
+        // Set pending forward after push so the input bar shows it
+        viewModel.setPendingForward(preview: forwardPreview, content: forwardContent)
     }
 
     private func showProfile(userId: String) {

@@ -58,6 +58,23 @@ final class ChatInputNode: ASDisplayNode {
     private let replyBodyNode = ASTextNode()
     private let replyCancelNode = ASButtonNode()
     private var isShowingReply = false
+    private var isShowingForward = false
+
+    func setForwardPreview(senderName: String?, body: String?) {
+        let showing = senderName != nil
+        guard showing != isShowingForward else { return }
+        isShowingForward = showing
+        // Reuse reply UI — just change the label
+        if showing {
+            updateReplyText(
+                senderName: "↗ \(senderName ?? "")",
+                body: body
+            )
+        }
+        isShowingReply = showing
+        setNeedsLayout()
+        onSizeChanged?()
+    }
 
     func setReplyPreview(senderName: String?, body: String?) {
         let showing = senderName != nil
@@ -204,7 +221,8 @@ final class ChatInputNode: ASDisplayNode {
             children: [attachButtonNode]
         )
 
-        let rightButton = isTextEmpty ? micButtonNode : sendButtonNode
+        let showSend = !isTextEmpty || isShowingForward
+        let rightButton = showSend ? sendButtonNode : micButtonNode
         let rightSpec = ASStackLayoutSpec(
             direction: .vertical, spacing: 0, justifyContent: .end, alignItems: .center,
             children: [rightButton]
@@ -561,9 +579,15 @@ final class ChatInputNode: ASDisplayNode {
 
     private func sendCurrentText(color: UIColor?) {
         let text = textInputNode.textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        // Allow empty text when forwarding — the content comes from
+        // the forwarded message, not the text field.
+        guard !text.isEmpty || isShowingForward else { return }
         onSend?(text, color)
         textInputNode.textView.text = ""
+        if isShowingForward {
+            isShowingForward = false
+            isShowingReply = false
+        }
         updateTextEmptyState()
         setNeedsLayout()
         onSizeChanged?()

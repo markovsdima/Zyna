@@ -74,7 +74,6 @@ final class TimelineService {
             }
         }
 
-        // Publish raw items for call signaling (deduplication happens in CallSignalingService)
         if !allItems.isEmpty {
             rawTimelineItemsSubject.send(allItems)
         }
@@ -326,6 +325,33 @@ final class TimelineService {
         }
 
         await MainActor.run { isPaginatingSubject.send(false) }
+    }
+
+    // MARK: - Forward
+
+    /// Extract message content suitable for forwarding to another room.
+    func extractForwardContent(eventId: String) async -> RoomMessageEventContentWithoutRelation? {
+        guard let timeline else { return nil }
+        do {
+            let event = try await timeline.getEventTimelineItemByEventId(eventId: eventId)
+            guard case .msgLike(let msgContent) = event.content,
+                  case .message(let message) = msgContent.kind
+            else { return nil }
+            return timeline.createMessageContent(msgType: message.msgType)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Send pre-extracted content (used for forwarding from another room).
+    func sendForwardedContent(_ content: RoomMessageEventContentWithoutRelation) async {
+        guard let timeline else { return }
+        do {
+            _ = try await timeline.send(msg: content)
+            logTimeline("Forwarded message sent")
+        } catch {
+            logTimeline("Forward send failed: \(error)")
+        }
     }
 
     // MARK: - Send

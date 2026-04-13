@@ -36,6 +36,7 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
 
     var onReplyHeaderTapped: ((String) -> Void)?
     private(set) var replyHeaderNode: ReplyHeaderNode?
+    private(set) var forwardedHeaderNode: ASTextNode?
 
     // MARK: - Subnodes
 
@@ -112,6 +113,22 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
                     .foregroundColor: MessageCellHelpers.senderColors[colorIndex]
                 ]
             )
+        }
+
+        // Forwarded header
+        if let forwarderName = message.zynaAttributes.forwardedFrom {
+            let node = ASTextNode()
+            node.attributedText = NSAttributedString(
+                string: "↗ Forwarded from \(forwarderName)",
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: isOutgoing
+                        ? AppColor.bubbleTimestampOutgoing
+                        : UIColor.secondaryLabel
+                ]
+            )
+            node.maximumNumberOfLines = 1
+            self.forwardedHeaderNode = node
         }
 
         // Reply header
