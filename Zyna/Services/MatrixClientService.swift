@@ -114,6 +114,7 @@ final class MatrixClientService {
                 .setSessionDelegate(sessionDelegate: sessionDelegate)
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
                 .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+                .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .build()
 
             try await client.login(
@@ -164,6 +165,7 @@ final class MatrixClientService {
                 .setSessionDelegate(sessionDelegate: sessionDelegate)
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
                 .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+                .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .build()
 
             try await client.restoreSession(session: session)

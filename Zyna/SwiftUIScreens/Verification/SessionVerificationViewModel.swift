@@ -8,11 +8,13 @@ import Combine
 import MatrixRustSDK
 
 /// Which flow the screen is currently presenting.
-/// Determined on appearance via `isLastDevice()`.
+/// Determined on appearance via `isLastDevice()`, or set to
+/// `.responder` when another device sends a verification request.
 enum VerificationMode {
     case checking      // determining which flow to use
     case firstDevice   // no other devices — generate recovery key
     case otherDevice   // verify against existing device with emojis
+    case responder     // another device requested verification from us
 }
 
 final class SessionVerificationViewModel: ObservableObject {
@@ -24,13 +26,28 @@ final class SessionVerificationViewModel: ObservableObject {
     @Published var recoveryKeyInput: String = ""
     @Published var errorMessage: String?
 
+    /// Incoming request details (responder mode only).
+    private(set) var incomingRequest: IncomingVerificationRequest?
+
     var onVerified: (() -> Void)?
     var onSkipped: (() -> Void)?
 
-    private let service = SessionVerificationService()
+    private let service = SessionVerificationService.shared
     private var cancellables = Set<AnyCancellable>()
 
     init() {
+        observeSteps()
+    }
+
+    /// Init for responder mode — when another device requested verification.
+    init(incomingRequest: IncomingVerificationRequest) {
+        self.incomingRequest = incomingRequest
+        self.mode = .responder
+        observeSteps()
+        acknowledgeRequest(incomingRequest)
+    }
+
+    private func observeSteps() {
         service.stepSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] step in
@@ -54,6 +71,9 @@ final class SessionVerificationViewModel: ObservableObject {
     // MARK: - Mode Detection
 
     func detectMode() {
+        // Responder mode is set at init, skip detection.
+        guard mode != .responder else { return }
+
         Task {
             do {
                 let isLast = try await service.isLastDevice()
@@ -71,7 +91,7 @@ final class SessionVerificationViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Other-Device Flow (emoji)
+    // MARK: - Other-Device Flow (emoji) — Initiator
 
     func startVerification() {
         errorMessage = nil
@@ -87,6 +107,41 @@ final class SessionVerificationViewModel: ObservableObject {
             }
         }
     }
+
+    // MARK: - Responder Flow
+
+    private func acknowledgeRequest(_ request: IncomingVerificationRequest) {
+        Task {
+            do {
+                try await service.acknowledgeVerificationRequest(request)
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    step = .failed
+                }
+            }
+        }
+    }
+
+    func acceptIncomingRequest() {
+        errorMessage = nil
+        Task {
+            do {
+                try await service.acceptVerificationRequest()
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    step = .failed
+                }
+            }
+        }
+    }
+
+    func ignoreIncomingRequest() {
+        onSkipped?()
+    }
+
+    // MARK: - Emoji Confirmation (shared by initiator & responder)
 
     func confirmEmojis() {
         Task {
