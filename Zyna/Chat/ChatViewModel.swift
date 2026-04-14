@@ -57,6 +57,7 @@ final class ChatViewModel {
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
     private var historySyncTask: Task<Void, Never>?
+    private var readReceiptWork: DispatchWorkItem?
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
@@ -85,6 +86,9 @@ final class ChatViewModel {
         let batcher = diffBatcher
         timelineService.onDiffs = { diffs in
             batcher.receive(diffs: diffs)
+        }
+        timelineService.onReadCursor = { timestamp in
+            batcher.updateReadCursor(timestamp: timestamp)
         }
 
         // Bridge: batcher flush → window refresh
@@ -235,7 +239,12 @@ final class ChatViewModel {
             onInPlaceUpdate?(indexPath, message)
         }
 
-        // 6. Auto-paginate if too few messages and GRDB + SDK both need more
+        // 7. Send read receipt when at live edge (user sees latest messages)
+        if window.isAtLiveEdge {
+            sendReadReceiptThrottled()
+        }
+
+        // 8. Auto-paginate if too few messages and GRDB + SDK both need more
         if newMessages.count < 20 && !isPaginating && !window.hasOlderInDB {
             loadOlderFromServer()
         }
@@ -327,6 +336,7 @@ final class ChatViewModel {
 
     func jumpToLive() {
         window.jumpToLive()
+        sendReadReceiptThrottled()
     }
 
     func jumpToOldest() {
@@ -335,6 +345,19 @@ final class ChatViewModel {
 
     func indexOfMessage(eventId: String) -> Int? {
         messages.firstIndex { $0.eventId == eventId }
+    }
+
+    // MARK: - Read Receipts
+
+    /// Debounced read receipt — avoids spamming the server when
+    /// multiple diffs arrive in quick succession.
+    private func sendReadReceiptThrottled() {
+        readReceiptWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { await self?.timelineService.markAsRead() }
+        }
+        readReceiptWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     // MARK: - Reply

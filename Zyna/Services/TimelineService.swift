@@ -21,6 +21,9 @@ final class TimelineService {
     /// Raw SDK diffs forwarded to the diff batcher.
     var onDiffs: (([TimelineDiff]) -> Void)?
 
+    /// Timestamp of the newest own message read by someone else.
+    var onReadCursor: ((TimeInterval) -> Void)?
+
     private let room: Room
     private var timeline: Timeline?
     private var listenerHandle: TaskHandle?
@@ -78,8 +81,25 @@ final class TimelineService {
             rawTimelineItemsSubject.send(allItems)
         }
 
-        // Forward raw diffs to the batcher
+        // Extract read cursor: the timestamp of the newest own message
+        // that has a read receipt from someone else.
+        var readCursorTimestamp: TimeInterval?
+        for item in allItems {
+            guard let event = item.asEvent(), event.isOwn else { continue }
+            let hasOtherReceipt = event.readReceipts.contains { $0.key != event.sender }
+            if hasOtherReceipt {
+                let ts = TimeInterval(event.timestamp) / 1000
+                if readCursorTimestamp == nil || ts > readCursorTimestamp! {
+                    readCursorTimestamp = ts
+                }
+            }
+        }
+
+        // Forward raw diffs + read cursor to the batcher
         onDiffs?(diffs)
+        if let cursor = readCursorTimestamp {
+            onReadCursor?(cursor)
+        }
 
         logTimeline("Timeline diffs forwarded: \(diffs.count) diffs")
     }
@@ -585,6 +605,16 @@ final class TimelineService {
             logTimeline("Call signaling sent via span")
         } catch {
             logTimeline("Call signaling send failed: \(error)")
+        }
+    }
+
+    // MARK: - Read Receipts
+
+    func markAsRead() async {
+        do {
+            try await timeline?.markAsRead(receiptType: .read)
+        } catch {
+            logTimeline("markAsRead failed: \(error)")
         }
     }
 

@@ -90,7 +90,7 @@ final class MessageStatusIconNode: ASDisplayNode {
             addPendingClockNodes()
         case .sent:
             addCheckNode(offset: 0)
-        case .delivered:
+        case .read:
             addDoubleCheckNodes()
         case .failed:
             addFailedBadgeNode()

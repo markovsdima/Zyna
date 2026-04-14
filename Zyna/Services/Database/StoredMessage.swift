@@ -54,7 +54,7 @@ extension StoredMessage {
         self.isOutgoing = msg.isOutgoing
         self.timestamp = msg.timestamp.timeIntervalSince1970
         self.reactionsJSON = Self.encodeReactions(msg.reactions)
-        self.sendStatus = "synced"
+        self.sendStatus = msg.sendStatus
 
         switch msg.itemIdentifier {
         case .eventId(let id):
@@ -63,7 +63,9 @@ extension StoredMessage {
         case .transactionId(let id):
             self.transactionId = id
             self.eventId = nil
-            self.sendStatus = "sending"
+            if msg.sendStatus == "synced" || msg.sendStatus == "read" {
+                self.sendStatus = "sending"
+            }
         case nil:
             self.eventId = msg.eventId
             self.transactionId = nil

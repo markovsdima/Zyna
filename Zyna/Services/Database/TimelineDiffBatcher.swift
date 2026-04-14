@@ -33,6 +33,10 @@ final class TimelineDiffBatcher {
     private var debounceWork: DispatchWorkItem?
     private static let debounceInterval: TimeInterval = 0.05
 
+    /// Timestamp of the newest own message read by someone else.
+    /// Updated from TimelineService when SDK delivers read receipts.
+    private var readCursorTimestamp: TimeInterval?
+
     /// Called on main queue after each successful flush.
     var onFlush: (() -> Void)?
 
@@ -41,6 +45,14 @@ final class TimelineDiffBatcher {
     init(roomId: String, dbQueue: DatabaseQueue) {
         self.roomId = roomId
         self.dbQueue = dbQueue
+    }
+
+    /// Update read cursor from SDK read receipts. Called from main queue.
+    func updateReadCursor(timestamp: TimeInterval) {
+        if readCursorTimestamp == nil || timestamp > readCursorTimestamp! {
+            readCursorTimestamp = timestamp
+            scheduleFlush()
+        }
     }
 
     // MARK: - Public
@@ -88,7 +100,10 @@ final class TimelineDiffBatcher {
     private func flush() {
         let ops = pendingOps
         pendingOps.removeAll()
-        guard !ops.isEmpty else { return }
+        let cursorTs = readCursorTimestamp
+        readCursorTimestamp = nil
+
+        guard !ops.isEmpty || cursorTs != nil else { return }
 
         let roomId = self.roomId
         let dbQueue = self.dbQueue
@@ -113,6 +128,19 @@ final class TimelineDiffBatcher {
                         case .delete(let id):
                             _ = try StoredMessage.deleteOne(db, key: id)
                         }
+                    }
+
+                    // Mark all outgoing messages up to the read cursor as "read"
+                    if let cursorTs {
+                        try db.execute(
+                            sql: """
+                                UPDATE storedMessage
+                                SET sendStatus = 'read'
+                                WHERE roomId = ? AND isOutgoing = 1
+                                  AND timestamp <= ? AND sendStatus != 'read'
+                                """,
+                            arguments: [roomId, cursorTs]
+                        )
                     }
                 }
 
