@@ -117,7 +117,6 @@ final class MatrixClientService {
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .autoEnableBackups(autoEnableBackups: true)
                 .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
-                .roomKeyRecipientStrategy(strategy: .errorOnVerifiedUserProblem)
                 .build()
 
             try await client.login(
@@ -171,7 +170,6 @@ final class MatrixClientService {
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .autoEnableBackups(autoEnableBackups: true)
                 .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
-                .roomKeyRecipientStrategy(strategy: .errorOnVerifiedUserProblem)
                 .build()
 
             try await client.restoreSession(session: session)
