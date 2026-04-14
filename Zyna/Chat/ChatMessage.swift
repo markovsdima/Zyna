@@ -19,9 +19,8 @@ enum ChatMessageContent: Equatable {
     case unsupported(typeName: String)
     case redacted
 
-    // MediaSource is a class (reference type) — SDK creates a new
-    // instance on every timeline diff. Compare by URL so content
-    // equality isn't broken by reference identity.
+    // MediaSource is a class — compare by URL, not reference.
+    // Image dimensions: treat nil as "not yet loaded", not as a change.
     static func == (lhs: ChatMessageContent, rhs: ChatMessageContent) -> Bool {
         switch (lhs, rhs) {
         case (.text(let a), .text(let b)): return a == b
