@@ -102,7 +102,7 @@ final class WebRTCClient: NSObject {
             return
         }
 
-        createPeerConnection()
+        await createPeerConnection()
         addLocalAudioTrack()
 
         do {
@@ -129,7 +129,15 @@ final class WebRTCClient: NSObject {
             return
         }
 
-        createPeerConnection()
+        // Save remote candidates that arrived before peer connection was created.
+        // createPeerConnection() calls resetICEQueue() which would lose them.
+        let earlyRemoteCandidates = pendingICECandidates
+        if !earlyRemoteCandidates.isEmpty {
+            logCall("Preserving \(earlyRemoteCandidates.count) early remote ICE candidates")
+        }
+
+        await createPeerConnection()
+        pendingICECandidates = earlyRemoteCandidates
         addLocalAudioTrack()
 
         do {
@@ -190,7 +198,7 @@ final class WebRTCClient: NSObject {
 
     // MARK: - Peer Connection
 
-    private func createPeerConnection() {
+    private func createPeerConnection() async {
         if peerConnection != nil {
             peerConnection?.close()
             peerConnection = nil
@@ -198,10 +206,15 @@ final class WebRTCClient: NSObject {
 
         resetICEQueue()
 
-        let config = WebRTCAudioConfig.peerConnectionConfig()
+        let iceServers = await TURNService.shared.iceServers()
+        for server in iceServers {
+            let hasCredential = server.credential != nil
+            logCall("ICE server: \(server.urlStrings) credential=\(hasCredential)")
+        }
+        let config = WebRTCAudioConfig.peerConnectionConfig(iceServers: iceServers)
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         peerConnection = factory.peerConnection(with: config, constraints: constraints, delegate: self)
-        logCall("Peer connection created")
+        logCall("Peer connection created with \(iceServers.count) ICE servers")
     }
 
     // MARK: - Audio Track
@@ -374,6 +387,14 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
+        let candidateType: String
+        let sdp = candidate.sdp
+        if sdp.contains("relay") { candidateType = "relay (TURN)" }
+        else if sdp.contains("srflx") { candidateType = "srflx (STUN)" }
+        else if sdp.contains("prflx") { candidateType = "prflx (peer)" }
+        else { candidateType = "host (local)" }
+        logCall("ICE candidate generated: \(candidateType) — \(sdp)")
+
         let iceCandidate = ICECandidate(
             candidate: candidate.sdp,
             sdpMid: candidate.sdpMid,
@@ -394,7 +415,13 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceGatheringState) {
-        logCall("ICE gathering state: \(newState.rawValue)")
+        let label = switch newState {
+        case .new: "new"
+        case .gathering: "gathering"
+        case .complete: "complete"
+        @unknown default: "unknown(\(newState.rawValue))"
+        }
+        logCall("ICE gathering state: \(label)")
     }
 
     func peerConnection(_ peerConnection: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver) {
