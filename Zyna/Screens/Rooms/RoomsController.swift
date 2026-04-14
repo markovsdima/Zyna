@@ -54,11 +54,11 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
             .sink { [weak self] state in
                 switch state {
                 case .syncing:
-                    self?.headerBar.connectionStatus = nil
+                    self?.glassTopBar.subtitle = nil
                 case .error:
-                    self?.headerBar.connectionStatus = "Connection error"
+                    self?.glassTopBar.subtitle = "Connection error"
                 default:
-                    self?.headerBar.connectionStatus = "Connecting..."
+                    self?.glassTopBar.subtitle = "Connecting..."
                 }
             }
             .store(in: &cancellables)
@@ -87,9 +87,10 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         }
     }
 
-override func viewWillAppear(_ animated: Bool) {
+    override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         viewModel.registerPresence()
+        GlassService.shared.setNeedsCapture()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -100,37 +101,48 @@ override func viewWillAppear(_ animated: Bool) {
     override func viewDidLoad() {
         super.viewDidLoad()
         tableNode.view.separatorStyle = .none
+        tableNode.view.keyboardDismissMode = .onDrag
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
+        tap.cancelsTouchesInView = false
+        tableNode.view.addGestureRecognizer(tap)
+
         setupHeaderBar()
     }
 
-    // MARK: - Header Bar
+    @objc private func dismissKeyboard() {
+        view.endEditing(true)
+    }
 
-    private let headerBar = RoomsHeaderBar()
+    // MARK: - Glass Top Bar
+
+    private let glassTopBar = GlassTopBar()
 
     private func setupHeaderBar() {
-        headerBar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(headerBar)
+        glassTopBar.sourceView = tableNode.view
+        glassTopBar.backdropClearColor = .systemBackground
 
-        NSLayoutConstraint.activate([
-            headerBar.topAnchor.constraint(equalTo: view.topAnchor),
-            headerBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            headerBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
-        ])
+        let composeConfig = UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)
+        let composeIcon = UIImage(systemName: "square.and.pencil", withConfiguration: composeConfig)!
 
-        headerBar.onComposeTapped = { [weak self] in
-            self?.onComposeTapped?()
-        }
-        headerBar.onSearchQueryChanged = { [weak self] query in
-            self?.viewModel.filterChats(query: query)
-        }
+        glassTopBar.items = [
+            .title(text: "Chats test", subtitle: nil),
+            .circleButton(icon: composeIcon, action: { [weak self] in
+                self?.onComposeTapped?()
+            })
+        ]
+
+        view.addSubview(glassTopBar)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let headerHeight = headerBar.frame.height
-        if tableNode.contentInset.top != headerHeight {
-            tableNode.contentInset.top = headerHeight
-            tableNode.view.verticalScrollIndicatorInsets.top = headerHeight
+        glassTopBar.updateLayout(in: view)
+
+        let covered = glassTopBar.coveredHeight
+        if tableNode.contentInset.top != covered {
+            tableNode.contentInset.top = covered
+            tableNode.view.verticalScrollIndicatorInsets.top = covered
         }
     }
 }
@@ -156,6 +168,7 @@ extension RoomsViewController: ASTableDataSource, ASTableDelegate {
 
     func tableNode(_ tableNode: ASTableNode, didSelectRowAt indexPath: IndexPath) {
         tableNode.deselectRow(at: indexPath, animated: true)
+        view.endEditing(true)
         viewModel.selectChat(at: indexPath.row)
     }
 }
@@ -176,6 +189,10 @@ extension RoomsViewController {
 // MARK: - 120fps Scroll Boost
 
 extension RoomsViewController {
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        GlassService.shared.setNeedsCapture()
+    }
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if decelerate {
             fpsBooster.start()
