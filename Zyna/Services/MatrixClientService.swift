@@ -115,6 +115,9 @@ final class MatrixClientService {
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
                 .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
+                .autoEnableBackups(autoEnableBackups: true)
+                .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+                .roomKeyRecipientStrategy(strategy: .errorOnVerifiedUserProblem)
                 .build()
 
             try await client.login(
@@ -166,6 +169,9 @@ final class MatrixClientService {
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
                 .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
+                .autoEnableBackups(autoEnableBackups: true)
+                .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+                .roomKeyRecipientStrategy(strategy: .errorOnVerifiedUserProblem)
                 .build()
 
             try await client.restoreSession(session: session)
