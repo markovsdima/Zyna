@@ -64,7 +64,8 @@ final class DatabaseService {
             try db.create(
                 index: "idx_storedMessage_eventId",
                 on: "storedMessage",
-                columns: ["eventId"],
+                columns: ["roomId", "eventId"],
+                unique: true,
                 condition: Column("eventId") != nil
             )
             try db.create(

@@ -183,6 +183,13 @@ final class MessageWindow {
         if !combined.contains(where: { $0.id == target.id }) {
             combined.append(target)
         }
+        // Deduplicate by eventId — DB may briefly have two records
+        // with the same eventId but different id (local echo → server echo race)
+        var seenEventIds = Set<String>()
+        combined = combined.filter { msg in
+            guard let eid = msg.eventId, !eid.isEmpty else { return true }
+            return seenEventIds.insert(eid).inserted
+        }
         combined.sort { $0.timestamp > $1.timestamp }
 
         updateCursors(from: combined)

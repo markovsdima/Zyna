@@ -101,7 +101,12 @@ final class TimelineDiffBatcher {
                         case .upsert(let record):
                             if let eventId = record.eventId {
                                 try StoredMessage
-                                    .filter(Column("eventId") == eventId && Column("id") != record.id)
+                                    .filter(Column("roomId") == record.roomId && Column("eventId") == eventId && Column("id") != record.id)
+                                    .deleteAll(db)
+                            }
+                            if let txnId = record.transactionId {
+                                try StoredMessage
+                                    .filter(Column("roomId") == record.roomId && Column("transactionId") == txnId && Column("id") != record.id)
                                     .deleteAll(db)
                             }
                             try record.save(db)
