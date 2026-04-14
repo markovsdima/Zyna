@@ -235,6 +235,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.applyTableUpdate(update)
         }
 
+        viewModel.onInPlaceUpdate = { [weak self] indexPath, message in
+            guard let self,
+                  let cellNode = self.node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode
+            else { return }
+            cellNode.updateSendStatus(message.sendStatus)
+        }
+
         viewModel.onRedactedDetected = { [weak self] messageIds in
             self?.handleRedactedMessages(messageIds)
         }

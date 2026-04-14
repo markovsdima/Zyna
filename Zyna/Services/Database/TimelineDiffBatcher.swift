@@ -151,7 +151,7 @@ final class TimelineDiffBatcher {
 
         case .pushFront(let item):
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(msg?.id, at: 0)
+            shadowItems.insert(msg.map { storedId($0.id) }, at: 0)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
@@ -160,7 +160,7 @@ final class TimelineDiffBatcher {
             let idx = Int(index)
             guard idx <= shadowItems.count else { return }
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(msg?.id, at: idx)
+            shadowItems.insert(msg.map { storedId($0.id) }, at: idx)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
@@ -170,10 +170,11 @@ final class TimelineDiffBatcher {
             guard idx < shadowItems.count else { return }
             let oldId = shadowItems[idx]
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems[idx] = msg?.id
+            shadowItems[idx] = msg.map { storedId($0.id) }
 
             if let msg {
-                if let oldId, oldId != msg.id {
+                let newStoredId = storedId(msg.id)
+                if let oldId, oldId != newStoredId {
                     pendingOps.append(.delete(oldId))
                 }
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
@@ -211,9 +212,13 @@ final class TimelineDiffBatcher {
 
     // MARK: - Helpers
 
+    private func storedId(_ msgId: String) -> String {
+        "\(roomId):\(msgId)"
+    }
+
     private func appendItem(_ item: TimelineItem) {
         let msg = TimelineService.mapTimelineItem(item)
-        shadowItems.append(msg?.id)
+        shadowItems.append(msg.map { storedId($0.id) })
         if let msg {
             pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
         }

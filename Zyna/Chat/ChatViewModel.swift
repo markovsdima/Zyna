@@ -27,6 +27,10 @@ final class ChatViewModel {
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate) -> Void)?
 
+    /// Called for lightweight in-place cell updates (e.g. send-status change)
+    /// that don't require cell recreation. Index path → updated message.
+    var onInPlaceUpdate: ((IndexPath, ChatMessage) -> Void)?
+
     /// Called when messages become redacted (from any source). Passes message IDs.
     var onRedactedDetected: (([String]) -> Void)?
 
@@ -204,12 +208,12 @@ final class ChatViewModel {
         self.messages = newMessages
 
         let tableUpdate: TableUpdate
+        var inPlaceUpdates: [(IndexPath, ChatMessage)] = []
         if prevStored == nil {
             tableUpdate = .reload
         } else {
-            tableUpdate = Self.computeTableUpdate(old: oldMessages, new: newMessages)
+            (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldMessages, new: newMessages)
         }
-
         // 5. Emit (filter redacted from normal updates, send separately for animation)
         if !newlyRedactedIds.isEmpty {
             if case .batch(let del, let ins, let upd, let anim) = tableUpdate {
@@ -226,22 +230,34 @@ final class ChatViewModel {
             onTableUpdate?(tableUpdate)
         }
 
+        // 6. Apply lightweight in-place updates (send-status) without cell recreation
+        for (indexPath, message) in inPlaceUpdates {
+            onInPlaceUpdate?(indexPath, message)
+        }
+
         // 6. Auto-paginate if too few messages and GRDB + SDK both need more
         if newMessages.count < 20 && !isPaginating && !window.hasOlderInDB {
             loadOlderFromServer()
         }
     }
 
-    private static func computeTableUpdate(old: [ChatMessage], new: [ChatMessage]) -> TableUpdate {
-        let oldIDs = old.map(\.id)
-        let newIDs = new.map(\.id)
-        let idDiff = newIDs.difference(from: oldIDs)
+    /// Stable key for diff comparison. Uses eventId (server-assigned,
+    /// immutable) when available; falls back to id (SDK uniqueId) for
+    /// local echoes that don't have an eventId yet.
+    private static func stableKey(_ msg: ChatMessage) -> String {
+        msg.eventId ?? msg.id
+    }
+
+    private static func computeTableUpdate(old: [ChatMessage], new: [ChatMessage]) -> (TableUpdate, [(IndexPath, ChatMessage)]) {
+        let oldKeys = old.map { stableKey($0) }
+        let newKeys = new.map { stableKey($0) }
+        let keyDiff = newKeys.difference(from: oldKeys)
 
         var deletions: [IndexPath] = []
         var insertions: [IndexPath] = []
         var removedOldOffsets = Set<Int>()
 
-        for change in idDiff {
+        for change in keyDiff {
             switch change {
             case .remove(let offset, _, _):
                 deletions.append(IndexPath(row: offset, section: 0))
@@ -251,17 +267,23 @@ final class ChatViewModel {
             }
         }
 
-        let newById = Dictionary(new.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { _, last in last })
-        var updates: [IndexPath] = []
+        let newByKey = Dictionary(new.enumerated().map { (stableKey($1), $0) }, uniquingKeysWith: { _, last in last })
+        var fullUpdates: [IndexPath] = []
+        var inPlaceUpdates: [(IndexPath, ChatMessage)] = []
+
         for (oldIdx, oldMsg) in old.enumerated() {
             guard !removedOldOffsets.contains(oldIdx) else { continue }
-            if let newIdx = newById[oldMsg.id], old[oldIdx] != new[newIdx] {
-                updates.append(IndexPath(row: oldIdx, section: 0))
+            guard let newIdx = newByKey[stableKey(oldMsg)], old[oldIdx] != new[newIdx] else { continue }
+            if MessageCellNode.canUpdateInPlace(old: old[oldIdx], new: new[newIdx]) {
+                inPlaceUpdates.append((IndexPath(row: newIdx, section: 0), new[newIdx]))
+            } else {
+                fullUpdates.append(IndexPath(row: oldIdx, section: 0))
             }
         }
 
-        let animated = deletions.isEmpty && insertions.count == 1 && updates.isEmpty
-        return .batch(deletions: deletions, insertions: insertions, updates: updates, animated: animated)
+        let animated = deletions.isEmpty && insertions.count == 1 && fullUpdates.isEmpty
+        let batch = TableUpdate.batch(deletions: deletions, insertions: insertions, updates: fullUpdates, animated: animated)
+        return (batch, inPlaceUpdates)
     }
 
     // MARK: - Pagination

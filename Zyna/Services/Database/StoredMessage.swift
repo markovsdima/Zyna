@@ -45,7 +45,9 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
 extension StoredMessage {
 
     init(from msg: ChatMessage, roomId: String) {
-        self.id = msg.id
+        // SDK uniqueId is a sequential number per-timeline, not globally
+        // unique. Prefix with roomId to avoid cross-room primary key collisions.
+        self.id = "\(roomId):\(msg.id)"
         self.roomId = roomId
         self.senderId = msg.senderId
         self.senderDisplayName = msg.senderDisplayName

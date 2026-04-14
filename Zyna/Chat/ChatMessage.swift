@@ -19,6 +19,32 @@ enum ChatMessageContent: Equatable {
     case unsupported(typeName: String)
     case redacted
 
+    // MediaSource is a class (reference type) — SDK creates a new
+    // instance on every timeline diff. Compare by URL so content
+    // equality isn't broken by reference identity.
+    static func == (lhs: ChatMessageContent, rhs: ChatMessageContent) -> Bool {
+        switch (lhs, rhs) {
+        case (.text(let a), .text(let b)): return a == b
+        case (.notice(let a), .notice(let b)): return a == b
+        case (.emote(let a), .emote(let b)): return a == b
+        case (.redacted, .redacted): return true
+        case (.unsupported(let a), .unsupported(let b)): return a == b
+        case (.callEvent(let t1, let c1, let r1), .callEvent(let t2, let c2, let r2)):
+            return t1 == t2 && c1 == c2 && r1 == r2
+        case (.image(let s1, let w1, let h1, let c1), .image(let s2, let w2, let h2, let c2)):
+            // Treat nil dimensions as "not yet loaded" — don't trigger
+            // cell recreation when SDK sends the same image without/with size.
+            let wMatch = w1 == w2 || w1 == nil || w2 == nil
+            let hMatch = h1 == h2 || h1 == nil || h2 == nil
+            return s1.url() == s2.url() && wMatch && hMatch && c1 == c2
+        case (.voice(let s1, let d1, let w1), .voice(let s2, let d2, let w2)):
+            return s1.url() == s2.url() && d1 == d2 && w1 == w2
+        case (.file(let s1, let f1, let m1, let sz1), .file(let s2, let f2, let m2, let sz2)):
+            return s1.url() == s2.url() && f1 == f2 && m1 == m2 && sz1 == sz2
+        default: return false
+        }
+    }
+
     var isRedacted: Bool {
         if case .redacted = self { return true }
         return false
@@ -62,30 +88,6 @@ enum ChatMessageContent: Equatable {
         }
     }
 
-    static func == (lhs: ChatMessageContent, rhs: ChatMessageContent) -> Bool {
-        switch (lhs, rhs) {
-        case (.text(let a), .text(let b)):
-            return a == b
-        case (.image(let s1, let w1, let h1, let c1), .image(let s2, let w2, let h2, let c2)):
-            return s1.url() == s2.url() && w1 == w2 && h1 == h2 && c1 == c2
-        case (.voice(let s1, let d1, let w1), .voice(let s2, let d2, let w2)):
-            return s1.url() == s2.url() && d1 == d2 && w1 == w2
-        case (.file(let s1, let f1, let m1, let sz1), .file(let s2, let f2, let m2, let sz2)):
-            return s1.url() == s2.url() && f1 == f2 && m1 == m2 && sz1 == sz2
-        case (.callEvent(let t1, let c1, let r1), .callEvent(let t2, let c2, let r2)):
-            return t1 == t2 && c1 == c2 && r1 == r2
-        case (.notice(let a), .notice(let b)):
-            return a == b
-        case (.emote(let a), .emote(let b)):
-            return a == b
-        case (.unsupported(let a), .unsupported(let b)):
-            return a == b
-        case (.redacted, .redacted):
-            return true
-        default:
-            return false
-        }
-    }
 }
 
 // MARK: - Call Event Type
@@ -160,8 +162,9 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     let sendStatus: String
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
-        lhs.id == rhs.id
-            && lhs.eventId == rhs.eventId
+        // id (SDK uniqueId) is unstable across timeline recreations.
+        // Use eventId as the stable identity; compare other fields by value.
+        lhs.eventId == rhs.eventId
             && lhs.senderId == rhs.senderId
             && lhs.senderDisplayName == rhs.senderDisplayName
             && lhs.isOutgoing == rhs.isOutgoing

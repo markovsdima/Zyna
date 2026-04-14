@@ -207,6 +207,27 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         return ASInsetLayoutSpec(insets: MessageCellHelpers.cellInsets, child: hStack)
     }
 
+    // MARK: - In-Place Update
+
+    /// Returns true if the change between old and new can be applied
+    /// without recreating the cell (only send-status changed).
+    static func canUpdateInPlace(old: ChatMessage, new: ChatMessage) -> Bool {
+        old.id == new.id
+            && old.content == new.content
+            && old.reactions == new.reactions
+            && old.zynaAttributes == new.zynaAttributes
+            && old.replyInfo == new.replyInfo
+            && old.senderDisplayName == new.senderDisplayName
+    }
+
+    /// Update send-status icon without recreating the cell.
+    func updateSendStatus(_ status: String) {
+        guard let iconNode = statusIconNode,
+              let newIcon = MessageStatusIcon.from(sendStatus: status)
+        else { return }
+        iconNode.icon = newIcon
+    }
+
     // MARK: - Highlight
 
     func highlightBubble() {
