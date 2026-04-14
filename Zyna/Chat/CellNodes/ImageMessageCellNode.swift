@@ -14,7 +14,7 @@ final class ImageMessageCellNode: MessageCellNode {
 
     // MARK: - Subnodes
 
-    private let imageNode = ASImageNode()
+    private let imageNode = RoundedImageNode()
     private let timeBadgeNode = ASDisplayNode()
     private let captionNode: ASTextNode?
 
@@ -82,30 +82,23 @@ final class ImageMessageCellNode: MessageCellNode {
 
         super.init(message: message, isGroupChat: isGroupChat)
 
-        // Image
-        imageNode.contentMode = .scaleAspectFill
-        imageNode.cornerRadius = 18
-        imageNode.clipsToBounds = true
-        imageNode.displaysAsynchronously = true
-
-        // Flatten image corners adjacent to header/caption so
-        // the photo fills the bubble edge-to-edge on those sides.
+        // Image — precomposited per-corner rounding via RoundedImageNode
         let hasHeader = forwardedHeaderNode != nil || replyHeaderNode != nil
         let hasCaption = captionNode != nil
-        if hasHeader || hasCaption {
-            imageNode.onDidLoad { node in
-                var corners: CACornerMask = []
-                if !hasHeader {
-                    corners.insert(.layerMinXMinYCorner)
-                    corners.insert(.layerMaxXMinYCorner)
-                }
-                if !hasCaption {
-                    corners.insert(.layerMinXMaxYCorner)
-                    corners.insert(.layerMaxXMaxYCorner)
-                }
-                node.layer.maskedCorners = corners
-            }
+
+        imageNode.radius = 18
+        imageNode.imageContentMode = .scaleAspectFill
+
+        var corners: UIRectCorner = .allCorners
+        if hasHeader {
+            corners.remove(.topLeft)
+            corners.remove(.topRight)
         }
+        if hasCaption {
+            corners.remove(.bottomLeft)
+            corners.remove(.bottomRight)
+        }
+        imageNode.roundedCorners = corners
 
         // Bubble layout
         bubbleNode.layoutSpecBlock = { [weak self] _, _ in
