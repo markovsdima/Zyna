@@ -6,11 +6,8 @@
 import Foundation
 import Combine
 
-private let logPresence = ScopedLog(.presence)
+private let log = ScopedLog(.presence)
 
-/// Centralized presence tracker. ViewModels register which userIds they care about
-/// (identified by a tag). The tracker maintains a single polling loop and publishes
-/// a merged `statuses` dictionary that all subscribers read from.
 final class PresenceTracker {
 
     static let shared = PresenceTracker()
@@ -18,9 +15,76 @@ final class PresenceTracker {
     @Published private(set) var statuses: [String: UserPresence] = [:]
 
     private var registrations: [String: Set<String>] = [:]
-    private var pollingTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+    private var connected = false
 
-    private init() {}
+    private init() {
+        let service = PresenceService.shared
+
+        service.onStatuses = { [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                for (id, presence) in snapshot {
+                    self.statuses[id] = presence
+                }
+            }
+        }
+
+        service.onPresenceChange = { [weak self] userId, presence in
+            Task { @MainActor [weak self] in
+                self?.statuses[userId] = presence
+            }
+        }
+
+        service.onDisconnect = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleReconnect()
+            }
+        }
+    }
+
+    // MARK: - Connection Lifecycle
+
+    func connect() {
+        guard Brand.current.presenceEnabled else { return }
+
+        reconnectTask?.cancel()
+        reconnectTask = nil
+
+        guard let client = MatrixClientService.shared.client,
+              let session = try? client.session(),
+              let userId = try? client.userId()
+        else {
+            log("Cannot connect: no active Matrix session")
+            return
+        }
+
+        connected = true
+
+        Task {
+            do {
+                try await PresenceService.shared.connect(
+                    accessToken: session.accessToken,
+                    userId: userId
+                )
+                await MainActor.run { [weak self] in
+                    self?.resubscribe()
+                }
+            } catch {
+                log("Connection failed: \(error)")
+                await MainActor.run { [weak self] in
+                    self?.scheduleReconnect()
+                }
+            }
+        }
+    }
+
+    func disconnect() {
+        connected = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        PresenceService.shared.disconnect()
+    }
 
     // MARK: - Registration
 
@@ -28,41 +92,59 @@ final class PresenceTracker {
         let incoming = Set(userIds)
         guard registrations[tag] != incoming else { return }
         registrations[tag] = incoming
-        logPresence("[\(tag)] registered \(userIds.count) users")
-        startPollingIfNeeded()
-        Task { await poll() }
+        log("[\(tag)] registered \(userIds.count) users")
+        resubscribe()
     }
 
     func unregister(for tag: String) {
         guard registrations[tag] != nil else { return }
         registrations.removeValue(forKey: tag)
-        logPresence("[\(tag)] unregistered, active tags: \(registrations.keys.joined(separator: ", "))")
-        if registrations.isEmpty {
-            pollingTask?.cancel()
-            pollingTask = nil
-        }
+        log("[\(tag)] unregistered")
     }
 
-    // MARK: - Polling
+    // MARK: - Subscribe
 
-    private func startPollingIfNeeded() {
-        guard pollingTask == nil else { return }
-        pollingTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(15))
-                guard !Task.isCancelled else { return }
-                await self?.poll()
-            }
-        }
-    }
-
-    @MainActor
-    func poll() async {
+    private func resubscribe() {
         let ids = Array(registrations.values.reduce(into: Set<String>()) { $0.formUnion($1) })
         guard !ids.isEmpty else { return }
-        let result = await PresenceService.shared.batchStatus(userIds: ids)
-        for (id, presence) in result {
-            statuses[id] = presence
+        PresenceService.shared.subscribe(userIds: ids)
+    }
+
+    // MARK: - Reconnect
+
+    private func scheduleReconnect() {
+        guard connected else { return }
+        connected = false
+        reconnectTask?.cancel()
+
+        reconnectTask = Task { [weak self] in
+            for attempt in 1...5 {
+                let delay = min(pow(2.0, Double(attempt - 1)), 30) + Double.random(in: 0...0.5)
+                log("Reconnect #\(attempt) in \(String(format: "%.1f", delay))s")
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+
+                guard let client = MatrixClientService.shared.client,
+                      let session = try? client.session(),
+                      let userId = try? client.userId()
+                else { continue }
+
+                do {
+                    try await PresenceService.shared.connect(
+                        accessToken: session.accessToken,
+                        userId: userId
+                    )
+                    await MainActor.run { [weak self] in
+                        self?.connected = true
+                        self?.resubscribe()
+                    }
+                    log("Reconnected")
+                    return
+                } catch {
+                    log("Reconnect #\(attempt) failed: \(error)")
+                }
+            }
+            log("Gave up reconnecting")
         }
     }
 }

@@ -139,20 +139,17 @@ final class AppCoordinator {
         coordinator.start()
         self.mainCoordinator = coordinator
 
-        if let userId = MatrixClientService.shared.client.flatMap({ try? $0.userId() }) {
-            PresenceService.shared.startHeartbeatLoop(userId: userId)
-        }
+        PresenceTracker.shared.connect()
 
         window?.rootViewController = coordinator.tabBarController
     }
 
     func resumeHeartbeatIfNeeded() {
-        guard let userId = MatrixClientService.shared.client.flatMap({ try? $0.userId() }) else { return }
-        PresenceService.shared.startHeartbeatLoop(userId: userId)
+        PresenceTracker.shared.connect()
     }
 
     private func performLogout() {
-        PresenceService.shared.stopHeartbeatLoop()
+        PresenceTracker.shared.disconnect()
         Task { @MainActor in
             await MatrixClientService.shared.logout()
             self.mainCoordinator = nil
