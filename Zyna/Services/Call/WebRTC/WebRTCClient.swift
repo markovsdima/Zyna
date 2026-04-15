@@ -290,6 +290,13 @@ final class WebRTCClient: NSObject {
         }
     }
 
+    // MARK: - Mute
+
+    func setMuted(_ muted: Bool) {
+        localAudioTrack?.isEnabled = !muted
+        logCall("Microphone \(muted ? "muted" : "unmuted")")
+    }
+
     // MARK: - Cleanup
 
     func cleanup() {

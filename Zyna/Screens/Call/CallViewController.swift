@@ -59,12 +59,12 @@ final class CallViewController: ASDKViewController<CallNode> {
 
     @objc private func muteTapped() {
         node.muteButton.isSelected.toggle()
-        // WebRTC will handle actual audio muting via CallServiceDelegate
+        callService.setMuted(node.muteButton.isSelected)
     }
 
     @objc private func speakerTapped() {
         node.speakerButton.isSelected.toggle()
-        // WebRTC will handle audio routing
+        callService.setSpeaker(enabled: node.speakerButton.isSelected)
     }
 
     // MARK: - State Binding
