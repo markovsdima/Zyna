@@ -64,6 +64,7 @@ final class PresenceTracker {
         Task {
             do {
                 try await PresenceService.shared.connect(
+                    homeserverUrl: session.homeserverUrl,
                     accessToken: session.accessToken,
                     userId: userId
                 )
@@ -131,6 +132,7 @@ final class PresenceTracker {
 
                 do {
                     try await PresenceService.shared.connect(
+                        homeserverUrl: session.homeserverUrl,
                         accessToken: session.accessToken,
                         userId: userId
                     )
