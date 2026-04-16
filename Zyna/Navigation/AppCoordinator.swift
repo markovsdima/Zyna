@@ -27,6 +27,7 @@ final class AppCoordinator {
     private func showAuth() {
         let viewModel = AuthViewModel()
         viewModel.onAuthenticated = { [weak self] in
+            PushService.shared.registerIfNeeded()
             Task {
                 await self?.showVerificationIfNeeded()
                 await self?.setupVerificationRequestListener()
@@ -41,6 +42,7 @@ final class AppCoordinator {
         Task {
             do {
                 try await MatrixClientService.shared.restoreSession()
+                PushService.shared.registerIfNeeded()
                 await MainActor.run { [weak self] in
                     self?.resumeHeartbeatIfNeeded()
                 }
