@@ -55,7 +55,7 @@ final class ImageViewerController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
+        view.backgroundColor = .clear
 
         scrollView.delegate = self
         scrollView.minimumZoomScale = 1
