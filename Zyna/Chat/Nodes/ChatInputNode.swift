@@ -145,7 +145,7 @@ final class ChatInputNode: ASDisplayNode {
 
         textInputNode.typingAttributes = [
             NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
-            NSAttributedString.Key.foregroundColor.rawValue: UIColor.white
+            NSAttributedString.Key.foregroundColor.rawValue: UIColor.label
         ]
         textInputNode.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
         textInputNode.style.flexGrow = 1
