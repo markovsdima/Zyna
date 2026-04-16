@@ -9,6 +9,8 @@ import MatrixRustSDK
 struct SessionVerificationView: View {
     @ObservedObject var viewModel: SessionVerificationViewModel
     @State private var showSavedConfirmation = false
+    @State private var showResetWarning = false
+    @State private var showResetFinalConfirmation = false
 
     var body: some View {
         ZStack {
@@ -32,6 +34,18 @@ struct SessionVerificationView: View {
             Button("I've saved it") { viewModel.confirmRecoveryKeySaved() }
         } message: {
             Text("Without this key you'll lose access to encrypted messages if you sign in on another device.")
+        }
+        .alert("Reset recovery key?", isPresented: $showResetWarning) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset", role: .destructive) { showResetFinalConfirmation = true }
+        } message: {
+            Text("This will permanently destroy your current key backup. All previously encrypted messages that haven't been decrypted on this device will become unreadable forever.\n\nOnly do this if you've lost your recovery key and have no other verified devices.")
+        }
+        .alert("Are you sure?", isPresented: $showResetFinalConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete backup and reset", role: .destructive) { viewModel.resetAndGenerateNewKey() }
+        } message: {
+            Text("This cannot be undone. Your encrypted message history will be permanently lost.")
         }
     }
 
@@ -170,6 +184,10 @@ struct SessionVerificationView: View {
             enterRecoveryKeyView()
         case .restoringFromRecoveryKey:
             restoringView()
+        case .waitingForSecrets:
+            waitingForSecretsView()
+        case .needsRecoveryKey:
+            needsRecoveryKeyView()
         case .generatingRecoveryKey:
             generatingKeyView()
         case .showingRecoveryKey(let key):
@@ -180,6 +198,59 @@ struct SessionVerificationView: View {
             failedView()
         default:
             EmptyView()
+        }
+    }
+
+    private func waitingForSecretsView() -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: 56))
+                .foregroundColor(.green)
+
+            Text("Device Verified")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundColor(.white.opacity(0.9))
+
+            ProgressView()
+                .scaleEffect(1.2)
+                .tint(.white)
+
+            Text("Syncing encryption keys…")
+                .font(.body)
+                .foregroundColor(.white.opacity(0.6))
+        }
+    }
+
+    private func needsRecoveryKeyView() -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: 56))
+                .foregroundColor(.green)
+
+            Text("Device Verified")
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .foregroundColor(.white.opacity(0.9))
+
+            Text("Encryption keys couldn't be transferred automatically. Enter the recovery key you saved when setting up this account to restore access to message history.")
+                .font(.body)
+                .foregroundColor(.white.opacity(0.6))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+
+            TextField("", text: $viewModel.recoveryKeyInput, axis: .vertical)
+                .font(.system(.body, design: .monospaced))
+                .foregroundColor(.white)
+                .lineLimit(3...5)
+                .padding()
+                .background(Color.white.opacity(0.08))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                )
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
+                .padding(.horizontal)
         }
     }
 
@@ -464,7 +535,7 @@ struct SessionVerificationView: View {
             VStack(spacing: 12) {
                 primaryButton("Start Verification") { viewModel.startVerification() }
                 textButton("I have a recovery key") { viewModel.useRecoveryKey() }
-                textButton("Generate new recovery key") { viewModel.setupRecovery() }
+                textButton("Reset recovery key") { showResetWarning = true }
                 textButton("Skip for now") { viewModel.skip() }
             }
         case .requestingVerification, .waitingForAcceptance:
@@ -479,6 +550,14 @@ struct SessionVerificationView: View {
                 primaryButton("Restore") { viewModel.restoreFromRecoveryKey() }
                 textButton("Cancel") { viewModel.skip() }
             }
+        case .waitingForSecrets:
+            EmptyView()
+        case .needsRecoveryKey:
+            VStack(spacing: 12) {
+                primaryButton("Restore") { viewModel.restoreFromRecoveryKey() }
+                textButton("Reset recovery key") { showResetWarning = true }
+                textButton("Skip for now") { viewModel.skip() }
+            }
         case .restoringFromRecoveryKey:
             EmptyView()
         case .generatingRecoveryKey:
@@ -491,7 +570,7 @@ struct SessionVerificationView: View {
             VStack(spacing: 12) {
                 primaryButton("Try Again") { viewModel.startVerification() }
                 textButton("I have a recovery key") { viewModel.useRecoveryKey() }
-                textButton("Generate new recovery key") { viewModel.setupRecovery() }
+                textButton("Reset recovery key") { showResetWarning = true }
                 textButton("Skip for now") { viewModel.skip() }
             }
         default:

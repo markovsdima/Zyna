@@ -19,6 +19,8 @@ enum VerificationStep: Equatable {
     case showingRecoveryKey(String)
     case enteringRecoveryKey
     case restoringFromRecoveryKey
+    case waitingForSecrets // waiting for secret gossiping after SAS
+    case needsRecoveryKey  // after emoji verification, recovery still incomplete
     case verified
     case cancelled
     case failed
@@ -32,6 +34,8 @@ enum VerificationStep: Equatable {
              (.generatingRecoveryKey, .generatingRecoveryKey),
              (.enteringRecoveryKey, .enteringRecoveryKey),
              (.restoringFromRecoveryKey, .restoringFromRecoveryKey),
+             (.waitingForSecrets, .waitingForSecrets),
+             (.needsRecoveryKey, .needsRecoveryKey),
              (.verified, .verified),
              (.cancelled, .cancelled),
              (.failed, .failed):
@@ -124,10 +128,11 @@ final class SessionVerificationService {
     // MARK: - State Check
 
     /// Decides whether to skip the verification screen on launch.
-    /// Returns true if `hasLocalSecrets` is set, or if the SDK
-    /// reports `.verified` on `verificationState` within `timeout`
-    /// (cross-device SAS path). Defaults to false on timeout — the
-    /// safe choice is to show the screen.
+    ///
+    /// On single-device accounts `verificationState` never becomes
+    /// `.verified` (no other device to verify against), so we also
+    /// trust the `hasLocalSecrets` flag. The flag is cleared on
+    /// login, so a fresh login always shows the verification screen.
     func awaitVerificationState(timeout: TimeInterval = 3.0) async -> Bool {
         if hasLocalSecrets {
             logVerify("awaitVerificationState: positive (local secrets flag)")
@@ -178,13 +183,11 @@ final class SessionVerificationService {
         return try await client.encryption().isLastDevice()
     }
 
-    /// Bootstrap cross-signing and generate a recovery key.
-    ///
-    /// If the account already has recovery set up on the server
-    /// (`recoveryState != .disabled`), we call `resetRecoveryKey()`
-    /// instead — calling `enableRecovery` on top of an existing
-    /// setup throws `RecoveryError.BackupExistsOnServer`. This is
-    /// the same approach Element X uses.
+    /// Bootstraps cross-signing and key backup from scratch.
+    /// Only safe when recovery is not fully set up yet (first device,
+    /// or incomplete/broken state). If recovery is `.enabled`, the
+    /// user must restore via `recover(key:)` instead — calling
+    /// resetRecoveryKey() would destroy the existing backup.
     func enableRecovery() async throws -> String {
         guard let client = matrixService.client else {
             throw VerificationError.clientNotAvailable
@@ -194,58 +197,69 @@ final class SessionVerificationService {
         logVerify("enableRecovery: starting; verificationState=\(encryption.verificationState()) recoveryState=\(initialRecoveryState)")
 
         do {
-            // Check if cross-signing identity actually exists on the server.
-            // recoveryState can be .incomplete/.enabled even when cross-signing
-            // was never bootstrapped (partial state from a failed attempt).
-            // Only use resetRecoveryKey() when identity is confirmed present.
             let userId = try client.userId()
             let identity = try? await encryption.userIdentity(userId: userId, fallbackToServer: true)
             let hasCrossSigning = identity != nil
             logVerify("enableRecovery: cross-signing identity = \(hasCrossSigning)")
 
-            let key: String
-            if hasCrossSigning && (initialRecoveryState == .enabled || initialRecoveryState == .incomplete) {
-                logVerify("enableRecovery: cross-signing exists, calling resetRecoveryKey")
-                key = try await encryption.resetRecoveryKey()
-            } else {
-                // No cross-signing — bootstrap from scratch.
-                // If a previous broken attempt left a backup on the server,
-                // disableRecovery() first to clear it, otherwise
-                // enableRecovery() throws BackupExistsOnServer.
-                if !hasCrossSigning && initialRecoveryState != .disabled {
-                    logVerify("enableRecovery: clearing orphaned recovery state")
-                    do {
-                        try await encryption.disableRecovery()
-                        logVerify("enableRecovery: disableRecovery succeeded, recoveryState=\(encryption.recoveryState())")
-                    } catch {
-                        logVerify("enableRecovery: disableRecovery failed: \(error)")
-                    }
-
-                    // Also delete backup via Matrix API as a fallback
-                    let backupExists = try? await encryption.backupExistsOnServer()
-                    logVerify("enableRecovery: backupExistsOnServer = \(String(describing: backupExists))")
-                    if backupExists == true {
-                        logVerify("enableRecovery: deleting orphaned backup via API")
-                        await deleteBackupFromServer()
-                    }
-                }
-
-                logVerify("enableRecovery: bootstrapping cross-signing from scratch")
-                let progress = RecoveryProgressListener { state in
-                    logVerify("Recovery progress: \(state)")
-                }
-                key = try await encryption.enableRecovery(
-                    waitForBackupsToUpload: false,
-                    passphrase: nil,
-                    progressListener: progress
-                )
+            // Recovery fully set up with active backup — don't destroy it.
+            // The user should enter their existing recovery key instead.
+            // `.incomplete` means partial/broken state with nothing to protect,
+            // so we allow bootstrapping over it.
+            if hasCrossSigning && initialRecoveryState == .enabled {
+                logVerify("enableRecovery: recovery already enabled, refusing to reset")
+                throw VerificationError.recoveryAlreadyExists
             }
+
+            // Clean up orphaned recovery state before bootstrapping.
+            // This handles both: no cross-signing at all, or cross-signing
+            // with incomplete/broken recovery (e.g. after a failed setup).
+            if initialRecoveryState != .disabled {
+                logVerify("enableRecovery: clearing orphaned recovery state")
+                do {
+                    try await encryption.disableRecovery()
+                    logVerify("enableRecovery: disableRecovery succeeded, recoveryState=\(encryption.recoveryState())")
+                } catch {
+                    logVerify("enableRecovery: disableRecovery failed: \(error)")
+                }
+
+                let backupExists = try? await encryption.backupExistsOnServer()
+                logVerify("enableRecovery: backupExistsOnServer = \(String(describing: backupExists))")
+                if backupExists == true {
+                    logVerify("enableRecovery: deleting orphaned backup via API")
+                    await deleteBackupFromServer()
+                }
+            }
+
+            logVerify("enableRecovery: bootstrapping cross-signing from scratch")
+            let progress = RecoveryProgressListener { state in
+                logVerify("Recovery progress: \(state)")
+            }
+            let key = try await encryption.enableRecovery(
+                waitForBackupsToUpload: false,
+                passphrase: nil,
+                progressListener: progress
+            )
             logVerify("enableRecovery: done; key length=\(key.count) recoveryState=\(encryption.recoveryState())")
             return key
         } catch {
             logVerify("enableRecovery FAILED: \(error)")
             throw error
         }
+    }
+
+    /// Destructive reset: wipes existing recovery key and backup,
+    /// then bootstraps new ones from scratch. Only use when the user
+    /// has explicitly confirmed they accept losing old messages.
+    func forceResetRecovery() async throws -> String {
+        guard let client = matrixService.client else {
+            throw VerificationError.clientNotAvailable
+        }
+        let encryption = client.encryption()
+        logVerify("forceResetRecovery: resetting recovery key (destructive)")
+        let key = try await encryption.resetRecoveryKey()
+        logVerify("forceResetRecovery: done; key length=\(key.count) recoveryState=\(encryption.recoveryState())")
+        return key
     }
 
     // MARK: - Setup (controller + delegate)
@@ -520,11 +534,13 @@ final class SessionVerificationService {
 enum VerificationError: LocalizedError {
     case clientNotAvailable
     case controllerNotReady
+    case recoveryAlreadyExists
 
     var errorDescription: String? {
         switch self {
         case .clientNotAvailable: return "Matrix client is not available"
         case .controllerNotReady: return "Verification controller is not ready"
+        case .recoveryAlreadyExists: return "Recovery key already exists. Use your existing recovery key to restore access."
         }
     }
 }

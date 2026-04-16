@@ -297,6 +297,7 @@ final class TimelineService {
             case .redacted:
                 return .redacted
             case .unableToDecrypt:
+                logTimeline("UTD: eventId=\(event.eventOrTransactionId) sender=\(event.sender)")
                 return .text(body: "Encrypted message")
             case .other:
                 return nil
