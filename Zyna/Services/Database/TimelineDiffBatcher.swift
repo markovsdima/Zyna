@@ -111,9 +111,20 @@ final class TimelineDiffBatcher {
         writeQueue.async { [weak self] in
             do {
                 try dbQueue.write { db in
+                    // Collect eventIds already marked as read so upserts don't downgrade them
+                    let readEventIds = try Set(String.fetchAll(db,
+                        sql: "SELECT eventId FROM storedMessage WHERE roomId = ? AND sendStatus = 'read' AND isOutgoing = 1 AND eventId IS NOT NULL",
+                        arguments: [roomId]))
+
                     for op in ops {
                         switch op {
-                        case .upsert(let record):
+                        case .upsert(var record):
+                            if record.sendStatus != "read",
+                               let eventId = record.eventId,
+                               readEventIds.contains(eventId) {
+                                record.sendStatus = "read"
+                            }
+
                             if let eventId = record.eventId {
                                 try StoredMessage
                                     .filter(Column("roomId") == record.roomId && Column("eventId") == eventId && Column("id") != record.id)
