@@ -19,11 +19,13 @@ final class CallsViewModel {
 
     init(dbQueue: DatabaseQueue = DatabaseService.shared.dbQueue) {
         self.dbQueue = dbQueue
-        loadCalls()
+        reload()
     }
 
     func reload() {
-        loadCalls()
+        Task.detached { [weak self] in
+            self?.loadCalls()
+        }
     }
 
     func call(at index: Int) {
@@ -75,6 +77,9 @@ final class CallsViewModel {
             }
         }) ?? []
 
-        calls = results
+        guard results != calls else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.calls = results
+        }
     }
 }

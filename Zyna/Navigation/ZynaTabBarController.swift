@@ -127,10 +127,19 @@ public class ZynaTabBarController: UIViewController {
         _selectedIndex = newIndex
 
         if isViewLoaded {
-            if oldIndex >= 0, oldIndex < controllers.count {
-                controllers[oldIndex].view.removeFromSuperview()
+            let incoming = controllers[newIndex]
+            attachControllerView(incoming)
+
+            // Crossfade
+            incoming.view.alpha = 0
+            UIView.animate(withDuration: 0.1, delay: 0, options: .curveEaseOut) {
+                incoming.view.alpha = 1
+            } completion: { _ in
+                if oldIndex >= 0, oldIndex < self.controllers.count {
+                    self.controllers[oldIndex].view.removeFromSuperview()
+                }
             }
-            attachControllerView(controllers[newIndex])
+
             setNeedsStatusBarAppearanceUpdate()
         }
 
