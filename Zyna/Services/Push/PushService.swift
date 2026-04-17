@@ -18,6 +18,12 @@ final class PushService {
 
     private var deviceToken: Data?
 
+    #if DEBUG
+    private static let gatewayURL = "http://127.0.0.1:8091/_matrix/push/v1/notify"
+    #else
+    private static let gatewayURL = "http://127.0.0.1:8090/_matrix/push/v1/notify"
+    #endif
+
     private init() {}
 
     // MARK: - Request Permission & Register
@@ -96,7 +102,7 @@ final class PushService {
                 "device_display_name": deviceName,
                 "lang": "en",
                 "data": [
-                    "url": "http://127.0.0.1:8090/_matrix/push/v1/notify",
+                    "url": Self.gatewayURL,
                     "format": "event_id_only"
                 ]
             ]
