@@ -81,10 +81,10 @@ final class PresenceTitleView: UIView {
         if let presence {
             statusLabel.isHidden = false
             if presence.online {
-                statusLabel.text = "online"
+                statusLabel.text = String(localized: "online")
                 statusLabel.textColor = .systemGreen
             } else if let lastSeen = presence.lastSeen {
-                statusLabel.text = lastSeen.presenceLastSeenString
+                statusLabel.text = lastSeen.presenceLastSeenString(style: .chat)
                 statusLabel.textColor = .secondaryLabel
             } else {
                 statusLabel.text = nil

@@ -1,0 +1,262 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "" : {
+
+    },
+    "Accept the verification request on your other device." : {
+
+    },
+    "All Set!" : {
+
+    },
+    "Another device wants to verify this session." : {
+
+    },
+    "Are you sure?" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Checking account…" : {
+
+    },
+    "Compare Emojis" : {
+
+    },
+    "Confirm the emojis below match those shown on your other device." : {
+
+    },
+    "Confirm your identity by verifying this device with another session, like Element on your phone or computer." : {
+
+    },
+    "Copy" : {
+
+    },
+    "Create Account" : {
+
+    },
+    "Delete backup and reset" : {
+
+    },
+    "Device Verified" : {
+
+    },
+    "Encryption keys couldn't be transferred automatically. Enter the recovery key you saved when setting up this account to restore access to message history." : {
+
+    },
+    "Enter Recovery Key" : {
+
+    },
+    "Generate a recovery key to back up your encrypted messages, or enter an existing key if you already have one." : {
+
+    },
+    "Generating recovery key…" : {
+
+    },
+    "Homeserver" : {
+
+    },
+    "I've saved it" : {
+
+    },
+    "last seen %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "был(а) %@"
+          }
+        }
+      }
+    },
+    "last seen %lld hours ago" : {
+      "localizations" : {
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "был(а) %lld часа назад"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "был(а) %lld часов назад"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "был(а) %lld час назад"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "был(а) %lld часов назад"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "last seen %lld minutes ago" : {
+      "localizations" : {
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "был(а) %lld минуты назад"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "был(а) %lld минут назад"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "был(а) %lld минуту назад"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "был(а) %lld минут назад"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "last seen just now" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "был(а) только что"
+          }
+        }
+      }
+    },
+    "last seen today at %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "был(а) сегодня в %@"
+          }
+        }
+      }
+    },
+    "last seen yesterday at %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "был(а) вчера в %@"
+          }
+        }
+      }
+    },
+    "Login" : {
+
+    },
+    "online" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "в сети"
+          }
+        }
+      }
+    },
+    "Password" : {
+
+    },
+    "Paste the recovery key you saved when setting up the account." : {
+
+    },
+    "Recovery key saved. You're ready to chat." : {
+
+    },
+    "Reset" : {
+
+    },
+    "Reset recovery key?" : {
+
+    },
+    "Restoring from recovery key…" : {
+
+    },
+    "Safe chats. Stunning vibes." : {
+
+    },
+    "Save this key in a password manager or somewhere safe. You'll need it to restore encrypted messages on other devices." : {
+
+    },
+    "Saved your recovery key?" : {
+
+    },
+    "Set Up Recovery" : {
+
+    },
+    "Setup Failed" : {
+
+    },
+    "Share" : {
+
+    },
+    "Sign In" : {
+
+    },
+    "Sign In with Browser" : {
+
+    },
+    "Syncing encryption keys…" : {
+
+    },
+    "This cannot be undone. Your encrypted message history will be permanently lost." : {
+
+    },
+    "This will permanently destroy your current key backup. All previously encrypted messages that haven't been decrypted on this device will become unreadable forever.\n\nOnly do this if you've lost your recovery key and have no other verified devices." : {
+
+    },
+    "Verification Failed" : {
+
+    },
+    "Verification Request" : {
+
+    },
+    "Verify This Device" : {
+
+    },
+    "Waiting for Approval" : {
+
+    },
+    "Without this key you'll lose access to encrypted messages if you sign in on another device." : {
+
+    },
+    "Your device is now verified. Messages will be trusted by other sessions." : {
+
+    },
+    "Your Recovery Key" : {
+
+    },
+    "Zyna" : {
+
+    }
+  },
+  "version" : "1.1"
+}

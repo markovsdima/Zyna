@@ -150,10 +150,10 @@ final class ProfileNode: ScreenNode {
             let text: String
             let color: UIColor
             if presence.online {
-                text = "online"
+                text = String(localized: "online")
                 color = .systemGreen
             } else if let lastSeen = presence.lastSeen {
-                text = lastSeen.presenceLastSeenString
+                text = lastSeen.presenceLastSeenString(style: .expanded)
                 color = .secondaryLabel
             } else {
                 presenceNode.attributedText = nil
