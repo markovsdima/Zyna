@@ -49,7 +49,7 @@ final class VoiceRecordingOverlayNode: ASDisplayNode {
 
         // Slide to cancel
         slideToCancelNode.attributedText = NSAttributedString(
-            string: "Slide to cancel",
+            string: String(localized: "Slide to cancel"),
             attributes: [
                 .font: UIFont.systemFont(ofSize: 15),
                 .foregroundColor: UIColor.secondaryLabel

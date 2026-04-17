@@ -119,7 +119,7 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         if let forwarderName = message.zynaAttributes.forwardedFrom {
             let node = ASTextNode()
             node.attributedText = NSAttributedString(
-                string: "↗ Forwarded from \(forwarderName)",
+                string: "↗ " + String(localized: "Forwarded from \(forwarderName)"),
                 attributes: [
                     .font: UIFont.systemFont(ofSize: 11, weight: .medium),
                     .foregroundColor: isOutgoing

@@ -308,7 +308,7 @@ struct SessionVerificationView: View {
                 .font(.system(size: 28, weight: .bold, design: .rounded))
                 .foregroundColor(.white.opacity(0.9))
 
-            Text("Confirm your identity by verifying this device with another session, like Element on your phone or computer.")
+            Text("Confirm your identity by verifying this device with another session on your phone or computer.")
                 .font(.body)
                 .foregroundColor(.white.opacity(0.6))
                 .multilineTextAlignment(.center)

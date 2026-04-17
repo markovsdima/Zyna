@@ -32,7 +32,7 @@ final class SearchBarView: UIView {
     private func setup() {
         backgroundColor = AppColor.searchBarBackground
 
-        textField.placeholder = "Search messages"
+        textField.placeholder = String(localized: "Search messages")
         textField.font = .systemFont(ofSize: 16)
         textField.returnKeyType = .search
         textField.autocorrectionType = .no

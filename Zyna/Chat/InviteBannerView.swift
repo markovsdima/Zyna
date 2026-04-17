@@ -25,12 +25,12 @@ final class InviteBannerView: UIView {
     private func setup() {
         backgroundColor = AppColor.inviteBannerBackground
 
-        label.text = "You've been invited to this chat"
+        label.text = String(localized: "You've been invited to this chat")
         label.font = .systemFont(ofSize: 14)
         label.textColor = .label
         label.numberOfLines = 1
 
-        acceptButton.setTitle("Accept", for: .normal)
+        acceptButton.setTitle(String(localized: "Accept"), for: .normal)
         acceptButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
         acceptButton.addTarget(self, action: #selector(acceptTapped), for: .touchUpInside)
 

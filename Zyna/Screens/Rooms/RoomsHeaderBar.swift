@@ -12,7 +12,7 @@ final class RoomsHeaderBar: UIView {
 
     var connectionStatus: String? {
         didSet {
-            searchField.placeholder = connectionStatus ?? "Search"
+            searchField.placeholder = connectionStatus ?? String(localized: "Search")
         }
     }
 
@@ -33,7 +33,7 @@ final class RoomsHeaderBar: UIView {
         composeButton.translatesAutoresizingMaskIntoConstraints = false
 
         // Search field
-        searchField.placeholder = "Search"
+        searchField.placeholder = String(localized: "Search")
         searchField.backgroundColor = .secondarySystemBackground
         searchField.layer.cornerRadius = 10
         searchField.leftView = makeSearchIcon()

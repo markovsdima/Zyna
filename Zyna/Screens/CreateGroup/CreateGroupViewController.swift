@@ -12,7 +12,7 @@ final class CreateGroupViewController: ASDKViewController<CreateGroupNode> {
     init(viewModel: CreateGroupViewModel) {
         self.viewModel = viewModel
         super.init(node: CreateGroupNode())
-        title = "New Group"
+        title = String(localized: "New Group")
     }
 
     required init?(coder: NSCoder) {

@@ -734,13 +734,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func presentAttachmentSheet() {
         let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
 
-        sheet.addAction(UIAlertAction(title: "Photos", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: String(localized: "Photos"), style: .default) { [weak self] _ in
             self?.presentPhotoPicker()
         })
-        sheet.addAction(UIAlertAction(title: "Files", style: .default) { [weak self] _ in
+        sheet.addAction(UIAlertAction(title: String(localized: "Files"), style: .default) { [weak self] _ in
             self?.presentDocumentPicker()
         })
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        sheet.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
 
         present(sheet, animated: true)
     }

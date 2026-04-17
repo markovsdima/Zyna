@@ -200,7 +200,7 @@ final class ProfileNode: ScreenNode {
 
         // Message button (visible only when onMessageTapped is set)
         messageButtonNode.setAttributedTitle(NSAttributedString(
-            string: "Message",
+            string: String(localized: "Message"),
             attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .semibold), .foregroundColor: UIColor.white]
         ), for: .normal)
         messageButtonNode.backgroundColor = .systemBlue
@@ -214,7 +214,7 @@ final class ProfileNode: ScreenNode {
         )
         searchButtonNode.setImage(searchIcon, for: .normal)
         searchButtonNode.setAttributedTitle(NSAttributedString(
-            string: "  Search Messages",
+            string: "  " + String(localized: "Search Messages"),
             attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
         ), for: .normal)
         searchButtonNode.contentHorizontalAlignment = .middle
@@ -222,7 +222,7 @@ final class ProfileNode: ScreenNode {
 
         // Settings (own only)
         settingsButtonNode.setAttributedTitle(NSAttributedString(
-            string: "Settings",
+            string: String(localized: "Settings"),
             attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
         ), for: .normal)
         settingsButtonNode.contentHorizontalAlignment = .left
@@ -230,7 +230,7 @@ final class ProfileNode: ScreenNode {
 
         // Logout (own only)
         logoutButtonNode.setAttributedTitle(NSAttributedString(
-            string: "Выйти",
+            string: String(localized: "Sign Out"),
             attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .semibold), .foregroundColor: UIColor.white]
         ), for: .normal)
         logoutButtonNode.backgroundColor = .systemRed

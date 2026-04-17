@@ -22,7 +22,7 @@ final class CreateGroupNode: ScreenNode {
         super.init()
 
         nameLabel.attributedText = NSAttributedString(
-            string: "Group Name",
+            string: String(localized: "Group Name"),
             attributes: [.font: UIFont.systemFont(ofSize: 13), .foregroundColor: UIColor.secondaryLabel]
         )
 
@@ -36,7 +36,7 @@ final class CreateGroupNode: ScreenNode {
         nameSeparator.style.height = ASDimension(unit: .points, value: 0.5)
 
         topicLabel.attributedText = NSAttributedString(
-            string: "Topic (optional)",
+            string: String(localized: "Topic (optional)"),
             attributes: [.font: UIFont.systemFont(ofSize: 13), .foregroundColor: UIColor.secondaryLabel]
         )
 
@@ -50,11 +50,11 @@ final class CreateGroupNode: ScreenNode {
         topicSeparator.style.height = ASDimension(unit: .points, value: 0.5)
 
         membersLabel.attributedText = NSAttributedString(
-            string: "Members",
+            string: String(localized: "Members"),
             attributes: [.font: UIFont.systemFont(ofSize: 13), .foregroundColor: UIColor.secondaryLabel]
         )
 
-        createButtonNode.setTitle("Create Group", with: UIFont.systemFont(ofSize: 17, weight: .semibold), with: .white, for: .normal)
+        createButtonNode.setTitle(String(localized: "Create Group"), with: UIFont.systemFont(ofSize: 17, weight: .semibold), with: .white, for: .normal)
         createButtonNode.backgroundColor = .systemBlue
         createButtonNode.cornerRadius = 12
         createButtonNode.style.height = ASDimension(unit: .points, value: 50)

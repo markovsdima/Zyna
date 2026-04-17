@@ -15,7 +15,7 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
     init(viewModel: StartChatViewModel) {
         self.viewModel = viewModel
         super.init(node: StartChatNode())
-        title = "New Chat"
+        title = String(localized: "New Chat")
     }
 
     required init?(coder: NSCoder) {
@@ -100,7 +100,7 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
 
                 let text = ASTextNode()
                 text.attributedText = NSAttributedString(
-                    string: "New Group",
+                    string: String(localized: "New Group"),
                     attributes: [
                         .font: UIFont.systemFont(ofSize: 16, weight: .medium),
                         .foregroundColor: UIColor.systemBlue

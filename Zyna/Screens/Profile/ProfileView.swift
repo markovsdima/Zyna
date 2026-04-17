@@ -87,7 +87,7 @@ final class ProfileViewController: ASDKViewController<ProfileNode> {
             // Enter edit mode
             viewModel.toggleEditing()
             navigationItem.rightBarButtonItem = UIBarButtonItem(
-                title: "Done", style: .done, target: self, action: #selector(editTapped)
+                title: String(localized: "Done"), style: .done, target: self, action: #selector(editTapped)
             )
         }
     }
@@ -148,9 +148,9 @@ final class ProfileViewController: ASDKViewController<ProfileNode> {
     // MARK: - Logout
 
     private func confirmLogout() {
-        let alert = UIAlertController(title: "Выход", message: "Вы уверены?", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Выйти", style: .destructive) { [weak self] _ in
+        let alert = UIAlertController(title: String(localized: "Sign Out"), message: String(localized: "Are you sure?"), preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        alert.addAction(UIAlertAction(title: String(localized: "Sign Out"), style: .destructive) { [weak self] _ in
             self?.viewModel.logout()
         })
         present(alert, animated: true)

@@ -33,10 +33,10 @@ final class MainCoordinator {
         profile.start()
 
         let items: [ZynaTabBarItem] = [
-            ZynaTabBarItem(title: "Контакты", icon: UIImage(systemName: "person.2")),
-            ZynaTabBarItem(title: "Звонки",   icon: UIImage(systemName: "phone")),
-            ZynaTabBarItem(title: "Чаты",     icon: UIImage(systemName: "message")),
-            ZynaTabBarItem(title: "Профиль",  icon: UIImage(systemName: "person")),
+            ZynaTabBarItem(title: String(localized: "Contacts"), icon: UIImage(systemName: "person.2")),
+            ZynaTabBarItem(title: String(localized: "Calls"),    icon: UIImage(systemName: "phone")),
+            ZynaTabBarItem(title: String(localized: "Chats"),    icon: UIImage(systemName: "message")),
+            ZynaTabBarItem(title: String(localized: "Profile"),  icon: UIImage(systemName: "person")),
         ]
 
         tabBarController.setControllers(

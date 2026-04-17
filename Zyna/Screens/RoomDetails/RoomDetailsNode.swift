@@ -44,7 +44,7 @@ final class RoomDetailsNode: ScreenNode {
         )
         searchButtonNode.setImage(searchIcon, for: .normal)
         searchButtonNode.setAttributedTitle(NSAttributedString(
-            string: "  Search Messages",
+            string: "  " + String(localized: "Search Messages"),
             attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
         ), for: .normal)
         searchButtonNode.contentHorizontalAlignment = .middle

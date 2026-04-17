@@ -18,14 +18,14 @@ final class StartChatHeaderBar: UIView {
         backgroundColor = .systemBackground
 
         // Cancel button
-        cancelButton.setTitle("Cancel", for: .normal)
+        cancelButton.setTitle(String(localized: "Cancel"), for: .normal)
         cancelButton.titleLabel?.font = .systemFont(ofSize: 17)
         cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         cancelButton.translatesAutoresizingMaskIntoConstraints = false
         cancelButton.setContentHuggingPriority(.required, for: .horizontal)
 
         // Search field
-        searchField.placeholder = "Search users (@user:server)"
+        searchField.placeholder = String(localized: "Search users (@user:server)")
         searchField.backgroundColor = .secondarySystemBackground
         searchField.layer.cornerRadius = 10
         searchField.leftView = makeSearchIcon()

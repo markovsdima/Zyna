@@ -96,8 +96,7 @@ final class PresenceTitleView: UIView {
         // Group: show member count
         if let memberCount {
             statusLabel.isHidden = false
-            // TODO: Replace with stringsdict plural rules when adding localization
-            statusLabel.text = "\(memberCount) member\(memberCount == 1 ? "" : "s")"
+            statusLabel.text = String(localized: "\(memberCount) members")
             statusLabel.textColor = .secondaryLabel
             return
         }

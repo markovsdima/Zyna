@@ -18,14 +18,14 @@ final class SelectMembersHeaderBar: UIView {
         backgroundColor = .systemBackground
 
         // Next button
-        nextButton.setTitle("Next", for: .normal)
+        nextButton.setTitle(String(localized: "Next"), for: .normal)
         nextButton.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
         nextButton.addTarget(self, action: #selector(nextTapped), for: .touchUpInside)
         nextButton.translatesAutoresizingMaskIntoConstraints = false
         nextButton.setContentHuggingPriority(.required, for: .horizontal)
 
         // Search field
-        searchField.placeholder = "Search users"
+        searchField.placeholder = String(localized: "Search users")
         searchField.backgroundColor = .secondarySystemBackground
         searchField.layer.cornerRadius = 10
         searchField.leftView = makeSearchIcon()
