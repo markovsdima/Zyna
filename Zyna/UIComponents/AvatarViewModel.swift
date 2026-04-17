@@ -37,6 +37,52 @@ struct AvatarViewModel: Equatable {
         return Self.mxcToHTTPS(mxc, size: size)
     }
 
+    /// Pre-rendered circle with baked-in initials. Cached by userId + diameter
+    /// so identical avatars share one UIImage. No cornerRadius needed, no
+    /// offscreen rendering on every frame.
+    func circleImage(diameter: CGFloat, fontSize: CGFloat) -> UIImage {
+        let key = "\(userId):\(Int(diameter))" as NSString
+        if let cached = Self.imageCache.object(forKey: key) {
+            return cached
+        }
+        let size = CGSize(width: diameter, height: diameter)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { _ in
+            let rect = CGRect(origin: .zero, size: size)
+
+            color.setFill()
+            UIBezierPath(ovalIn: rect).fill()
+
+            UIColor.separator.setStroke()
+            let borderPath = UIBezierPath(ovalIn: rect.insetBy(dx: 0.25, dy: 0.25))
+            borderPath.lineWidth = 0.5
+            borderPath.stroke()
+
+            let font = UIFont.systemFont(ofSize: fontSize, weight: .medium)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: UIColor.white
+            ]
+            let text = initials as NSString
+            let textSize = text.size(withAttributes: attrs)
+            let textRect = CGRect(
+                x: (diameter - textSize.width) / 2,
+                y: (diameter - textSize.height) / 2,
+                width: textSize.width,
+                height: textSize.height
+            )
+            text.draw(in: textRect, withAttributes: attrs)
+        }
+        Self.imageCache.setObject(image, forKey: key)
+        return image
+    }
+
+    private static let imageCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 200
+        return cache
+    }()
+
     // MARK: - Private
 
     private static let colors: [UIColor] = [

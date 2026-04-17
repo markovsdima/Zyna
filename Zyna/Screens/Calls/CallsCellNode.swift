@@ -9,8 +9,7 @@ final class CallsCellNode: ASCellNode {
 
     var onCallButtonTapped: (() -> Void)?
 
-    private let avatarBackgroundNode = ASDisplayNode()
-    private let avatarTextNode = ASTextNode()
+    private let avatarBackgroundNode = ASImageNode()
     private let avatarImageNode = ASImageNode()
     private let nameNode = ASTextNode()
     private let statusNode = ASTextNode()
@@ -30,20 +29,11 @@ final class CallsCellNode: ASCellNode {
     }
 
     private func setupNodes() {
-        // Avatar
-        avatarBackgroundNode.backgroundColor = model.avatar.color
-        avatarBackgroundNode.cornerRadius = 22
-        avatarBackgroundNode.borderWidth = 0.5
-        avatarBackgroundNode.borderColor = UIColor.separator.cgColor
+        // Avatar background (pre-rendered circle with baked initials)
+        avatarBackgroundNode.image = model.avatar.circleImage(diameter: 44, fontSize: 16)
+        avatarBackgroundNode.isLayerBacked = true
 
-        avatarTextNode.attributedText = NSAttributedString(
-            string: model.avatar.initials,
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 16, weight: .medium),
-                .foregroundColor: UIColor.white
-            ]
-        )
-
+        avatarImageNode.cornerRoundingType = .precomposited
         avatarImageNode.cornerRadius = 22
         avatarImageNode.clipsToBounds = true
         avatarImageNode.contentMode = .scaleAspectFill
@@ -125,15 +115,8 @@ final class CallsCellNode: ASCellNode {
         // Avatar
         avatarBackgroundNode.style.preferredSize = CGSize(width: 44, height: 44)
         avatarImageNode.style.preferredSize = CGSize(width: 44, height: 44)
-        let initials = ASCenterLayoutSpec(
-            centeringOptions: .XY, sizingOptions: .minimumXY,
-            child: avatarTextNode
-        )
-        let withInitials = ASOverlayLayoutSpec(
-            child: avatarBackgroundNode, overlay: initials
-        )
         let avatar = ASOverlayLayoutSpec(
-            child: withInitials, overlay: avatarImageNode
+            child: avatarBackgroundNode, overlay: avatarImageNode
         )
 
         // Text column: name + status

@@ -9,8 +9,7 @@ class RoomsCellNode: ASCellNode {
 
     private let chat: RoomModel
     private let avatarImageNode = ASImageNode()
-    private let avatarBackgroundNode = ASDisplayNode()
-    private let avatarTextNode = ASTextNode()
+    private let avatarBackgroundNode = ASImageNode()
     private let nameNode = ASTextNode()
     private let messageNode = ASTextNode()
     private let timestampNode = ASTextNode()
@@ -28,21 +27,12 @@ class RoomsCellNode: ASCellNode {
     }
 
     private func setupNodes() {
-        // Avatar background (colored circle with initials as fallback)
-        avatarBackgroundNode.backgroundColor = chat.avatar.color
-        avatarBackgroundNode.cornerRadius = 25
-        avatarBackgroundNode.borderWidth = 0.5
-        avatarBackgroundNode.borderColor = UIColor.separator.cgColor
-
-        avatarTextNode.attributedText = NSAttributedString(
-            string: chat.avatar.initials,
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 18, weight: .medium),
-                .foregroundColor: UIColor.white
-            ]
-        )
+        // Avatar background (pre-rendered circle with baked initials)
+        avatarBackgroundNode.image = chat.avatar.circleImage(diameter: 50, fontSize: 18)
+        avatarBackgroundNode.isLayerBacked = true
 
         // Avatar image (authenticated media, loaded async)
+        avatarImageNode.cornerRoundingType = .precomposited
         avatarImageNode.cornerRadius = 25
         avatarImageNode.clipsToBounds = true
         avatarImageNode.contentMode = .scaleAspectFill
@@ -127,12 +117,10 @@ class RoomsCellNode: ASCellNode {
     }
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        // Avatar: colored background with centered initials, image overlaid on top
+        // Avatar: pre-rendered circle background, photo overlaid on top
         avatarBackgroundNode.style.preferredSize = CGSize(width: 50, height: 50)
         avatarImageNode.style.preferredSize = CGSize(width: 50, height: 50)
-        let initials = ASCenterLayoutSpec(centeringOptions: .XY, sizingOptions: .minimumXY, child: avatarTextNode)
-        let withInitials = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: initials)
-        let avatar: ASLayoutSpec = ASOverlayLayoutSpec(child: withInitials, overlay: avatarImageNode)
+        let avatar: ASLayoutSpec = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: avatarImageNode)
 
         // Avatar with optional online indicator
         let avatarSection: ASLayoutSpec
