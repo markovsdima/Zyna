@@ -38,10 +38,10 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         tableNode.backgroundColor = UIColor.systemBackground
         node.backgroundColor = UIColor.systemBackground
 
-        node.layoutSpecBlock = { [weak self] _, constrainedSize in
-            guard let self else { return ASLayoutSpec() }
-            return ASWrapperLayoutSpec(layoutElement: self.tableNode)
-        }
+        // Manual subnode management — automaticallyManagesSubnodes
+        // would fight with our manual frame setting in viewDidLayoutSubviews.
+        node.automaticallyManagesSubnodes = false
+        node.addSubnode(tableNode)
     }
 
     private func bindViewModel() {
@@ -122,8 +122,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         glassTopBar.sourceView = tableNode.view
         glassTopBar.backdropClearColor = .systemBackground
 
-        let composeConfig = UIImage.SymbolConfiguration(pointSize: 17, weight: .medium)
-        let composeIcon = UIImage(systemName: "square.and.pencil", withConfiguration: composeConfig)!
+        let composeIcon = AppIcon.compose.rendered(size: 17, weight: .medium, color: AppColor.accent)
 
         glassTopBar.items = [
             .title(text: "Chats test", subtitle: nil),
@@ -132,11 +131,12 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
             })
         ]
 
-        view.addSubview(glassTopBar)
+        node.addSubnode(glassTopBar)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        tableNode.frame = node.bounds
         glassTopBar.updateLayout(in: view)
 
         let covered = glassTopBar.coveredHeight

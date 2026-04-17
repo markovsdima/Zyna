@@ -83,7 +83,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self.onRoomDetailsTapped?()
             }
         }
-        view.addSubview(glassNavBar)
+        node.addSubnode(glassNavBar)
 
         // Search bar (hidden by default)
         searchBar.isHidden = true
@@ -112,7 +112,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         // Glass input bar
         glassInputBar.isHidden = viewModel.isInvited
-        view.addSubview(glassInputBar)
+        node.addSubnode(glassInputBar)
 
         // Both glass bars capture from the table — no self-capture
         glassNavBar.sourceView = node.tableNode.view

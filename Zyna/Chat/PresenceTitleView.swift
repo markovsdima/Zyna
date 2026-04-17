@@ -3,12 +3,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import UIKit
+import AsyncDisplayKit
 
-final class PresenceTitleView: UIView {
+final class PresenceTitleNode: ASDisplayNode {
 
     var name: String = "" {
-        didSet { nameLabel.text = name }
+        didSet {
+            nameNode.attributedText = NSAttributedString(
+                string: name,
+                attributes: Self.nameAttributes
+            )
+            invalidateCalculatedLayout()
+        }
     }
 
     var presence: UserPresence? {
@@ -19,93 +25,110 @@ final class PresenceTitleView: UIView {
         didSet { updateStatus() }
     }
 
-    var isTappable = false {
-        didSet { tapRecognizer.isEnabled = isTappable }
-    }
-
-    var contentWidth: CGFloat {
-        stack.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width
-    }
+    var isTappable = false
 
     var onTapped: (() -> Void)?
 
-    private lazy var tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap))
-
-    private let nameLabel = UILabel()
-    private let statusLabel = UILabel()
-    private let stack = UIStackView()
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        setup()
+    /// Intrinsic width of the name/status stack (for glass shape sizing).
+    var contentWidth: CGFloat {
+        let nameSize = nameNode.attributedText?.size() ?? .zero
+        let statusSize = statusNode.attributedText?.size() ?? .zero
+        return ceil(max(nameSize.width, statusSize.width))
     }
 
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setup()
+    private let nameNode = ASTextNode()
+    private let statusNode = ASTextNode()
+    private var statusHidden = true
+
+    private static let nameAttributes: [NSAttributedString.Key: Any] = [
+        .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
+        .foregroundColor: UIColor.label,
+        .paragraphStyle: {
+            let p = NSMutableParagraphStyle()
+            p.alignment = .center
+            return p
+        }()
+    ]
+
+    private static func statusAttributes(color: UIColor) -> [NSAttributedString.Key: Any] {
+        [
+            .font: UIFont.systemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: color,
+            .paragraphStyle: {
+                let p = NSMutableParagraphStyle()
+                p.alignment = .center
+                return p
+            }()
+        ]
     }
 
-    private func setup() {
-        nameLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-        nameLabel.textAlignment = .center
+    override init() {
+        super.init()
+        automaticallyManagesSubnodes = true
+        nameNode.maximumNumberOfLines = 1
+        statusNode.maximumNumberOfLines = 1
+    }
 
-        statusLabel.font = .systemFont(ofSize: 12, weight: .regular)
-        statusLabel.textColor = .secondaryLabel
-        statusLabel.textAlignment = .center
-
-        stack.axis = .vertical
-        stack.alignment = .center
-        stack.spacing = 1
-        stack.addArrangedSubview(nameLabel)
-        stack.addArrangedSubview(statusLabel)
-
-        addSubview(stack)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor)
-        ])
-
-        tapRecognizer.isEnabled = false
-        addGestureRecognizer(tapRecognizer)
+    override func didLoad() {
+        super.didLoad()
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        view.addGestureRecognizer(tap)
     }
 
     @objc private func handleTap() {
+        guard isTappable else { return }
         onTapped?()
+    }
+
+    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
+        var children: [ASLayoutElement] = [nameNode]
+        if !statusHidden {
+            children.append(statusNode)
+        }
+        let stack = ASStackLayoutSpec(
+            direction: .vertical,
+            spacing: 1,
+            justifyContent: .center,
+            alignItems: .center,
+            children: children
+        )
+        return ASCenterLayoutSpec(centeringOptions: .XY, sizingOptions: .minimumXY, child: stack)
     }
 
     private func updateStatus() {
         // DM: show presence
         if let presence {
-            statusLabel.isHidden = false
             if presence.online {
-                statusLabel.text = String(localized: "online")
-                statusLabel.textColor = .systemGreen
+                setStatus(String(localized: "online"), color: .systemGreen)
             } else if let lastSeen = presence.lastSeen {
-                statusLabel.text = lastSeen.presenceLastSeenString(style: .chat)
-                statusLabel.textColor = .secondaryLabel
+                setStatus(lastSeen.presenceLastSeenString(style: .chat), color: .secondaryLabel)
             } else {
-                statusLabel.text = nil
-                statusLabel.isHidden = true
+                hideStatus()
             }
             return
         }
 
         // Group: show member count
         if let memberCount {
-            statusLabel.isHidden = false
-            statusLabel.text = String(localized: "\(memberCount) members")
-            statusLabel.textColor = .secondaryLabel
+            setStatus(String(localized: "\(memberCount) members"), color: .secondaryLabel)
             return
         }
 
-        statusLabel.text = nil
-        statusLabel.isHidden = true
+        hideStatus()
     }
 
-    override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: 44)
+    private func setStatus(_ text: String, color: UIColor) {
+        statusHidden = false
+        statusNode.attributedText = NSAttributedString(
+            string: text,
+            attributes: Self.statusAttributes(color: color)
+        )
+        invalidateCalculatedLayout()
+    }
+
+    private func hideStatus() {
+        statusHidden = true
+        statusNode.attributedText = nil
+        invalidateCalculatedLayout()
     }
 }

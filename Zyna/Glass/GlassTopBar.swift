@@ -3,14 +3,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import UIKit
+import AsyncDisplayKit
 
 /// Configurable glass navigation bar with island shapes.
 ///
 /// Circle buttons are fixed 36x36 circles. Buttons before `.title`
 /// in the items array are placed on the left, buttons after — on the right.
 /// The `.title` is centered on the bar axis, fitted to its content width.
-final class GlassTopBar: UIView {
+final class GlassTopBar: ASDisplayNode {
 
     // MARK: - Item
 
@@ -31,7 +31,7 @@ final class GlassTopBar: UIView {
     var subtitle: String? {
         didSet {
             for entry in entries where entry.kind == .title {
-                guard let tv = entry.view as? GlassTopBarTitleView else { continue }
+                guard let tv = entry.titleView else { continue }
                 tv.subtitle = subtitle
                 fittedTitleW = tv.contentWidth + titleHPad * 2
                 setNeedsLayout()
@@ -52,8 +52,8 @@ final class GlassTopBar: UIView {
 
     /// Total height from top of screen (safeArea + bar).
     var coveredHeight: CGFloat {
-        guard let superview else { return 0 }
-        return superview.safeAreaInsets.top + barHeight
+        guard let parentView = view.superview else { return 0 }
+        return parentView.safeAreaInsets.top + barHeight
     }
 
     // MARK: - Constants
@@ -66,58 +66,61 @@ final class GlassTopBar: UIView {
     private let titleHPad: CGFloat = 12
     private let gap: CGFloat = 6
 
-    // MARK: - Glass
+    // MARK: - Glass (UIView, added in didLoad)
 
     private let anchor = GlassAnchor()
-    private let contentView = UIView()
 
     // MARK: - Built content
 
-    /// Ordered entries matching `items`. Rebuilt on every `items` set.
     private struct Entry {
         enum Kind { case circle, title }
         let kind: Kind
-        let view: UIView
+        let node: ASDisplayNode
+        /// Non-nil for `.title` entries — direct access to the wrapped UIView.
+        let titleView: GlassTopBarTitleView?
     }
 
     private var entries: [Entry] = []
-    /// Cached fitted title width (content + padding). Set in rebuildContent, stable from frame 0.
     private var fittedTitleW: CGFloat = 0
 
     // MARK: - Init
 
-    init() {
-        super.init(frame: .zero)
-        backgroundColor = .clear
-        clipsToBounds = false
+    override init() {
+        super.init()
+    }
+
+    // MARK: - Hit testing
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        for entry in entries {
+            guard entry.node.isNodeLoaded else { continue }
+            let local = entry.node.view.convert(point, from: view)
+            if let hit = entry.node.view.hitTest(local, with: event) {
+                return hit
+            }
+        }
+        return nil
+    }
+
+    // MARK: - didLoad
+
+    override func didLoad() {
+        super.didLoad()
+        view.backgroundColor = .clear
+        view.clipsToBounds = false
 
         anchor.cornerRadius = cornerR
         anchor.shapeProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
                 ?? GlassRenderer.ShapeParams()
         }
-        addSubview(anchor)
-        addSubview(anchor.renderer)
+        view.addSubview(anchor)
+        view.addSubview(anchor.renderer)
 
-        contentView.backgroundColor = .clear
-        addSubview(contentView)
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    // MARK: - Hit testing
-
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let contentPoint = contentView.convert(point, from: self)
-        if let hit = contentView.hitTest(contentPoint, with: event) {
-            return hit
-        }
-        return nil
-    }
-
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        let contentPoint = contentView.convert(point, from: self)
-        return contentView.point(inside: contentPoint, with: event)
+        // Subnodes may already exist (items set before node loaded).
+        // Ensure renderer stays behind them.
+        view.sendSubviewToBack(anchor.renderer)
+        view.sendSubviewToBack(anchor)
     }
 
     // MARK: - Layout
@@ -129,11 +132,10 @@ final class GlassTopBar: UIView {
 
         frame = CGRect(x: sideInset, y: safeTop, width: barWidth, height: barHeight)
         anchor.frame = bounds
-        contentView.frame = bounds
     }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
+    override func layout() {
+        super.layout()
         layoutEntries(in: bounds)
     }
 
@@ -148,7 +150,7 @@ final class GlassTopBar: UIView {
         for (i, entry) in entries.enumerated() {
             guard entry.kind == .circle else { continue }
             guard titleIdx == nil || i < titleIdx! else { break }
-            entry.view.frame = CGRect(x: leftX, y: cy - btnSize / 2, width: btnSize, height: btnSize)
+            entry.node.frame = CGRect(x: leftX, y: cy - btnSize / 2, width: btnSize, height: btnSize)
             leftX += btnSize + gap
         }
 
@@ -159,7 +161,7 @@ final class GlassTopBar: UIView {
             guard entry.kind == .circle else { continue }
             guard let ti = titleIdx, i > ti else { break }
             rightX -= btnSize
-            entry.view.frame = CGRect(x: rightX, y: cy - btnSize / 2, width: btnSize, height: btnSize)
+            entry.node.frame = CGRect(x: rightX, y: cy - btnSize / 2, width: btnSize, height: btnSize)
             rightX -= gap
         }
 
@@ -171,7 +173,7 @@ final class GlassTopBar: UIView {
             let maxW = rect.width - (btnPad + CGFloat(sideSlots) * (btnSize + gap)) * 2
             let w = min(fittedTitleW, maxW)
             let x = (rect.width - w) / 2
-            entries[ti].view.frame = CGRect(x: x, y: 0, width: w, height: rect.height)
+            entries[ti].node.frame = CGRect(x: x, y: 0, width: w, height: rect.height)
         }
     }
 
@@ -180,30 +182,50 @@ final class GlassTopBar: UIView {
     private func rebuildContent() {
         // Tear down previous
         for entry in entries {
-            entry.view.removeFromSuperview()
+            entry.node.removeFromSupernode()
         }
         entries.removeAll()
 
         for item in items {
             switch item {
             case .circleButton(let icon, let action):
-                let btn = GlassCircleButton(icon: icon, action: action)
-                contentView.addSubview(btn)
-                entries.append(Entry(kind: .circle, view: btn))
+                let btn = ASButtonNode()
+                btn.setImage(icon, for: .normal)
+                btn.style.preferredSize = CGSize(width: btnSize, height: btnSize)
+                let handler = action
+                btn.addTarget(self, action: #selector(circleButtonTapped(_:)), forControlEvents: .touchUpInside)
+                // Store the action in the node's user data
+                objc_setAssociatedObject(btn, &GlassTopBar.actionKey, handler, .OBJC_ASSOCIATION_COPY_NONATOMIC)
+                addSubnode(btn)
+                entries.append(Entry(kind: .circle, node: btn, titleView: nil))
 
             case .title(let text, let subtitle):
-                let titleView = GlassTopBarTitleView()
-                titleView.text = text
-                titleView.subtitle = subtitle
-                titleView.onTapped = { [weak self] in self?.onTitleTapped?() }
-                contentView.addSubview(titleView)
-                entries.append(Entry(kind: .title, view: titleView))
-                fittedTitleW = titleView.contentWidth + titleHPad * 2
-
+                let tv = GlassTopBarTitleView()
+                tv.text = text
+                tv.subtitle = subtitle
+                tv.onTapped = { [weak self] in self?.onTitleTapped?() }
+                let titleNode = ASDisplayNode(viewBlock: { tv })
+                addSubnode(titleNode)
+                entries.append(Entry(kind: .title, node: titleNode, titleView: tv))
+                fittedTitleW = tv.contentWidth + titleHPad * 2
             }
         }
 
+        // Ensure glass renderer stays behind interactive content
+        if isNodeLoaded {
+            view.sendSubviewToBack(anchor.renderer)
+            view.sendSubviewToBack(anchor)
+        }
+
         setNeedsLayout()
+    }
+
+    private static var actionKey: UInt8 = 0
+
+    @objc private func circleButtonTapped(_ sender: ASButtonNode) {
+        if let action = objc_getAssociatedObject(sender, &GlassTopBar.actionKey) as? () -> Void {
+            action()
+        }
     }
 
     // MARK: - Shape building
@@ -214,7 +236,6 @@ final class GlassTopBar: UIView {
         let ch = captureFrame.height
         guard cw > 0, ch > 0 else { return p }
 
-        // Compute geometry from constants — no dependency on UIView frames
         let barW = glassFrame.width
         let titleIdx = entries.firstIndex { $0.kind == .title }
 
@@ -281,24 +302,6 @@ final class GlassTopBar: UIView {
     }
 }
 
-// MARK: - Circle button
-
-private final class GlassCircleButton: UIButton {
-
-    private var action: (() -> Void)?
-
-    init(icon: UIImage, action: @escaping () -> Void) {
-        self.action = action
-        super.init(frame: .zero)
-        setImage(icon, for: .normal)
-        addTarget(self, action: #selector(tapped), for: .touchUpInside)
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    @objc private func tapped() { action?() }
-}
-
 // MARK: - Title view
 
 private final class GlassTopBarTitleView: UIView {
@@ -362,4 +365,3 @@ private final class GlassTopBarTitleView: UIView {
 
     @objc private func handleTap() { onTapped?() }
 }
-

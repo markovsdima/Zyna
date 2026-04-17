@@ -10,13 +10,14 @@ final class ChatNode: ASDisplayNode {
 
     override init() {
         super.init()
-        automaticallyManagesSubnodes = true
+        addSubnode(tableNode)
         tableNode.inverted = true
         backgroundColor = AppColor.chatBackground
         tableNode.backgroundColor = AppColor.chatBackground
     }
 
-    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        ASWrapperLayoutSpec(layoutElement: tableNode)
+    override func layout() {
+        super.layout()
+        tableNode.frame = bounds
     }
 }

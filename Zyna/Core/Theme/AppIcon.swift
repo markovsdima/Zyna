@@ -15,24 +15,30 @@ enum AppIcon {
     case mic
     case lockOpen
     case lockClosed
+    case chevronLeft
     case chevronUp
     case chevronDown
     case phone
+    case compose
+    case xmark
 
     var systemName: String {
         switch self {
-        case .play:       return "play.fill"
-        case .pause:      return "pause.fill"
-        case .stop:       return "stop.circle.fill"
-        case .trash:      return "trash.circle.fill"
-        case .attach:     return "paperclip"
-        case .send:       return "arrow.up.circle.fill"
-        case .mic:        return "mic.fill"
-        case .lockOpen:   return "lock.open.fill"
-        case .lockClosed: return "lock.fill"
+        case .play:        return "play.fill"
+        case .pause:       return "pause.fill"
+        case .stop:        return "stop.circle.fill"
+        case .trash:       return "trash.circle.fill"
+        case .attach:      return "paperclip"
+        case .send:        return "arrow.up.circle.fill"
+        case .mic:         return "mic.fill"
+        case .lockOpen:    return "lock.open.fill"
+        case .lockClosed:  return "lock.fill"
+        case .chevronLeft: return "chevron.left"
         case .chevronUp:   return "chevron.up"
         case .chevronDown: return "chevron.down"
         case .phone:       return "phone.fill"
+        case .compose:     return "square.and.pencil"
+        case .xmark:       return "xmark"
         }
     }
 
