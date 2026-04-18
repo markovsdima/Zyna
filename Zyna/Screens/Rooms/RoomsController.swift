@@ -126,7 +126,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
         glassTopBar.items = [
             .title(text: "Chats test", subtitle: nil),
-            .circleButton(icon: composeIcon, accessibilityLabel: "New message", action: { [weak self] in
+            .circleButton(icon: composeIcon, accessibilityLabel: "New chat", action: { [weak self] in
                 self?.onComposeTapped?()
             })
         ]
