@@ -50,8 +50,8 @@ final class GlassNavBar: ASDisplayNode {
 
     // MARK: - Subnodes
 
-    let backButtonNode = ASButtonNode()
-    let callButtonNode = ASButtonNode()
+    let backButtonNode = AccessibleButtonNode()
+    let callButtonNode = AccessibleButtonNode()
     let titleNode = PresenceTitleNode()
 
     // MARK: - Glass (UIView, added in didLoad)
@@ -78,27 +78,38 @@ final class GlassNavBar: ASDisplayNode {
             AppIcon.chevronLeft.rendered(size: 17, weight: .semibold, color: AppColor.accent),
             for: .normal
         )
+        backButtonNode.isAccessibilityElement = true
+        backButtonNode.accessibilityLabel = "Back"
+        backButtonNode.accessibilityTraits = .button
         backButtonNode.style.preferredSize = CGSize(width: btnSize, height: btnSize)
 
         callButtonNode.setImage(
             AppIcon.phone.rendered(size: 16, weight: .medium, color: AppColor.accent),
             for: .normal
         )
+        callButtonNode.isAccessibilityElement = true
+        callButtonNode.accessibilityLabel = "Call"
+        callButtonNode.accessibilityTraits = .button
         callButtonNode.style.preferredSize = CGSize(width: btnSize, height: btnSize)
     }
 
-    // MARK: - Hit testing
+    // MARK: - Accessibility
 
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        for subnode in [backButtonNode, titleNode, callButtonNode] {
-            guard subnode.isNodeLoaded else { continue }
-            let local = subnode.view.convert(point, from: view)
-            if let hit = subnode.view.hitTest(local, with: event) {
-                return hit
-            }
+    /// Override to enforce reading order: back → title → call.
+    /// Without this, Texture iterates subviews and may interleave with
+    /// anchor/renderer or sort by frame in unexpected ways.
+    override var accessibilityElements: [Any]? {
+        get {
+            var elements: [Any] = []
+            if backButtonNode.isNodeLoaded { elements.append(backButtonNode.view) }
+            if titleNode.isNodeLoaded { elements.append(titleNode.view) }
+            if callButtonNode.isNodeLoaded { elements.append(callButtonNode.view) }
+            return elements
         }
-        return nil
+        set { }
     }
+
+    // MARK: - didLoad
 
     override func didLoad() {
         super.didLoad()
@@ -113,6 +124,8 @@ final class GlassNavBar: ASDisplayNode {
         }
         view.addSubview(anchor)
         view.addSubview(anchor.renderer)
+        anchor.accessibilityElementsHidden = true
+        anchor.renderer.accessibilityElementsHidden = true
 
         // Subnodes on top of renderer
         addSubnode(backButtonNode)

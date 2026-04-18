@@ -116,7 +116,10 @@ private final class ItemView: UIView {
     private let item: ZynaTabBarItem
 
     var isSelected: Bool = false {
-        didSet { applyTint() }
+        didSet {
+            applyTint()
+            accessibilityTraits = isSelected ? [.button, .selected] : .button
+        }
     }
 
     var onTap: (() -> Void)?

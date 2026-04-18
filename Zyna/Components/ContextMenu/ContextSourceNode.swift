@@ -225,6 +225,9 @@ final class ContextSourceNode: ASDisplayNode {
 
 extension ContextSourceNode: UIGestureRecognizerDelegate {
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // VoiceOver double-tap triggers long press; disable to prevent
+        // accidental context menu activation.
+        if UIAccessibility.isVoiceOverRunning { return false }
         let location = gestureRecognizer.location(in: view)
         return shouldBegin?(location) ?? true
     }

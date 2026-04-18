@@ -12,6 +12,11 @@ final class FileCellNode: MessageCellNode {
 
     var onFileTapped: (() -> Void)?
 
+    override func accessibilityActivate() -> Bool {
+        onFileTapped?()
+        return true
+    }
+
     // MARK: - Subnodes
 
     private let iconBackgroundNode = ASDisplayNode()

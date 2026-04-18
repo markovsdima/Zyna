@@ -84,6 +84,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
         }
         node.addSubnode(glassNavBar)
+        node.glassNavBar = glassNavBar
 
         // Search bar (hidden by default)
         searchBar.isHidden = true
@@ -113,6 +114,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         // Glass input bar
         glassInputBar.isHidden = viewModel.isInvited
         node.addSubnode(glassInputBar)
+        node.glassInputBar = glassInputBar
 
         // Both glass bars capture from the table — no self-capture
         glassNavBar.sourceView = node.tableNode.view
@@ -393,8 +395,37 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self?.navigateToMessage(eventId: eventId)
             }
 
+            cellNode.accessibilityActionsProvider = { [weak self] in
+                self?.buildAccessibilityActions(for: message) ?? []
+            }
+
             return cellNode
         }
+    }
+
+    private func buildAccessibilityActions(for message: ChatMessage) -> [UIAccessibilityCustomAction] {
+        var actions: [UIAccessibilityCustomAction] = []
+
+        actions.append(UIAccessibilityCustomAction(name: "Reply") { [weak self] _ in
+            self?.viewModel.setReplyTarget(message)
+            return true
+        })
+
+        if !message.content.isRedacted {
+            actions.append(UIAccessibilityCustomAction(name: "Forward") { [weak self] _ in
+                self?.onForwardMessage?(message)
+                return true
+            })
+        }
+
+        if message.itemIdentifier != nil && !message.content.isRedacted {
+            actions.append(UIAccessibilityCustomAction(name: "Delete") { [weak self] _ in
+                self?.triggerPaintSplashDelete(for: message)
+                return true
+            })
+        }
+
+        return actions
     }
 
     // MARK: - Context Menu

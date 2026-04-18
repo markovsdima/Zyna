@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-class RoomsCellNode: ASCellNode {
+class RoomsCellNode: ZynaCellNode {
 
     private let chat: RoomModel
     private let avatarImageNode = ASImageNode()
@@ -24,6 +24,7 @@ class RoomsCellNode: ASCellNode {
 
         automaticallyManagesSubnodes = true
         setupNodes()
+        setupAccessibility()
     }
 
     private func setupNodes() {
@@ -186,6 +187,27 @@ class RoomsCellNode: ASCellNode {
             alignItems: .stretch,
             children: [contentInset, separatorNode]
         )
+    }
+
+    private func setupAccessibility() {
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+
+        var label = chat.name
+        if !chat.lastMessage.isEmpty {
+            label += ", \(chat.lastMessage)"
+        }
+        if chat.unreadCount > 0 {
+            label += ", \(chat.unreadCount) unread"
+        }
+        if chat.isOnline {
+            label += ", online"
+        }
+        accessibilityLabel = label
+
+        if !chat.timestamp.isEmpty {
+            accessibilityValue = chat.timestamp
+        }
     }
 
     override func didLoad() {

@@ -216,6 +216,7 @@ public class ZynaNavigationController: UIViewController {
             self.fpsBoostToken?.invalidate()
             self.fpsBoostToken = nil
             self.setNeedsStatusBarAppearanceUpdate()
+            UIAccessibility.post(notification: .screenChanged, argument: nil)
         }
     }
 
@@ -409,6 +410,7 @@ public class ZynaNavigationController: UIViewController {
             newView.clipsToBounds = savedClips
             self.view.isUserInteractionEnabled = true
             completion()
+            UIAccessibility.post(notification: .screenChanged, argument: nil)
         }
 
         newView.layer.add(
@@ -494,6 +496,7 @@ public class ZynaNavigationController: UIViewController {
             topView.clipsToBounds = savedClips
             self.view.isUserInteractionEnabled = true
             completion()
+            UIAccessibility.post(notification: .screenChanged, argument: nil)
         }
 
         topView.layer.add(

@@ -197,6 +197,11 @@ final class VoiceMessageCellNode: MessageCellNode {
         audioPlayer?.togglePlayPause(source: mediaSource)
     }
 
+    override func accessibilityActivate() -> Bool {
+        playTapped()
+        return true
+    }
+
     // MARK: - UI Updates
 
     private func updatePlayIcon(playing: Bool) {

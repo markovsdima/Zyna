@@ -14,6 +14,7 @@ final class PresenceTitleNode: ASDisplayNode {
                 attributes: Self.nameAttributes
             )
             invalidateCalculatedLayout()
+            updateAccessibility()
         }
     }
 
@@ -25,7 +26,9 @@ final class PresenceTitleNode: ASDisplayNode {
         didSet { updateStatus() }
     }
 
-    var isTappable = false
+    var isTappable = false {
+        didSet { updateAccessibility() }
+    }
 
     var onTapped: (() -> Void)?
 
@@ -65,6 +68,8 @@ final class PresenceTitleNode: ASDisplayNode {
     override init() {
         super.init()
         automaticallyManagesSubnodes = true
+        isAccessibilityElement = true
+        accessibilityTraits = .header
         nameNode.maximumNumberOfLines = 1
         statusNode.maximumNumberOfLines = 1
     }
@@ -78,6 +83,12 @@ final class PresenceTitleNode: ASDisplayNode {
     @objc private func handleTap() {
         guard isTappable else { return }
         onTapped?()
+    }
+
+    override func accessibilityActivate() -> Bool {
+        guard isTappable else { return false }
+        onTapped?()
+        return true
     }
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
@@ -124,11 +135,22 @@ final class PresenceTitleNode: ASDisplayNode {
             attributes: Self.statusAttributes(color: color)
         )
         invalidateCalculatedLayout()
+        updateAccessibility()
     }
 
     private func hideStatus() {
         statusHidden = true
         statusNode.attributedText = nil
         invalidateCalculatedLayout()
+        updateAccessibility()
+    }
+
+    private func updateAccessibility() {
+        var label = name
+        if let statusText = statusNode.attributedText?.string, !statusHidden {
+            label += ", \(statusText)"
+        }
+        accessibilityLabel = label
+        accessibilityTraits = isTappable ? [.header, .button] : .header
     }
 }

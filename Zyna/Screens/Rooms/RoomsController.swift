@@ -22,7 +22,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     var onComposeTapped: (() -> Void)?
 
     override init() {
-        super.init(node: ScreenNode())
+        super.init(node: RoomsScreenNode())
 
         setupTableNode()
         bindViewModel()
@@ -126,12 +126,14 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
         glassTopBar.items = [
             .title(text: "Chats test", subtitle: nil),
-            .circleButton(icon: composeIcon, action: { [weak self] in
+            .circleButton(icon: composeIcon, accessibilityLabel: "New message", action: { [weak self] in
                 self?.onComposeTapped?()
             })
         ]
 
         node.addSubnode(glassTopBar)
+        (node as? RoomsScreenNode)?.glassTopBar = glassTopBar
+        (node as? RoomsScreenNode)?.tableNode = tableNode
     }
 
     override func viewDidLayoutSubviews() {
@@ -201,5 +203,28 @@ extension RoomsViewController {
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         fpsBooster.stop()
+    }
+}
+
+// MARK: - Screen node with accessibility-friendly element order
+
+/// Glass top bar must be first in the accessibility tree so VoiceOver
+/// hit-tests it before the table cells visually behind it.
+final class RoomsScreenNode: ScreenNode {
+    weak var glassTopBar: ASDisplayNode?
+    weak var tableNode: ASDisplayNode?
+
+    override var accessibilityElements: [Any]? {
+        get {
+            var elements: [Any] = []
+            if let bar = glassTopBar?.view, bar.superview === view {
+                elements.append(bar)
+            }
+            if let table = tableNode?.view {
+                elements.append(table)
+            }
+            return elements
+        }
+        set { }
     }
 }

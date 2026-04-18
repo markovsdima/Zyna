@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-final class CallsCellNode: ASCellNode {
+final class CallsCellNode: ZynaCellNode {
 
     var onCallButtonTapped: (() -> Void)?
 
@@ -26,6 +26,7 @@ final class CallsCellNode: ASCellNode {
         super.init()
         automaticallyManagesSubnodes = true
         setupNodes()
+        setupAccessibility()
     }
 
     private func setupNodes() {
@@ -166,6 +167,15 @@ final class CallsCellNode: ASCellNode {
             alignItems: .stretch,
             children: [contentInset, separatorNode]
         )
+    }
+
+    private func setupAccessibility() {
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        accessibilityLabel = "\(model.roomName), \(model.statusText)"
+        accessibilityValue = model.formattedTime
+
+        callButtonNode.accessibilityLabel = "Call \(model.roomName)"
     }
 
     override func didLoad() {

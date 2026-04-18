@@ -12,6 +12,11 @@ final class ImageMessageCellNode: MessageCellNode {
 
     var onImageTapped: (() -> Void)?
 
+    override func accessibilityActivate() -> Bool {
+        onImageTapped?()
+        return true
+    }
+
     // MARK: - Subnodes
 
     private let imageNode = RoundedImageNode()

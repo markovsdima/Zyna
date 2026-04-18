@@ -7,7 +7,7 @@ import AsyncDisplayKit
 
 /// Base class for all message cell nodes.
 /// Handles context menu protocol, sender name, bubble styling, and the outer layout.
-class MessageCellNode: ASCellNode, ContextMenuCellNode {
+class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     // MARK: - Context Menu
 
@@ -38,6 +38,7 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
     private(set) var replyHeaderNode: ReplyHeaderNode?
     private(set) var forwardedHeaderNode: ASTextNode?
 
+
     // MARK: - Subnodes
 
     let bubbleNode = ASDisplayNode()
@@ -52,9 +53,19 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
     let isOutgoing: Bool
     let showSenderName: Bool
 
+    private let accessibilityContent: String
+
     // MARK: - Init
 
     init(message: ChatMessage, isGroupChat: Bool = false) {
+        var parts: [String] = []
+        if let sender = message.senderDisplayName, !message.isOutgoing {
+            parts.append(sender)
+        }
+        parts.append(message.content.textPreview)
+        parts.append(MessageCellHelpers.timeFormatter.string(from: message.timestamp))
+        self.accessibilityContent = parts.joined(separator: ", ")
+
         self.isOutgoing = message.isOutgoing
         self.showSenderName = !message.isOutgoing && isGroupChat
         self.contextSourceNode = ContextSourceNode(contentNode: bubbleNode)
@@ -71,6 +82,10 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
             self.statusIconNode = nil
         }
         super.init()
+
+        isAccessibilityElement = true
+        accessibilityTraits = .staticText
+        accessibilityLabel = accessibilityContent
 
         contextSourceNode.activated = { [weak self] _ in
             self?.onContextMenuActivated?()

@@ -9,9 +9,9 @@ import Combine
 final class ChatInputNode: ASDisplayNode {
 
     let textInputNode = ASEditableTextNode()
-    let sendButtonNode = ASButtonNode()
-    let micButtonNode = ASButtonNode()
-    let attachButtonNode = ASButtonNode()
+    let sendButtonNode = AccessibleButtonNode()
+    let micButtonNode = AccessibleButtonNode()
+    let attachButtonNode = AccessibleButtonNode()
     private let separatorNode = ASDisplayNode()
 
     private let overlayNode = VoiceRecordingOverlayNode()
@@ -154,15 +154,26 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.style.maxHeight = ASDimension(unit: .points, value: 220)
         textInputNode.scrollEnabled = false
         textInputNode.backgroundColor = .clear
+        textInputNode.isAccessibilityElement = true
+        textInputNode.accessibilityLabel = "Message"
 
         attachButtonNode.setImage(AppIcon.attach.rendered(size: 24, color: .gray), for: .normal)
         attachButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
+        attachButtonNode.isAccessibilityElement = true
+        attachButtonNode.accessibilityLabel = "Attach"
+        attachButtonNode.accessibilityTraits = .button
 
         sendButtonNode.setImage(AppIcon.send.rendered(size: 24, weight: .semibold, color: AppColor.accent), for: .normal)
         sendButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
+        sendButtonNode.isAccessibilityElement = true
+        sendButtonNode.accessibilityLabel = "Send"
+        sendButtonNode.accessibilityTraits = .button
 
         micButtonNode.setImage(AppIcon.mic.rendered(size: 24, color: .gray), for: .normal)
         micButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
+        micButtonNode.isAccessibilityElement = true
+        micButtonNode.accessibilityLabel = "Record voice message"
+        micButtonNode.accessibilityTraits = .button
 
         overlayNode.alpha = 0
         overlayNode.isUserInteractionEnabled = false

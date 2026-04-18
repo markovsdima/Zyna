@@ -5,7 +5,7 @@
 
 import AsyncDisplayKit
 
-final class ContactsCellNode: ASCellNode {
+final class ContactsCellNode: ZynaCellNode {
 
     var onCallTapped: (() -> Void)?
 
@@ -25,6 +25,7 @@ final class ContactsCellNode: ASCellNode {
         super.init()
         automaticallyManagesSubnodes = true
         setupNodes()
+        setupAccessibility()
     }
 
     private func setupNodes() {
@@ -131,6 +132,15 @@ final class ContactsCellNode: ASCellNode {
             alignItems: .stretch,
             children: [contentInset, separatorNode]
         )
+    }
+
+    private func setupAccessibility() {
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        accessibilityLabel = model.displayName
+        accessibilityValue = model.userId
+
+        callButtonNode.accessibilityLabel = "Call \(model.displayName)"
     }
 
     override func didLoad() {

@@ -15,7 +15,7 @@ final class GlassTopBar: ASDisplayNode {
     // MARK: - Item
 
     enum Item {
-        case circleButton(icon: UIImage, action: () -> Void)
+        case circleButton(icon: UIImage, accessibilityLabel: String, action: () -> Void)
         case title(text: String, subtitle: String?)
     }
 
@@ -89,19 +89,6 @@ final class GlassTopBar: ASDisplayNode {
         super.init()
     }
 
-    // MARK: - Hit testing
-
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        for entry in entries {
-            guard entry.node.isNodeLoaded else { continue }
-            let local = entry.node.view.convert(point, from: view)
-            if let hit = entry.node.view.hitTest(local, with: event) {
-                return hit
-            }
-        }
-        return nil
-    }
-
     // MARK: - didLoad
 
     override func didLoad() {
@@ -116,6 +103,8 @@ final class GlassTopBar: ASDisplayNode {
         }
         view.addSubview(anchor)
         view.addSubview(anchor.renderer)
+        anchor.accessibilityElementsHidden = true
+        anchor.renderer.accessibilityElementsHidden = true
 
         // Subnodes may already exist (items set before node loaded).
         // Ensure renderer stays behind them.
@@ -188,9 +177,12 @@ final class GlassTopBar: ASDisplayNode {
 
         for item in items {
             switch item {
-            case .circleButton(let icon, let action):
-                let btn = ASButtonNode()
+            case .circleButton(let icon, let label, let action):
+                let btn = AccessibleButtonNode()
                 btn.setImage(icon, for: .normal)
+                btn.isAccessibilityElement = true
+                btn.accessibilityLabel = label
+                btn.accessibilityTraits = .button
                 btn.style.preferredSize = CGSize(width: btnSize, height: btnSize)
                 let handler = action
                 btn.addTarget(self, action: #selector(circleButtonTapped(_:)), forControlEvents: .touchUpInside)
@@ -307,13 +299,14 @@ final class GlassTopBar: ASDisplayNode {
 private final class GlassTopBarTitleView: UIView {
 
     var text: String = "" {
-        didSet { titleLabel.text = text }
+        didSet { titleLabel.text = text; updateAccessibilityLabel() }
     }
 
     var subtitle: String? {
         didSet {
             subtitleLabel.text = subtitle
             subtitleLabel.isHidden = subtitle == nil
+            updateAccessibilityLabel()
         }
     }
 
@@ -344,6 +337,9 @@ private final class GlassTopBarTitleView: UIView {
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
         addGestureRecognizer(tap)
+
+        isAccessibilityElement = true
+        accessibilityTraits = .header
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -364,4 +360,12 @@ private final class GlassTopBarTitleView: UIView {
     }
 
     @objc private func handleTap() { onTapped?() }
+
+    private func updateAccessibilityLabel() {
+        var label = text
+        if let subtitle, !subtitle.isEmpty {
+            label += ", \(subtitle)"
+        }
+        accessibilityLabel = label
+    }
 }

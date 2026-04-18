@@ -65,26 +65,6 @@ final class GlassInputBar: ASDisplayNode {
         inputNode.backgroundColor = .clear
     }
 
-    // MARK: - Hit testing
-
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        // Check scroll button (may be outside bounds, above the bar)
-        if scrollButtonTap.alpha > 0 {
-            let local = scrollButtonTap.convert(point, from: view)
-            if scrollButtonTap.point(inside: local, with: event) {
-                return scrollButtonTap
-            }
-        }
-        // Check input node
-        if inputNode.isNodeLoaded {
-            let local = inputNode.view.convert(point, from: view)
-            if let hit = inputNode.view.hitTest(local, with: event) {
-                return hit
-            }
-        }
-        return nil
-    }
-
     // MARK: - didLoad
 
     override func didLoad() {
@@ -104,6 +84,8 @@ final class GlassInputBar: ASDisplayNode {
         }
         view.addSubview(anchor)
         view.addSubview(anchor.renderer)
+        anchor.accessibilityElementsHidden = true
+        anchor.renderer.accessibilityElementsHidden = true
 
         // Input node as subnode (already ASDisplayNode)
         addSubnode(inputNode)
@@ -120,6 +102,7 @@ final class GlassInputBar: ASDisplayNode {
         view.addSubview(scrollButtonIcon)
 
         scrollButtonTap.alpha = 0
+        scrollButtonTap.accessibilityLabel = "Scroll to bottom"
         scrollButtonTap.addTarget(self, action: #selector(scrollButtonTapped), for: .touchUpInside)
         view.addSubview(scrollButtonTap)
 
