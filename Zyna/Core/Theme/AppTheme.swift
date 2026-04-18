@@ -47,6 +47,7 @@ protocol AppTheme {
     var searchBarBackground: UIColor { get }
     var voiceRecordingBackground: UIColor { get }
     var inputReplyBackground: UIColor { get }
+    var systemEventBackground: UIColor { get }
 }
 
 extension AppTheme {
@@ -91,4 +92,9 @@ extension AppTheme {
     var searchBarBackground: UIColor { .systemBackground }
     var voiceRecordingBackground: UIColor { .systemBackground }
     var inputReplyBackground: UIColor { UIColor.black.withAlphaComponent(0.5) }
+    // Chat background is #D5D5D5 / #141414 — step away from it in both
+    // directions so the pill reads as a distinct surface without alpha.
+    var systemEventBackground: UIColor {
+        UIColor.dynamic(light: UIColor(hex: 0xEEEEEE), dark: UIColor(hex: 0x0B0B0B))
+    }
 }

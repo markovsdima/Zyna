@@ -48,6 +48,7 @@ enum AppColor {
     static let searchBarBackground: UIColor       = current.searchBarBackground
     static let voiceRecordingBackground: UIColor  = current.voiceRecordingBackground
     static let inputReplyBackground: UIColor      = current.inputReplyBackground
+    static let systemEventBackground: UIColor     = current.systemEventBackground
 }
 
 extension UIColor {
