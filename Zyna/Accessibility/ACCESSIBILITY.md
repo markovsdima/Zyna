@@ -76,8 +76,8 @@ When you have a glass bar floating over a table/list:
    `isAccessibilityElement = true`, `accessibilityLabel`,
    `accessibilityTraits = .button`
 
-See [ChatNode](Zyna/Chat/Nodes/ChatNode.swift) and
-[RoomsScreenNode](Zyna/Screens/Rooms/RoomsController.swift) for
+See [ChatNode](../Chat/Nodes/ChatNode.swift) and
+[RoomsScreenNode](../Screens/Rooms/RoomsController.swift) for
 worked examples.
 
 ## Activating things from VoiceOver
