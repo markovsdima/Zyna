@@ -40,6 +40,9 @@ final class ContactsCoordinator {
         vc.onSearchTapped = { [weak self] in
             self?.navigationController.pop()
         }
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
         vc.onMessageTapped = { [weak self] in
             self?.openChat(for: contact)
         }

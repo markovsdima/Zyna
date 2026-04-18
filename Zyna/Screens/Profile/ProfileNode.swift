@@ -5,6 +5,38 @@
 
 import AsyncDisplayKit
 
+/// Orders `accessibilityElements` bar-before-content so VoiceOver reads the
+/// glass bar first, regardless of subnode insertion order.
+final class ProfileScreenNode: ScreenNode {
+
+    let content: ProfileNode
+    weak var glassTopBar: ASDisplayNode?
+
+    init(mode: ProfileMode) {
+        self.content = ProfileNode(mode: mode)
+        super.init()
+        automaticallyManagesSubnodes = false
+        addSubnode(content)
+    }
+
+    override func layout() {
+        super.layout()
+        content.frame = bounds
+    }
+
+    override var accessibilityElements: [Any]? {
+        get {
+            var elements: [Any] = []
+            if let bar = glassTopBar?.view, bar.superview === view {
+                elements.append(bar)
+            }
+            elements.append(content.view)
+            return elements
+        }
+        set { }
+    }
+}
+
 final class ProfileNode: ScreenNode {
 
     // MARK: - Callbacks

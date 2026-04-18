@@ -106,6 +106,9 @@
         }
       }
     },
+    "Back" : {
+
+    },
     "Calls" : {
       "localizations" : {
         "ru" : {
@@ -245,6 +248,9 @@
           }
         }
       }
+    },
+    "Edit" : {
+
     },
     "Encryption keys couldn't be transferred automatically. Enter the recovery key you saved when setting up this account to restore access to message history." : {
       "localizations" : {

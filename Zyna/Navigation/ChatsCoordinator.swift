@@ -175,6 +175,9 @@ final class ChatsCoordinator {
         vc.onSearchTapped = { [weak self] in
             self?.popAndActivateSearch()
         }
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
         navigationController.push(vc)
     }
 
