@@ -35,8 +35,12 @@ final class GlassInputBar: ASDisplayNode {
         }
     }
 
-    /// Called when scroll-to-live button is tapped.
-    var onScrollToLive: (() -> Void)?
+    /// Called each animation frame with the scroll button's current
+    /// icon frame, icon alpha, tap frame, tap alpha — in this bar's
+    /// parent view coordinate space. The owner (ChatViewController)
+    /// positions the actual UIViews at its level.
+    /// Driven by the spring animation in `scrollButtonTick`.
+    var onScrollButtonLayoutChanged: ((CGRect, CGFloat, CGRect, CGFloat) -> Void)?
 
     // MARK: - Private
 
@@ -53,10 +57,6 @@ final class GlassInputBar: ASDisplayNode {
     private var scrollButtonVelocity: CGFloat = 0
     private var scrollButtonDisplayLink: CADisplayLink?
     private var scrollButtonLastTime: CFTimeInterval = 0
-
-    // Scroll button views (positioned per-frame via spring animation)
-    private let scrollButtonIcon = UIImageView()
-    private let scrollButtonTap = UIButton(type: .custom)
 
     // MARK: - Init
 
@@ -95,17 +95,6 @@ final class GlassInputBar: ASDisplayNode {
         view.sendSubviewToBack(anchor.renderer)
         view.sendSubviewToBack(anchor)
 
-        // Scroll button UIViews (per-frame positioned, above the bar)
-        scrollButtonIcon.image = AppIcon.chevronDown.rendered(size: 24, color: .gray)
-        scrollButtonIcon.contentMode = .center
-        scrollButtonIcon.alpha = 0
-        view.addSubview(scrollButtonIcon)
-
-        scrollButtonTap.alpha = 0
-        scrollButtonTap.accessibilityLabel = "Scroll to bottom"
-        scrollButtonTap.addTarget(self, action: #selector(scrollButtonTapped), for: .touchUpInside)
-        view.addSubview(scrollButtonTap)
-
         inputNode.onWaveformUpdate = { [weak self] waveform in
             self?.updateBarHeights(waveform)
         }
@@ -142,6 +131,9 @@ final class GlassInputBar: ASDisplayNode {
         frame = CGRect(x: insetH, y: barY, width: barWidth, height: fittedSize.height)
         anchor.frame = bounds
         inputNode.frame = CGRect(x: 0, y: 0, width: barWidth, height: fittedSize.height)
+
+        // Bar position changed — scroll button position must follow
+        emitScrollButtonLayout()
     }
 
     /// Returns how much space the input bar + keyboard covers at the bottom.
@@ -282,25 +274,8 @@ final class GlassInputBar: ASDisplayNode {
                 0
             )
             p.scrollButtonVisible = 1
-
-            // Position icon + tap area in view coords
-            let iconCX = scrollCX - glassFrame.origin.x
-            let iconCY = scrollCY - glassFrame.origin.y
-            let iconSize = scrollCurrentR * 2
-            scrollButtonIcon.frame = CGRect(
-                x: iconCX - iconSize / 2,
-                y: iconCY - iconSize / 2,
-                width: iconSize,
-                height: iconSize
-            )
-            scrollButtonIcon.alpha = radiusFactor
-
-            scrollButtonTap.frame = scrollButtonIcon.frame.insetBy(dx: -8, dy: -8)
-            scrollButtonTap.alpha = t > 0.3 ? 1 : 0
         } else {
             p.scrollButtonVisible = 0
-            scrollButtonIcon.alpha = 0
-            scrollButtonTap.alpha = 0
         }
 
         // Shape 2: mic (circle) — inflated when absorbing scroll button volume
@@ -353,8 +328,47 @@ final class GlassInputBar: ASDisplayNode {
 
     // MARK: - Scroll Button
 
-    @objc private func scrollButtonTapped() {
-        onScrollToLive?()
+    /// Computes the scroll button icon/tap frame + alpha based on the
+    /// current spring progress, in this bar's parent view coordinates.
+    private func computeScrollButtonLayout() -> (CGRect, CGFloat, CGRect, CGFloat) {
+        guard scrollButtonProgress > 0.001 else {
+            return (.zero, 0, .zero, 0)
+        }
+        let barFrame = frame
+        let hPad: CGFloat = 14
+        let vPad: CGFloat = 6
+        let btnSize: CGFloat = 48
+        let scrollR: CGFloat = btnSize / 2
+
+        let micCX = barFrame.maxX - hPad - btnSize / 2
+        let contentY = barFrame.origin.y + vPad
+        let contentH = barFrame.height - vPad * 2
+        let micCY = contentY + contentH - btnSize / 2
+
+        let scrollTargetCX = micCX
+        let scrollTargetCY = barFrame.origin.y - 12 - scrollR
+
+        let t = scrollButtonProgress
+        let scrollCX = micCX + (scrollTargetCX - micCX) * t
+        let scrollCY = micCY + (scrollTargetCY - micCY) * t
+        let radiusFactor = min(1, t * 4)
+        let scrollCurrentR = scrollR * radiusFactor
+        let iconSize = scrollCurrentR * 2
+
+        let iconFrame = CGRect(
+            x: scrollCX - iconSize / 2,
+            y: scrollCY - iconSize / 2,
+            width: iconSize,
+            height: iconSize
+        )
+        let tapFrame = iconFrame.insetBy(dx: -8, dy: -8)
+        let tapAlpha: CGFloat = t > 0.3 ? 1 : 0
+        return (iconFrame, radiusFactor, tapFrame, tapAlpha)
+    }
+
+    private func emitScrollButtonLayout() {
+        let (icon, iconAlpha, tap, tapAlpha) = computeScrollButtonLayout()
+        onScrollButtonLayoutChanged?(icon, iconAlpha, tap, tapAlpha)
     }
 
     private func animateScrollButton(visible: Bool) {
@@ -402,9 +416,11 @@ final class GlassInputBar: ASDisplayNode {
             }
             // Sustain capture to ensure glass redraws with new capture frame
             GlassService.shared.captureFor(duration: 0.15)
+            emitScrollButtonLayout()
             return
         }
 
+        emitScrollButtonLayout()
         GlassService.shared.setNeedsCapture()
     }
 

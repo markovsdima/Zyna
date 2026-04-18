@@ -14,6 +14,11 @@ final class ChatNode: ASDisplayNode {
     weak var glassNavBar: ASDisplayNode?
     weak var glassInputBar: ASDisplayNode?
 
+    /// Set by ChatViewController. The scroll-to-live floating button lives
+    /// at this node's view level (not inside the input bar) so its tap
+    /// target works when positioned above the bar's bounds.
+    weak var scrollButtonTap: UIView?
+
     override init() {
         super.init()
         addSubnode(tableNode)
@@ -35,6 +40,9 @@ final class ChatNode: ASDisplayNode {
             }
             if let input = glassInputBar?.view, input.superview === view {
                 elements.append(input)
+            }
+            if let tap = scrollButtonTap, tap.superview === view, tap.alpha > 0 {
+                elements.append(tap)
             }
             elements.append(tableNode.view)
             return elements

@@ -25,6 +25,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let glassInputBar = GlassInputBar()
     private let searchBar = SearchBarView()
     private let inviteBanner = InviteBannerView()
+
+    /// Scroll-to-live button lives at node.view level (not inside input bar)
+    /// so its tap target works even when positioned above the bar's bounds.
+    /// The glass circle itself is rendered by GlassInputBar's shader
+    /// (shape3, metaball with mic). These are just the chevron + tap area.
+    private let scrollButtonIcon = UIImageView()
+    private let scrollButtonTap = UIButton(type: .custom)
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
@@ -115,6 +122,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassInputBar.isHidden = viewModel.isInvited
         node.addSubnode(glassInputBar)
         node.glassInputBar = glassInputBar
+
+        // Scroll-to-live button — lives on node.view so its tap target
+        // works when positioned above the input bar's bounds.
+        scrollButtonIcon.image = AppIcon.chevronDown.rendered(size: 24, color: .gray)
+        scrollButtonIcon.contentMode = .center
+        scrollButtonIcon.alpha = 0
+        scrollButtonIcon.isUserInteractionEnabled = false
+        node.view.addSubview(scrollButtonIcon)
+
+        scrollButtonTap.alpha = 0
+        scrollButtonTap.accessibilityLabel = "Scroll to bottom"
+        scrollButtonTap.accessibilityTraits = .button
+        scrollButtonTap.addTarget(self, action: #selector(scrollToLiveTapped), for: .touchUpInside)
+        node.view.addSubview(scrollButtonTap)
+        node.scrollButtonTap = scrollButtonTap
 
         // Both glass bars capture from the table — no self-capture
         glassNavBar.sourceView = node.tableNode.view
@@ -322,10 +344,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.viewModel.clearPendingForward()
         }
 
-        glassInputBar.onScrollToLive = { [weak self] in
-            self?.navigateToLive()
-            self?.glassInputBar.scrollButtonVisible = false
+        glassInputBar.onScrollButtonLayoutChanged = { [weak self] iconFrame, iconAlpha, tapFrame, tapAlpha in
+            guard let self else { return }
+            self.scrollButtonIcon.frame = iconFrame
+            self.scrollButtonIcon.alpha = iconAlpha
+            self.scrollButtonTap.frame = tapFrame
+            self.scrollButtonTap.alpha = tapAlpha
         }
+    }
+
+    @objc private func scrollToLiveTapped() {
+        navigateToLive()
+        glassInputBar.scrollButtonVisible = false
     }
 
     @objc private func tableTapped() {
