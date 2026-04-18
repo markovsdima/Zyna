@@ -41,7 +41,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     // MARK: - Subnodes
 
-    let bubbleNode = ASDisplayNode()
+    let bubbleNode = RoundedBackgroundNode()
     let contextSourceNode: ContextSourceNode
     let timeNode = ASTextNode()
     let statusIconNode: MessageStatusIconNode?
@@ -100,11 +100,10 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         // Bubble defaults — custom color from Zyna attributes wins if set.
         let customColor = message.zynaAttributes.color
-        bubbleNode.backgroundColor = customColor
+        bubbleNode.fillColor = customColor
             ?? (isOutgoing ? AppColor.bubbleBackgroundOutgoing
                            : AppColor.bubbleBackgroundIncoming)
-        bubbleNode.cornerRadius = 18
-        bubbleNode.clipsToBounds = true
+        bubbleNode.radius = 18
         bubbleNode.automaticallyManagesSubnodes = true
 
         // Timestamp (default colors — override in subclass if needed)
@@ -247,10 +246,10 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     func highlightBubble() {
         guard isNodeLoaded else { return }
-        let highlight = CALayer()
+        let highlight = CAShapeLayer()
         highlight.frame = bubbleNode.bounds
-        highlight.cornerRadius = bubbleNode.cornerRadius
-        highlight.backgroundColor = (isOutgoing ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming)
+        highlight.path = bubbleNode.currentPath().cgPath
+        highlight.fillColor = (isOutgoing ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming)
             .withAlphaComponent(0.3).cgColor
         highlight.opacity = 0
         bubbleNode.layer.addSublayer(highlight)
