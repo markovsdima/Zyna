@@ -35,7 +35,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
-    
+
+    // TODO: dial in via side-by-side gesture comparison — current values
+    // are a reasonable starting point, not a final choice.
+    /// Release-velocity threshold (pt/ms) a drag must exceed to dismiss the keyboard.
+    private static let keyboardDismissVelocity: CGFloat = 1.0
+    /// Minimum scroll distance (pt). Paired with the velocity threshold above.
+    private static let keyboardDismissDistance: CGFloat = 80
+
+    private var dragStartOffsetY: CGFloat = 0
+
     private lazy var glassComparison = GlassComparisonView()
     private lazy var glassTuning = GlassTuningView()
     private let audioPlayer = AudioPlayerService()
@@ -66,12 +75,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.dataSource = self
         node.tableNode.delegate = self
         node.tableNode.view.separatorStyle = .none
-        node.tableNode.view.keyboardDismissMode = .interactive
+        node.tableNode.view.keyboardDismissMode = .none
         node.tableNode.view.contentInsetAdjustmentBehavior = .never
         node.tableNode.view.showsVerticalScrollIndicator = false
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(tableTapped))
         tap.cancelsTouchesInView = false
+        // Cells' ContextSourceNode installs a zero-duration long-press
+        // that would otherwise swallow the tap — recognize simultaneously.
+        tap.delegate = self
+        // Let the scroll pan take precedence: a flick that starts a scroll
+        // shouldn't also register as a dismissing tap.
+        tap.require(toFail: node.tableNode.view.panGestureRecognizer)
         node.tableNode.view.addGestureRecognizer(tap)
 
         setupNavigationBar()
@@ -732,6 +747,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         GlassService.shared.captureFor(duration: springTiming.settlingDuration)
     }
 
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        dragStartOffsetY = scrollView.contentOffset.y
+    }
+
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView,
+                                   withVelocity velocity: CGPoint,
+                                   targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        // Deliberate flick only: fast AND far. `velocity` in pt/ms.
+        let distance = abs(scrollView.contentOffset.y - dragStartOffsetY)
+        if abs(velocity.y) > Self.keyboardDismissVelocity,
+           distance > Self.keyboardDismissDistance {
+            glassInputBar.inputNode.textInputNode.resignFirstResponder()
+        }
+    }
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if decelerate {
             fpsBooster.start()
@@ -998,6 +1028,15 @@ extension ChatViewController: QLPreviewControllerDelegate {
 private enum TeleportDirection {
     case up    // jumping to older — snapshot exits down, new content enters from top
     case down  // jumping to newer — snapshot exits up, new content enters from bottom
+}
+
+// MARK: - UIGestureRecognizerDelegate
+
+extension ChatViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        other is UILongPressGestureRecognizer
+    }
 }
 
 // MARK: - Teleport Animation Delegate
