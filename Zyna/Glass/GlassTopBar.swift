@@ -17,6 +17,8 @@ final class GlassTopBar: ASDisplayNode {
     enum Item {
         case circleButton(icon: UIImage, accessibilityLabel: String, action: () -> Void)
         case title(text: String, subtitle: String?)
+        /// Splits items into left / right groups without a visual element.
+        case flexibleSpace
     }
 
     // MARK: - Public
@@ -73,9 +75,10 @@ final class GlassTopBar: ASDisplayNode {
     // MARK: - Built content
 
     private struct Entry {
-        enum Kind { case circle, title }
+        enum Kind { case circle, title, flexibleSpace }
         let kind: Kind
-        let node: ASDisplayNode
+        /// nil for `.flexibleSpace`.
+        let node: ASDisplayNode?
         /// Non-nil for `.title` entries — direct access to the wrapped UIView.
         let titleView: GlassTopBarTitleView?
     }
@@ -132,37 +135,37 @@ final class GlassTopBar: ASDisplayNode {
         guard !entries.isEmpty else { return }
 
         let cy = rect.height / 2
-        let titleIdx = entries.firstIndex { $0.kind == .title }
+        let dividerIdx = entries.firstIndex { $0.kind == .title || $0.kind == .flexibleSpace }
 
-        // Left circles (before title)
+        // Left circles (before divider)
         var leftX = btnPad
         for (i, entry) in entries.enumerated() {
-            guard entry.kind == .circle else { continue }
-            guard titleIdx == nil || i < titleIdx! else { break }
-            entry.node.frame = CGRect(x: leftX, y: cy - btnSize / 2, width: btnSize, height: btnSize)
+            guard entry.kind == .circle, let node = entry.node else { continue }
+            guard dividerIdx == nil || i < dividerIdx! else { break }
+            node.frame = CGRect(x: leftX, y: cy - btnSize / 2, width: btnSize, height: btnSize)
             leftX += btnSize + gap
         }
 
-        // Right circles (after title), placed right-to-left
+        // Right circles (after divider), placed right-to-left
         var rightX = rect.width - btnPad
         for i in stride(from: entries.count - 1, through: 0, by: -1) {
             let entry = entries[i]
-            guard entry.kind == .circle else { continue }
-            guard let ti = titleIdx, i > ti else { break }
+            guard entry.kind == .circle, let node = entry.node else { continue }
+            guard let di = dividerIdx, i > di else { break }
             rightX -= btnSize
-            entry.node.frame = CGRect(x: rightX, y: cy - btnSize / 2, width: btnSize, height: btnSize)
+            node.frame = CGRect(x: rightX, y: cy - btnSize / 2, width: btnSize, height: btnSize)
             rightX -= gap
         }
 
-        // Title: centered
-        if let ti = titleIdx {
-            let leftCount = entries[..<ti].filter { $0.kind == .circle }.count
-            let rightCount = entries[(ti + 1)...].filter { $0.kind == .circle }.count
+        // Title: centered. Only `.title` has a node; `.flexibleSpace` is invisible.
+        if let di = dividerIdx, entries[di].kind == .title, let titleNode = entries[di].node {
+            let leftCount = entries[..<di].filter { $0.kind == .circle }.count
+            let rightCount = entries[(di + 1)...].filter { $0.kind == .circle }.count
             let sideSlots = max(leftCount, rightCount)
             let maxW = rect.width - (btnPad + CGFloat(sideSlots) * (btnSize + gap)) * 2
             let w = min(fittedTitleW, maxW)
             let x = (rect.width - w) / 2
-            entries[ti].node.frame = CGRect(x: x, y: 0, width: w, height: rect.height)
+            titleNode.frame = CGRect(x: x, y: 0, width: w, height: rect.height)
         }
     }
 
@@ -171,7 +174,7 @@ final class GlassTopBar: ASDisplayNode {
     private func rebuildContent() {
         // Tear down previous
         for entry in entries {
-            entry.node.removeFromSupernode()
+            entry.node?.removeFromSupernode()
         }
         entries.removeAll()
 
@@ -200,6 +203,9 @@ final class GlassTopBar: ASDisplayNode {
                 addSubnode(titleNode)
                 entries.append(Entry(kind: .title, node: titleNode, titleView: tv))
                 fittedTitleW = tv.contentWidth + titleHPad * 2
+
+            case .flexibleSpace:
+                entries.append(Entry(kind: .flexibleSpace, node: nil, titleView: nil))
             }
         }
 
@@ -229,7 +235,7 @@ final class GlassTopBar: ASDisplayNode {
         guard cw > 0, ch > 0 else { return p }
 
         let barW = glassFrame.width
-        let titleIdx = entries.firstIndex { $0.kind == .title }
+        let dividerIdx = entries.firstIndex { $0.kind == .title || $0.kind == .flexibleSpace }
 
         var circleIndex = 0
 
@@ -251,30 +257,28 @@ final class GlassTopBar: ASDisplayNode {
             circleIndex += 1
         }
 
-        // Left circles (before title)
+        // Left circles (before divider)
         var leftX = btnPad
         for (i, entry) in entries.enumerated() {
             guard entry.kind == .circle else { continue }
-            guard titleIdx == nil || i < titleIdx! else { break }
+            guard dividerIdx == nil || i < dividerIdx! else { break }
             addCircleShape(x: leftX)
             leftX += btnSize + gap
         }
 
-        // Right circles (after title), placed right-to-left
+        // Right circles (after divider), placed right-to-left
         var rightX = barW - btnPad
         for i in stride(from: entries.count - 1, through: 0, by: -1) {
             guard entries[i].kind == .circle else { continue }
-            guard let ti = titleIdx, i > ti else { break }
+            guard let di = dividerIdx, i > di else { break }
             rightX -= btnSize
             addCircleShape(x: rightX)
             rightX -= gap
         }
 
-        // Title: centered
-        var hasRect = false
-        if let ti = titleIdx {
-            let leftCount = entries[..<ti].filter { $0.kind == .circle }.count
-            let rightCount = entries[(ti + 1)...].filter { $0.kind == .circle }.count
+        if let di = dividerIdx, entries[di].kind == .title {
+            let leftCount = entries[..<di].filter { $0.kind == .circle }.count
+            let rightCount = entries[(di + 1)...].filter { $0.kind == .circle }.count
             let sideSlots = max(leftCount, rightCount)
             let maxW = barW - (btnPad + CGFloat(sideSlots) * (btnSize + gap)) * 2
             let w = min(fittedTitleW, maxW)
@@ -286,10 +290,12 @@ final class GlassTopBar: ASDisplayNode {
                 Float(glassFrame.height / ch)
             )
             p.shape0cornerR = Float(cornerR * scale) / Float(ch * scale)
-            hasRect = true
         }
 
-        p.shapeCount = Float((hasRect ? 1 : 0) + circleIndex)
+        // Shader gates shape1 on `shapeCount >= 2`, shape2 on `>= 3`, etc.
+        // Always reserve shape0's slot so circles light up when title is absent.
+        // Degenerate (zero) shape0 has no effect on the SDF union.
+        p.shapeCount = Float(1 + circleIndex)
         return p
     }
 }
