@@ -49,6 +49,14 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
             self?.applyTableUpdate(update)
         }
 
+        viewModel.onInPlacePresence = { [weak self] updates in
+            guard let self else { return }
+            for (indexPath, isOnline) in updates {
+                guard let cell = self.tableNode.nodeForRow(at: indexPath) as? RoomsCellNode else { continue }
+                cell.updatePresence(isOnline: isOnline)
+            }
+        }
+
         MatrixClientService.shared.stateSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
@@ -82,8 +90,6 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
                     tableNode.reloadRows(at: reloads, with: .none)
                 }
             }, completion: nil)
-        case .partialReload(let indexPaths):
-            tableNode.reloadRows(at: indexPaths, with: .none)
         }
     }
 

@@ -13,6 +13,9 @@ final class RoomsViewModel {
 
     var onChatSelected: ((Room) -> Void)?
     var onTableUpdate: ((RoomsTableUpdate) -> Void)?
+    /// Lightweight presence flips — applied in place so cells aren't
+    /// re-created (that would flicker during presence bursts).
+    var onInPlacePresence: (([(IndexPath, Bool)]) -> Void)?
 
     let roomListService = ZynaRoomListService()
     private var cancellables = Set<AnyCancellable>()
@@ -107,19 +110,19 @@ final class RoomsViewModel {
         }
 
         // Update visible chats
-        var changedRows: [IndexPath] = []
+        var presenceUpdates: [(IndexPath, Bool)] = []
         for (idx, chat) in chats.enumerated() {
             guard let userId = chat.directUserId,
                   let status = statuses[userId] else { continue }
             if chat.isOnline != status.online {
                 chats[idx].isOnline = status.online
                 chats[idx].lastSeen = status.lastSeen
-                changedRows.append(IndexPath(row: idx, section: 0))
+                presenceUpdates.append((IndexPath(row: idx, section: 0), status.online))
             }
         }
 
-        if !changedRows.isEmpty {
-            onTableUpdate?(.partialReload(changedRows))
+        if !presenceUpdates.isEmpty {
+            onInPlacePresence?(presenceUpdates)
         }
     }
 
@@ -228,5 +231,4 @@ enum RoomsTableUpdate {
         insertions: [IndexPath],
         reloads: [IndexPath]
     )
-    case partialReload([IndexPath])
 }

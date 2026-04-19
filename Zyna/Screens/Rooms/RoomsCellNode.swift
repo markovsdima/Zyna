@@ -13,7 +13,9 @@ class RoomsCellNode: ZynaCellNode {
     private let nameNode = ASTextNode()
     private let messageNode = ASTextNode()
     private let timestampNode = ASTextNode()
-    private let onlineIndicatorNode = ASDisplayNode()
+    private let onlineIndicatorNode = ASImageNode()
+    private static let onlineIndicatorDiameter: CGFloat = 12
+    private static let onlineIndicatorBorderWidth: CGFloat = 2
     private let unreadBadgeNode = ASDisplayNode()
     private let unreadCountNode = ASTextNode()
     private let separatorNode = ASDisplayNode()
@@ -25,6 +27,20 @@ class RoomsCellNode: ZynaCellNode {
         automaticallyManagesSubnodes = true
         setupNodes()
         setupAccessibility()
+    }
+
+    private func updateOnlineIndicatorImage() {
+        onlineIndicatorNode.image = OnlineIndicatorImage.render(
+            diameter: Self.onlineIndicatorDiameter,
+            borderWidth: Self.onlineIndicatorBorderWidth,
+            userInterfaceStyle: view.traitCollection.userInterfaceStyle
+        )
+    }
+
+    /// Flips the indicator alpha without rebuilding the cell.
+    /// Driven by RoomsViewModel.onInPlacePresence on presence change.
+    func updatePresence(isOnline: Bool) {
+        onlineIndicatorNode.alpha = isOnline ? 1 : 0
     }
 
     private func setupNodes() {
@@ -80,11 +96,12 @@ class RoomsCellNode: ZynaCellNode {
         )
         timestampNode.maximumNumberOfLines = 1
 
-        // Online indicator
-        onlineIndicatorNode.backgroundColor = UIColor.systemGreen
-        onlineIndicatorNode.cornerRadius = 6
-        onlineIndicatorNode.borderWidth = 2
-        onlineIndicatorNode.borderColor = UIColor.systemBackground.cgColor
+        // Online indicator — pre-rendered UIImage from
+        // OnlineIndicatorImage, set in didLoad when the trait
+        // collection is on main. Layer-backed, no cornerRadius work.
+        onlineIndicatorNode.isLayerBacked = true
+        onlineIndicatorNode.isOpaque = false
+        onlineIndicatorNode.contentMode = .center
 
         // Unread badge
         unreadBadgeNode.backgroundColor = UIColor.systemBlue
@@ -123,16 +140,14 @@ class RoomsCellNode: ZynaCellNode {
         avatarImageNode.style.preferredSize = CGSize(width: 50, height: 50)
         let avatar: ASLayoutSpec = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: avatarImageNode)
 
-        // Avatar with optional online indicator
-        let avatarSection: ASLayoutSpec
-        if chat.isOnline {
-            onlineIndicatorNode.style.preferredSize = CGSize(width: 12, height: 12)
-            onlineIndicatorNode.style.layoutPosition = CGPoint(x: 38, y: 38)
-            avatarSection = ASAbsoluteLayoutSpec(children: [avatar, onlineIndicatorNode])
-            avatarSection.style.preferredSize = CGSize(width: 50, height: 50)
-        } else {
-            avatarSection = ASWrapperLayoutSpec(layoutElement: avatar)
-        }
+        // Always in layout — alpha=0 is compositor-skipped, no
+        // flicker on presence flips.
+        let d = Self.onlineIndicatorDiameter
+        onlineIndicatorNode.style.preferredSize = CGSize(width: d, height: d)
+        onlineIndicatorNode.style.layoutPosition = CGPoint(x: 38, y: 38)
+        onlineIndicatorNode.alpha = chat.isOnline ? 1 : 0
+        let avatarSection = ASAbsoluteLayoutSpec(children: [avatar, onlineIndicatorNode])
+        avatarSection.style.preferredSize = CGSize(width: 50, height: 50)
 
         // Right side: timestamp + optional unread badge
         var rightElements: [ASLayoutElement] = [timestampNode]
@@ -217,5 +232,16 @@ class RoomsCellNode: ZynaCellNode {
         let highlightedBackground = UIView()
         highlightedBackground.backgroundColor = UIColor.systemGray6
         selectedBackgroundView = highlightedBackground
+
+        updateOnlineIndicatorImage()
+        // Border depends on trait; cells aren't re-created on flip.
+        // didLoad is on main but not @MainActor in the bridge.
+        if #available(iOS 17, *) {
+            MainActor.assumeIsolated {
+                view.registerForTraitChanges([UITraitUserInterfaceStyle.self]) { [weak self] (_: UIView, _) in
+                    self?.updateOnlineIndicatorImage()
+                }
+            }
+        }
     }
 }
