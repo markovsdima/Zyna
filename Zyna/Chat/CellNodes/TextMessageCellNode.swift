@@ -66,8 +66,11 @@ final class TextMessageCellNode: MessageCellNode {
 
             let metrics = Self.textMetrics(for: attributedText, maxWidth: maxContentWidth)
             let timeTextSize = Self.singleLineSize(for: timeText)
+            // Slot reserves extra width for double-check — reading
+            // preferredSize.width (not iconSize) keeps the time strip
+            // from overlapping the trailing text.
             let statusIconWidth: CGFloat = self.statusIconNode.map {
-                $0.iconSize + 4  // 4pt gap between time and icon
+                $0.style.preferredSize.width + 4
             } ?? 0
             let timeSize = CGSize(
                 width: timeTextSize.width + statusIconWidth,
