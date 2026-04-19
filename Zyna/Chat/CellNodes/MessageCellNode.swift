@@ -9,6 +9,10 @@ import AsyncDisplayKit
 /// Handles context menu protocol, sender name, bubble styling, and the outer layout.
 class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
+    /// Matches a single-line text bubble
+    fileprivate static let avatarDiameter: CGFloat = 32
+    fileprivate static let avatarThumbSize: Int = Int(avatarDiameter * ScreenConstants.scale)
+
     // MARK: - Context Menu
 
     var onContextMenuActivated: (() -> Void)?
@@ -32,6 +36,11 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     var onReactionTapped: ((String) -> Void)?
 
+    // MARK: - Sender
+
+    /// Fires with the sender's Matrix user ID on tap of the name or avatar.
+    var onSenderTapped: ((String) -> Void)?
+
     // MARK: - Reply
 
     var onReplyHeaderTapped: ((String) -> Void)?
@@ -47,11 +56,18 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     let statusIconNode: MessageStatusIconNode?
     let senderNameNode = ASTextNode()
     private(set) var reactionsNode: ReactionsNode?
+    private let avatarBackgroundNode = ASImageNode()
+    private let avatarImageNode = ASImageNode()
 
     // MARK: - State
 
     let isOutgoing: Bool
     let showSenderName: Bool
+    /// Left-gutter slot is reserved (incoming + group); image
+    /// visibility then depends on isLastInCluster.
+    let reservesAvatarGutter: Bool
+    private let senderId: String
+    private var isLastInCluster: Bool
 
     private let accessibilityContent: String
 
@@ -67,7 +83,10 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         self.accessibilityContent = parts.joined(separator: ", ")
 
         self.isOutgoing = message.isOutgoing
-        self.showSenderName = !message.isOutgoing && isGroupChat
+        self.showSenderName = !message.isOutgoing && isGroupChat && message.isFirstInCluster
+        self.reservesAvatarGutter = !message.isOutgoing && isGroupChat
+        self.senderId = message.senderId
+        self.isLastInCluster = message.isLastInCluster
         self.contextSourceNode = ContextSourceNode(contentNode: bubbleNode)
 
         // Status icon only on the sender's own bubbles. For incoming
@@ -127,6 +146,69 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
                     .foregroundColor: MessageCellHelpers.senderColors[colorIndex]
                 ]
             )
+            senderNameNode.onDidLoad { [weak self] node in
+                node.view.isUserInteractionEnabled = true
+                let tap = UITapGestureRecognizer(
+                    target: self,
+                    action: #selector(MessageCellNode.handleSenderTap)
+                )
+                node.view.addGestureRecognizer(tap)
+            }
+        }
+
+        if reservesAvatarGutter {
+            let avatarModel = AvatarViewModel(
+                userId: message.senderId,
+                displayName: message.senderDisplayName,
+                mxcAvatarURL: message.senderAvatarUrl
+            )
+            avatarBackgroundNode.image = avatarModel.circleImage(
+                diameter: Self.avatarDiameter, fontSize: 13
+            )
+            avatarBackgroundNode.isOpaque = false
+            avatarBackgroundNode.backgroundColor = .clear
+            // Image comes in already-rounded from CircularImageCache,
+            // so the node does no corner work. Layer-only so taps fall
+            // through to the background node which owns the gesture.
+            avatarImageNode.isOpaque = false
+            avatarImageNode.backgroundColor = .clear
+            avatarImageNode.contentMode = .scaleAspectFill
+            avatarImageNode.isLayerBacked = true
+
+            let visible = isLastInCluster
+            avatarBackgroundNode.alpha = visible ? 1 : 0
+            avatarImageNode.alpha = visible ? 1 : 0
+
+            if let mxc = message.senderAvatarUrl {
+                let diameter = Self.avatarDiameter
+                if let source = MediaCache.shared.cachedImage(for: mxc) {
+                    avatarImageNode.image = CircularImageCache.roundedImage(
+                        source: source, diameter: diameter, cacheKey: mxc
+                    )
+                } else {
+                    // Don't annotate this Task @MainActor. A single
+                    // render is cheap but bursts of new avatars on
+                    // scroll pile up and drop frames. Everything
+                    // touched here is thread-safe:
+                    // UIGraphicsImageRenderer, NSCache, ASImageNode.image.
+                    Task { [weak self] in
+                        guard let source = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: Self.avatarThumbSize) else { return }
+                        let rounded = CircularImageCache.roundedImage(
+                            source: source, diameter: diameter, cacheKey: mxc
+                        )
+                        self?.avatarImageNode.image = rounded
+                    }
+                }
+            }
+
+            avatarBackgroundNode.onDidLoad { [weak self] node in
+                node.view.isUserInteractionEnabled = true
+                let tap = UITapGestureRecognizer(
+                    target: self,
+                    action: #selector(MessageCellNode.handleSenderTap)
+                )
+                node.view.addGestureRecognizer(tap)
+            }
         }
 
         // Forwarded header
@@ -178,6 +260,10 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    @objc private func handleSenderTap() {
+        onSenderTapped?(senderId)
+    }
+
     // MARK: - Layout
 
     /// Wraps the bubble in sender-name + spacer + alignment.
@@ -214,17 +300,34 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         let hStack = ASStackLayoutSpec.horizontal()
         hStack.spacing = 4
         hStack.alignItems = .start
-        hStack.children = isOutgoing
-            ? [spacer, column]
-            : [column, spacer]
+
+        if isOutgoing {
+            hStack.children = [spacer, column]
+        } else if reservesAvatarGutter {
+            hStack.children = [buildAvatarSlot(), column, spacer]
+        } else {
+            hStack.children = [column, spacer]
+        }
 
         return ASInsetLayoutSpec(insets: MessageCellHelpers.cellInsets, child: hStack)
+    }
+
+    /// Fixed-width slot; the avatar image is hidden via alpha on
+    /// non-last bubbles so the whole cluster stays horizontally aligned.
+    private func buildAvatarSlot() -> ASLayoutElement {
+        let overlay = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: avatarImageNode)
+        overlay.style.preferredSize = CGSize(width: Self.avatarDiameter, height: Self.avatarDiameter)
+        // Anchored to the bottom so the avatar sits by the last bubble
+        // of the cluster, not the first.
+        overlay.style.alignSelf = .end
+        return overlay
     }
 
     // MARK: - In-Place Update
 
     /// Returns true if the change between old and new can be applied
-    /// without recreating the cell (only send-status changed).
+    /// without recreating the cell (send-status or cluster-membership
+    /// flip — both are lightweight).
     static func canUpdateInPlace(old: ChatMessage, new: ChatMessage) -> Bool {
         old.id == new.id
             && old.content == new.content
@@ -232,6 +335,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             && old.zynaAttributes == new.zynaAttributes
             && old.replyInfo == new.replyInfo
             && old.senderDisplayName == new.senderDisplayName
+            && old.senderAvatarUrl == new.senderAvatarUrl
     }
 
     /// Update send-status icon without recreating the cell.
@@ -240,6 +344,17 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
               let newIcon = MessageStatusIcon.from(sendStatus: status)
         else { return }
         iconNode.icon = newIcon
+    }
+
+    /// Alpha-toggles the avatar when a new same-sender message pushes
+    /// this cell out of the "last in cluster" slot. Layout is stable,
+    /// and alpha=0 layers are compositor-skipped — hiding is free.
+    func updateClusterMembership(isLastInCluster: Bool) {
+        guard reservesAvatarGutter, self.isLastInCluster != isLastInCluster else { return }
+        self.isLastInCluster = isLastInCluster
+        let alpha: CGFloat = isLastInCluster ? 1 : 0
+        avatarBackgroundNode.alpha = alpha
+        avatarImageNode.alpha = alpha
     }
 
     // MARK: - Highlight

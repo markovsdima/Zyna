@@ -212,6 +212,33 @@ final class MessageWindow {
         log("jumpToOldest: window=\(stored.count)")
     }
 
+    // MARK: - Cluster Peek
+
+    /// One row just outside the top edge of the window, used by
+    /// cluster decoration so the oldest visible message sees its
+    /// real predecessor instead of nil.
+    func peekOlderNeighbor() -> ClusterNeighbor? {
+        guard let oldestTs = oldestTimestamp else { return nil }
+        guard let msg = queryOlderThan(timestamp: oldestTs, limit: 1).first else { return nil }
+        return ClusterNeighbor(
+            senderId: msg.senderId,
+            timestamp: Date(timeIntervalSince1970: msg.timestamp),
+            isCallEvent: msg.contentType == "call"
+        )
+    }
+
+    /// Bottom-edge mirror of peekOlderNeighbor. Non-nil only after a
+    /// trim or jumpTo — at live edge nothing newer exists yet.
+    func peekNewerNeighbor() -> ClusterNeighbor? {
+        guard let newestTs = newestTimestamp else { return nil }
+        guard let msg = queryNewerThan(timestamp: newestTs, limit: 1).first else { return nil }
+        return ClusterNeighbor(
+            senderId: msg.senderId,
+            timestamp: Date(timeIntervalSince1970: msg.timestamp),
+            isCallEvent: msg.contentType == "call"
+        )
+    }
+
     // MARK: - GRDB Queries
 
     private func queryNewest(limit: Int) -> [StoredMessage] {

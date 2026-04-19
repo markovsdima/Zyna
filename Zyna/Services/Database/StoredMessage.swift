@@ -17,6 +17,7 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var transactionId: String?
     var senderId: String
     var senderDisplayName: String?
+    var senderAvatarUrl: String?
     var isOutgoing: Bool
     var timestamp: TimeInterval
     var contentType: String
@@ -51,6 +52,7 @@ extension StoredMessage {
         self.roomId = roomId
         self.senderId = msg.senderId
         self.senderDisplayName = msg.senderDisplayName
+        self.senderAvatarUrl = msg.senderAvatarUrl
         self.isOutgoing = msg.isOutgoing
         self.timestamp = msg.timestamp.timeIntervalSince1970
         self.reactionsJSON = Self.encodeReactions(msg.reactions)
@@ -155,6 +157,7 @@ extension StoredMessage {
             itemIdentifier: itemIdentifier,
             senderId: senderId,
             senderDisplayName: senderDisplayName,
+            senderAvatarUrl: senderAvatarUrl,
             isOutgoing: isOutgoing,
             timestamp: Date(timeIntervalSince1970: timestamp),
             content: content,

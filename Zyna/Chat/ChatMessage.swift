@@ -141,6 +141,17 @@ enum ChatItemIdentifier: Equatable {
     }
 }
 
+// MARK: - Cluster Neighbor
+
+/// Phantom neighbour just outside the visible window. Carries only
+/// what the cluster rule consults, so peek queries don't pay full
+/// ChatMessage construction.
+struct ClusterNeighbor {
+    let senderId: String
+    let timestamp: Date
+    let isCallEvent: Bool
+}
+
 // MARK: - Chat Message
 
 struct ChatMessage: Identifiable, Equatable, Hashable {
@@ -149,6 +160,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     let itemIdentifier: ChatItemIdentifier?
     let senderId: String
     let senderDisplayName: String?
+    let senderAvatarUrl: String?
     let isOutgoing: Bool
     let timestamp: Date
     let content: ChatMessageContent
@@ -159,6 +171,10 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     /// unwrap noise.
     let zynaAttributes: ZynaMessageAttributes
     let sendStatus: String
+    /// Populated by ChatViewModel.decorateClusters. Defaults assume a
+    /// standalone message so DMs and one-off callers don't need to set them.
+    var isFirstInCluster: Bool = true
+    var isLastInCluster: Bool = true
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         // id (SDK uniqueId) is unstable across timeline recreations.
@@ -166,6 +182,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
         lhs.eventId == rhs.eventId
             && lhs.senderId == rhs.senderId
             && lhs.senderDisplayName == rhs.senderDisplayName
+            && lhs.senderAvatarUrl == rhs.senderAvatarUrl
             && lhs.isOutgoing == rhs.isOutgoing
             && lhs.timestamp == rhs.timestamp
             && lhs.content == rhs.content
@@ -173,6 +190,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.replyInfo == rhs.replyInfo
             && lhs.zynaAttributes == rhs.zynaAttributes
             && lhs.sendStatus == rhs.sendStatus
+            && lhs.isLastInCluster == rhs.isLastInCluster
     }
 
     func hash(into hasher: inout Hasher) {

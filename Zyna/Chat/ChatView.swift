@@ -54,6 +54,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var isPickerPresented = false
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
+    private var isGroupChat = false
 
     // MARK: - Init
 
@@ -240,6 +241,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
             .store(in: &cancellables)
 
+        viewModel.$isGroupChat
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] flag in
+                guard let self, self.isGroupChat != flag else { return }
+                self.isGroupChat = flag
+                // RoomInfo resolves shortly after appear; one reload
+                // makes sender names appear on already-rendered rows.
+                self.node.tableNode.reloadData()
+            }
+            .store(in: &cancellables)
+
         viewModel.$searchState
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
@@ -279,6 +291,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                   let cellNode = self.node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode
             else { return }
             cellNode.updateSendStatus(message.sendStatus)
+            cellNode.updateClusterMembership(isLastInCluster: message.isLastInCluster)
         }
 
         viewModel.onRedactedDetected = { [weak self] messageIds in
@@ -390,6 +403,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
         let message = messages[indexPath.row]
         let audioPlayer = self.audioPlayer
+        let isGroup = self.isGroupChat
         return { [weak self] in
 
             // Call events use a standalone centered cell, not a MessageCellNode
@@ -400,23 +414,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             let cellNode: MessageCellNode
             switch message.content {
             case .voice:
-                cellNode = VoiceMessageCellNode(message: message, audioPlayer: audioPlayer)
+                cellNode = VoiceMessageCellNode(message: message, audioPlayer: audioPlayer, isGroupChat: isGroup)
             case .image:
-                let imageCell = ImageMessageCellNode(message: message)
+                let imageCell = ImageMessageCellNode(message: message, isGroupChat: isGroup)
                 imageCell.onImageTapped = { [weak self, weak imageCell] in
                     guard let self, let imageCell else { return }
                     self.presentImageViewer(for: message, from: imageCell)
                 }
                 cellNode = imageCell
             case .file:
-                let fileCell = FileCellNode(message: message)
+                let fileCell = FileCellNode(message: message, isGroupChat: isGroup)
                 fileCell.onFileTapped = { [weak self] in
                     guard let self else { return }
                     self.handleFileTap(message: message, cellNode: fileCell)
                 }
                 cellNode = fileCell
             default:
-                cellNode = TextMessageCellNode(message: message)
+                cellNode = TextMessageCellNode(message: message, isGroupChat: isGroup)
+            }
+
+            cellNode.onSenderTapped = { [weak self] userId in
+                self?.onTitleTapped?(userId)
             }
 
             cellNode.onInteractionLockChanged = { [weak self] locked in

@@ -41,6 +41,7 @@ final class ChatViewModel {
     @Published private(set) var partnerPresence: UserPresence?
     @Published private(set) var partnerUserId: String?
     @Published private(set) var memberCount: Int?
+    @Published private(set) var isGroupChat: Bool = false
     @Published private(set) var searchState: ChatSearchState?
 
     // MARK: - Coordinator callback
@@ -125,6 +126,7 @@ final class ChatViewModel {
                 let count = Int(info.joinedMembersCount)
                 await MainActor.run {
                     self.memberCount = count
+                    self.isGroupChat = true
                 }
             }
         }
@@ -202,7 +204,12 @@ final class ChatViewModel {
             return true
         }
 
-        let newMessages = displayStored.compactMap { $0.toChatMessage() }
+        let rawMessages = displayStored.compactMap { $0.toChatMessage() }
+        let newMessages = Self.decorateClusters(
+            rawMessages,
+            olderBoundary: window.peekOlderNeighbor(),
+            newerBoundary: window.peekNewerNeighbor()
+        )
 
         // 3. Prefetch images
         Self.prefetchImages(newMessages)
@@ -557,6 +564,63 @@ final class ChatViewModel {
                 .filter(Column("roomId") == rid)
                 .fetchCount(db)
         }) ?? 0
+    }
+
+    // MARK: - Cluster Decoration
+
+    /// Same-sender messages within this gap share a cluster; beyond it
+    /// the cluster breaks even without a sender change.
+    private static let clusterGap: TimeInterval = 5 * 60
+
+    /// Assigns isFirstInCluster / isLastInCluster. A cluster breaks on
+    /// sender change, a gap > clusterGap, or a call event between.
+    ///
+    /// Array is newest → oldest (table is inverted). "First in cluster"
+    /// is the visually top bubble — the OLDER one, higher-index.
+    ///
+    /// `olderBoundary` / `newerBoundary` are phantom rows just outside
+    /// the window, fetched from GRDB. Needed after window trim or
+    /// jumpTo, where both edges are artificial cuts.
+    private static func decorateClusters(
+        _ messages: [ChatMessage],
+        olderBoundary: ClusterNeighbor?,
+        newerBoundary: ClusterNeighbor?
+    ) -> [ChatMessage] {
+        guard !messages.isEmpty else { return messages }
+        var result = messages
+
+        for i in 0..<result.count {
+            let current = result[i]
+            if case .callEvent = current.content {
+                result[i].isFirstInCluster = true
+                result[i].isLastInCluster = true
+                continue
+            }
+            // Array is newest-first: prev index = newer, next = older.
+            let newerInArray = i > 0 ? neighbor(from: result[i - 1]) : newerBoundary
+            let olderInArray = i + 1 < result.count ? neighbor(from: result[i + 1]) : olderBoundary
+            result[i].isFirstInCluster = isClusterBoundary(current: current, neighbor: olderInArray)
+            result[i].isLastInCluster = isClusterBoundary(current: current, neighbor: newerInArray)
+        }
+        return result
+    }
+
+    private static func neighbor(from message: ChatMessage) -> ClusterNeighbor {
+        let isCall: Bool
+        if case .callEvent = message.content { isCall = true } else { isCall = false }
+        return ClusterNeighbor(
+            senderId: message.senderId,
+            timestamp: message.timestamp,
+            isCallEvent: isCall
+        )
+    }
+
+    private static func isClusterBoundary(current: ChatMessage, neighbor: ClusterNeighbor?) -> Bool {
+        guard let neighbor else { return true }
+        if neighbor.isCallEvent { return true }
+        if neighbor.senderId != current.senderId { return true }
+        let gap = abs(current.timestamp.timeIntervalSince(neighbor.timestamp))
+        return gap > clusterGap
     }
 
     // MARK: - Prefetch

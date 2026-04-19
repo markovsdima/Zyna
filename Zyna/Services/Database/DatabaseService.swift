@@ -108,6 +108,12 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v4_senderAvatar") { db in
+            try db.alter(table: "storedMessage") { t in
+                t.add(column: "senderAvatarUrl", .text)
+            }
+        }
+
         return migrator
     }
 }

@@ -112,11 +112,14 @@ final class TimelineService {
         let timestamp = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
 
         let senderName: String?
+        let senderAvatarUrl: String?
         switch event.senderProfile {
-        case .ready(let displayName, _, _):
+        case .ready(let displayName, _, let avatarUrl):
             senderName = displayName
+            senderAvatarUrl = avatarUrl
         default:
             senderName = nil
+            senderAvatarUrl = nil
         }
 
         guard let content = contentFromEvent(event) else { return nil }
@@ -145,6 +148,7 @@ final class TimelineService {
             itemIdentifier: itemIdentifier,
             senderId: event.sender,
             senderDisplayName: senderName,
+            senderAvatarUrl: senderAvatarUrl,
             isOutgoing: event.isOwn,
             timestamp: timestamp,
             content: content,
