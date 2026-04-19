@@ -569,8 +569,9 @@ final class ChatViewModel {
     // MARK: - Cluster Decoration
 
     /// Same-sender messages within this gap share a cluster; beyond it
-    /// the cluster breaks even without a sender change.
-    private static let clusterGap: TimeInterval = 5 * 60
+    /// the cluster breaks even without a sender change. Same threshold
+    /// for DM and group — a long pause means a new "take" either way.
+    private static let clusterGap: TimeInterval = 10 * 60
 
     /// Assigns isFirstInCluster / isLastInCluster. A cluster breaks on
     /// sender change, a gap > clusterGap, or a call event between.

@@ -67,6 +67,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     /// visibility then depends on isLastInCluster.
     let reservesAvatarGutter: Bool
     private let senderId: String
+    private let isFirstInCluster: Bool
     private var isLastInCluster: Bool
 
     private let accessibilityContent: String
@@ -86,6 +87,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         self.showSenderName = !message.isOutgoing && isGroupChat && message.isFirstInCluster
         self.reservesAvatarGutter = !message.isOutgoing && isGroupChat
         self.senderId = message.senderId
+        self.isFirstInCluster = message.isFirstInCluster
         self.isLastInCluster = message.isLastInCluster
         self.contextSourceNode = ContextSourceNode(contentNode: bubbleNode)
 
@@ -122,7 +124,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         bubbleNode.fillColor = customColor
             ?? (isOutgoing ? AppColor.bubbleBackgroundOutgoing
                            : AppColor.bubbleBackgroundIncoming)
-        bubbleNode.radius = 18
+        bubbleNode.radius = 14
         bubbleNode.automaticallyManagesSubnodes = true
 
         // Timestamp (default colors — override in subclass if needed)
@@ -309,7 +311,13 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             hStack.children = [column, spacer]
         }
 
-        return ASInsetLayoutSpec(insets: MessageCellHelpers.cellInsets, child: hStack)
+        // Only top is cluster-aware; bottom stays fixed so cell
+        // height doesn't jump when isLastInCluster flips in place.
+        var insets = MessageCellHelpers.cellInsets
+        if isFirstInCluster {
+            insets.top = MessageCellHelpers.clusterBreakTopInset
+        }
+        return ASInsetLayoutSpec(insets: insets, child: hStack)
     }
 
     /// Fixed-width slot; the avatar image is hidden via alpha on

@@ -9,6 +9,11 @@ enum MessageCellHelpers {
 
     static let maxBubbleWidthRatio: CGFloat = 0.75
     static let cellInsets = UIEdgeInsets(top: 1, left: 8, bottom: 1, right: 8)
+    /// Top inset for the first bubble of a cluster — the "breather"
+    /// between different senders (or a long same-sender pause, or a
+    /// system event between messages). Replaces `cellInsets.top`, not
+    /// added to it.
+    static let clusterBreakTopInset: CGFloat = 5
 
     static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
