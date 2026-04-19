@@ -9,6 +9,7 @@ import MatrixRustSDK
 final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
     var onSearchTapped: (() -> Void)?
+    var onInviteMembersTapped: (() -> Void)?
 
     private let room: Room
     private let memberCount: Int?
@@ -27,6 +28,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
         node.onSearchTapped = { [weak self] in
             self?.onSearchTapped?()
+        }
+
+        node.onInviteTapped = { [weak self] in
+            self?.onInviteMembersTapped?()
         }
 
         let name = room.displayName() ?? "Group"

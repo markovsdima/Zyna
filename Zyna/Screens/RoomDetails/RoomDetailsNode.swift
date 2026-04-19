@@ -8,6 +8,7 @@ import AsyncDisplayKit
 final class RoomDetailsNode: ScreenNode {
 
     var onSearchTapped: (() -> Void)?
+    var onInviteTapped: (() -> Void)?
 
     // MARK: - Nodes
 
@@ -16,6 +17,7 @@ final class RoomDetailsNode: ScreenNode {
     private let avatarInitialsNode = ASTextNode()
     private let nameNode = ASTextNode()
     private let memberCountNode = ASTextNode()
+    private let inviteButtonNode = ASButtonNode()
     private let searchButtonNode = ASButtonNode()
 
     // MARK: - State
@@ -38,10 +40,8 @@ final class RoomDetailsNode: ScreenNode {
         avatarImageNode.contentMode = .scaleAspectFill
         avatarImageNode.isLayerBacked = true
 
-        let searchIcon = UIImage(
-            systemName: "magnifyingglass",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-        )
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
+        let searchIcon = UIImage(systemName: "magnifyingglass", withConfiguration: iconConfig)
         searchButtonNode.setImage(searchIcon, for: .normal)
         searchButtonNode.setAttributedTitle(NSAttributedString(
             string: "  " + String(localized: "Search Messages"),
@@ -49,6 +49,15 @@ final class RoomDetailsNode: ScreenNode {
         ), for: .normal)
         searchButtonNode.contentHorizontalAlignment = .middle
         searchButtonNode.addTarget(self, action: #selector(searchTapped), forControlEvents: .touchUpInside)
+
+        let inviteIcon = UIImage(systemName: "person.badge.plus", withConfiguration: iconConfig)
+        inviteButtonNode.setImage(inviteIcon, for: .normal)
+        inviteButtonNode.setAttributedTitle(NSAttributedString(
+            string: "  " + String(localized: "Invite Members"),
+            attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
+        ), for: .normal)
+        inviteButtonNode.contentHorizontalAlignment = .middle
+        inviteButtonNode.addTarget(self, action: #selector(inviteTapped), forControlEvents: .touchUpInside)
     }
 
     // MARK: - Update
@@ -123,12 +132,19 @@ final class RoomDetailsNode: ScreenNode {
         let spacer = ASLayoutSpec()
         spacer.style.flexGrow = 1
 
+        inviteButtonNode.style.alignSelf = .stretch
         searchButtonNode.style.alignSelf = .stretch
+
+        let buttonsStack = ASStackLayoutSpec(
+            direction: .vertical, spacing: 24,
+            justifyContent: .start, alignItems: .stretch,
+            children: [inviteButtonNode, searchButtonNode]
+        )
 
         let mainStack = ASStackLayoutSpec(
             direction: .vertical, spacing: 0,
             justifyContent: .start, alignItems: .stretch,
-            children: [profileStack, spacer, searchButtonNode]
+            children: [profileStack, spacer, buttonsStack]
         )
 
         return ASInsetLayoutSpec(
@@ -141,6 +157,10 @@ final class RoomDetailsNode: ScreenNode {
 
     @objc private func searchTapped() {
         onSearchTapped?()
+    }
+
+    @objc private func inviteTapped() {
+        onInviteTapped?()
     }
 
     override func didLoad() {

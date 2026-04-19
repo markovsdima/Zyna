@@ -186,7 +186,35 @@ final class ChatsCoordinator {
         vc.onSearchTapped = { [weak self] in
             self?.popAndActivateSearch()
         }
+        vc.onInviteMembersTapped = { [weak self] in
+            self?.showInviteMembers(room: room)
+        }
         navigationController.push(vc)
+    }
+
+    private func showInviteMembers(room: Room) {
+        let vm = SelectMembersViewModel()
+        let vc = SelectMembersViewController(viewModel: vm)
+
+        vm.onNext = { [weak self] users in
+            self?.inviteUsers(users, to: room)
+        }
+
+        navigationController.push(vc)
+    }
+
+    private func inviteUsers(_ users: [UserProfile], to room: Room) {
+        navigationController.pop()
+        for user in users {
+            let userId = user.userId
+            Task {
+                do {
+                    try await room.inviteUserById(userId: userId)
+                } catch {
+                    ScopedLog(.rooms)("Invite failed for \(userId): \(error)")
+                }
+            }
+        }
     }
 
     private func popAndActivateSearch() {
