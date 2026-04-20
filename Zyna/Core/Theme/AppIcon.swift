@@ -19,11 +19,18 @@ enum AppIcon {
     case chevronUp
     case chevronDown
     case chevronBackward
+    case chevronForward
     case phone
     case compose
     case xmark
     case pencil
     case checkmark
+    case bubbleLeft
+    case personBadgeMinus
+    case personBadgePlus
+    case personSlash
+    case noSign
+    case magnifyingGlass
 
     var systemName: String {
         switch self {
@@ -40,11 +47,18 @@ enum AppIcon {
         case .chevronUp:        return "chevron.up"
         case .chevronDown:      return "chevron.down"
         case .chevronBackward:  return "chevron.backward"
+        case .chevronForward:   return "chevron.forward"
         case .phone:            return "phone.fill"
         case .compose:          return "square.and.pencil"
         case .xmark:            return "xmark"
         case .pencil:           return "pencil"
         case .checkmark:        return "checkmark"
+        case .bubbleLeft:       return "bubble.left.fill"
+        case .personBadgeMinus: return "person.badge.minus"
+        case .personBadgePlus:  return "person.badge.plus"
+        case .personSlash:      return "person.slash"
+        case .noSign:           return "nosign"
+        case .magnifyingGlass:  return "magnifyingglass"
         }
     }
 

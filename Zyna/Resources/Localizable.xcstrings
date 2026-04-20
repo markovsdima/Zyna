@@ -76,6 +76,16 @@
         }
       }
     },
+    "Admin" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Админ"
+          }
+        }
+      }
+    },
     "All Set!" : {
       "localizations" : {
         "ru" : {
@@ -85,6 +95,9 @@
           }
         }
       }
+    },
+    "Already applied" : {
+
     },
     "Another device wants to verify this session." : {
       "localizations" : {
@@ -107,7 +120,54 @@
       }
     },
     "Back" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Назад"
+          }
+        }
+      }
+    },
+    "Ban" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Забанить"
+          }
+        }
+      }
+    },
+    "Ban from Group" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Забанить в группе"
+          }
+        }
+      }
+    },
+    "Ban from group?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Забанить в группе?"
+          }
+        }
+      }
+    },
+    "Banned users can't re-join without being unbanned." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Забаненные не смогут вернуться без разбана."
+          }
+        }
+      }
     },
     "Calls" : {
       "localizations" : {
@@ -128,6 +188,49 @@
           }
         }
       }
+    },
+    "Cancel Invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить приглашение"
+          }
+        }
+      }
+    },
+    "Cancel invite?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить приглашение?"
+          }
+        }
+      }
+    },
+    "Change" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Изменить"
+          }
+        }
+      }
+    },
+    "Change role?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Изменить роль?"
+          }
+        }
+      }
+    },
+    "Changes member role" : {
+
     },
     "Chats" : {
       "localizations" : {
@@ -250,7 +353,14 @@
       }
     },
     "Edit" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Изменить"
+          }
+        }
+      }
     },
     "Encryption keys couldn't be transferred automatically. Enter the recovery key you saved when setting up this account to restore access to message history." : {
       "localizations" : {
@@ -343,7 +453,54 @@
       }
     },
     "Invite Members" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пригласить участников"
+          }
+        }
+      }
+    },
+    "Invited" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приглашённые"
+          }
+        }
+      }
+    },
+    "Kick" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исключить"
+          }
+        }
+      }
+    },
+    "Kick from Group" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исключить из группы"
+          }
+        }
+      }
+    },
+    "Kick from group?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исключить из группы?"
+          }
+        }
+      }
     },
     "last seen %@" : {
       "localizations" : {
@@ -354,6 +511,9 @@
           }
         }
       }
+    },
+    "Last seen %@" : {
+
     },
     "last seen %lld hours ago" : {
       "localizations" : {
@@ -463,6 +623,16 @@
         }
       }
     },
+    "Member" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участник"
+          }
+        }
+      }
+    },
     "Members" : {
       "localizations" : {
         "ru" : {
@@ -479,6 +649,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Сообщение"
+          }
+        }
+      }
+    },
+    "Mod" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Модер"
           }
         }
       }
@@ -513,12 +693,41 @@
         }
       }
     },
+    "Offline" : {
+
+    },
+    "OK" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ОК"
+          }
+        }
+      }
+    },
     "online" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "в сети"
+          }
+        }
+      }
+    },
+    "Online" : {
+
+    },
+    "Opens the member list" : {
+
+    },
+    "Owner" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Владелец"
           }
         }
       }
@@ -563,6 +772,16 @@
         }
       }
     },
+    "Reason (optional)" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Причина (необязательно)"
+          }
+        }
+      }
+    },
     "Recovery key saved. You're ready to chat." : {
       "localizations" : {
         "ru" : {
@@ -599,6 +818,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Восстановление из ключа…"
+          }
+        }
+      }
+    },
+    "Role" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Роль"
           }
         }
       }
@@ -693,6 +922,32 @@
         }
       }
     },
+    "Send Message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Написать"
+          }
+        }
+      }
+    },
+    "Set %@ as %@?" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Set %1$@ as %2$@?"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Назначить %1$@ как %2$@?"
+          }
+        }
+      }
+    },
     "Set Up Recovery" : {
       "localizations" : {
         "ru" : {
@@ -773,12 +1028,43 @@
         }
       }
     },
+    "Something went wrong" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Что-то пошло не так"
+          }
+        }
+      }
+    },
     "Syncing encryption keys…" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Синхронизация ключей шифрования…"
+          }
+        }
+      }
+    },
+    "Tap to change" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нажмите, чтобы изменить"
+          }
+        }
+      }
+    },
+    "They can be re-invited later." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Их можно пригласить снова позже."
           }
         }
       }

@@ -218,6 +218,20 @@ final class GlassTopBar: ASDisplayNode {
         setNeedsLayout()
     }
 
+    /// Accessibility targets (title + circle buttons) in items-array
+    /// order. Screens can take this array and reorder to taste when
+    /// overriding their own `accessibilityElements`.
+    var accessibilityElementsInOrder: [UIView] {
+        guard isNodeLoaded else { return [] }
+        return entries.compactMap { entry in
+            switch entry.kind {
+            case .title: return entry.titleView
+            case .circle: return entry.node?.view
+            case .flexibleSpace: return nil
+            }
+        }
+    }
+
     private static var actionKey: UInt8 = 0
 
     @objc private func circleButtonTapped(_ sender: ASButtonNode) {

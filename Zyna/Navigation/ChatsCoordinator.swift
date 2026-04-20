@@ -183,13 +183,75 @@ final class ChatsCoordinator {
 
     private func showRoomDetails(room: Room, memberCount: Int?) {
         let vc = RoomDetailsViewController(room: room, memberCount: memberCount)
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
         vc.onSearchTapped = { [weak self] in
             self?.popAndActivateSearch()
         }
         vc.onInviteMembersTapped = { [weak self] in
             self?.showInviteMembers(room: room)
         }
+        vc.onMembersTapped = { [weak self] in
+            self?.showMembersList(room: room)
+        }
         navigationController.push(vc)
+    }
+
+    private func showMembersList(room: Room) {
+        let vc = MembersListViewController(room: room)
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
+        vc.onSelectUser = { [weak self] userId in
+            self?.showMemberDetail(room: room, userId: userId)
+        }
+        navigationController.push(vc)
+    }
+
+    private func showMemberDetail(room: Room, userId: String) {
+        let vc = MemberDetailViewController(room: room, userId: userId)
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
+        vc.onSendMessage = { [weak self] targetUserId in
+            self?.openDM(with: targetUserId)
+        }
+        vc.onDismiss = { [weak self] in
+            self?.navigationController.pop()
+        }
+        navigationController.push(vc)
+    }
+
+    private func openDM(with userId: String) {
+        Task { [weak self] in
+            guard let self,
+                  let client = MatrixClientService.shared.client else { return }
+            do {
+                if let existing = try client.getDmRoom(userId: userId) {
+                    await MainActor.run {
+                        self.navigationController.popToRoot(animated: false)
+                        self.showChat(existing)
+                    }
+                    return
+                }
+                let params = CreateRoomParameters(
+                    name: nil, topic: nil, isEncrypted: true, isDirect: true,
+                    visibility: .private, preset: .trustedPrivateChat,
+                    invite: [userId], avatar: nil, powerLevelContentOverride: nil,
+                    joinRuleOverride: nil, historyVisibilityOverride: nil,
+                    canonicalAlias: nil
+                )
+                let roomId = try await client.createRoom(request: params)
+                guard let dmRoom = roomListService.room(for: roomId) else { return }
+                await MainActor.run {
+                    self.navigationController.popToRoot(animated: false)
+                    self.showChat(dmRoom)
+                }
+            } catch {
+                ScopedLog(.rooms)("Failed to open DM: \(error)")
+            }
+        }
     }
 
     private func showInviteMembers(room: Room) {

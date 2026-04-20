@@ -70,7 +70,19 @@ public class ZynaNavigationController: UIViewController {
     /// `push`/`pop` to keep the stack in a coherent state.
     private var isInteractivePopActive = false
 
+    /// True while a programmatic push/pop animation is in flight.
+    /// `isUserInteractionEnabled = false` blocks taps but VoiceOver
+    /// gestures (escape, magic tap) bypass it — so we need a separate
+    /// flag to keep the VO escape from racing the animation.
+    private var isAnimatingTransition = false
+
     // MARK: - Lifecycle
+
+    public override func loadView() {
+        let v = ZynaNavBackingView()
+        v.owner = self
+        self.view = v
+    }
 
     public override func viewDidLoad() {
         super.viewDidLoad()
@@ -207,6 +219,7 @@ public class ZynaNavigationController: UIViewController {
         topVC.willMove(toParent: nil)
         stack.removeLast()
 
+        let revealedVC = transition.revealedVC
         transition.finish(velocity: velocity) { [weak self, weak transition] in
             guard let self, let transition else { return }
             transition.tearDown(removeTopFromHierarchy: true)
@@ -216,7 +229,10 @@ public class ZynaNavigationController: UIViewController {
             self.fpsBoostToken?.invalidate()
             self.fpsBoostToken = nil
             self.setNeedsStatusBarAppearanceUpdate()
-            UIAccessibility.post(notification: .screenChanged, argument: nil)
+            UIAccessibility.post(
+                notification: .screenChanged,
+                argument: Self.accessibilityFocusTarget(for: revealedVC)
+            )
         }
     }
 
@@ -389,6 +405,7 @@ public class ZynaNavigationController: UIViewController {
         newView.clipsToBounds = true
 
         view.isUserInteractionEnabled = false
+        isAnimatingTransition = true
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -409,8 +426,12 @@ public class ZynaNavigationController: UIViewController {
             newView.layer.cornerCurve = .circular
             newView.clipsToBounds = savedClips
             self.view.isUserInteractionEnabled = true
+            self.isAnimatingTransition = false
             completion()
-            UIAccessibility.post(notification: .screenChanged, argument: nil)
+            UIAccessibility.post(
+                notification: .screenChanged,
+                argument: Self.accessibilityFocusTarget(for: newTop)
+            )
         }
 
         newView.layer.add(
@@ -474,6 +495,7 @@ public class ZynaNavigationController: UIViewController {
         topView.clipsToBounds = true
 
         view.isUserInteractionEnabled = false
+        isAnimatingTransition = true
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -495,8 +517,12 @@ public class ZynaNavigationController: UIViewController {
             topView.layer.cornerCurve = .circular
             topView.clipsToBounds = savedClips
             self.view.isUserInteractionEnabled = true
+            self.isAnimatingTransition = false
             completion()
-            UIAccessibility.post(notification: .screenChanged, argument: nil)
+            UIAccessibility.post(
+                notification: .screenChanged,
+                argument: Self.accessibilityFocusTarget(for: revealedVC)
+            )
         }
 
         topView.layer.add(
@@ -585,6 +611,40 @@ public class ZynaNavigationController: UIViewController {
 
     private func detachView(of vc: UIViewController) {
         vc.view.removeFromSuperview()
+    }
+
+    /// VoiceOver Z-scrub dismiss. Called via `ZynaNavBackingView`
+    /// (UIView override) since UIKit dispatches escape on views,
+    /// not view controllers.
+    func performEscapeAction() -> Bool {
+        guard stack.count > 1,
+              !isInteractivePopActive,
+              !isAnimatingTransition
+        else { return false }
+        pop()
+        return true
+    }
+
+    /// Target for `.screenChanged` after push/pop. VCs conforming to
+    /// `AccessibilityFocusProviding` pick the specific element; others
+    /// fall back to the VC's whole view (VO descends into its subtree).
+    private static func accessibilityFocusTarget(for vc: UIViewController?) -> Any? {
+        guard let vc else { return nil }
+        if let provider = vc as? AccessibilityFocusProviding,
+           let focus = provider.initialAccessibilityFocus {
+            return focus
+        }
+        return vc.view
+    }
+}
+
+/// Backing view whose only job is to forward the VO two-finger Z-scrub
+/// escape gesture to the owning nav controller.
+private final class ZynaNavBackingView: UIView {
+    weak var owner: ZynaNavigationController?
+
+    override func accessibilityPerformEscape() -> Bool {
+        owner?.performEscapeAction() ?? false
     }
 }
 
