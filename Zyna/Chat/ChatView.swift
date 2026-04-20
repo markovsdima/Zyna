@@ -411,11 +411,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func bindInput() {
         glassInputBar.inputNode.onSend = { [weak self] text, color in
-            self?.viewModel.sendMessage(text, color: color)
+            guard let self else { return }
+            self.viewModel.sendMessage(text, color: color)
+            self.scrollToLiveAfterUserSend()
         }
 
         glassInputBar.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
-            self?.viewModel.sendVoiceMessage(fileURL: fileURL, duration: duration, waveform: waveform)
+            guard let self else { return }
+            self.viewModel.sendVoiceMessage(fileURL: fileURL, duration: duration, waveform: waveform)
+            self.scrollToLiveAfterUserSend()
         }
 
         glassInputBar.inputNode.onAttachTapped = { [weak self] in
@@ -437,6 +441,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     @objc private func scrollToLiveTapped() {
+        navigateToLive()
+        glassInputBar.scrollButtonVisible = false
+    }
+
+    private func scrollToLiveAfterUserSend() {
         navigateToLive()
         glassInputBar.scrollButtonVisible = false
     }
@@ -1041,6 +1050,7 @@ extension ChatViewController: PHPickerViewControllerDelegate {
             guard !processed.isEmpty else { return }
             await MainActor.run {
                 viewModel.sendImages(processed, caption: caption)
+                self.scrollToLiveAfterUserSend()
             }
         }
     }
@@ -1064,6 +1074,7 @@ extension ChatViewController: UIDocumentPickerDelegate {
         for url in urls.prefix(10) {
             viewModel.sendFile(url: url)
         }
+        scrollToLiveAfterUserSend()
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
