@@ -5,12 +5,6 @@
 
 import AsyncDisplayKit
 
-/// Content that wants VoiceOver focus moved to a specific view
-/// when the popup appears. Defaults to `nil` — no explicit focus.
-protocol AccessibilityFocusProviding {
-    var initialAccessibilityFocus: UIView? { get }
-}
-
 /// Popup card right-aligned below an anchor frame. Tap backdrop to dismiss.
 final class AnchoredPopupNode: ASDisplayNode {
 
