@@ -198,7 +198,10 @@ final class ImageMessageCellNode: MessageCellNode {
 
         // Load image
         if let source = mediaSource {
-            if let cached = MediaCache.shared.image(for: source) {
+            let dims = thumbnailPixelDimensions()
+            if let cached = MediaCache.shared.image(
+                for: source, width: dims.width, height: dims.height
+            ) {
                 imageNode.image = cached
                 if !hasSDKDimensions, cached.size.height > 0 {
                     aspectRatio = cached.size.width / cached.size.height
@@ -212,23 +215,25 @@ final class ImageMessageCellNode: MessageCellNode {
 
     // MARK: - Async Loading
 
-    private func loadThumbnailAsync(source: MediaSource) {
+    /// Pixel size requested from the server. Shared between the sync
+    /// memory-hit lookup and the async fetch so they cache-key the
+    /// same way. When SDK didn't provide dimensions we ask for a
+    /// large square so the server returns the image at its natural
+    /// aspect ratio.
+    private func thumbnailPixelDimensions() -> (width: Int, height: Int) {
         let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
         let scale = UIScreen.main.scale
-
-        // When SDK didn't provide dimensions, request a large
-        // square thumbnail so the server returns the image at its
-        // natural aspect ratio. Otherwise request the exact size.
-        let thumbWidth: UInt64
-        let thumbHeight: UInt64
         if hasSDKDimensions {
-            thumbWidth = UInt64(maxWidth * scale)
-            thumbHeight = UInt64(maxWidth / aspectRatio * scale)
-        } else {
-            let dim = UInt64(maxWidth * scale)
-            thumbWidth = dim
-            thumbHeight = dim
+            return (Int(maxWidth * scale), Int(maxWidth / aspectRatio * scale))
         }
+        let dim = Int(maxWidth * scale)
+        return (dim, dim)
+    }
+
+    private func loadThumbnailAsync(source: MediaSource) {
+        let dims = thumbnailPixelDimensions()
+        let thumbWidth = UInt64(dims.width)
+        let thumbHeight = UInt64(dims.height)
 
         Task { [weak self] in
             guard let self,

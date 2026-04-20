@@ -16,6 +16,8 @@ class RoomsCellNode: ZynaCellNode {
     private let onlineIndicatorNode = ASImageNode()
     private static let onlineIndicatorDiameter: CGFloat = 12
     private static let onlineIndicatorBorderWidth: CGFloat = 2
+    private static let avatarDiameter: CGFloat = 50
+    private static let avatarThumbSize: Int = Int(avatarDiameter * ScreenConstants.scale)
     private let unreadBadgeNode = ASDisplayNode()
     private let unreadCountNode = ASTextNode()
     private let separatorNode = ASDisplayNode()
@@ -57,7 +59,7 @@ class RoomsCellNode: ZynaCellNode {
         if let mxc = chat.avatar.mxcAvatarURL {
             // Synchronous memory hit — safe from Texture's bg thread,
             // node appears with image immediately, no flash.
-            if let cached = MediaCache.shared.cachedImage(for: mxc) {
+            if let cached = MediaCache.shared.cachedImage(forUrl: mxc, size: Self.avatarThumbSize) {
                 avatarImageNode.image = cached
             } else {
                 loadAvatarImage()
@@ -121,16 +123,17 @@ class RoomsCellNode: ZynaCellNode {
 
     private func loadAvatarImage() {
         guard let mxc = chat.avatar.mxcAvatarURL else { return }
-        Task { @MainActor in
-            if let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: 100) {
-                self.avatarImageNode.image = image
+        let size = Self.avatarThumbSize
+        Task { [weak self] in
+            if let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: size) {
+                self?.avatarImageNode.image = image
                 return
             }
             // Client may not be ready on first attempt (rooms load
             // from GRDB cache before SDK session restores).
             try? await Task.sleep(for: .seconds(1))
-            guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: 100) else { return }
-            self.avatarImageNode.image = image
+            guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: size) else { return }
+            self?.avatarImageNode.image = image
         }
     }
 

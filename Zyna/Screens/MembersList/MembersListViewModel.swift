@@ -42,6 +42,12 @@ final class MembersListViewModel {
     private var isReloading = false
     private var needsReload = false
 
+    /// Coalesces a burst of room-info callbacks into a single reload.
+    /// `isReloading` only prevents overlap — 5 events still queue 5
+    /// sequential reloads otherwise.
+    private var roomInfoDebounce: DispatchWorkItem?
+    private static let roomInfoDebounceMillis = 300
+
     init(room: Room) {
         self.room = room
         self.presenceTag = "members-list-\(room.id())"
@@ -52,6 +58,7 @@ final class MembersListViewModel {
 
     deinit {
         roomInfoSubscription?.cancel()
+        roomInfoDebounce?.cancel()
         PresenceTracker.shared.unregister(for: presenceTag)
     }
 
@@ -186,9 +193,19 @@ final class MembersListViewModel {
     private func subscribeToRoomInfoUpdates() {
         // Callback fires off-main; bounce so flags stay MainActor-isolated.
         let listener = RoomInfoCallbackListener { [weak self] in
-            DispatchQueue.main.async { self?.reload() }
+            DispatchQueue.main.async { self?.scheduleDebouncedReload() }
         }
         roomInfoSubscription = room.subscribeToRoomInfoUpdates(listener: listener)
+    }
+
+    private func scheduleDebouncedReload() {
+        roomInfoDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reload() }
+        roomInfoDebounce = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + .milliseconds(Self.roomInfoDebounceMillis),
+            execute: work
+        )
     }
 
     // MARK: - Rows

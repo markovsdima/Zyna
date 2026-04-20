@@ -183,7 +183,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
             if let mxc = message.senderAvatarUrl {
                 let diameter = Self.avatarDiameter
-                if let source = MediaCache.shared.cachedImage(for: mxc) {
+                if let source = MediaCache.shared.cachedImage(forUrl: mxc, size: Self.avatarThumbSize) {
                     avatarImageNode.image = CircularImageCache.roundedImage(
                         source: source, diameter: diameter, cacheKey: mxc
                     )

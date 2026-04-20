@@ -54,9 +54,9 @@ final class RoomDetailsNode: ScreenNode {
 
     private func setupNodes() {
         avatarBackgroundNode.backgroundColor = .systemGray4
-        avatarImageNode.clipsToBounds = true
         avatarImageNode.contentMode = .scaleAspectFill
         avatarImageNode.isLayerBacked = true
+        avatarImageNode.isOpaque = false
 
         searchButtonNode.setAttributedTitle(NSAttributedString(
             string: "  " + String(localized: "Search Messages"),
@@ -116,19 +116,37 @@ final class RoomDetailsNode: ScreenNode {
 
         if let mxcUrl = avatarMxcUrl {
             loadAvatarImage(mxcUrl: mxcUrl)
+        } else {
+            avatarImageNode.image = nil
+            setBackgroundVisible(true)
         }
 
         setNeedsLayout()
     }
 
     private func loadAvatarImage(mxcUrl: String) {
-        // Detached Task — keeps the SDK fetch and decode off-main.
-        // ASImageNode.image is thread-safe, so the assignment doesn't
-        // need a main hop.
+        // Fetch + circle bake stay off-main. Both UIKit mutations
+        // (image set + bg hide) land in the same main-thread tick so
+        // the bg disappears in the same frame the image appears —
+        // otherwise a single frame can leak the antialiased ring.
+        let pixelSize = Int(100 * ScreenConstants.scale)
         Task { [weak self] in
-            guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxcUrl, size: 200) else { return }
-            self?.avatarImageNode.image = image
+            guard let source = await MediaCache.shared.loadThumbnail(mxcUrl: mxcUrl, size: pixelSize) else { return }
+            let rounded = CircularImageCache.roundedImage(
+                source: source, diameter: 100, cacheKey: mxcUrl
+            )
+            await MainActor.run {
+                self?.avatarImageNode.image = rounded
+                self?.setBackgroundVisible(false)
+            }
         }
+    }
+
+    /// Bg + initials show only when there's no avatar image. Hiding
+    /// (rather than alpha=0) skips the layer from compositing entirely.
+    private func setBackgroundVisible(_ visible: Bool) {
+        avatarBackgroundNode.isHidden = !visible
+        avatarInitialsNode.isHidden = !visible
     }
 
     // MARK: - Layout
@@ -211,10 +229,13 @@ final class RoomDetailsNode: ScreenNode {
 
     override func didLoad() {
         super.didLoad()
+        // No mask on avatarImageNode — it renders a pre-rounded image
+        // (corners baked into the bitmap). Two overlapping circular
+        // masks would leak a 1-2px antialiased ring of the bg through
+        // the seam. Bg keeps its mask because it's used as a fallback
+        // when no avatar image is present.
         avatarBackgroundNode.cornerRadius = 50
         avatarBackgroundNode.clipsToBounds = true
-        avatarImageNode.cornerRadius = 50
-        avatarImageNode.clipsToBounds = true
 
         searchButtonNode.setImage(
             AppIcon.magnifyingGlass.rendered(size: 16, weight: .medium, color: AppColor.accent),

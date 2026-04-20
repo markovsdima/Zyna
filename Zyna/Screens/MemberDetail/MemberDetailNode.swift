@@ -136,7 +136,7 @@ final class MemberDetailNode: ScreenNode {
         if let mxc = member.avatarUrl {
             let diameter: CGFloat = 100
             let thumb = Int(diameter * ScreenConstants.scale)
-            if let cached = MediaCache.shared.cachedImage(for: mxc) {
+            if let cached = MediaCache.shared.cachedImage(forUrl: mxc, size: thumb) {
                 avatarImageNode.image = CircularImageCache.roundedImage(
                     source: cached, diameter: diameter, cacheKey: mxc
                 )

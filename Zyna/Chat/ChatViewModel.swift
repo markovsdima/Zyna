@@ -629,7 +629,6 @@ final class ChatViewModel {
     private static func prefetchImages(_ messages: [ChatMessage]) {
         for message in messages {
             guard case .image(let source, let width, let height, _) = message.content else { continue }
-            guard MediaCache.shared.image(for: source) == nil else { continue }
             let thumbWidth = UInt64((ScreenConstants.width * 0.75) * UIScreen.main.scale)
             let thumbHeight: UInt64
             if let width, let height, height > 0 {
@@ -637,6 +636,9 @@ final class ChatViewModel {
             } else {
                 thumbHeight = thumbWidth * 3 / 4
             }
+            guard MediaCache.shared.image(
+                for: source, width: Int(thumbWidth), height: Int(thumbHeight)
+            ) == nil else { continue }
             Task { await MediaCache.shared.loadThumbnail(source: source, width: thumbWidth, height: thumbHeight) }
         }
     }

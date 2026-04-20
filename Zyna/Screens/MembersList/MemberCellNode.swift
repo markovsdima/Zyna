@@ -149,7 +149,7 @@ final class MemberCellNode: ZynaCellNode {
     private func loadAvatar() {
         guard let mxc = model.avatarUrl else { return }
         let diameter = Self.avatarDiameter
-        if let source = MediaCache.shared.cachedImage(for: mxc) {
+        if let source = MediaCache.shared.cachedImage(forUrl: mxc, size: Self.avatarThumbSize) {
             avatarImageNode.image = CircularImageCache.roundedImage(
                 source: source, diameter: diameter, cacheKey: mxc
             )

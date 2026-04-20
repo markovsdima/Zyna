@@ -43,17 +43,38 @@ final class MediaCache {
         )
     }
 
+    // MARK: - Cache keys
+
+    /// Cache entries are keyed by (url, requested pixel size). Without
+    /// the size, a 44pt avatar fetched for a list cell would satisfy a
+    /// 100pt detail-screen lookup — and the user sees an upscaled
+    /// blurry image. Including the size means each display context
+    /// gets its own properly-sized thumbnail.
+    private static func cacheKey(url: String, size: Int) -> String {
+        "\(url)|s\(size)"
+    }
+
+    private static func cacheKey(url: String, width: Int, height: Int) -> String {
+        // Square requests share keys with the size-only variant so a
+        // sync `cachedImage(forUrl:size:)` can hit on a thumbnail that
+        // was originally fetched with width==height.
+        if width == height { return cacheKey(url: url, size: width) }
+        return "\(url)|\(width)x\(height)"
+    }
+
     // MARK: - Synchronous (memory only, safe from any thread)
 
     /// Returns image from memory cache if available. Does not hit
     /// disk or network. Call from Texture node init for instant
     /// display without a Task.
-    func cachedImage(for key: String) -> UIImage? {
-        memory.object(forKey: key as NSString)
+    func cachedImage(forUrl url: String, size: Int) -> UIImage? {
+        memory.object(forKey: Self.cacheKey(url: url, size: size) as NSString)
     }
 
-    func image(for source: MediaSource) -> UIImage? {
-        cachedImage(for: source.url())
+    func image(for source: MediaSource, width: Int, height: Int) -> UIImage? {
+        memory.object(
+            forKey: Self.cacheKey(url: source.url(), width: width, height: height) as NSString
+        )
     }
 
     // MARK: - Async (memory → disk → network)
@@ -63,7 +84,7 @@ final class MediaCache {
         width: UInt64,
         height: UInt64
     ) async -> UIImage? {
-        let key = source.url()
+        let key = Self.cacheKey(url: source.url(), width: Int(width), height: Int(height))
         return await load(key: key) { client in
             try await client.getMediaThumbnail(
                 mediaSource: source, width: width, height: height
@@ -76,7 +97,8 @@ final class MediaCache {
             return nil
         }
         let px = UInt64(size)
-        return await load(key: mxcUrl) { client in
+        let key = Self.cacheKey(url: mxcUrl, size: size)
+        return await load(key: key) { client in
             try await client.getMediaThumbnail(
                 mediaSource: source, width: px, height: px
             )

@@ -100,10 +100,12 @@ final class ProfileNode: ScreenNode {
 
     override func didLoad() {
         super.didLoad()
+        // avatarImageNode renders a pre-rounded image (corners baked
+        // into the bitmap by CircularImageCache), so no cornerRadius
+        // mask here — masks on overlapping circular nodes leak a 1-2px
+        // antialiased ring of the underlying bg through the seam.
         avatarBackgroundNode.cornerRadius = 50
         avatarBackgroundNode.clipsToBounds = true
-        avatarImageNode.cornerRadius = 50
-        avatarImageNode.clipsToBounds = true
         editAvatarOverlayNode.cornerRadius = 50
         editAvatarOverlayNode.clipsToBounds = true
         messageButtonNode.cornerRadius = 12
@@ -136,6 +138,7 @@ final class ProfileNode: ScreenNode {
             loadAvatarImage(mxcUrl: mxc)
         } else {
             avatarImageNode.image = nil
+            setBackgroundVisible(true)
         }
 
         let name = displayName ?? userId
@@ -166,14 +169,38 @@ final class ProfileNode: ScreenNode {
     }
 
     func updateAvatarLocally(image: UIImage) {
-        avatarImageNode.image = image
+        // One-shot local image (just-cropped, before SDK upload). No
+        // stable cache key, so we use a UUID — adds one disposable
+        // entry that LRU will rotate out.
+        avatarImageNode.image = CircularImageCache.roundedImage(
+            source: image, diameter: 100, cacheKey: UUID().uuidString
+        )
+        setBackgroundVisible(false)
     }
 
     private func loadAvatarImage(mxcUrl: String) {
-        Task { @MainActor in
-            guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxcUrl, size: 200) else { return }
-            self.avatarImageNode.image = image
+        // Fetch + circle bake stay off-main. Both UIKit mutations
+        // (image set + bg hide) land in the same main-thread tick so
+        // the bg disappears in the same frame the image appears —
+        // otherwise a single frame can leak the antialiased ring.
+        let pixelSize = Int(100 * ScreenConstants.scale)
+        Task { [weak self] in
+            guard let source = await MediaCache.shared.loadThumbnail(mxcUrl: mxcUrl, size: pixelSize) else { return }
+            let rounded = CircularImageCache.roundedImage(
+                source: source, diameter: 100, cacheKey: mxcUrl
+            )
+            await MainActor.run {
+                self?.avatarImageNode.image = rounded
+                self?.setBackgroundVisible(false)
+            }
         }
+    }
+
+    /// Bg + initials show only when there's no avatar image. Hiding
+    /// (rather than alpha=0) skips the layer from compositing entirely.
+    private func setBackgroundVisible(_ visible: Bool) {
+        avatarBackgroundNode.isHidden = !visible
+        avatarInitialsNode.isHidden = !visible
     }
 
     func updatePresence(_ presence: UserPresence?) {
@@ -213,9 +240,9 @@ final class ProfileNode: ScreenNode {
 
     private func setupNodes() {
         avatarBackgroundNode.backgroundColor = .systemGray4
-        avatarImageNode.clipsToBounds = true
         avatarImageNode.contentMode = .scaleAspectFill
         avatarImageNode.isLayerBacked = true
+        avatarImageNode.isOpaque = false
 
         // Edit overlay on avatar
         editAvatarOverlayNode.backgroundColor = UIColor.black.withAlphaComponent(0.4)
