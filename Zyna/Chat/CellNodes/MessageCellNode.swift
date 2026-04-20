@@ -51,6 +51,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     // MARK: - Subnodes
 
     let bubbleNode = RoundedBackgroundNode()
+    private let bubbleBackgroundNode = RoundedBackgroundNode()
+    private let bubbleWrapperNode = ASDisplayNode()
     let contextSourceNode: ContextSourceNode
     let timeNode = ASTextNode()
     let statusIconNode: MessageStatusIconNode?
@@ -58,6 +60,27 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     private(set) var reactionsNode: ReactionsNode?
     private let avatarBackgroundNode = ASImageNode()
     private let avatarImageNode = ASImageNode()
+
+    // MARK: - Gradient bubble
+
+    /// Set by the cell factory: gradient view that message bubbles
+    /// mirror via a portal with `matchesPosition=true`. Nil means the bubble
+    /// falls back to its solid `fillColor`.
+    weak var bubbleGradientSource: UIView? {
+        didSet {
+            applyBubbleChrome()
+            updateBubblePortalSource()
+        }
+    }
+
+    /// Holds the portal view alive. Built in `didLoad` when the cell
+    /// has a shared gradient source; mask + frame
+    /// updated in `layout()` so bubble-shape clipping tracks any
+    /// post-layout changes (reactions added, cluster-flip, etc.).
+    private var bubblePortal: PortalView?
+    private var bubblePortalContainer: UIView?
+    private var didReloadBubblePortalAfterReadyLayout = false
+    private let bubbleBaseFillColor: UIColor
 
     // MARK: - State
 
@@ -69,6 +92,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     private let senderId: String
     private let isFirstInCluster: Bool
     private var isLastInCluster: Bool
+    let usesAccentBubbleStyle: Bool
 
     private let accessibilityContent: String
 
@@ -89,7 +113,14 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         self.senderId = message.senderId
         self.isFirstInCluster = message.isFirstInCluster
         self.isLastInCluster = message.isLastInCluster
-        self.contextSourceNode = ContextSourceNode(contentNode: bubbleNode)
+        let customColor = message.zynaAttributes.color
+        let usesAccentBubbleStyle = message.isOutgoing || customColor != nil
+        self.usesAccentBubbleStyle = usesAccentBubbleStyle
+        let defaultFill = customColor
+            ?? (message.isOutgoing ? AppColor.bubbleBackgroundOutgoing
+                                   : AppColor.bubbleBackgroundIncoming)
+        self.bubbleBaseFillColor = defaultFill
+        self.contextSourceNode = ContextSourceNode(contentNode: bubbleWrapperNode)
 
         // Status icon only on the sender's own bubbles. For incoming
         // messages it carries no information and would just clutter.
@@ -97,7 +128,9 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
            let iconState = MessageStatusIcon.from(sendStatus: message.sendStatus) {
             let node = MessageStatusIconNode()
             node.icon = iconState
-            node.tintColour = AppColor.bubbleTimestampOutgoing
+            node.tintColour = usesAccentBubbleStyle
+                ? AppColor.bubbleTimestampOutgoing
+                : AppColor.bubbleTimestampIncoming
             self.statusIconNode = node
         } else {
             self.statusIconNode = nil
@@ -119,23 +152,29 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         // the table's own background and break glass backdrop sampling.
         backgroundColor = .clear
 
-        // Bubble defaults — custom color from Zyna attributes wins if set.
-        let customColor = message.zynaAttributes.color
-        bubbleNode.fillColor = customColor
-            ?? (isOutgoing ? AppColor.bubbleBackgroundOutgoing
-                           : AppColor.bubbleBackgroundIncoming)
         bubbleNode.radius = 14
+        bubbleNode.fillColor = .clear
         bubbleNode.automaticallyManagesSubnodes = true
+        bubbleBackgroundNode.radius = 14
+        bubbleBackgroundNode.isUserInteractionEnabled = false
+        bubbleWrapperNode.addSubnode(bubbleBackgroundNode)
+        bubbleWrapperNode.addSubnode(bubbleNode)
+        bubbleWrapperNode.layoutSpecBlock = { [weak self] _, _ in
+            guard let self else { return ASLayoutSpec() }
+            return ASBackgroundLayoutSpec(
+                child: self.bubbleNode,
+                background: self.bubbleBackgroundNode
+            )
+        }
+        applyBubbleChrome()
 
         // Timestamp (default colors — override in subclass if needed)
         timeNode.attributedText = NSAttributedString(
-            string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 11),
-                .foregroundColor: isOutgoing
-                    ? AppColor.bubbleTimestampOutgoing
-                    : AppColor.bubbleTimestampIncoming
-            ]
+                string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 11),
+                    .foregroundColor: bubbleTimestampColor
+                ]
         )
 
         // Sender name
@@ -220,9 +259,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
                 string: "↗ " + String(localized: "Forwarded from \(forwarderName)"),
                 attributes: [
                     .font: UIFont.systemFont(ofSize: 11, weight: .medium),
-                    .foregroundColor: isOutgoing
-                        ? AppColor.bubbleTimestampOutgoing
-                        : UIColor.secondaryLabel
+                    .foregroundColor: bubbleTimestampColor
                 ]
             )
             node.maximumNumberOfLines = 1
@@ -231,7 +268,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         // Reply header
         if let replyInfo = message.replyInfo {
-            let rh = ReplyHeaderNode(replyInfo: replyInfo, isOutgoing: isOutgoing)
+            let rh = ReplyHeaderNode(replyInfo: replyInfo, usesAccentStyle: usesAccentBubbleStyle)
             self.replyHeaderNode = rh
 
             // Handle quick taps on reply header via ContextSourceNode
@@ -264,6 +301,147 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     @objc private func handleSenderTap() {
         onSenderTapped?(senderId)
+    }
+
+    // MARK: - Gradient portal
+
+    /// Main-thread hook: safe point to alloc the portal view (UIView
+    /// subclass, alloc off-main is undefined behaviour).
+    override func didLoad() {
+        super.didLoad()
+        installBubblePortalIfNeeded()
+    }
+
+    override func didEnterVisibleState() {
+        super.didEnterVisibleState()
+        guard usesBubblePortal else { return }
+        reloadBubblePortal()
+        // Visible-state callbacks can still race the final window/layout
+        // settle on slower devices, so give the portal one more pass on
+        // the next run loop.
+        DispatchQueue.main.async { [weak self] in
+            self?.reloadBubblePortal()
+        }
+    }
+
+    private func installBubblePortalIfNeeded() {
+        guard bubblePortal == nil else { return }
+        guard let source = bubbleGradientSource else { return }
+        guard let portal = PortalView(matchesPosition: true) else { return }
+        let container = UIView()
+        container.backgroundColor = .clear
+        container.isUserInteractionEnabled = false
+        portal.sourceView = source
+        bubbleWrapperNode.view.insertSubview(container, belowSubview: bubbleNode.view)
+        container.addSubview(portal.view)
+        // Re-trigger after the portal's view entered the hierarchy:
+        // the setter above called `reload` while the view had no
+        // superview, so the index-reinsert was a no-op and the
+        // compositor may not have linked to the source.
+        portal.reload()
+        bubblePortal = portal
+        bubblePortalContainer = container
+        didReloadBubblePortalAfterReadyLayout = false
+        if let source = source as? BubbleGradientSource {
+            source.addPortal(portal)
+        }
+    }
+
+    private func updateBubblePortalSource() {
+        guard isNodeLoaded else { return }
+        guard let portal = bubblePortal else {
+            installBubblePortalIfNeeded()
+            syncBubblePortalLayout(skipActivationReload: true)
+            return
+        }
+        portal.sourceView = bubbleGradientSource
+        bubblePortalContainer?.isHidden = bubbleGradientSource == nil
+        didReloadBubblePortalAfterReadyLayout = false
+        if let source = bubbleGradientSource as? BubbleGradientSource {
+            source.addPortal(portal)
+        }
+        syncBubblePortalLayout(skipActivationReload: true)
+    }
+
+    /// Keep portal frame + bubble-shape mask in sync with the bubble's
+    /// current bounds. Cell layout can re-run on in-place updates
+    /// (status / cluster flip) and on width changes from reactions.
+    private func syncBubblePortalLayout(skipActivationReload: Bool = false) {
+        guard let portal = bubblePortal,
+              let container = bubblePortalContainer else {
+            return
+        }
+        container.frame = bubbleNode.frame
+        portal.view.frame = container.bounds
+        if portal.view.layer.mask != nil {
+            portal.view.layer.mask = nil
+        }
+        let mask = (container.layer.mask as? CAShapeLayer) ?? CAShapeLayer()
+        mask.frame = container.bounds
+        mask.path = bubbleNode.currentPath().cgPath
+        if container.layer.mask !== mask {
+            container.layer.mask = mask
+        }
+        if !skipActivationReload,
+           !didReloadBubblePortalAfterReadyLayout,
+           reloadBubblePortalIfEligible() {
+            didReloadBubblePortalAfterReadyLayout = true
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        syncBubblePortalLayout()
+    }
+
+    func reloadBubblePortal() {
+        syncBubblePortalLayout(skipActivationReload: true)
+        _ = reloadBubblePortalIfEligible()
+    }
+
+    @discardableResult
+    private func reloadBubblePortalIfEligible() -> Bool {
+        guard let portal = bubblePortal else {
+            return false
+        }
+        guard portal.view.window != nil,
+              bubbleGradientSource?.window != nil,
+              !portal.view.bounds.isEmpty else {
+            return false
+        }
+        portal.reload()
+        return true
+    }
+
+    private var usesFallbackBubbleBackground: Bool {
+        return usesBubblePortal
+    }
+
+    private func applyBubbleChrome() {
+        bubbleNode.radius = 14
+        bubbleBackgroundNode.radius = bubbleNode.radius
+        bubbleNode.roundedCorners = .allCorners
+        bubbleBackgroundNode.roundedCorners = bubbleNode.roundedCorners
+
+        if usesFallbackBubbleBackground {
+            bubbleBackgroundNode.fillColor = bubbleBaseFillColor
+            bubbleNode.fillColor = .clear
+        } else {
+            bubbleBackgroundNode.fillColor = .clear
+            bubbleNode.fillColor = bubbleBaseFillColor
+        }
+    }
+
+    private var usesBubblePortal: Bool {
+        bubbleGradientSource != nil
+    }
+
+    var bubbleForegroundColor: UIColor {
+        usesAccentBubbleStyle ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming
+    }
+
+    var bubbleTimestampColor: UIColor {
+        usesAccentBubbleStyle ? AppColor.bubbleTimestampOutgoing : AppColor.bubbleTimestampIncoming
     }
 
     // MARK: - Layout
@@ -372,7 +550,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         let highlight = CAShapeLayer()
         highlight.frame = bubbleNode.bounds
         highlight.path = bubbleNode.currentPath().cgPath
-        highlight.fillColor = (isOutgoing ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming)
+        highlight.fillColor = bubbleForegroundColor
             .withAlphaComponent(0.3).cgColor
         highlight.opacity = 0
         bubbleNode.layer.addSublayer(highlight)

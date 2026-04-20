@@ -49,7 +49,7 @@ final class TextMessageCellNode: MessageCellNode {
             string: bodyText,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 16),
-                .foregroundColor: isOutgoing ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming
+                .foregroundColor: bubbleForegroundColor
             ]
         )
 

@@ -13,11 +13,11 @@ final class ReplyHeaderNode: ASDisplayNode {
     private let nameNode = ASTextNode()
     private let bodyNode = ASTextNode()
 
-    init(replyInfo: ReplyInfo, isOutgoing: Bool) {
+    init(replyInfo: ReplyInfo, usesAccentStyle: Bool) {
         super.init()
         automaticallyManagesSubnodes = true
 
-        barNode.backgroundColor = isOutgoing ? AppColor.replyBarOutgoing : AppColor.replyBarIncoming
+        barNode.backgroundColor = usesAccentStyle ? AppColor.replyBarOutgoing : AppColor.replyBarIncoming
         barNode.cornerRadius = 1
         barNode.style.width = ASDimension(unit: .points, value: 2)
         barNode.style.minHeight = ASDimension(unit: .points, value: 16)
@@ -34,7 +34,7 @@ final class ReplyHeaderNode: ASDisplayNode {
             string: senderText.isEmpty ? "Unknown" : senderText,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
-                .foregroundColor: isOutgoing ? AppColor.replySenderOutgoing : AppColor.replySenderIncoming
+                .foregroundColor: usesAccentStyle ? AppColor.replySenderOutgoing : AppColor.replySenderIncoming
             ]
         )
 
@@ -47,7 +47,7 @@ final class ReplyHeaderNode: ASDisplayNode {
             string: bodyText.isEmpty ? "Message" : bodyText,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 12),
-                .foregroundColor: isOutgoing
+                .foregroundColor: usesAccentStyle
                     ? AppColor.replyBodyOutgoing
                     : AppColor.replyBodyIncoming
             ]

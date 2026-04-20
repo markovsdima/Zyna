@@ -57,13 +57,14 @@ final class ImageMessageCellNode: MessageCellNode {
         }
 
         // Caption node
+        let usesAccentBubbleStyle = message.isOutgoing || message.zynaAttributes.color != nil
         if let captionText {
             let node = ASTextNode()
             node.attributedText = NSAttributedString(
                 string: captionText,
                 attributes: [
                     .font: UIFont.systemFont(ofSize: 14),
-                    .foregroundColor: message.isOutgoing
+                    .foregroundColor: usesAccentBubbleStyle
                         ? AppColor.bubbleForegroundOutgoing
                         : AppColor.bubbleForegroundIncoming
                 ]

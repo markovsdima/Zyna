@@ -12,6 +12,18 @@ import MatrixRustSDK
 
 final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
+    private enum BubblePortalWake {
+        static let immediateRetryDelay: TimeInterval = 0
+        static let nextFrameRetryDelay: TimeInterval = 0.032
+        static let lateRetryDelay: TimeInterval = 0.12
+
+        static let openDelays: [TimeInterval] = [
+            immediateRetryDelay,
+            nextFrameRetryDelay,
+            lateRetryDelay
+        ]
+    }
+
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
     var onTitleTapped: ((String) -> Void)?
@@ -47,6 +59,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private lazy var glassComparison = GlassComparisonView()
     private lazy var glassTuning = GlassTuningView()
+    private var bubblePortalWakeWorkItems: [DispatchWorkItem] = []
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactedIds: [String] = []
@@ -203,15 +216,57 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         super.viewDidAppear(animated)
         // Force glass recapture after navigation push completes
         GlassService.shared.setNeedsCapture()
+        scheduleBubblePortalOpenWake()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        cancelBubblePortalWakeWork()
         if isMovingFromParent {
             navigationController?.setNavigationBarHidden(false, animated: animated)
             audioPlayer.stop()
             viewModel.cleanup()
         }
+    }
+
+    // MARK: - Bubble Portal Wake
+
+    private func cancelBubblePortalWakeWork() {
+        bubblePortalWakeWorkItems.forEach { $0.cancel() }
+        bubblePortalWakeWorkItems.removeAll()
+    }
+
+    private func scheduleBubblePortalOpenWake() {
+        cancelBubblePortalWakeWork()
+        for delay in bubblePortalWakePlan {
+            scheduleBubblePortalWake(delay: delay)
+        }
+    }
+
+    private func scheduleBubblePortalWake(delay: TimeInterval) {
+        let item = DispatchWorkItem { [weak self] in
+            self?.wakeVisibleBubblePortals()
+        }
+        bubblePortalWakeWorkItems.append(item)
+        if delay == 0 {
+            DispatchQueue.main.async(execute: item)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        }
+    }
+
+    private func wakeVisibleBubblePortals() {
+        node.tableNode.view.layoutIfNeeded()
+        let indexPaths = node.tableNode.indexPathsForVisibleRows()
+        guard !indexPaths.isEmpty else { return }
+        for indexPath in indexPaths {
+            (node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode)?
+                .reloadBubblePortal()
+        }
+    }
+
+    private var bubblePortalWakePlan: [TimeInterval] {
+        BubblePortalWake.openDelays
     }
 
     // MARK: - Navigation
@@ -404,6 +459,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let message = messages[indexPath.row]
         let audioPlayer = self.audioPlayer
         let isGroup = self.isGroupChat
+        
+        // Ask ChatNode for the source view here on the main thread.
+        // Texture may build the cell inside the returned block on a background thread,
+        // and that block should use the already-resolved view instead of touching
+        // `self.node` / the live node hierarchy again.
+        let gradientSource = self.node.bubbleGradientSource(for: message)
         return { [weak self] in
 
             // Call events use a standalone centered cell, not a MessageCellNode
@@ -432,6 +493,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             default:
                 cellNode = TextMessageCellNode(message: message, isGroupChat: isGroup)
             }
+
+            cellNode.bubbleGradientSource = gradientSource
 
             cellNode.onSenderTapped = { [weak self] userId in
                 self?.onTitleTapped?(userId)
@@ -644,8 +707,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if let idx = viewModel.indexOfMessage(eventId: eventId) {
             let targetIP = IndexPath(row: idx, section: 0)
             let visibleRect = node.tableNode.view.bounds
-            if let cell = node.tableNode.view.cellForRow(at: targetIP),
-               visibleRect.intersects(cell.frame) {
+            if let cellNode = node.tableNode.nodeForRow(at: targetIP),
+               visibleRect.intersects(cellNode.view.frame) {
                 print("[nav] journey — already visible at idx=\(idx)")
                 node.tableNode.scrollToRow(at: targetIP, at: .middle, animated: true)
                 highlightMessage(eventId: eventId, delay: 0.3)
@@ -654,7 +717,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
         // Otherwise — teleport (Telegram-style snapshot slide)
         // Inverted table: higher row = older. Jumping to older → content slides down, to newer → up.
-        let currentFirst = node.tableNode.view.indexPathsForVisibleRows?.first?.row ?? 0
+        let currentFirst = node.tableNode.indexPathsForVisibleRows().first?.row ?? 0
         let targetIdx = viewModel.indexOfMessage(eventId: eventId)
         let direction: TeleportDirection = (targetIdx ?? Int.max) > currentFirst ? .up : .down
 

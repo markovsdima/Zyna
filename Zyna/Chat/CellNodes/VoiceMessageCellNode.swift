@@ -57,11 +57,11 @@ final class VoiceMessageCellNode: MessageCellNode {
         }
 
         let samples = Self.resampleWaveform(waveformData, to: Self.barCount)
-        let isOutgoing = message.isOutgoing
+        let usesAccentBubbleStyle = message.isOutgoing || message.zynaAttributes.color != nil
         self.waveformNode = WaveformNode(
             samples: samples,
-            filledColor: isOutgoing ? AppColor.onAccent : AppColor.accent,
-            unfilledColor: isOutgoing
+            filledColor: usesAccentBubbleStyle ? AppColor.onAccent : AppColor.accent,
+            unfilledColor: usesAccentBubbleStyle
                 ? AppColor.onAccent.withAlphaComponent(0.4)
                 : AppColor.accent.withAlphaComponent(0.3)
         )
@@ -82,7 +82,7 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     private func setupSubnodes() {
         // Play button
-        playIconNode.image = isOutgoing ? Self.playOnAccent : Self.playAccent
+        playIconNode.image = usesAccentBubbleStyle ? Self.playOnAccent : Self.playAccent
         playIconNode.contentMode = .center
         playIconNode.isUserInteractionEnabled = false
         playControlNode.automaticallyManagesSubnodes = true
@@ -93,7 +93,7 @@ final class VoiceMessageCellNode: MessageCellNode {
         }
 
         // Duration
-        durationNode.attributedText = Self.durationString(totalDuration, isOutgoing: isOutgoing)
+        durationNode.attributedText = Self.durationString(totalDuration, usesAccentStyle: usesAccentBubbleStyle)
 
         // Waveform
         let waveformSize = WaveformNode.size(for: Self.barCount)
@@ -205,7 +205,7 @@ final class VoiceMessageCellNode: MessageCellNode {
     // MARK: - UI Updates
 
     private func updatePlayIcon(playing: Bool) {
-        if isOutgoing {
+        if usesAccentBubbleStyle {
             playIconNode.image = playing ? Self.pauseOnAccent : Self.playOnAccent
         } else {
             playIconNode.image = playing ? Self.pauseAccent : Self.playAccent
@@ -215,22 +215,22 @@ final class VoiceMessageCellNode: MessageCellNode {
     private func updateDurationLabel(progress: Float) {
         if progress > 0 && progress < 1 {
             let remaining = totalDuration * (1 - TimeInterval(progress))
-            durationNode.attributedText = Self.durationString(remaining, isOutgoing: isOutgoing)
+            durationNode.attributedText = Self.durationString(remaining, usesAccentStyle: usesAccentBubbleStyle)
         } else {
-            durationNode.attributedText = Self.durationString(totalDuration, isOutgoing: isOutgoing)
+            durationNode.attributedText = Self.durationString(totalDuration, usesAccentStyle: usesAccentBubbleStyle)
         }
     }
 
     // MARK: - Helpers
 
-    private static func durationString(_ duration: TimeInterval, isOutgoing: Bool) -> NSAttributedString {
+    private static func durationString(_ duration: TimeInterval, usesAccentStyle: Bool) -> NSAttributedString {
         let totalSeconds = Int(duration)
         let minutes = totalSeconds / 60
         let seconds = totalSeconds % 60
         let text = String(format: "%d:%02d", minutes, seconds)
         return NSAttributedString(string: text, attributes: [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 14, weight: .medium),
-            .foregroundColor: isOutgoing ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming
+            .foregroundColor: usesAccentStyle ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming
         ])
     }
 

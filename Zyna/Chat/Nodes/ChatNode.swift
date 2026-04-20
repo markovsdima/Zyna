@@ -7,6 +7,16 @@ import AsyncDisplayKit
 
 final class ChatNode: ASDisplayNode {
     let tableNode = ASTableNode()
+    private let bubbleGradientHostView = UIView()
+    private let bubbleGradientSources: [BubbleGradientRole: BubbleGradientSource] = {
+        var sources: [BubbleGradientRole: BubbleGradientSource] = [:]
+        for role in BubbleGradientRole.allCases {
+            sources[role] = BubbleGradientSource { traits in
+                role.colors(traits: traits)
+            }
+        }
+        return sources
+    }()
 
     /// Set by ChatViewController. Used to put glass bars first in the
     /// accessibility tree so VoiceOver hit-tests the bars before the
@@ -25,11 +35,31 @@ final class ChatNode: ASDisplayNode {
         tableNode.inverted = true
         backgroundColor = AppColor.chatBackground
         tableNode.backgroundColor = AppColor.chatBackground
+        bubbleGradientHostView.backgroundColor = .clear
+        bubbleGradientHostView.isUserInteractionEnabled = false
+    }
+
+    override func didLoad() {
+        super.didLoad()
+        view.insertSubview(bubbleGradientHostView, belowSubview: tableNode.view)
+        for role in BubbleGradientRole.allCases {
+            guard let source = bubbleGradientSources[role] else { continue }
+            bubbleGradientHostView.addSubview(source)
+        }
     }
 
     override func layout() {
         super.layout()
         tableNode.frame = bounds
+        bubbleGradientHostView.frame = bounds
+        for source in bubbleGradientSources.values {
+            source.frame = bubbleGradientHostView.bounds
+        }
+    }
+
+    func bubbleGradientSource(for message: ChatMessage) -> UIView? {
+        guard message.zynaAttributes.color == nil else { return nil }
+        return bubbleGradientSources[message.isOutgoing ? .outgoing : .incoming]
     }
 
     override var accessibilityElements: [Any]? {
