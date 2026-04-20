@@ -28,9 +28,7 @@ final class PortalView {
         didSet { applySource() }
     }
 
-    /// Returns nil if the underlying class is unavailable on the
-    /// current iOS. Caller should fall back to
-    /// `snapshotView(afterScreenUpdates:)` or a cached UIImage.
+    /// Returns nil if the underlying class is unavailable on the current iOS.
     init?(matchesPosition: Bool = false) {
         guard let cls = Self.portalClass else { return nil }
         self.view = cls.init()
