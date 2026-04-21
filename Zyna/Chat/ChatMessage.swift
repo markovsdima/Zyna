@@ -121,10 +121,47 @@ struct ReplyInfo: Equatable {
 
 // MARK: - Reaction
 
+struct ReactionSender: Codable, Equatable {
+    let userId: String
+    let timestamp: TimeInterval
+}
+
 struct MessageReaction: Equatable {
     let key: String
-    let count: Int
+    let senders: [ReactionSender]
     let isOwn: Bool
+    /// Fallback count for GRDB rows that still use the older reactions cache format.
+    /// Once a message is refreshed from Matrix timeline/history sync, sender details
+    /// are written and this fallback is no longer needed.
+    let legacyCount: Int?
+
+    init(
+        key: String,
+        senders: [ReactionSender],
+        isOwn: Bool,
+        legacyCount: Int? = nil
+    ) {
+        self.key = key
+        self.senders = senders
+        self.isOwn = isOwn
+        self.legacyCount = legacyCount
+    }
+
+    var count: Int {
+        max(senders.count, legacyCount ?? 0)
+    }
+
+    var hasDetailedSenders: Bool {
+        !senders.isEmpty
+    }
+}
+
+struct ReactionSummaryEntry: Equatable {
+    let id: String
+    let userId: String
+    let displayName: String
+    let timestamp: Date
+    let reactionKey: String
 }
 
 // MARK: - Item Identifier (safe copy of SDK's EventOrTransactionId)

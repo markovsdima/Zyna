@@ -461,6 +461,43 @@ final class ChatViewModel {
         }
     }
 
+    func reactionSummaryEntries(for message: ChatMessage) async -> [ReactionSummaryEntry] {
+        let flattened = message.reactions
+            .flatMap { reaction in
+                reaction.senders.map {
+                    ReactionSummaryEntry(
+                        id: "\(reaction.key)|\($0.userId)|\($0.timestamp)",
+                        userId: $0.userId,
+                        displayName: $0.userId,
+                        timestamp: Date(timeIntervalSince1970: $0.timestamp),
+                        reactionKey: reaction.key
+                    )
+                }
+            }
+            .sorted { $0.timestamp > $1.timestamp }
+
+        guard !flattened.isEmpty else { return [] }
+
+        let uniqueIds = Set(flattened.map(\.userId))
+        var displayNames: [String: String] = [:]
+        displayNames.reserveCapacity(uniqueIds.count)
+
+        for userId in uniqueIds {
+            let member = try? await room.member(userId: userId)
+            displayNames[userId] = member?.displayName ?? userId
+        }
+
+        return flattened.map {
+            ReactionSummaryEntry(
+                id: $0.id,
+                userId: $0.userId,
+                displayName: displayNames[$0.userId] ?? $0.userId,
+                timestamp: $0.timestamp,
+                reactionKey: $0.reactionKey
+            )
+        }
+    }
+
     func redactMessage(_ message: ChatMessage) {
         guard let itemId = message.itemIdentifier else { return }
         Task {

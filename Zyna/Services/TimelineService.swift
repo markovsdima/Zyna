@@ -220,9 +220,17 @@ final class TimelineService {
         let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         return msgContent.reactions
             .map { reaction in
-                MessageReaction(
+                let senders = reaction.senders
+                    .map {
+                        ReactionSender(
+                            userId: $0.senderId,
+                            timestamp: TimeInterval($0.timestamp) / 1000
+                        )
+                    }
+                    .sorted { $0.timestamp > $1.timestamp }
+                return MessageReaction(
                     key: reaction.key,
-                    count: reaction.senders.count,
+                    senders: senders,
                     isOwn: reaction.senders.contains { $0.senderId == currentUserId }
                 )
             }

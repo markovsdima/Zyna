@@ -647,6 +647,42 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             )
         ]
 
+        if message.reactions.contains(where: \.hasDetailedSenders) {
+            actions.append(ContextMenuAction(
+                title: "Reactions",
+                image: UIImage(systemName: "list.bullet"),
+                behavior: .handleInMenu,
+                handler: { [weak self] in
+                    guard let self,
+                          let menu = self.activeContextMenu else { return }
+
+                    let initialEntries = message.reactions
+                        .flatMap { reaction in
+                            reaction.senders.map {
+                                ReactionSummaryEntry(
+                                    id: "\(reaction.key)|\($0.userId)|\($0.timestamp)",
+                                    userId: $0.userId,
+                                    displayName: $0.userId,
+                                    timestamp: Date(timeIntervalSince1970: $0.timestamp),
+                                    reactionKey: reaction.key
+                                )
+                            }
+                        }
+                        .sorted { $0.timestamp > $1.timestamp }
+
+                    menu.showReactionSummary(entries: initialEntries)
+
+                    Task { [weak self, weak menu] in
+                        guard let self else { return }
+                        let resolved = await self.viewModel.reactionSummaryEntries(for: message)
+                        await MainActor.run {
+                            menu?.updateReactionSummary(entries: resolved)
+                        }
+                    }
+                }
+            ))
+        }
+
         if !message.content.isRedacted {
             actions.append(ContextMenuAction(
                 title: "Forward",

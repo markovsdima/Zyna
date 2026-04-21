@@ -223,23 +223,67 @@ extension StoredMessage {
 
 private extension StoredMessage {
 
+    struct ReactionSenderJSON: Codable {
+        let userId: String
+        let timestamp: TimeInterval
+    }
+
     struct ReactionJSON: Codable {
+        let key: String
+        let senders: [ReactionSenderJSON]
+        let isOwn: Bool
+        let legacyCount: Int?
+    }
+
+    struct LegacyReactionJSON: Codable {
         let key: String
         let count: Int
         let isOwn: Bool
     }
 
     static func encodeReactions(_ reactions: [MessageReaction]) -> String {
-        let items = reactions.map { ReactionJSON(key: $0.key, count: $0.count, isOwn: $0.isOwn) }
+        let items = reactions.map {
+            ReactionJSON(
+                key: $0.key,
+                senders: $0.senders.map {
+                    ReactionSenderJSON(userId: $0.userId, timestamp: $0.timestamp)
+                },
+                isOwn: $0.isOwn,
+                legacyCount: nil
+            )
+        }
         guard let data = try? JSONEncoder().encode(items),
               let json = String(data: data, encoding: .utf8) else { return "[]" }
         return json
     }
 
     static func decodeReactions(_ json: String) -> [MessageReaction] {
-        guard let data = json.data(using: .utf8),
-              let items = try? JSONDecoder().decode([ReactionJSON].self, from: data) else { return [] }
-        return items.map { MessageReaction(key: $0.key, count: $0.count, isOwn: $0.isOwn) }
+        guard let data = json.data(using: .utf8) else { return [] }
+
+        if let items = try? JSONDecoder().decode([ReactionJSON].self, from: data) {
+            return items.map {
+                MessageReaction(
+                    key: $0.key,
+                    senders: $0.senders.map {
+                        ReactionSender(userId: $0.userId, timestamp: $0.timestamp)
+                    },
+                    isOwn: $0.isOwn,
+                    legacyCount: $0.legacyCount
+                )
+            }
+        }
+
+        guard let legacyItems = try? JSONDecoder().decode([LegacyReactionJSON].self, from: data) else {
+            return []
+        }
+        return legacyItems.map {
+            MessageReaction(
+                key: $0.key,
+                senders: [],
+                isOwn: $0.isOwn,
+                legacyCount: $0.count
+            )
+        }
     }
 }
 
