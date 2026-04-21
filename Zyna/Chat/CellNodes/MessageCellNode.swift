@@ -94,19 +94,9 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     private var isLastInCluster: Bool
     let usesAccentBubbleStyle: Bool
 
-    private let accessibilityContent: String
-
     // MARK: - Init
 
     init(message: ChatMessage, isGroupChat: Bool = false) {
-        var parts: [String] = []
-        if let sender = message.senderDisplayName, !message.isOutgoing {
-            parts.append(sender)
-        }
-        parts.append(message.content.textPreview)
-        parts.append(MessageCellHelpers.timeFormatter.string(from: message.timestamp))
-        self.accessibilityContent = parts.joined(separator: ", ")
-
         self.isOutgoing = message.isOutgoing
         self.showSenderName = !message.isOutgoing && isGroupChat && message.isFirstInCluster
         self.reservesAvatarGutter = !message.isOutgoing && isGroupChat
@@ -139,7 +129,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         isAccessibilityElement = true
         accessibilityTraits = .staticText
-        accessibilityLabel = accessibilityContent
+        accessibilityLabel = Self.makeAccessibilityLabel(for: message)
 
         contextSourceNode.activated = { [weak self] _ in
             self?.onContextMenuActivated?()
@@ -282,18 +272,28 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             }
         }
 
-        // Reactions
         if !message.reactions.isEmpty {
-            let rNode = ReactionsNode(reactions: message.reactions)
-            rNode.onReactionTapped = { [weak self] key in
-                self?.onReactionTapped?(key)
-            }
-            rNode.style.maxWidth = ASDimension(
-                unit: .points,
-                value: ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
-            )
-            self.reactionsNode = rNode
+            self.reactionsNode = makeReactionsNode(message.reactions)
         }
+    }
+
+    private static func makeAccessibilityLabel(for message: ChatMessage) -> String {
+        var parts: [String] = []
+        if let sender = message.senderDisplayName, !message.isOutgoing {
+            parts.append(sender)
+        }
+        parts.append(message.content.textPreview)
+        parts.append(MessageCellHelpers.timeFormatter.string(from: message.timestamp))
+        if let reactionsText = reactionCountAccessibilityText(for: message.reactions) {
+            parts.append(reactionsText)
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private static func reactionCountAccessibilityText(for reactions: [MessageReaction]) -> String? {
+        let totalCount = reactions.reduce(0) { $0 + $1.count }
+        guard totalCount > 0 else { return nil }
+        return String(localized: "\(totalCount) reactions")
     }
 
     @available(*, unavailable)
@@ -301,6 +301,18 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     @objc private func handleSenderTap() {
         onSenderTapped?(senderId)
+    }
+
+    private func makeReactionsNode(_ reactions: [MessageReaction]) -> ReactionsNode {
+        let node = ReactionsNode(reactions: reactions)
+        node.onReactionTapped = { [weak self] key in
+            self?.onReactionTapped?(key)
+        }
+        node.style.maxWidth = ASDimension(
+            unit: .points,
+            value: ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
+        )
+        return node
     }
 
     // MARK: - Gradient portal
@@ -512,12 +524,11 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     // MARK: - In-Place Update
 
     /// Returns true if the change between old and new can be applied
-    /// without recreating the cell (send-status or cluster-membership
-    /// flip — both are lightweight).
+    /// without recreating the cell (send-status, cluster-membership,
+    /// or reactions change — all are lightweight).
     static func canUpdateInPlace(old: ChatMessage, new: ChatMessage) -> Bool {
         old.id == new.id
             && old.content == new.content
-            && old.reactions == new.reactions
             && old.zynaAttributes == new.zynaAttributes
             && old.replyInfo == new.replyInfo
             && old.senderDisplayName == new.senderDisplayName
@@ -541,6 +552,24 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         let alpha: CGFloat = isLastInCluster ? 1 : 0
         avatarBackgroundNode.alpha = alpha
         avatarImageNode.alpha = alpha
+    }
+
+    func updateReactions(_ reactions: [MessageReaction]) {
+        switch (reactionsNode, reactions.isEmpty) {
+        case let (node?, false):
+            node.update(reactions: reactions)
+        case (.none, false):
+            reactionsNode = makeReactionsNode(reactions)
+        case (.some, true):
+            reactionsNode = nil
+        case (.none, true):
+            return
+        }
+        setNeedsLayout()
+    }
+
+    func updateAccessibilityMessage(_ message: ChatMessage) {
+        accessibilityLabel = Self.makeAccessibilityLabel(for: message)
     }
 
     // MARK: - Highlight

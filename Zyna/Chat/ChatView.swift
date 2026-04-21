@@ -415,8 +415,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             guard let self,
                   let cellNode = self.node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode
             else { return }
+            self.configureMessageDrivenInteractions(for: cellNode, message: message)
+            cellNode.updateAccessibilityMessage(message)
             cellNode.updateSendStatus(message.sendStatus)
             cellNode.updateClusterMembership(isLastInCluster: message.isLastInCluster)
+            cellNode.updateReactions(message.reactions)
+            cellNode.refreshAccessibilityForwarding()
         }
 
         viewModel.onRedactedDetected = { [weak self] messageIds in
@@ -587,24 +591,26 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 }
             }
 
-            cellNode.onContextMenuActivated = { [weak self, weak cellNode] in
-                guard let self, let cellNode else { return }
-                self.presentContextMenu(for: message, from: cellNode)
-            }
-
-            cellNode.onReactionTapped = { [weak self] key in
-                self?.viewModel.toggleReaction(key, for: message)
-            }
+            self?.configureMessageDrivenInteractions(for: cellNode, message: message)
 
             cellNode.onReplyHeaderTapped = { [weak self] eventId in
                 self?.navigateToMessage(eventId: eventId)
             }
 
-            cellNode.accessibilityActionsProvider = { [weak self] in
-                self?.buildAccessibilityActions(for: message) ?? []
-            }
-
             return cellNode
+        }
+    }
+
+    private func configureMessageDrivenInteractions(for cellNode: MessageCellNode, message: ChatMessage) {
+        cellNode.onContextMenuActivated = { [weak self, weak cellNode] in
+            guard let self, let cellNode else { return }
+            self.presentContextMenu(for: message, from: cellNode)
+        }
+        cellNode.onReactionTapped = { [weak self] key in
+            self?.viewModel.toggleReaction(key, for: message)
+        }
+        cellNode.accessibilityActionsProvider = { [weak self] in
+            self?.buildAccessibilityActions(for: message) ?? []
         }
     }
 
@@ -615,6 +621,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.viewModel.setReplyTarget(message)
             return true
         })
+
+        if message.itemIdentifier != nil {
+            actions.append(UIAccessibilityCustomAction(name: "Add Reaction") { [weak self] _ in
+                self?.presentAccessibilityReactionPicker(for: message)
+                return true
+            })
+        }
+
+        if message.reactions.contains(where: \.hasDetailedSenders) {
+            actions.append(UIAccessibilityCustomAction(name: "Show Reactions") { [weak self] _ in
+                self?.presentAccessibilityReactionSummary(for: message)
+                return true
+            })
+        }
 
         if !message.content.isRedacted {
             actions.append(UIAccessibilityCustomAction(name: "Forward") { [weak self] _ in
@@ -631,6 +651,71 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         return actions
+    }
+
+    private func initialReactionSummaryEntries(for message: ChatMessage) -> [ReactionSummaryEntry] {
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        return message.reactions
+            .flatMap { reaction in
+                reaction.senders.map {
+                    ReactionSummaryEntry(
+                        id: "\(reaction.key)|\($0.userId)|\($0.timestamp)",
+                        userId: $0.userId,
+                        displayName: $0.userId,
+                        timestamp: Date(timeIntervalSince1970: $0.timestamp),
+                        reactionKey: reaction.key,
+                        isOwn: $0.userId == currentUserId
+                    )
+                }
+            }
+            .sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private func presentAccessibilityReactionPicker(for message: ChatMessage) {
+        let alert = UIAlertController(
+            title: "Add Reaction",
+            message: nil,
+            preferredStyle: .alert
+        )
+
+        for emoji in ContextMenuController.quickEmojis {
+            alert.addAction(UIAlertAction(title: emoji, style: .default) { [weak self] _ in
+                self?.viewModel.toggleReaction(emoji, for: message)
+            })
+        }
+
+        alert.addAction(UIAlertAction(title: String(localized: "More Emoji"), style: .default) { [weak self] _ in
+            self?.presentAccessibilityFullEmojiPicker(for: message)
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func presentAccessibilityFullEmojiPicker(for message: ChatMessage) {
+        let picker = AccessibilityEmojiCategoryPickerViewController { [weak self] emoji in
+            self?.viewModel.toggleReaction(emoji, for: message)
+        }
+        let nav = UINavigationController(rootViewController: picker)
+        nav.modalPresentationStyle = .formSheet
+        present(nav, animated: true)
+    }
+
+    private func presentAccessibilityReactionSummary(for message: ChatMessage) {
+        let initialEntries = initialReactionSummaryEntries(for: message)
+        let summary = AccessibilityReactionSummaryViewController(entries: initialEntries) { [weak self] entry in
+            self?.viewModel.toggleReaction(entry.reactionKey, for: message)
+        }
+        let nav = UINavigationController(rootViewController: summary)
+        nav.modalPresentationStyle = .formSheet
+        present(nav, animated: true)
+
+        Task { [weak self, weak summary] in
+            guard let self else { return }
+            let resolved = await self.viewModel.reactionSummaryEntries(for: message)
+            await MainActor.run {
+                summary?.update(entries: resolved)
+            }
+        }
     }
 
     // MARK: - Context Menu
@@ -656,20 +741,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     guard let self,
                           let menu = self.activeContextMenu else { return }
 
-                    let initialEntries = message.reactions
-                        .flatMap { reaction in
-                            reaction.senders.map {
-                                ReactionSummaryEntry(
-                                    id: "\(reaction.key)|\($0.userId)|\($0.timestamp)",
-                                    userId: $0.userId,
-                                    displayName: $0.userId,
-                                    timestamp: Date(timeIntervalSince1970: $0.timestamp),
-                                    reactionKey: reaction.key
-                                )
-                            }
-                        }
-                        .sorted { $0.timestamp > $1.timestamp }
-
+                    let initialEntries = self.initialReactionSummaryEntries(for: message)
                     menu.showReactionSummary(entries: initialEntries)
 
                     Task { [weak self, weak menu] in
@@ -1243,4 +1315,556 @@ private final class TeleportAnimationDelegate: NSObject, CAAnimationDelegate {
     private let completion: () -> Void
     init(_ completion: @escaping () -> Void) { self.completion = completion }
     func animationDidStop(_ anim: CAAnimation, finished flag: Bool) { completion() }
+}
+
+// MARK: - Accessibility Reaction Summary
+
+private final class AccessibilityReactionSummaryViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private let emptyStateLabel = UILabel()
+    private let onRemoveReaction: (ReactionSummaryEntry) -> Void
+    private var entries: [ReactionSummaryEntry]
+    private var suppressedEntryIds = Set<String>()
+    private var didPostInitialFocus = false
+
+    init(
+        entries: [ReactionSummaryEntry],
+        onRemoveReaction: @escaping (ReactionSummaryEntry) -> Void
+    ) {
+        self.entries = entries
+        self.onRemoveReaction = onRemoveReaction
+        super.init(nibName: nil, bundle: nil)
+        title = String(localized: "Reactions")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: String(localized: "Close"),
+            style: .done,
+            target: self,
+            action: #selector(closeTapped)
+        )
+
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(
+            AccessibilityReactionSummaryCell.self,
+            forCellReuseIdentifier: AccessibilityReactionSummaryCell.reuseIdentifier
+        )
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 52
+        tableView.allowsSelection = false
+        view.addSubview(tableView)
+
+        emptyStateLabel.font = .preferredFont(forTextStyle: .body)
+        emptyStateLabel.textColor = .secondaryLabel
+        emptyStateLabel.textAlignment = .center
+        emptyStateLabel.numberOfLines = 0
+        emptyStateLabel.text = String(localized: "No reactions yet.")
+
+        updateEmptyState()
+        preferredContentSize = CGSize(width: 360, height: 420)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        tableView.frame = view.bounds
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !didPostInitialFocus else { return }
+        didPostInitialFocus = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            UIAccessibility.post(
+                notification: .screenChanged,
+                argument: self.preferredFocusTarget
+            )
+        }
+    }
+
+    @objc private func closeTapped() {
+        dismiss(animated: true)
+    }
+
+    func update(entries: [ReactionSummaryEntry]) {
+        self.entries = entries.filter { !suppressedEntryIds.contains($0.id) }
+        tableView.reloadData()
+        updateEmptyState()
+    }
+
+    private var preferredFocusTarget: Any? {
+        if let firstVisible = tableView.visibleCells.first {
+            return firstVisible
+        }
+        if !entries.isEmpty {
+            tableView.layoutIfNeeded()
+            return tableView.cellForRow(at: IndexPath(row: 0, section: 0))
+        }
+        return emptyStateLabel
+    }
+
+    private func updateEmptyState() {
+        tableView.backgroundView = entries.isEmpty ? emptyStateLabel : nil
+    }
+
+    private func remove(_ entry: ReactionSummaryEntry) {
+        suppressedEntryIds.insert(entry.id)
+        onRemoveReaction(entry)
+
+        let removedIndex = entries.firstIndex { $0.id == entry.id } ?? 0
+        entries.removeAll { $0.id == entry.id }
+        tableView.reloadData()
+        updateEmptyState()
+
+        let nextIndex = min(removedIndex, max(entries.count - 1, 0))
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let target: Any?
+            if self.entries.indices.contains(nextIndex) {
+                target = self.tableView.cellForRow(at: IndexPath(row: nextIndex, section: 0))
+            } else {
+                target = self.emptyStateLabel
+            }
+            UIAccessibility.post(notification: .layoutChanged, argument: target)
+        }
+    }
+
+    // MARK: - UITableViewDataSource
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        entries.count
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        cellForRowAt indexPath: IndexPath
+    ) -> UITableViewCell {
+        guard let cell = tableView.dequeueReusableCell(
+            withIdentifier: AccessibilityReactionSummaryCell.reuseIdentifier,
+            for: indexPath
+        ) as? AccessibilityReactionSummaryCell else {
+            return UITableViewCell()
+        }
+
+        let entry = entries[indexPath.row]
+        cell.configure(
+            entry: entry,
+            timeText: MessageCellHelpers.timeFormatter.string(from: entry.timestamp),
+            onRemoveReaction: entry.isOwn ? { [weak self] in
+                self?.remove(entry)
+            } : nil
+        )
+        return cell
+    }
+}
+
+private final class AccessibilityReactionSummaryCell: UITableViewCell {
+
+    static let reuseIdentifier = "AccessibilityReactionSummaryCell"
+
+    private let nameLabel = UILabel()
+    private let timeLabel = UILabel()
+    private let reactionLabel = UILabel()
+    private var onRemoveReaction: (() -> Void)?
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+
+        selectionStyle = .none
+        isAccessibilityElement = true
+        contentView.isAccessibilityElement = false
+
+        nameLabel.font = .preferredFont(forTextStyle: .body)
+        nameLabel.textColor = .label
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        timeLabel.font = .preferredFont(forTextStyle: .footnote)
+        timeLabel.textColor = .secondaryLabel
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        reactionLabel.font = .systemFont(ofSize: 22)
+        reactionLabel.textAlignment = .right
+        reactionLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        reactionLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let stack = UIStackView(arrangedSubviews: [nameLabel, timeLabel, reactionLabel])
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor, constant: 4),
+            stack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor, constant: -4)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(
+        entry: ReactionSummaryEntry,
+        timeText: String,
+        onRemoveReaction: (() -> Void)?
+    ) {
+        nameLabel.text = entry.displayName
+        timeLabel.text = timeText
+        reactionLabel.text = entry.reactionKey
+        self.onRemoveReaction = onRemoveReaction
+
+        accessibilityTraits = .staticText
+        accessibilityLabel = "\(entry.displayName), \(timeText), \(entry.reactionKey)"
+        accessibilityCustomActions = onRemoveReaction.map { _ in
+            [
+                UIAccessibilityCustomAction(name: String(localized: "Remove reaction")) { [weak self] _ in
+                    self?.onRemoveReaction?()
+                    return true
+                }
+            ]
+        }
+    }
+}
+
+// MARK: - Accessibility Emoji Picker
+
+private typealias AccessibilityEmojiCategory = (name: String, emojis: [String])
+
+private final class AccessibilityEmojiCategoryPickerViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating {
+
+    private let tableView = UITableView(frame: .zero, style: .insetGrouped)
+    private let searchController = UISearchController(searchResultsController: nil)
+    private let emptyStateLabel = UILabel()
+    private let onEmojiSelected: (String) -> Void
+    private var filteredEmojis: [String] = []
+    private var didPostInitialFocus = false
+
+    private var query: String {
+        searchController.searchBar.text?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+    }
+
+    private var isSearching: Bool {
+        !query.isEmpty
+    }
+
+    init(onEmojiSelected: @escaping (String) -> Void) {
+        self.onEmojiSelected = onEmojiSelected
+        super.init(nibName: nil, bundle: nil)
+        title = String(localized: "More Emoji")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        definesPresentationContext = true
+
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: String(localized: "Close"),
+            style: .done,
+            target: self,
+            action: #selector(closeTapped)
+        )
+
+        searchController.searchResultsUpdater = self
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchBar.placeholder = String(localized: "Search emoji")
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = false
+
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.keyboardDismissMode = .onDrag
+        tableView.register(
+            AccessibilityEmojiPickerCell.self,
+            forCellReuseIdentifier: AccessibilityEmojiPickerCell.reuseIdentifier
+        )
+        view.addSubview(tableView)
+
+        emptyStateLabel.font = .preferredFont(forTextStyle: .body)
+        emptyStateLabel.textColor = .secondaryLabel
+        emptyStateLabel.textAlignment = .center
+        emptyStateLabel.numberOfLines = 0
+        emptyStateLabel.text = String(localized: "No emoji found.")
+
+        updateEmptyState()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        tableView.frame = view.bounds
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !didPostInitialFocus else { return }
+        didPostInitialFocus = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            UIAccessibility.post(notification: .screenChanged, argument: self.preferredFocusTarget)
+        }
+    }
+
+    @objc private func closeTapped() {
+        dismiss(animated: true)
+    }
+
+    func updateSearchResults(for searchController: UISearchController) {
+        let query = query
+        if query.isEmpty {
+            filteredEmojis = []
+        } else {
+            var seen = Set<String>()
+            filteredEmojis = EmojiData.categories
+                .flatMap(\.emojis)
+                .filter { emoji in
+                    let matches = emoji.contains(query) || EmojiData.names[emoji]?.contains(query) == true
+                    guard matches, seen.insert(emoji).inserted else { return false }
+                    return true
+                }
+        }
+        tableView.reloadData()
+        updateEmptyState()
+    }
+
+    private var preferredFocusTarget: Any? {
+        tableView.layoutIfNeeded()
+        return tableView.visibleCells.first
+            ?? tableView.cellForRow(at: IndexPath(row: 0, section: 0))
+            ?? searchController.searchBar
+    }
+
+    private func updateEmptyState() {
+        tableView.backgroundView = isSearching && filteredEmojis.isEmpty ? emptyStateLabel : nil
+    }
+
+    private func selectEmoji(_ emoji: String) {
+        onEmojiSelected(emoji)
+        navigationController?.dismiss(animated: true)
+    }
+
+    // MARK: - UITableViewDataSource
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        isSearching ? filteredEmojis.count : EmojiData.categories.count
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        cellForRowAt indexPath: IndexPath
+    ) -> UITableViewCell {
+        if isSearching {
+            guard let cell = tableView.dequeueReusableCell(
+                withIdentifier: AccessibilityEmojiPickerCell.reuseIdentifier,
+                for: indexPath
+            ) as? AccessibilityEmojiPickerCell else {
+                return UITableViewCell()
+            }
+            cell.configure(emoji: filteredEmojis[indexPath.row])
+            return cell
+        }
+
+        let reuseIdentifier = "AccessibilityEmojiCategoryCell"
+        let cell = tableView.dequeueReusableCell(withIdentifier: reuseIdentifier)
+            ?? UITableViewCell(style: .subtitle, reuseIdentifier: reuseIdentifier)
+        let category = EmojiData.categories[indexPath.row]
+        cell.textLabel?.text = category.name
+        cell.detailTextLabel?.text = "\(category.emojis.count) " + String(localized: "emoji")
+        cell.accessoryType = .disclosureIndicator
+        cell.selectionStyle = .default
+        cell.accessibilityTraits = .button
+        cell.accessibilityLabel = category.name
+        cell.accessibilityValue = "\(category.emojis.count) " + String(localized: "emoji")
+        cell.accessibilityHint = String(localized: "Opens this emoji category")
+        return cell
+    }
+
+    // MARK: - UITableViewDelegate
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+
+        if isSearching {
+            selectEmoji(filteredEmojis[indexPath.row])
+            return
+        }
+
+        let category = EmojiData.categories[indexPath.row]
+        let controller = AccessibilityEmojiListViewController(
+            category: category,
+            onEmojiSelected: onEmojiSelected
+        )
+        navigationController?.pushViewController(controller, animated: true)
+    }
+}
+
+private final class AccessibilityEmojiListViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+
+    private let tableView = UITableView(frame: .zero, style: .plain)
+    private let category: AccessibilityEmojiCategory
+    private let onEmojiSelected: (String) -> Void
+    private var didPostInitialFocus = false
+
+    init(
+        category: AccessibilityEmojiCategory,
+        onEmojiSelected: @escaping (String) -> Void
+    ) {
+        self.category = category
+        self.onEmojiSelected = onEmojiSelected
+        super.init(nibName: nil, bundle: nil)
+        title = category.name
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: String(localized: "Close"),
+            style: .done,
+            target: self,
+            action: #selector(closeTapped)
+        )
+
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.register(
+            AccessibilityEmojiPickerCell.self,
+            forCellReuseIdentifier: AccessibilityEmojiPickerCell.reuseIdentifier
+        )
+        view.addSubview(tableView)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        tableView.frame = view.bounds
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !didPostInitialFocus else { return }
+        didPostInitialFocus = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            UIAccessibility.post(
+                notification: .screenChanged,
+                argument: self.tableView.visibleCells.first
+                    ?? self.tableView.cellForRow(at: IndexPath(row: 0, section: 0))
+            )
+        }
+    }
+
+    @objc private func closeTapped() {
+        navigationController?.dismiss(animated: true)
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        category.emojis.count
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        cellForRowAt indexPath: IndexPath
+    ) -> UITableViewCell {
+        guard let cell = tableView.dequeueReusableCell(
+            withIdentifier: AccessibilityEmojiPickerCell.reuseIdentifier,
+            for: indexPath
+        ) as? AccessibilityEmojiPickerCell else {
+            return UITableViewCell()
+        }
+        cell.configure(emoji: category.emojis[indexPath.row])
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        onEmojiSelected(category.emojis[indexPath.row])
+        navigationController?.dismiss(animated: true)
+    }
+}
+
+private final class AccessibilityEmojiPickerCell: UITableViewCell {
+
+    static let reuseIdentifier = "AccessibilityEmojiPickerCell"
+
+    private let emojiLabel = UILabel()
+    private let nameLabel = UILabel()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+
+        selectionStyle = .default
+        isAccessibilityElement = true
+        contentView.isAccessibilityElement = false
+        accessibilityTraits = .button
+
+        emojiLabel.font = .systemFont(ofSize: 30)
+        emojiLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        emojiLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        nameLabel.font = .preferredFont(forTextStyle: .body)
+        nameLabel.textColor = .label
+        nameLabel.numberOfLines = 2
+
+        let stack = UIStackView(arrangedSubviews: [emojiLabel, nameLabel])
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor, constant: 4),
+            stack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor, constant: -4)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(emoji: String) {
+        let displayName = Self.displayName(for: emoji)
+        emojiLabel.text = emoji
+        nameLabel.text = displayName
+        accessibilityLabel = displayName
+        accessibilityValue = emoji
+        accessibilityHint = String(localized: "Adds this reaction")
+    }
+
+    private static func displayName(for emoji: String) -> String {
+        guard let rawName = EmojiData.names[emoji], !rawName.isEmpty else { return emoji }
+        return rawName.capitalized
+    }
 }

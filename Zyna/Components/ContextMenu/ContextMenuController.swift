@@ -56,7 +56,7 @@ final class ContextMenuController: NSObject {
 
     // MARK: - Constants
 
-    private static let quickEmojis = ["👍", "❤️", "😂", "😮", "😢", "🔥"]
+    static let quickEmojis = ["👍", "❤️", "😂", "😮", "😢", "🔥"]
     private static let actionsWidth: CGFloat = 250
     private static let actionsCornerRadius: CGFloat = 14
     private static let actionRowHeight: CGFloat = 44
@@ -761,4 +761,3 @@ private final class HighlightControl: UIControl {
         }
     }
 }
-

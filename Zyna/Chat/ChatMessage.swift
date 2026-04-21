@@ -162,6 +162,7 @@ struct ReactionSummaryEntry: Equatable {
     let displayName: String
     let timestamp: Date
     let reactionKey: String
+    let isOwn: Bool
 }
 
 // MARK: - Item Identifier (safe copy of SDK's EventOrTransactionId)

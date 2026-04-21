@@ -9,19 +9,31 @@ final class ReactionsNode: ASDisplayNode {
 
     var onReactionTapped: ((String) -> Void)?
 
-    private let reactions: [MessageReaction]
+    private var reactions: [MessageReaction]
     private var pillNodes: [ReactionPillNode] = []
 
     init(reactions: [MessageReaction]) {
         self.reactions = reactions
         super.init()
         automaticallyManagesSubnodes = true
+        rebuildPills()
+    }
 
-        for reaction in reactions {
-            let pill = ReactionPillNode(reaction: reaction)
-            pill.addTarget(self, action: #selector(pillTapped(_:)), forControlEvents: .touchUpInside)
-            pillNodes.append(pill)
-        }
+    func update(reactions: [MessageReaction]) {
+        guard self.reactions != reactions else { return }
+        self.reactions = reactions
+        rebuildPills()
+        setNeedsLayout()
+    }
+
+    private func rebuildPills() {
+        pillNodes = reactions.map(makePill)
+    }
+
+    private func makePill(for reaction: MessageReaction) -> ReactionPillNode {
+        let pill = ReactionPillNode(reaction: reaction)
+        pill.addTarget(self, action: #selector(pillTapped(_:)), forControlEvents: .touchUpInside)
+        return pill
     }
 
     @objc private func pillTapped(_ sender: ReactionPillNode) {

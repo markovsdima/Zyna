@@ -462,6 +462,7 @@ final class ChatViewModel {
     }
 
     func reactionSummaryEntries(for message: ChatMessage) async -> [ReactionSummaryEntry] {
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         let flattened = message.reactions
             .flatMap { reaction in
                 reaction.senders.map {
@@ -470,7 +471,8 @@ final class ChatViewModel {
                         userId: $0.userId,
                         displayName: $0.userId,
                         timestamp: Date(timeIntervalSince1970: $0.timestamp),
-                        reactionKey: reaction.key
+                        reactionKey: reaction.key,
+                        isOwn: $0.userId == currentUserId
                     )
                 }
             }
@@ -493,7 +495,8 @@ final class ChatViewModel {
                 userId: $0.userId,
                 displayName: displayNames[$0.userId] ?? $0.userId,
                 timestamp: $0.timestamp,
-                reactionKey: $0.reactionKey
+                reactionKey: $0.reactionKey,
+                isOwn: $0.isOwn
             )
         }
     }

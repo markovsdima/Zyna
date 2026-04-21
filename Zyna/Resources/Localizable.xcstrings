@@ -56,6 +56,58 @@
         }
       }
     },
+    "%lld reactions" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld reaction"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld reactions"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld реакции"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld реакций"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld реакция"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld реакций"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "Accept" : {
       "localizations" : {
         "ru" : {
@@ -75,6 +127,9 @@
           }
         }
       }
+    },
+    "Adds this reaction" : {
+
     },
     "Admin" : {
       "localizations" : {
@@ -252,6 +307,9 @@
         }
       }
     },
+    "Close" : {
+
+    },
     "Compare Emojis" : {
       "localizations" : {
         "ru" : {
@@ -361,6 +419,9 @@
           }
         }
       }
+    },
+    "emoji" : {
+
     },
     "Encryption keys couldn't be transferred automatically. Enter the recovery key you saved when setting up this account to restore access to message history." : {
       "localizations" : {
@@ -663,6 +724,9 @@
         }
       }
     },
+    "More Emoji" : {
+
+    },
     "New Chat" : {
       "localizations" : {
         "ru" : {
@@ -693,6 +757,12 @@
         }
       }
     },
+    "No emoji found." : {
+
+    },
+    "No reactions yet." : {
+
+    },
     "Offline" : {
 
     },
@@ -720,6 +790,9 @@
 
     },
     "Opens the member list" : {
+
+    },
+    "Opens this emoji category" : {
 
     },
     "Owner" : {
@@ -772,6 +845,9 @@
         }
       }
     },
+    "Reactions" : {
+
+    },
     "Reason (optional)" : {
       "localizations" : {
         "ru" : {
@@ -791,6 +867,9 @@
           }
         }
       }
+    },
+    "Remove reaction" : {
+
     },
     "Reset" : {
       "localizations" : {
@@ -871,6 +950,9 @@
           }
         }
       }
+    },
+    "Search emoji" : {
+
     },
     "Search employees" : {
       "localizations" : {

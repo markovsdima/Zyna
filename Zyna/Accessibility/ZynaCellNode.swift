@@ -21,12 +21,17 @@ class ZynaCellNode: ASCellNode {
     /// property to the view reliably, so we set it explicitly each layout.
     var accessibilityActionsProvider: (() -> [UIAccessibilityCustomAction])?
 
-    override func layout() {
-        super.layout()
-        // Skip work entirely when VoiceOver is off — no observable cost
-        // for the 99% of users who don't have it enabled.
-        guard UIAccessibility.isVoiceOverRunning else { return }
+    /// Pushes fresh VO custom actions to the wrapped cell immediately.
+    /// Useful after lightweight in-place updates where the node may not
+    /// get a layout pass soon enough on its own.
+    func refreshAccessibilityForwarding() {
+        guard isNodeLoaded, UIAccessibility.isVoiceOverRunning else { return }
         view.accessibilityCustomActions = accessibilityActionsProvider?()
         forwardAccessibilityToWrappingCell()
+    }
+
+    override func layout() {
+        super.layout()
+        refreshAccessibilityForwarding()
     }
 }
