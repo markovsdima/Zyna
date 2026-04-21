@@ -24,6 +24,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         ]
     }
 
+    private enum InputBarInsetCompensation {
+        static let liveEdgeTolerance: CGFloat = 2
+        static let automaticZoneTolerance: CGFloat = 8
+    }
+
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
     var onTitleTapped: ((String) -> Void)?
@@ -277,18 +282,45 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func updateTableInsetsForInputBar() {
         let newCoveredHeight = glassInputBar.coveredHeight
         let previousCoveredHeight = previousInputCoveredHeight
+        let liveEdgeDistance = tableDistanceToLiveEdge()
+        let wasPinnedToLiveEdge = liveEdgeDistance <= InputBarInsetCompensation.liveEdgeTolerance
 
         node.tableNode.contentInset.top = newCoveredHeight
         node.tableNode.view.verticalScrollIndicatorInsets.top = newCoveredHeight
 
         if let previousCoveredHeight {
-            compensateTableOffsetForInputHeightChange(
-                from: previousCoveredHeight,
-                to: newCoveredHeight
-            )
+            let compensationDelta = newCoveredHeight - previousCoveredHeight
+            let isInAutomaticZone = liveEdgeDistance
+                <= abs(compensationDelta) + InputBarInsetCompensation.automaticZoneTolerance
+            if wasPinnedToLiveEdge {
+                pinTableToLiveEdge()
+            } else if isInAutomaticZone && compensationDelta < 0 {
+                // Near the live edge, shrinking the covered area already pulls the
+                // table back down through UIKit's own layout/clamping. Applying our
+                // full manual delta on top causes the overshoot.
+            } else {
+                compensateTableOffsetForInputHeightChange(
+                    from: previousCoveredHeight,
+                    to: newCoveredHeight
+                )
+            }
         }
 
         previousInputCoveredHeight = newCoveredHeight
+    }
+
+    private func tableDistanceToLiveEdge() -> CGFloat {
+        let tableView = node.tableNode.view
+        let liveOffsetY = -tableView.adjustedContentInset.top
+        return max(0, node.tableNode.contentOffset.y - liveOffsetY)
+    }
+
+    private func pinTableToLiveEdge() {
+        let tableView = node.tableNode.view
+        let liveOffsetY = -tableView.adjustedContentInset.top
+        var targetOffset = node.tableNode.contentOffset
+        targetOffset.y = liveOffsetY
+        node.tableNode.contentOffset = targetOffset
     }
 
     private func compensateTableOffsetForInputHeightChange(from oldHeight: CGFloat, to newHeight: CGFloat) {
