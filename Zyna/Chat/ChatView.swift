@@ -60,6 +60,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private lazy var glassComparison = GlassComparisonView()
     private lazy var glassTuning = GlassTuningView()
     private var bubblePortalWakeWorkItems: [DispatchWorkItem] = []
+    private var previousInputCoveredHeight: CGFloat?
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactedIds: [String] = []
@@ -208,8 +209,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.contentInset.bottom = glassNavBar.coveredHeight
 
         glassInputBar.updateLayout(in: view)
-        node.tableNode.contentInset.top = glassInputBar.coveredHeight
-        node.tableNode.view.verticalScrollIndicatorInsets.top = glassInputBar.coveredHeight
+        updateTableInsetsForInputBar()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -270,6 +270,44 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     // MARK: - Navigation
+
+    /// Keep the current viewport stable when the input bar/keyboard
+    /// changes how much space is covered at the bottom. The table is
+    /// inverted, so that covered height lives in `contentInset.top`.
+    private func updateTableInsetsForInputBar() {
+        let newCoveredHeight = glassInputBar.coveredHeight
+        let previousCoveredHeight = previousInputCoveredHeight
+
+        node.tableNode.contentInset.top = newCoveredHeight
+        node.tableNode.view.verticalScrollIndicatorInsets.top = newCoveredHeight
+
+        if let previousCoveredHeight {
+            compensateTableOffsetForInputHeightChange(
+                from: previousCoveredHeight,
+                to: newCoveredHeight
+            )
+        }
+
+        previousInputCoveredHeight = newCoveredHeight
+    }
+
+    private func compensateTableOffsetForInputHeightChange(from oldHeight: CGFloat, to newHeight: CGFloat) {
+        let delta = newHeight - oldHeight
+        guard abs(delta) > 0.5 else { return }
+
+        let tableNode = node.tableNode
+        let tableView = node.tableNode.view
+        let minOffsetY = -tableView.adjustedContentInset.top
+        let maxOffsetY = max(
+            minOffsetY,
+            tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+        )
+
+        var targetOffset = tableNode.contentOffset
+        targetOffset.y -= delta
+        targetOffset.y = min(max(targetOffset.y, minOffsetY), maxOffsetY)
+        tableNode.contentOffset = targetOffset
+    }
 
     private func setupNavigationBar() {
         navigationController?.setNavigationBarHidden(true, animated: false)
