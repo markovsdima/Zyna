@@ -103,7 +103,6 @@ final class GlassComparisonView: UIView {
                 ?? GlassRenderer.ShapeParams()
         }
         addSubview(anchor)
-        addSubview(anchor.renderer)
 
         contentView.backgroundColor = .clear
         addSubview(contentView)
@@ -130,6 +129,7 @@ final class GlassComparisonView: UIView {
 
         frame = CGRect(x: 6, y: topY, width: barWidth, height: totalHeight)
         anchor.frame = CGRect(x: 0, y: barHeight + gap, width: barWidth, height: barHeight)
+        anchor.renderHostContainerView = parentView
 
         layoutAppleShapes(y: 0, width: barWidth)
         layoutLabel(tag: 100, y: -14)

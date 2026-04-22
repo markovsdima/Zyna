@@ -9,6 +9,8 @@ import AsyncDisplayKit
 /// Handles context menu protocol, sender name, bubble styling, and the outer layout.
 class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
+    private static let portalFallbackBackgroundEnabled = false
+
     /// Matches a single-line text bubble
     fileprivate static let avatarDiameter: CGFloat = 32
     fileprivate static let avatarThumbSize: Int = Int(avatarDiameter * ScreenConstants.scale)
@@ -52,6 +54,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     let bubbleNode = RoundedBackgroundNode()
     private let bubbleBackgroundNode = RoundedBackgroundNode()
+    private let bubblePortalBackgroundNode = BubblePortalBackgroundNode()
+    let directBubbleContentNode = ASDisplayNode()
     private let bubbleWrapperNode = ASDisplayNode()
     let contextSourceNode: ContextSourceNode
     let timeNode = ASTextNode()
@@ -63,28 +67,21 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     // MARK: - Gradient bubble
 
-    /// Set by the cell factory: gradient view that message bubbles
-    /// mirror via a portal with `matchesPosition=true`. Nil means the bubble
-    /// falls back to its solid `fillColor`.
-    weak var bubbleGradientSource: UIView? {
+    /// Shared source host resolved by `ChatNode` on the main thread.
+    /// The bubble background mirrors this source through a thin portal
+    /// node; nil means the bubble falls back to its solid fill color.
+    weak var bubbleGradientSource: PortalSourceView? {
         didSet {
             applyBubbleChrome()
-            updateBubblePortalSource()
+            bubblePortalBackgroundNode.sourceView = usesBubblePortal ? bubbleGradientSource : nil
         }
     }
-
-    /// Holds the portal view alive. Built in `didLoad` when the cell
-    /// has a shared gradient source; mask + frame
-    /// updated in `layout()` so bubble-shape clipping tracks any
-    /// post-layout changes (reactions added, cluster-flip, etc.).
-    private var bubblePortal: PortalView?
-    private var bubblePortalContainer: UIView?
-    private var didReloadBubblePortalAfterReadyLayout = false
     private let bubbleBaseFillColor: UIColor
 
     // MARK: - State
 
     let isOutgoing: Bool
+    let messageId: String
     let showSenderName: Bool
     /// Left-gutter slot is reserved (incoming + group); image
     /// visibility then depends on isLastInCluster.
@@ -93,11 +90,14 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     private let isFirstInCluster: Bool
     private var isLastInCluster: Bool
     let usesAccentBubbleStyle: Bool
+    private var showsBubbleChrome = true
+    private var usesBareBubbleContent = false
 
     // MARK: - Init
 
     init(message: ChatMessage, isGroupChat: Bool = false) {
         self.isOutgoing = message.isOutgoing
+        self.messageId = message.id
         self.showSenderName = !message.isOutgoing && isGroupChat && message.isFirstInCluster
         self.reservesAvatarGutter = !message.isOutgoing && isGroupChat
         self.senderId = message.senderId
@@ -145,15 +145,30 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         bubbleNode.radius = 14
         bubbleNode.fillColor = .clear
         bubbleNode.automaticallyManagesSubnodes = true
+        directBubbleContentNode.automaticallyManagesSubnodes = true
+        directBubbleContentNode.isHidden = true
         bubbleBackgroundNode.radius = 14
         bubbleBackgroundNode.isUserInteractionEnabled = false
+        bubblePortalBackgroundNode.isUserInteractionEnabled = false
         bubbleWrapperNode.addSubnode(bubbleBackgroundNode)
+        bubbleWrapperNode.addSubnode(bubblePortalBackgroundNode)
         bubbleWrapperNode.addSubnode(bubbleNode)
+        bubbleWrapperNode.addSubnode(directBubbleContentNode)
         bubbleWrapperNode.layoutSpecBlock = { [weak self] _, _ in
             guard let self else { return ASLayoutSpec() }
+            if self.usesBareBubbleContent {
+                return ASWrapperLayoutSpec(layoutElement: self.directBubbleContentNode)
+            }
+            guard self.showsBubbleChrome else {
+                return ASWrapperLayoutSpec(layoutElement: self.bubbleNode)
+            }
+            let layeredBackground = ASOverlayLayoutSpec(
+                child: self.bubbleBackgroundNode,
+                overlay: self.bubblePortalBackgroundNode
+            )
             return ASBackgroundLayoutSpec(
                 child: self.bubbleNode,
-                background: self.bubbleBackgroundNode
+                background: layeredBackground
             )
         }
         applyBubbleChrome()
@@ -299,6 +314,11 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    override func didLoad() {
+        super.didLoad()
+        assignProbeLayerNames()
+    }
+
     @objc private func handleSenderTap() {
         onSenderTapped?(senderId)
     }
@@ -315,128 +335,44 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         return node
     }
 
-    // MARK: - Gradient portal
-
-    /// Main-thread hook: safe point to alloc the portal view (UIView
-    /// subclass, alloc off-main is undefined behaviour).
-    override func didLoad() {
-        super.didLoad()
-        installBubblePortalIfNeeded()
-    }
-
-    override func didEnterVisibleState() {
-        super.didEnterVisibleState()
-        guard usesBubblePortal else { return }
-        reloadBubblePortal()
-        // Visible-state callbacks can still race the final window/layout
-        // settle on slower devices, so give the portal one more pass on
-        // the next run loop.
-        DispatchQueue.main.async { [weak self] in
-            self?.reloadBubblePortal()
-        }
-    }
-
-    private func installBubblePortalIfNeeded() {
-        guard bubblePortal == nil else { return }
-        guard let source = bubbleGradientSource else { return }
-        guard let portal = PortalView(matchesPosition: true) else { return }
-        let container = UIView()
-        container.backgroundColor = .clear
-        container.isUserInteractionEnabled = false
-        portal.sourceView = source
-        bubbleWrapperNode.view.insertSubview(container, belowSubview: bubbleNode.view)
-        container.addSubview(portal.view)
-        // Re-trigger after the portal's view entered the hierarchy:
-        // the setter above called `reload` while the view had no
-        // superview, so the index-reinsert was a no-op and the
-        // compositor may not have linked to the source.
-        portal.reload()
-        bubblePortal = portal
-        bubblePortalContainer = container
-        didReloadBubblePortalAfterReadyLayout = false
-        if let source = source as? BubbleGradientSource {
-            source.addPortal(portal)
-        }
-    }
-
-    private func updateBubblePortalSource() {
-        guard isNodeLoaded else { return }
-        guard let portal = bubblePortal else {
-            installBubblePortalIfNeeded()
-            syncBubblePortalLayout(skipActivationReload: true)
-            return
-        }
-        portal.sourceView = bubbleGradientSource
-        bubblePortalContainer?.isHidden = bubbleGradientSource == nil
-        didReloadBubblePortalAfterReadyLayout = false
-        if let source = bubbleGradientSource as? BubbleGradientSource {
-            source.addPortal(portal)
-        }
-        syncBubblePortalLayout(skipActivationReload: true)
-    }
-
-    /// Keep portal frame + bubble-shape mask in sync with the bubble's
-    /// current bounds. Cell layout can re-run on in-place updates
-    /// (status / cluster flip) and on width changes from reactions.
-    private func syncBubblePortalLayout(skipActivationReload: Bool = false) {
-        guard let portal = bubblePortal,
-              let container = bubblePortalContainer else {
-            return
-        }
-        container.frame = bubbleNode.frame
-        portal.view.frame = container.bounds
-        if portal.view.layer.mask != nil {
-            portal.view.layer.mask = nil
-        }
-        let mask = (container.layer.mask as? CAShapeLayer) ?? CAShapeLayer()
-        mask.frame = container.bounds
-        mask.path = bubbleNode.currentPath().cgPath
-        if container.layer.mask !== mask {
-            container.layer.mask = mask
-        }
-        if !skipActivationReload,
-           !didReloadBubblePortalAfterReadyLayout,
-           reloadBubblePortalIfEligible() {
-            didReloadBubblePortalAfterReadyLayout = true
-        }
-    }
-
-    override func layout() {
-        super.layout()
-        syncBubblePortalLayout()
-    }
-
-    func reloadBubblePortal() {
-        syncBubblePortalLayout(skipActivationReload: true)
-        _ = reloadBubblePortalIfEligible()
-    }
-
-    @discardableResult
-    private func reloadBubblePortalIfEligible() -> Bool {
-        guard let portal = bubblePortal else {
-            return false
-        }
-        guard portal.view.window != nil,
-              bubbleGradientSource?.window != nil,
-              !portal.view.bounds.isEmpty else {
-            return false
-        }
-        portal.reload()
-        return true
-    }
-
     private var usesFallbackBubbleBackground: Bool {
-        return usesBubblePortal
+        return usesBubblePortal && Self.portalFallbackBackgroundEnabled
     }
 
     private func applyBubbleChrome() {
+        directBubbleContentNode.isHidden = !usesBareBubbleContent
+        bubbleNode.isHidden = usesBareBubbleContent
+
+        guard !usesBareBubbleContent else {
+            bubbleBackgroundNode.fillColor = .clear
+            bubbleBackgroundNode.isHidden = true
+            bubblePortalBackgroundNode.isHidden = true
+            bubblePortalBackgroundNode.sourceView = nil
+            bubbleNode.fillColor = .clear
+            return
+        }
+
         bubbleNode.radius = 14
         bubbleBackgroundNode.radius = bubbleNode.radius
+        bubblePortalBackgroundNode.radius = bubbleNode.radius
         bubbleNode.roundedCorners = .allCorners
         bubbleBackgroundNode.roundedCorners = bubbleNode.roundedCorners
+        bubblePortalBackgroundNode.roundedCorners = bubbleNode.roundedCorners
 
-        if usesFallbackBubbleBackground {
-            bubbleBackgroundNode.fillColor = bubbleBaseFillColor
+        guard showsBubbleChrome else {
+            bubbleBackgroundNode.fillColor = .clear
+            bubbleBackgroundNode.isHidden = true
+            bubblePortalBackgroundNode.isHidden = true
+            bubblePortalBackgroundNode.sourceView = nil
+            bubbleNode.fillColor = .clear
+            return
+        }
+
+        bubbleBackgroundNode.isHidden = usesBubblePortal && !usesFallbackBubbleBackground
+        bubblePortalBackgroundNode.isHidden = !usesBubblePortal
+
+        if usesBubblePortal {
+            bubbleBackgroundNode.fillColor = usesFallbackBubbleBackground ? bubbleBaseFillColor : .clear
             bubbleNode.fillColor = .clear
         } else {
             bubbleBackgroundNode.fillColor = .clear
@@ -445,7 +381,25 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     }
 
     private var usesBubblePortal: Bool {
-        bubbleGradientSource != nil
+        showsBubbleChrome && bubbleGradientSource != nil
+    }
+
+    func setShowsBubbleChrome(_ enabled: Bool) {
+        guard showsBubbleChrome != enabled else { return }
+        showsBubbleChrome = enabled
+        applyBubbleChrome()
+        bubbleWrapperNode.setNeedsLayout()
+        contextSourceNode.setNeedsLayout()
+        setNeedsLayout()
+    }
+
+    func setUsesBareBubbleContent(_ enabled: Bool) {
+        guard usesBareBubbleContent != enabled else { return }
+        usesBareBubbleContent = enabled
+        applyBubbleChrome()
+        bubbleWrapperNode.setNeedsLayout()
+        contextSourceNode.setNeedsLayout()
+        setNeedsLayout()
     }
 
     var bubbleForegroundColor: UIColor {
@@ -609,5 +563,38 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     func restoreBubbleFromMenu() {
         contextSourceNode.restoreContentFromMenu()
+    }
+
+    func assignProbeName(_ name: String, to node: ASDisplayNode) {
+        if node.isNodeLoaded {
+            node.layer.name = name
+        } else {
+            node.onDidLoad { loadedNode in
+                loadedNode.layer.name = name
+            }
+        }
+    }
+
+    fileprivate func assignProbeLayerNames() {
+        assignProbeName("message.contextSource", to: contextSourceNode)
+        assignProbeName("message.bubbleWrapper", to: bubbleWrapperNode)
+        assignProbeName("message.bubbleFallbackBackground", to: bubbleBackgroundNode)
+        assignProbeName("message.bubblePortalBackground", to: bubblePortalBackgroundNode)
+        assignProbeName("message.bubbleNode", to: bubbleNode)
+        assignProbeName("message.directBubbleContent", to: directBubbleContentNode)
+        assignProbeName("message.timeNode", to: timeNode)
+        assignProbeName("message.senderName", to: senderNameNode)
+        assignProbeName("message.avatarBackground", to: avatarBackgroundNode)
+        assignProbeName("message.avatarImage", to: avatarImageNode)
+
+        if let reactionsNode {
+            assignProbeName("message.reactions", to: reactionsNode)
+        }
+        if let replyHeaderNode {
+            assignProbeName("message.replyHeader", to: replyHeaderNode)
+        }
+        if let forwardedHeaderNode {
+            assignProbeName("message.forwardedHeader", to: forwardedHeaderNode)
+        }
     }
 }

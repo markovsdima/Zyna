@@ -25,7 +25,8 @@ final class GlassRegistration {
 // MARK: - GlassService
 
 /// Central coordinator for the glass effect system.
-/// Single-window architecture: renderers live in the main window.
+/// Single-window architecture: glass output is rendered by shared overlay
+/// renderers attached to the relevant host containers inside the same window.
 /// Captures sourceView's layer tree only — glass UI is never in the capture path.
 ///
 /// Capture is driven by explicit triggers, not continuous:
@@ -40,7 +41,6 @@ final class GlassService {
 
     private struct Registration {
         weak var anchor: GlassAnchor?
-        let renderer: GlassRenderer
         // Cached for render-without-capture (liquid wave animation)
         var lastTexture: MTLTexture?
         var lastCaptureFrame: CGRect?
@@ -54,11 +54,22 @@ final class GlassService {
         weak var source: GlassCaptureSource?
     }
 
+    private final class RendererHost {
+        weak var container: UIView?
+        let renderer: GlassRenderer
+
+        init(container: UIView) {
+            self.container = container
+            self.renderer = GlassRenderer()
+        }
+    }
+
     // MARK: - State
 
     private var registrations: [UUID: Registration] = [:]
     private var displayLinkToken: DisplayLinkToken?
     private weak var sourceWindow: UIWindow?
+    private var rendererHosts: [ObjectIdentifier: RendererHost] = [:]
 
     // Reusable capture textures (keyed by pixel size)
     private var captureTextures: [String: MTLTexture] = [:]
@@ -77,23 +88,17 @@ final class GlassService {
     private var lastTickTime: CFTimeInterval = 0
 
     private var tickCount = 0
-    
-    #if DEBUG
-    private var statsTimestamp: CFTimeInterval = 0
-    private var perGlassStats: [UUID: (cap: Double, ren: Double, count: Int, label: String)] = [:]
-    #endif
 
     private init() {}
 
     // MARK: - Public API
 
-    /// Register a glass anchor with its renderer. The caller owns
-    /// the renderer and is responsible for placing it in the view
-    /// hierarchy; GlassService only drives its frame and content.
-    func register(anchor: GlassAnchor, renderer: GlassRenderer) -> GlassRegistration {
+    /// Register a glass anchor. Output is drawn into a shared renderer that
+    /// lives in the anchor's host container, above content and below controls.
+    func register(anchor: GlassAnchor) -> GlassRegistration {
         let id = UUID()
 
-        registrations[id] = Registration(anchor: anchor, renderer: renderer)
+        registrations[id] = Registration(anchor: anchor)
 
         if sourceWindow == nil {
             sourceWindow = anchor.window
@@ -130,9 +135,6 @@ final class GlassService {
     func captureFor(duration: CFTimeInterval) {
         continuousCaptureUntil = max(continuousCaptureUntil, CACurrentMediaTime() + duration)
         ensureRunning()
-        #if DEBUG
-        print("[glass] captureFor(\(String(format: "%.2f", duration))s)")
-        #endif
     }
 
     /// Register a continuous capture source (animated cell, Lottie, GIF).
@@ -156,6 +158,10 @@ final class GlassService {
         captureTextures.removeAll()
         captureCaches.removeAll()
         sourceWindow = nil
+        for host in rendererHosts.values {
+            host.renderer.removeFromSuperview()
+        }
+        rendererHosts.removeAll()
         captureSources.removeAll()
     }
 
@@ -197,6 +203,64 @@ final class GlassService {
         watchdogTimer = nil
     }
 
+    private func resolveRenderHostContainer(for anchor: GlassAnchor) -> UIView? {
+        anchor.renderHostContainerView ?? anchor.superview?.superview ?? anchor.superview ?? anchor.window
+    }
+
+    private func rendererHost(for container: UIView) -> RendererHost {
+        let key = ObjectIdentifier(container)
+        if let host = rendererHosts[key], host.container === container {
+            return host
+        }
+        let host = RendererHost(container: container)
+        rendererHosts[key] = host
+        return host
+    }
+
+    private func cleanupRendererHosts(liveContainers: [UIView]) {
+        let liveKeys = Set(liveContainers.map { ObjectIdentifier($0) })
+        for (key, host) in rendererHosts where host.container == nil || !liveKeys.contains(key) {
+            host.renderer.removeFromSuperview()
+            rendererHosts.removeValue(forKey: key)
+        }
+    }
+
+    private func ensureSharedRendererAttached(_ renderer: GlassRenderer, to container: UIView) {
+        let insertionView = registrations.values
+            .compactMap { $0.anchor?.superview }
+            .filter { $0.superview === container }
+            .min { lhs, rhs in
+                (container.subviews.firstIndex(of: lhs) ?? Int.max) < (container.subviews.firstIndex(of: rhs) ?? Int.max)
+            }
+
+        if renderer.superview !== container {
+            renderer.removeFromSuperview()
+            if let insertionView {
+                container.insertSubview(renderer, belowSubview: insertionView)
+            } else {
+                container.addSubview(renderer)
+            }
+            renderer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            renderer.accessibilityElementsHidden = true
+        } else if let insertionView {
+            container.insertSubview(renderer, belowSubview: insertionView)
+        }
+
+        renderer.frame = container.bounds
+        renderer.contentScaleFactor = container.window?.screen.scale ?? UIScreen.main.scale
+        renderer.layoutIfNeeded()
+    }
+
+    private func renderDestinationFrame(
+        for captureFrame: CGRect,
+        in renderHostContainer: UIView,
+        sourceWindow: UIWindow
+    ) -> CGRect {
+        let containerLayer = renderHostContainer.layer.presentation() ?? renderHostContainer.layer
+        let windowLayer = sourceWindow.layer.presentation() ?? sourceWindow.layer
+        return containerLayer.convert(captureFrame, from: windowLayer)
+    }
+
     private func watchdogCheck() {
         let anyAnimating = registrations.values.contains { $0.anchor?.isAnimating == true }
         let inBurst = CACurrentMediaTime() < continuousCaptureUntil
@@ -211,6 +275,9 @@ final class GlassService {
 
     private func tick() {
         guard let sourceWindow else { return }
+        let hadPendingCaptureRequest = needsCapture
+        var renderItemsByContainer: [ObjectIdentifier: (container: UIView, renderer: GlassRenderer, items: [GlassRenderer.RenderItem])] = [:]
+        var deferredCaptureRequest = false
 
         // Check if capture is needed:
         // 1. Explicit trigger (scroll, layout)
@@ -221,10 +288,6 @@ final class GlassService {
         let hasLiquidPool = registrations.values.contains { $0.anchor?.extendsCaptureToScreenBottom == true }
         let inBurst = CACurrentMediaTime() < continuousCaptureUntil
         let shouldCapture = needsCapture || inBurst || anyAnimating || hasActiveSourceUnderGlass()
-
-        if shouldCapture {
-            needsCapture = false
-        }
 
         // Wave energy: ramps up during scroll, decays when idle
         let now = CACurrentMediaTime()
@@ -239,25 +302,17 @@ final class GlassService {
             if anchorMoving {
                 waveEnergy = min(waveEnergy + dt * 5.0, 1.0)
                 waveTime += dt
-                #if DEBUG
-                if waveEnergy == dt * 5.0 { print("[glass] liquid pool ON — keyboard moving") }
-                #endif
             } else {
                 waveEnergy = max(waveEnergy - dt * 0.35, 0)
                 if waveEnergy > 0.001 {
                     waveTime += dt * waveEnergy
                 } else if waveEnergy <= 0.001 {
                     // Waves fully decayed — shrink capture back to glass rect
-                    var didDisable = false
                     for (_, reg) in registrations {
                         if reg.anchor?.extendsCaptureToScreenBottom == true {
                             reg.anchor?.extendsCaptureToScreenBottom = false
-                            didDisable = true
                         }
                     }
-                    #if DEBUG
-                    if didDisable { print("[glass] liquid pool OFF — waves decayed") }
-                    #endif
                 }
             }
         }
@@ -267,17 +322,40 @@ final class GlassService {
         let shouldRender = shouldCapture || (hasLiquidPool && waveEnergy > 0.001) || hasActiveBars
 
         let scale = sourceWindow.screen.scale
+        let renderHostContainers = registrations.values
+            .compactMap { $0.anchor }
+            .compactMap { resolveRenderHostContainer(for: $0) }
+        var uniqueRenderHostContainers: [UIView] = []
+        var seenRenderHostContainers = Set<ObjectIdentifier>()
+        for container in renderHostContainers {
+            let key = ObjectIdentifier(container)
+            if seenRenderHostContainers.insert(key).inserted {
+                uniqueRenderHostContainers.append(container)
+            }
+        }
+
+        for container in uniqueRenderHostContainers {
+            let host = rendererHost(for: container)
+            ensureSharedRendererAttached(host.renderer, to: container)
+        }
+        cleanupRendererHosts(liveContainers: uniqueRenderHostContainers)
 
         for (id, reg) in registrations {
             guard let anchor = reg.anchor,
                   let rawFrame = anchor.presentationFrame(),
-                  rawFrame.width > 0, rawFrame.height > 0
+                  rawFrame.width > 0, rawFrame.height > 0,
+                  let renderHostContainer = resolveRenderHostContainer(for: anchor)
             else {
-                reg.renderer.isHidden = true
                 continue
             }
 
-            reg.renderer.isHidden = false
+            let renderHost = rendererHost(for: renderHostContainer)
+            if shouldRender, renderHost.renderer.isFrameInFlight {
+                if hadPendingCaptureRequest {
+                    deferredCaptureRequest = true
+                }
+                continue
+            }
 
             // Snap to device pixels
             let glassFrame = CGRect(
@@ -295,57 +373,56 @@ final class GlassService {
             if shouldCapture {
                 // ── Capture new frame ──
                 let windowBounds = sourceWindow.bounds
-                let sidePadding: CGFloat = 50
+                let horizontalPadding: CGFloat = 50
                 // Liquid mode: more top padding to capture cells approaching the surface
                 // Bars mode: extend upward to capture environment for chrome reflections
                 let anchorHasBars = anchor.hasBars
                 let anchorHasScrollButton = anchor.hasScrollButton
-                let topPadding: CGFloat = wantsLiquid ? 80 : ((anchorHasBars || anchorHasScrollButton) ? 100 : 20)
+                let isInputCapture = anchor.debugName == "input"
+                let isNavCapture = anchor.debugName == "nav"
+                let topPadding: CGFloat
+                let bottomPadding: CGFloat
+                if wantsLiquid {
+                    topPadding = 80
+                    bottomPadding = 0
+                } else if anchorHasBars {
+                    topPadding = 100
+                    bottomPadding = 24
+                } else if anchorHasScrollButton {
+                    topPadding = 72
+                    bottomPadding = 12
+                } else if isNavCapture {
+                    topPadding = 8
+                    bottomPadding = 12
+                } else if isInputCapture {
+                    topPadding = 12
+                    bottomPadding = 12
+                } else {
+                    topPadding = 20
+                    bottomPadding = 24
+                }
+                let captureX = max(glassFrame.origin.x - horizontalPadding, 0)
                 let captureY = max(glassFrame.origin.y - topPadding, 0)
                 let captureFrame: CGRect
                 if wantsLiquid {
                     captureFrame = CGRect(
-                        x: max(glassFrame.origin.x - sidePadding, 0),
+                        x: captureX,
                         y: captureY,
-                        width: min(glassFrame.width + sidePadding * 2, windowBounds.width - max(glassFrame.origin.x - sidePadding, 0)),
+                        width: min(glassFrame.width + horizontalPadding * 2, windowBounds.width - captureX),
                         height: windowBounds.height - captureY
                     )
                 } else {
                     captureFrame = CGRect(
-                        x: max(glassFrame.origin.x - sidePadding, 0),
+                        x: captureX,
                         y: captureY,
-                        width: min(glassFrame.width + sidePadding * 2, windowBounds.width - max(glassFrame.origin.x - sidePadding, 0)),
-                        height: min(glassFrame.height + sidePadding * 2, windowBounds.height - captureY)
+                        width: min(glassFrame.width + horizontalPadding * 2, windowBounds.width - captureX),
+                        height: min(glassFrame.height + topPadding + bottomPadding, windowBounds.height - captureY)
                     )
                 }
-
-                #if DEBUG
-                let capStart = CACurrentMediaTime()
-                #endif
 
                 guard let texture = captureRegion(captureFrame, from: sourceWindow, scale: scale,
                                                      sourceView: anchor.sourceView,
                                                      clearPattern: anchor.clearPatternBGRA) else { continue }
-
-                #if DEBUG
-                let capTime = CACurrentMediaTime() - capStart
-                #endif
-
-                // Renderer lives inside the glass bar now, so its frame
-                // is relative to the anchor's parent. Derive it from
-                // the anchor's local frame + the padding offsets that
-                // captureFrame adds, instead of converting through
-                // window coordinates (which fights keyboard animations).
-                let anchorFrame = anchor.frame
-                let rendererFrame = CGRect(
-                    x: anchorFrame.origin.x + (captureFrame.origin.x - glassFrame.origin.x),
-                    y: anchorFrame.origin.y + (captureFrame.origin.y - glassFrame.origin.y),
-                    width: captureFrame.width,
-                    height: captureFrame.height
-                )
-                reg.renderer.frame = rendererFrame
-                reg.renderer.contentScaleFactor = scale
-                reg.renderer.layoutIfNeeded()  // sync drawableSize before render
 
                 let shapes: GlassRenderer.ShapeParams
                 if let provider = anchor.shapeProvider {
@@ -386,47 +463,82 @@ final class GlassService {
                 registrations[id]?.lastIsHDR = texture.pixelFormat == .bgr10a2Unorm
                 registrations[id]?.lastLiquidZone = liquidZone
                 registrations[id]?.lastBarData = barData
-
-                #if DEBUG
-                let renStart = CACurrentMediaTime()
-                #endif
-
-                reg.renderer.render(
-                    with: texture,
-                    shapes: shapes,
-                    isHDR: texture.pixelFormat == .bgr10a2Unorm,
-                    liquidZone: liquidZone,
-                    time: waveTime,
-                    barData: barData
+                let destinationFrame = renderDestinationFrame(
+                    for: captureFrame,
+                    in: renderHostContainer,
+                    sourceWindow: sourceWindow
                 )
-
-                #if DEBUG
-                let renTime = CACurrentMediaTime() - renStart
-                let label = anchor.extendsCaptureToScreenBottom ? "input" : "nav"
-                var s = perGlassStats[id] ?? (cap: 0, ren: 0, count: 0, label: label)
-                s.cap += capTime
-                s.ren += renTime
-                s.count += 1
-                perGlassStats[id] = s
-                #endif
+                let key = ObjectIdentifier(renderHostContainer)
+                if renderItemsByContainer[key] == nil {
+                    renderItemsByContainer[key] = (
+                        container: renderHostContainer,
+                        renderer: renderHost.renderer,
+                        items: []
+                    )
+                }
+                if var group = renderItemsByContainer[key] {
+                    group.items.append(
+                        GlassRenderer.RenderItem(
+                            name: anchor.debugName,
+                            frame: destinationFrame,
+                            sourceTexture: texture,
+                            shapes: shapes,
+                            isHDR: texture.pixelFormat == .bgr10a2Unorm,
+                            liquidZone: liquidZone,
+                            time: waveTime,
+                            barData: barData
+                        )
+                    )
+                    renderItemsByContainer[key] = group
+                }
 
             } else if (wantsLiquid || (anchor.hasBars && reg.lastBarData != nil)),
                       let texture = reg.lastTexture,
-                      let shapes = reg.lastShapes {
+                      let shapes = reg.lastShapes,
+                      let captureFrame = reg.lastCaptureFrame {
                 // ── Render-only: reuse cached texture, update wave animation ──
                 var lz = reg.lastLiquidZone
                 lz?.waveEnergy = waveEnergy
-
-                reg.renderer.render(
-                    with: texture,
-                    shapes: shapes,
-                    isHDR: reg.lastIsHDR,
-                    liquidZone: lz,
-                    time: waveTime,
-                    barData: reg.lastBarData
+                let destinationFrame = renderDestinationFrame(
+                    for: captureFrame,
+                    in: renderHostContainer,
+                    sourceWindow: sourceWindow
                 )
+                let key = ObjectIdentifier(renderHostContainer)
+                if renderItemsByContainer[key] == nil {
+                    renderItemsByContainer[key] = (
+                        container: renderHostContainer,
+                        renderer: renderHost.renderer,
+                        items: []
+                    )
+                }
+                if var group = renderItemsByContainer[key] {
+                    group.items.append(
+                        GlassRenderer.RenderItem(
+                            name: anchor.debugName,
+                            frame: destinationFrame,
+                            sourceTexture: texture,
+                            shapes: shapes,
+                            isHDR: reg.lastIsHDR,
+                            liquidZone: lz,
+                            time: waveTime,
+                            barData: reg.lastBarData
+                        )
+                    )
+                    renderItemsByContainer[key] = group
+                }
             }
         }
+
+        for group in renderItemsByContainer.values {
+            _ = group.renderer.render(items: group.items)
+        }
+
+        if hadPendingCaptureRequest {
+            needsCapture = deferredCaptureRequest
+        }
+
+        tickCount &+= 1
 
         // Cleanup dead weak references periodically
         if captureSources.count > 0 && tickCount % 600 == 0 {
@@ -440,38 +552,9 @@ final class GlassService {
             idleTicks += 1
             if idleTicks >= idleThreshold {
                 stopRenderLoop()
-                #if DEBUG
-                print("[glass] display link stopped (idle)")
-                #endif
                 return
             }
         }
-
-        #if DEBUG
-        if shouldRender {
-            tickCount += 1
-        }
-
-        let statsNow = CACurrentMediaTime()
-        if statsTimestamp == 0 { statsTimestamp = statsNow }
-        if statsNow - statsTimestamp >= 1.0 {
-            if perGlassStats.isEmpty {
-                print("[glass] idle")
-            } else {
-                for (_, stats) in perGlassStats {
-                    guard stats.count > 0 else { continue }
-                    let n = Double(stats.count)
-                    let capAvg = stats.cap / n * 1000
-                    let renAvg = stats.ren / n * 1000
-                    let totAvg = capAvg + renAvg
-                    print("[glass] [\(stats.label)] active=\(stats.count) capture=\(String(format: "%.2f", capAvg))ms render=\(String(format: "%.2f", renAvg))ms total=\(String(format: "%.2f", totAvg))ms")
-                }
-            }
-            perGlassStats.removeAll(keepingCapacity: true)
-            tickCount = 0
-            statsTimestamp = now
-        }
-        #endif
     }
 
     // MARK: - Source Intersection Check
@@ -669,7 +752,9 @@ final class GlassService {
             frameInTarget = frame
         }
 
-        // Check if source view is Y-flipped (inverted table)
+        // Inverted ASTableNode uses a flipped Y axis. Match the previous working
+        // table-capture behaviour at the root, then preserve nested layer
+        // transforms explicitly while walking portal-backed subtrees below.
         let isFlipped = sourceView.map { $0.transform.d < 0 } ?? false
 
         if isFlipped {
@@ -691,10 +776,23 @@ final class GlassService {
                 guard !sublayer.isHidden, sublayer.opacity > 0 else { continue }
                 let sublayerFrame = sublayer.frame
                 guard sublayerFrame.intersects(visibleRect) else { continue }
-                ctx.saveGState()
-                ctx.translateBy(x: sublayerFrame.origin.x, y: sublayerFrame.origin.y)
-                sublayer.render(in: ctx)
-                ctx.restoreGState()
+                let intersection = sublayerFrame.intersection(visibleRect)
+                guard !intersection.isEmpty else { continue }
+
+                // Clip each top-level render to the actual visible band inside the
+                // capture strip so tall cells do not redraw their full height.
+                let localClipRect = intersection.offsetBy(
+                    dx: -sublayerFrame.minX,
+                    dy: -sublayerFrame.minY
+                )
+
+                withLayerGeometry(sublayer, in: ctx) {
+                    renderLayerForCapture(
+                        sublayer,
+                        in: ctx,
+                        clipRectInLayer: localClipRect
+                    )
+                }
             }
         } else {
             targetLayer.render(in: ctx)
@@ -713,6 +811,143 @@ final class GlassService {
         }
 
         return slot.texture
+    }
+
+    private func renderLayerForCapture(
+        _ layer: CALayer,
+        in ctx: CGContext,
+        clipRectInLayer: CGRect
+    ) {
+        guard !clipRectInLayer.isEmpty else { return }
+        if subtreeContainsBubblePortalBackground(layer) {
+            renderLayerSubtreeWithBubblePortalFallback(
+                layer,
+                in: ctx,
+                clipRectInLayer: clipRectInLayer
+            )
+        } else {
+            ctx.saveGState()
+            ctx.clip(to: clipRectInLayer)
+            layer.render(in: ctx)
+            ctx.restoreGState()
+        }
+    }
+
+    private func renderLayerSubtreeWithBubblePortalFallback(
+        _ layer: CALayer,
+        in ctx: CGContext,
+        clipRectInLayer: CGRect
+    ) {
+        guard !clipRectInLayer.isEmpty, !layer.isHidden, layer.opacity > 0 else { return }
+
+        if renderBubblePortalBackgroundLayer(
+            layer,
+            in: ctx,
+            clipRectInLayer: clipRectInLayer
+        ) {
+            return
+        }
+
+        guard let sublayers = layer.sublayers, !sublayers.isEmpty else {
+            ctx.saveGState()
+            ctx.clip(to: clipRectInLayer)
+            layer.render(in: ctx)
+            ctx.restoreGState()
+            return
+        }
+
+        ctx.saveGState()
+        ctx.clip(to: clipRectInLayer)
+        for child in sublayers {
+            guard !child.isHidden, child.opacity > 0 else { continue }
+            let childFrame = child.frame
+            guard childFrame.intersects(clipRectInLayer) else { continue }
+
+            withLayerGeometry(child, in: ctx) {
+                renderLayerForCapture(child, in: ctx, clipRectInLayer: child.bounds)
+            }
+        }
+        ctx.restoreGState()
+    }
+
+    private func withLayerGeometry(
+        _ layer: CALayer,
+        in ctx: CGContext,
+        body: () -> Void
+    ) {
+        ctx.saveGState()
+        ctx.translateBy(x: layer.position.x, y: layer.position.y)
+
+        let transform = layer.transform
+        if CATransform3DIsAffine(transform) {
+            ctx.concatenate(CATransform3DGetAffineTransform(transform))
+        }
+
+        ctx.translateBy(
+            x: -layer.bounds.width * layer.anchorPoint.x,
+            y: -layer.bounds.height * layer.anchorPoint.y
+        )
+        body()
+        ctx.restoreGState()
+    }
+
+    private func subtreeContainsBubblePortalBackground(_ layer: CALayer) -> Bool {
+        if isBubblePortalBackgroundLayer(layer) {
+            return true
+        }
+        return layer.sublayers?.contains(where: subtreeContainsBubblePortalBackground) ?? false
+    }
+
+    private func isBubblePortalBackgroundLayer(_ layer: CALayer) -> Bool {
+        if layer.name == "message.bubblePortalBackground" {
+            return true
+        }
+        guard let hostView = layer.delegate as? UIView else { return false }
+        return BubblePortalBackgroundNode.captureSourceView(for: hostView) != nil
+    }
+
+    private func renderBubblePortalBackgroundLayer(
+        _ layer: CALayer,
+        in ctx: CGContext,
+        clipRectInLayer: CGRect
+    ) -> Bool {
+        guard let hostView = layer.delegate as? UIView,
+              let sourceView = BubblePortalBackgroundNode.captureSourceView(for: hostView),
+              !hostView.isHidden,
+              hostView.alpha > 0 else {
+            return false
+        }
+
+        ctx.saveGState()
+        ctx.clip(to: clipRectInLayer)
+
+        if let maskLayer = hostView.layer.mask as? CAShapeLayer,
+           let maskPath = maskLayer.path {
+            ctx.addPath(maskPath)
+            ctx.clip()
+        } else {
+            ctx.clip(to: hostView.bounds)
+        }
+
+        let sourceSubviews = sourceView.subviews.filter { !$0.isHidden && $0.alpha > 0 }
+        if sourceSubviews.isEmpty {
+            let sourceFrame = sourceView.convert(sourceView.bounds, to: hostView)
+            ctx.saveGState()
+            ctx.translateBy(x: sourceFrame.minX, y: sourceFrame.minY)
+            sourceView.layer.render(in: ctx)
+            ctx.restoreGState()
+        } else {
+            for sourceSubview in sourceSubviews {
+                let sourceFrame = sourceSubview.convert(sourceSubview.bounds, to: hostView)
+                ctx.saveGState()
+                ctx.translateBy(x: sourceFrame.minX, y: sourceFrame.minY)
+                sourceSubview.layer.render(in: ctx)
+                ctx.restoreGState()
+            }
+        }
+
+        ctx.restoreGState()
+        return true
     }
 
 }

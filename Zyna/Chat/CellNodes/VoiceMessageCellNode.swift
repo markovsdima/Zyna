@@ -9,10 +9,8 @@ import MatrixRustSDK
 
 final class VoiceMessageCellNode: MessageCellNode {
 
-    // MARK: - Icons (pre-rendered once, thread-safe)
+    // MARK: - Icons
 
-    // Pre-rendered with the brand's accent / on-accent so the icons
-    // pick up theme overrides without re-rendering at use time.
     private static let playOnAccent  = AppIcon.play.rendered(color: AppColor.onAccent)
     private static let playAccent    = AppIcon.play.rendered(color: AppColor.accent)
     private static let pauseOnAccent = AppIcon.pause.rendered(color: AppColor.onAccent)
@@ -20,10 +18,7 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     // MARK: - Subnodes
 
-    private let playControlNode = ASControlNode()
-    private let playIconNode = ASImageNode()
-    private let durationNode = ASTextNode()
-    private let waveformNode: WaveformNode
+    private let flatContentNode: VoiceBubbleContentNode
 
     // MARK: - State
 
@@ -33,16 +28,16 @@ final class VoiceMessageCellNode: MessageCellNode {
     private var cancellable: AnyCancellable?
     private var currentProgress: Float = 0
     private var isPlaying: Bool = false
+    private let replyEventId: String?
 
     // MARK: - Constants
 
     private static let barCount = 40
     private static let bubbleInsets = UIEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
 
-    // MARK: - Init
-
     init(message: ChatMessage, audioPlayer: AudioPlayerService, isGroupChat: Bool = false) {
         self.audioPlayer = audioPlayer
+        self.replyEventId = message.replyInfo?.eventId
 
         let waveformData: [UInt16]
         if case .voice(let source, let duration, let waveform) = message.content {
@@ -56,63 +51,116 @@ final class VoiceMessageCellNode: MessageCellNode {
             waveformData = []
         }
 
-        let samples = Self.resampleWaveform(waveformData, to: Self.barCount)
         let usesAccentBubbleStyle = message.isOutgoing || message.zynaAttributes.color != nil
-        self.waveformNode = WaveformNode(
-            samples: samples,
-            filledColor: usesAccentBubbleStyle ? AppColor.onAccent : AppColor.accent,
-            unfilledColor: usesAccentBubbleStyle
+        let bubbleForegroundColor = usesAccentBubbleStyle
+            ? AppColor.bubbleForegroundOutgoing
+            : AppColor.bubbleForegroundIncoming
+        let bubbleTimestampColor = usesAccentBubbleStyle
+            ? AppColor.bubbleTimestampOutgoing
+            : AppColor.bubbleTimestampIncoming
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+
+        let forwardedHeaderText: NSAttributedString?
+        if let forwarderName = message.zynaAttributes.forwardedFrom {
+            forwardedHeaderText = NSAttributedString(
+                string: "↗ " + String(localized: "Forwarded from \(forwarderName)"),
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: bubbleTimestampColor,
+                    .paragraphStyle: paragraph
+                ]
+            )
+        } else {
+            forwardedHeaderText = nil
+        }
+
+        let replyHeaderData: VoiceBubbleContentNode.ReplyHeaderData?
+        if let replyInfo = message.replyInfo {
+            replyHeaderData = VoiceBubbleContentNode.ReplyHeaderData(
+                senderText: NSAttributedString(
+                    string: (replyInfo.senderDisplayName ?? replyInfo.senderId).isEmpty
+                        ? "Unknown"
+                        : (replyInfo.senderDisplayName ?? replyInfo.senderId),
+                    attributes: [
+                        .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
+                        .foregroundColor: usesAccentBubbleStyle
+                            ? AppColor.replySenderOutgoing
+                            : AppColor.replySenderIncoming,
+                        .paragraphStyle: paragraph
+                    ]
+                ),
+                bodyText: NSAttributedString(
+                    string: replyInfo.body.isEmpty ? "Message" : replyInfo.body,
+                    attributes: [
+                        .font: UIFont.systemFont(ofSize: 12),
+                        .foregroundColor: usesAccentBubbleStyle
+                            ? AppColor.replyBodyOutgoing
+                            : AppColor.replyBodyIncoming,
+                        .paragraphStyle: paragraph
+                    ]
+                ),
+                barColor: usesAccentBubbleStyle ? AppColor.replyBarOutgoing : AppColor.replyBarIncoming
+            )
+        } else {
+            replyHeaderData = nil
+        }
+
+        let samples = Self.resampleWaveform(waveformData, to: Self.barCount)
+        let maxContentWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio - Self.bubbleInsets.left - Self.bubbleInsets.right
+
+        self.flatContentNode = VoiceBubbleContentNode(
+            forwardedHeaderText: forwardedHeaderText,
+            replyHeader: replyHeaderData,
+            durationText: Self.durationString(duration: self.totalDuration, color: bubbleForegroundColor),
+            timeText: NSAttributedString(
+                string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 11),
+                    .foregroundColor: bubbleTimestampColor
+                ]
+            ),
+            waveformSamples: samples,
+            waveformFilledColor: usesAccentBubbleStyle ? AppColor.onAccent : AppColor.accent,
+            waveformUnfilledColor: usesAccentBubbleStyle
                 ? AppColor.onAccent.withAlphaComponent(0.4)
-                : AppColor.accent.withAlphaComponent(0.3)
+                : AppColor.accent.withAlphaComponent(0.3),
+            playImageWhenPaused: usesAccentBubbleStyle ? Self.playOnAccent : Self.playAccent,
+            playImageWhenPlaying: usesAccentBubbleStyle ? Self.pauseOnAccent : Self.pauseAccent,
+            maxContentWidth: maxContentWidth
         )
 
         super.init(message: message, isGroupChat: isGroupChat)
 
-        contextSourceNode.shouldBegin = { [weak self] point in
-            guard let self, self.isNodeLoaded else { return true }
-            let buttonPoint = self.contextSourceNode.view.convert(point, to: self.playControlNode.view)
-            return !self.playControlNode.view.bounds.contains(buttonPoint)
+        flatContentNode.style.maxWidth = ASDimension(unit: .points, value: maxContentWidth)
+
+        contextSourceNode.onQuickTap = { [weak self] point in
+            guard let self, self.isNodeLoaded else { return }
+            let localPoint = self.contextSourceNode.view.convert(point, to: self.flatContentNode.view)
+            if let replyEventId = self.replyEventId,
+               let replyFrame = self.flatContentNode.replyHeaderFrame,
+               replyFrame.contains(localPoint) {
+                self.onReplyHeaderTapped?(replyEventId)
+                return
+            }
+            if self.flatContentNode.playButtonFrame.contains(localPoint) {
+                self.playTapped()
+            }
         }
 
-        setupSubnodes()
-        observePlayer()
-    }
-
-    // MARK: - Setup
-
-    private func setupSubnodes() {
-        // Play button
-        playIconNode.image = usesAccentBubbleStyle ? Self.playOnAccent : Self.playAccent
-        playIconNode.contentMode = .center
-        playIconNode.isUserInteractionEnabled = false
-        playControlNode.automaticallyManagesSubnodes = true
-        playControlNode.style.preferredSize = CGSize(width: 32, height: 32)
-        playControlNode.layoutSpecBlock = { [weak self] _, _ in
-            guard let self else { return ASLayoutSpec() }
-            return ASCenterLayoutSpec(centeringOptions: .XY, sizingOptions: [], child: self.playIconNode)
-        }
-
-        // Duration
-        durationNode.attributedText = Self.durationString(totalDuration, usesAccentStyle: usesAccentBubbleStyle)
-
-        // Waveform
-        let waveformSize = WaveformNode.size(for: Self.barCount)
-        waveformNode.style.preferredSize = waveformSize
-
-        // Bubble
-        bubbleNode.isUserInteractionEnabled = true
         bubbleNode.layoutSpecBlock = { [weak self] _, _ in
             guard let self else { return ASLayoutSpec() }
-            return self.bubbleLayout()
+            return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: self.flatContentNode)
         }
+
+        observePlayer()
     }
 
     override func didLoad() {
         super.didLoad()
-        playControlNode.addTarget(self, action: #selector(playTapped), forControlEvents: .touchUpInside)
+        assignProbeName("voiceMessage.flatContent", to: flatContentNode)
     }
-
-    // MARK: - Player Observation
 
     private func observePlayer() {
         guard let mediaSource else { return }
@@ -127,70 +175,21 @@ final class VoiceMessageCellNode: MessageCellNode {
 
                 if playing != self.isPlaying {
                     self.isPlaying = playing
-                    self.updatePlayIcon(playing: playing)
+                    self.flatContentNode.isPlaying = playing
                 }
 
                 if progress != self.currentProgress {
                     self.currentProgress = progress
-                    self.waveformNode.updateProgress(progress)
-                    self.updateDurationLabel(progress: progress)
+                    self.flatContentNode.waveformProgress = progress
+                    self.flatContentNode.durationText = Self.durationString(
+                        duration: progress > 0 && progress < 1
+                            ? self.totalDuration * (1 - TimeInterval(progress))
+                            : self.totalDuration,
+                        color: self.bubbleForegroundColor
+                    )
                 }
             }
     }
-
-    // MARK: - Bubble Layout
-
-    private func bubbleLayout() -> ASLayoutSpec {
-        waveformNode.style.flexShrink = 1
-
-        let contentRow = ASStackLayoutSpec(
-            direction: .horizontal,
-            spacing: 8,
-            justifyContent: .start,
-            alignItems: .center,
-            children: [playControlNode, waveformNode, durationNode]
-        )
-
-        let timeSpec = ASStackLayoutSpec(
-            direction: .horizontal,
-            spacing: 0,
-            justifyContent: .end,
-            alignItems: .end,
-            children: [timeNode]
-        )
-
-        var stackChildren: [ASLayoutElement] = []
-        if let fwd = forwardedHeaderNode {
-            stackChildren.append(fwd)
-        }
-        if let replyHeader = replyHeaderNode {
-            stackChildren.append(replyHeader)
-        }
-        stackChildren.append(contentRow)
-        stackChildren.append(timeSpec)
-
-        let fullStack = ASStackLayoutSpec(
-            direction: .vertical,
-            spacing: 2,
-            justifyContent: .start,
-            alignItems: .stretch,
-            children: stackChildren
-        )
-
-        return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: fullStack)
-    }
-
-    // MARK: - Cell Layout
-
-    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        bubbleNode.style.maxWidth = ASDimension(
-            unit: .points,
-            value: ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
-        )
-        return super.layoutSpecThatFits(constrainedSize)
-    }
-
-    // MARK: - Actions
 
     @objc private func playTapped() {
         guard let mediaSource else { return }
@@ -202,36 +201,18 @@ final class VoiceMessageCellNode: MessageCellNode {
         return true
     }
 
-    // MARK: - UI Updates
-
-    private func updatePlayIcon(playing: Bool) {
-        if usesAccentBubbleStyle {
-            playIconNode.image = playing ? Self.pauseOnAccent : Self.playOnAccent
-        } else {
-            playIconNode.image = playing ? Self.pauseAccent : Self.playAccent
-        }
-    }
-
-    private func updateDurationLabel(progress: Float) {
-        if progress > 0 && progress < 1 {
-            let remaining = totalDuration * (1 - TimeInterval(progress))
-            durationNode.attributedText = Self.durationString(remaining, usesAccentStyle: usesAccentBubbleStyle)
-        } else {
-            durationNode.attributedText = Self.durationString(totalDuration, usesAccentStyle: usesAccentBubbleStyle)
-        }
-    }
-
-    // MARK: - Helpers
-
-    private static func durationString(_ duration: TimeInterval, usesAccentStyle: Bool) -> NSAttributedString {
+    private static func durationString(duration: TimeInterval, color: UIColor) -> NSAttributedString {
         let totalSeconds = Int(duration)
         let minutes = totalSeconds / 60
         let seconds = totalSeconds % 60
         let text = String(format: "%d:%02d", minutes, seconds)
-        return NSAttributedString(string: text, attributes: [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 14, weight: .medium),
-            .foregroundColor: usesAccentStyle ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming
-        ])
+        return NSAttributedString(
+            string: text,
+            attributes: [
+                .font: UIFont.monospacedDigitSystemFont(ofSize: 14, weight: .medium),
+                .foregroundColor: color
+            ]
+        )
     }
 
     private static func resampleWaveform(_ waveform: [UInt16], to count: Int) -> [UInt16] {

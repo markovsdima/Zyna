@@ -12,18 +12,6 @@ import MatrixRustSDK
 
 final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
-    private enum BubblePortalWake {
-        static let immediateRetryDelay: TimeInterval = 0
-        static let nextFrameRetryDelay: TimeInterval = 0.032
-        static let lateRetryDelay: TimeInterval = 0.12
-
-        static let openDelays: [TimeInterval] = [
-            immediateRetryDelay,
-            nextFrameRetryDelay,
-            lateRetryDelay
-        ]
-    }
-
     private enum InputBarInsetCompensation {
         static let liveEdgeTolerance: CGFloat = 2
         static let automaticZoneTolerance: CGFloat = 8
@@ -52,6 +40,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
+    private enum GlassSourceMode {
+        case table
+    }
+    private static let glassSourceMode: GlassSourceMode = .table
 
     // TODO: dial in via side-by-side gesture comparison — current values
     // are a reasonable starting point, not a final choice.
@@ -64,7 +56,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private lazy var glassComparison = GlassComparisonView()
     private lazy var glassTuning = GlassTuningView()
-    private var bubblePortalWakeWorkItems: [DispatchWorkItem] = []
     private var previousInputCoveredHeight: CGFloat?
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
@@ -173,12 +164,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.view.addSubview(scrollButtonTap)
         node.scrollButtonTap = scrollButtonTap
 
-        // Both glass bars capture from the table — no self-capture
-        glassNavBar.sourceView = node.tableNode.view
-        glassInputBar.sourceView = node.tableNode.view
+        refreshGlassSourceBinding()
 
         if Self.showGlassComparison {
-            glassComparison.sourceView = node.tableNode.view
             view.addSubview(glassComparison)
             view.addSubview(glassTuning)
         }
@@ -217,61 +205,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         updateTableInsetsForInputBar()
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Pre-warm glass before the navigation transition starts so the
+        // shared render loop is already active on the first animated frame.
+        GlassService.shared.captureFor(duration: 0.5)
+        GlassService.shared.setNeedsCapture()
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         // Force glass recapture after navigation push completes
         GlassService.shared.setNeedsCapture()
-        scheduleBubblePortalOpenWake()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        cancelBubblePortalWakeWork()
         if isMovingFromParent {
             navigationController?.setNavigationBarHidden(false, animated: animated)
             audioPlayer.stop()
             viewModel.cleanup()
         }
-    }
-
-    // MARK: - Bubble Portal Wake
-
-    private func cancelBubblePortalWakeWork() {
-        bubblePortalWakeWorkItems.forEach { $0.cancel() }
-        bubblePortalWakeWorkItems.removeAll()
-    }
-
-    private func scheduleBubblePortalOpenWake() {
-        cancelBubblePortalWakeWork()
-        for delay in bubblePortalWakePlan {
-            scheduleBubblePortalWake(delay: delay)
-        }
-    }
-
-    private func scheduleBubblePortalWake(delay: TimeInterval) {
-        let item = DispatchWorkItem { [weak self] in
-            self?.wakeVisibleBubblePortals()
-        }
-        bubblePortalWakeWorkItems.append(item)
-        if delay == 0 {
-            DispatchQueue.main.async(execute: item)
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
-        }
-    }
-
-    private func wakeVisibleBubblePortals() {
-        node.tableNode.view.layoutIfNeeded()
-        let indexPaths = node.tableNode.indexPathsForVisibleRows()
-        guard !indexPaths.isEmpty else { return }
-        for indexPath in indexPaths {
-            (node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode)?
-                .reloadBubblePortal()
-        }
-    }
-
-    private var bubblePortalWakePlan: [TimeInterval] {
-        BubblePortalWake.openDelays
     }
 
     // MARK: - Navigation
@@ -282,11 +236,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func updateTableInsetsForInputBar() {
         let newCoveredHeight = glassInputBar.coveredHeight
         let previousCoveredHeight = previousInputCoveredHeight
+        let tableView = node.tableNode.view
         let liveEdgeDistance = tableDistanceToLiveEdge()
         let wasPinnedToLiveEdge = liveEdgeDistance <= InputBarInsetCompensation.liveEdgeTolerance
 
         node.tableNode.contentInset.top = newCoveredHeight
-        node.tableNode.view.verticalScrollIndicatorInsets.top = newCoveredHeight
+        tableView.verticalScrollIndicatorInsets.top = newCoveredHeight
+
+        // Don't fight UIKit's rubber-band or active user scroll. Snapping the
+        // inverted table back to the live edge during an elastic pull is what
+        // kills the springiness and makes the edge stutter.
+        if shouldDeferTableOffsetCompensation(for: tableView) {
+            previousInputCoveredHeight = newCoveredHeight
+            return
+        }
 
         if let previousCoveredHeight {
             let compensationDelta = newCoveredHeight - previousCoveredHeight
@@ -309,15 +272,37 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         previousInputCoveredHeight = newCoveredHeight
     }
 
+    private func tableOffsetBounds(for tableView: UIScrollView) -> (minY: CGFloat, maxY: CGFloat) {
+        let minY = -tableView.adjustedContentInset.top
+        let maxY = max(
+            minY,
+            tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
+        )
+        return (minY, maxY)
+    }
+
+    private func isTableRubberBanding(_ tableView: UIScrollView, tolerance: CGFloat = 0.5) -> Bool {
+        let bounds = tableOffsetBounds(for: tableView)
+        return tableView.contentOffset.y < bounds.minY - tolerance
+            || tableView.contentOffset.y > bounds.maxY + tolerance
+    }
+
+    private func shouldDeferTableOffsetCompensation(for tableView: UIScrollView) -> Bool {
+        if tableView.isTracking || tableView.isDragging || tableView.isDecelerating {
+            return true
+        }
+        return isTableRubberBanding(tableView)
+    }
+
     private func tableDistanceToLiveEdge() -> CGFloat {
         let tableView = node.tableNode.view
-        let liveOffsetY = -tableView.adjustedContentInset.top
+        let liveOffsetY = tableOffsetBounds(for: tableView).minY
         return max(0, node.tableNode.contentOffset.y - liveOffsetY)
     }
 
     private func pinTableToLiveEdge() {
         let tableView = node.tableNode.view
-        let liveOffsetY = -tableView.adjustedContentInset.top
+        let liveOffsetY = tableOffsetBounds(for: tableView).minY
         var targetOffset = node.tableNode.contentOffset
         targetOffset.y = liveOffsetY
         node.tableNode.contentOffset = targetOffset
@@ -329,11 +314,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         let tableNode = node.tableNode
         let tableView = node.tableNode.view
-        let minOffsetY = -tableView.adjustedContentInset.top
-        let maxOffsetY = max(
-            minOffsetY,
-            tableView.contentSize.height - tableView.bounds.height + tableView.adjustedContentInset.bottom
-        )
+        let bounds = tableOffsetBounds(for: tableView)
+        let minOffsetY = bounds.minY
+        let maxOffsetY = bounds.maxY
 
         var targetOffset = tableNode.contentOffset
         targetOffset.y -= delta
@@ -825,7 +808,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - ASTableDelegate — Batch Fetching (Pagination)
 
     func shouldBatchFetch(for tableNode: ASTableNode) -> Bool {
-        !viewModel.isPaginating && !viewModel.sdkPaginationExhausted
+        let tableView = tableNode.view
+        if isTableRubberBanding(tableView) {
+            return false
+        }
+        return !viewModel.isPaginating && !viewModel.sdkPaginationExhausted
     }
 
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
@@ -875,9 +862,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         GlassService.shared.setNeedsCapture()
         guard !isTeleporting else { return }
+        let isRubberBanding = isTableRubberBanding(scrollView)
 
         // Load newer messages when scrolling toward bottom (inverted: small contentOffset.y)
-        if !viewModel.isAtLiveEdge && scrollView.contentOffset.y < 200 {
+        if !viewModel.isAtLiveEdge && !isRubberBanding && scrollView.contentOffset.y < 200 {
             viewModel.loadNewerMessages()
         }
 
@@ -1038,6 +1026,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         fpsBooster.stop()
+    }
+
+    private func refreshGlassSourceBinding() {
+        let sourceView = node.tableNode.view
+        glassNavBar.sourceView = sourceView
+        glassInputBar.sourceView = sourceView
+        if Self.showGlassComparison {
+            glassComparison.sourceView = sourceView
+        }
     }
 
     // MARK: - Paint Splash Delete

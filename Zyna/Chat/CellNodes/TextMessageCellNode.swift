@@ -4,25 +4,29 @@
 //
 
 import AsyncDisplayKit
-import CoreText
 
 final class TextMessageCellNode: MessageCellNode {
 
     // MARK: - Subnodes
 
-    private let textNode = ASTextNode()
+    private let flatContentNode: TextBubbleContentNode
+    private let replyEventId: String?
 
     // MARK: - Constants
 
     private static let bubbleInsets = UIEdgeInsets(top: 7, left: 12, bottom: 7, right: 12)
-    private static let timeSpacing: CGFloat = 6
 
     // MARK: - Init
 
     override init(message: ChatMessage, isGroupChat: Bool = false) {
-        super.init(message: message, isGroupChat: isGroupChat)
+        let usesAccentBubbleStyle = message.isOutgoing || message.zynaAttributes.color != nil
+        let bubbleForegroundColor = usesAccentBubbleStyle
+            ? AppColor.bubbleForegroundOutgoing
+            : AppColor.bubbleForegroundIncoming
+        let bubbleTimestampColor = usesAccentBubbleStyle
+            ? AppColor.bubbleTimestampOutgoing
+            : AppColor.bubbleTimestampIncoming
 
-        // Message text
         let bodyText: String
         switch message.content {
         case .text(let body):
@@ -45,7 +49,7 @@ final class TextMessageCellNode: MessageCellNode {
             bodyText = "Message deleted"
         }
 
-        textNode.attributedText = NSAttributedString(
+        let bodyAttributedText = NSAttributedString(
             string: bodyText,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 16),
@@ -53,158 +57,106 @@ final class TextMessageCellNode: MessageCellNode {
             ]
         )
 
+        let forwardedHeaderText: NSAttributedString?
+        if let forwarderName = message.zynaAttributes.forwardedFrom {
+            forwardedHeaderText = NSAttributedString(
+                string: "↗ " + String(localized: "Forwarded from \(forwarderName)"),
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: bubbleTimestampColor
+                ]
+            )
+        } else {
+            forwardedHeaderText = nil
+        }
+
+        let replyHeaderData: TextBubbleContentNode.ReplyHeaderData?
+        if let replyInfo = message.replyInfo {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byTruncatingTail
+            replyHeaderData = TextBubbleContentNode.ReplyHeaderData(
+                senderText: NSAttributedString(
+                    string: (replyInfo.senderDisplayName ?? replyInfo.senderId).isEmpty
+                        ? "Unknown"
+                        : (replyInfo.senderDisplayName ?? replyInfo.senderId),
+                    attributes: [
+                        .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
+                        .foregroundColor: usesAccentBubbleStyle
+                            ? AppColor.replySenderOutgoing
+                            : AppColor.replySenderIncoming,
+                        .paragraphStyle: paragraph
+                    ]
+                ),
+                bodyText: NSAttributedString(
+                    string: replyInfo.body.isEmpty ? "Message" : replyInfo.body,
+                    attributes: [
+                        .font: UIFont.systemFont(ofSize: 12),
+                        .foregroundColor: usesAccentBubbleStyle
+                            ? AppColor.replyBodyOutgoing
+                            : AppColor.replyBodyIncoming,
+                        .paragraphStyle: paragraph
+                    ]
+                ),
+                barColor: usesAccentBubbleStyle ? AppColor.replyBarOutgoing : AppColor.replyBarIncoming
+            )
+        } else {
+            replyHeaderData = nil
+        }
+
+        let timeAttributedText = NSAttributedString(
+            string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 11),
+                .foregroundColor: bubbleTimestampColor
+            ]
+        )
+
+        let statusIcon = message.isOutgoing
+            ? MessageStatusIcon.from(sendStatus: message.sendStatus)
+            : nil
+
         let maxContentWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
             - Self.bubbleInsets.left - Self.bubbleInsets.right
-        textNode.style.maxWidth = ASDimension(unit: .points, value: maxContentWidth)
 
-        // Bubble layout
+        self.flatContentNode = TextBubbleContentNode(
+            bodyText: bodyAttributedText,
+            forwardedHeaderText: forwardedHeaderText,
+            replyHeader: replyHeaderData,
+            timeText: timeAttributedText,
+            statusIcon: statusIcon,
+            statusTintColor: bubbleTimestampColor,
+            maxTextWidth: maxContentWidth
+        )
+        self.replyEventId = message.replyInfo?.eventId
+
+        super.init(message: message, isGroupChat: isGroupChat)
+
+        flatContentNode.style.maxWidth = ASDimension(unit: .points, value: maxContentWidth)
+
         bubbleNode.layoutSpecBlock = { [weak self] _, _ in
-            guard let self,
-                  let attributedText = self.textNode.attributedText,
-                  let timeText = self.timeNode.attributedText
-            else { return ASLayoutSpec() }
+            guard let self else { return ASLayoutSpec() }
+            return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: self.flatContentNode)
+        }
 
-            let metrics = Self.textMetrics(for: attributedText, maxWidth: maxContentWidth)
-            let timeTextSize = Self.singleLineSize(for: timeText)
-            // Slot reserves extra width for double-check — reading
-            // preferredSize.width (not iconSize) keeps the time strip
-            // from overlapping the trailing text.
-            let statusIconWidth: CGFloat = self.statusIconNode.map {
-                $0.style.preferredSize.width + 4
-            } ?? 0
-            let timeSize = CGSize(
-                width: timeTextSize.width + statusIconWidth,
-                height: timeTextSize.height
-            )
-
-            let fitsInline = metrics.trailingLineWidth + Self.timeSpacing + timeSize.width
-                <= maxContentWidth
-
-            // Build text element — add height placeholder when time goes below
-            let textElement: ASLayoutElement
-            if fitsInline {
-                textElement = self.textNode
-            } else {
-                let timePlaceholder = ASLayoutSpec()
-                timePlaceholder.style.preferredSize = CGSize(
-                    width: timeSize.width, height: timeSize.height + 2
-                )
-                let placeholderRow = ASStackLayoutSpec.horizontal()
-                placeholderRow.justifyContent = .end
-                placeholderRow.children = [timePlaceholder]
-
-                textElement = ASStackLayoutSpec(
-                    direction: .vertical,
-                    spacing: 0,
-                    justifyContent: .start,
-                    alignItems: .stretch,
-                    children: [self.textNode, placeholderRow]
-                )
+        if let replyEventId {
+            contextSourceNode.onQuickTap = { [weak self] point in
+                guard let self, self.isNodeLoaded else { return }
+                let localPoint = self.contextSourceNode.view.convert(point, to: self.flatContentNode.view)
+                if let replyFrame = self.flatContentNode.replyHeaderFrame,
+                   replyFrame.contains(localPoint) {
+                    self.onReplyHeaderTapped?(replyEventId)
+                }
             }
-
-            // Add forwarded / reply headers if present
-            var headerChildren: [ASLayoutElement] = []
-            if let fwd = self.forwardedHeaderNode {
-                headerChildren.append(fwd)
-            }
-            if let replyHeader = self.replyHeaderNode {
-                headerChildren.append(replyHeader)
-            }
-            headerChildren.append(textElement)
-
-            let mainContent: ASLayoutElement
-            if headerChildren.count > 1 {
-                mainContent = ASStackLayoutSpec(
-                    direction: .vertical,
-                    spacing: 0,
-                    justifyContent: .start,
-                    alignItems: .stretch,
-                    children: headerChildren
-                )
-            } else {
-                mainContent = textElement
-            }
-
-            // Ensure minimum width so time doesn't overflow
-            let minWidth = fitsInline
-                ? metrics.trailingLineWidth + Self.timeSpacing + timeSize.width
-                : timeSize.width
-            mainContent.style.minWidth = ASDimension(unit: .points, value: minWidth)
-
-            // Time + optional status icon glued together as a row.
-            let timeGroup: ASLayoutElement
-            if let iconNode = self.statusIconNode {
-                timeGroup = ASStackLayoutSpec(
-                    direction: .horizontal,
-                    spacing: 4,
-                    justifyContent: .end,
-                    alignItems: .center,
-                    children: [self.timeNode, iconNode]
-                )
-            } else {
-                timeGroup = self.timeNode
-            }
-
-            // Overlay time at bottom-right of entire content
-            let timeCorner = ASRelativeLayoutSpec(
-                horizontalPosition: .end,
-                verticalPosition: .end,
-                sizingOption: [],
-                child: timeGroup
-            )
-            let result = ASOverlayLayoutSpec(child: mainContent, overlay: timeCorner)
-
-            return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: result)
         }
     }
 
-    // MARK: - CoreText Measurement
-
-    private struct TextMetrics {
-        let size: CGSize
-        let trailingLineWidth: CGFloat
+    override func didLoad() {
+        super.didLoad()
+        assignProbeName("textMessage.flatContent", to: flatContentNode)
     }
 
-    private static func textMetrics(
-        for attributedText: NSAttributedString,
-        maxWidth: CGFloat
-    ) -> TextMetrics {
-        let framesetter = CTFramesetterCreateWithAttributedString(attributedText)
-
-        let suggestedSize = CTFramesetterSuggestFrameSizeWithConstraints(
-            framesetter,
-            CFRange(location: 0, length: attributedText.length),
-            nil,
-            CGSize(width: maxWidth, height: .greatestFiniteMagnitude),
-            nil
-        )
-
-        let path = CGMutablePath()
-        path.addRect(CGRect(x: 0, y: 0, width: maxWidth, height: 100_000))
-        let frame = CTFramesetterCreateFrame(
-            framesetter, CFRange(location: 0, length: attributedText.length), path, nil
-        )
-
-        var trailingWidth: CGFloat = 0
-        if let lines = CTFrameGetLines(frame) as? [CTLine], let lastLine = lines.last {
-            trailingWidth = CGFloat(CTLineGetTypographicBounds(lastLine, nil, nil, nil))
-        }
-
-        return TextMetrics(
-            size: CGSize(width: ceil(suggestedSize.width), height: ceil(suggestedSize.height)),
-            trailingLineWidth: ceil(trailingWidth)
-        )
-    }
-
-    private static func singleLineSize(for attributedText: NSAttributedString) -> CGSize {
-        let framesetter = CTFramesetterCreateWithAttributedString(attributedText)
-        let size = CTFramesetterSuggestFrameSizeWithConstraints(
-            framesetter,
-            CFRange(location: 0, length: attributedText.length),
-            nil,
-            CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude),
-            nil
-        )
-        return CGSize(width: ceil(size.width), height: ceil(size.height))
+    override func updateSendStatus(_ status: String) {
+        super.updateSendStatus(status)
+        flatContentNode.statusIcon = MessageStatusIcon.from(sendStatus: status)
     }
 }

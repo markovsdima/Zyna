@@ -667,19 +667,34 @@ final class ChatViewModel {
     // MARK: - Prefetch
 
     private static func prefetchImages(_ messages: [ChatMessage]) {
+        let maxPixelWidth = Int(
+            round(ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio * UIScreen.main.scale)
+        )
+        let maxPixelHeight = Int(
+            round(MessageCellHelpers.maxImageBubbleHeight * UIScreen.main.scale)
+        )
+
         for message in messages {
             guard case .image(let source, let width, let height, _) = message.content else { continue }
-            let thumbWidth = UInt64((ScreenConstants.width * 0.75) * UIScreen.main.scale)
-            let thumbHeight: UInt64
-            if let width, let height, height > 0 {
-                thumbHeight = UInt64(CGFloat(thumbWidth) / CGFloat(width) * CGFloat(height))
-            } else {
-                thumbHeight = thumbWidth * 3 / 4
-            }
-            guard MediaCache.shared.image(
-                for: source, width: Int(thumbWidth), height: Int(thumbHeight)
+            guard MediaCache.shared.bubbleImage(
+                for: source,
+                maxPixelWidth: maxPixelWidth,
+                maxPixelHeight: maxPixelHeight
             ) == nil else { continue }
-            Task { await MediaCache.shared.loadThumbnail(source: source, width: thumbWidth, height: thumbHeight) }
+            let knownAspectRatio: CGFloat?
+            if let width, let height, height > 0 {
+                knownAspectRatio = CGFloat(width) / CGFloat(height)
+            } else {
+                knownAspectRatio = nil
+            }
+            Task {
+                await MediaCache.shared.loadBubbleImage(
+                    source: source,
+                    maxPixelWidth: maxPixelWidth,
+                    maxPixelHeight: maxPixelHeight,
+                    knownAspectRatio: knownAspectRatio
+                )
+            }
         }
     }
 }

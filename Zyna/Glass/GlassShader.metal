@@ -24,6 +24,11 @@ struct VertexOut {
     float2 uv;
 };
 
+struct GlassVertex {
+    float2 position;
+    float2 uv;
+};
+
 struct GlassUniforms {
     float2 resolution;      // drawable size in pixels
     float  isHDR;           // 1.0 for bgr10a2, 0.0 for bgra8
@@ -184,12 +189,11 @@ inline float3 decodeHDR(float3 color, float isHDR) {
 
 // ─── Vertex ─────────────────────────────────────────────────────────
 
-vertex VertexOut glassVertex(uint vid [[vertex_id]]) {
-    float2 pos[4] = { {-1,-1}, {1,-1}, {-1,1}, {1,1} };
-    float2 uvs[4] = { {0,1}, {1,1}, {0,0}, {1,0} };
+vertex VertexOut glassVertex(const device GlassVertex *vertices [[buffer(1)]],
+                             uint vid [[vertex_id]]) {
     VertexOut out;
-    out.position = float4(pos[vid], 0, 1);
-    out.uv = uvs[vid];
+    out.position = float4(vertices[vid].position, 0, 1);
+    out.uv = vertices[vid].uv;
     return out;
 }
 

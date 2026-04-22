@@ -76,6 +76,18 @@ public class ZynaNavigationController: UIViewController {
     /// flag to keep the VO escape from racing the animation.
     private var isAnimatingTransition = false
 
+    private enum DeferredStackMutation {
+        case push(UIViewController, animated: Bool)
+        case pop(animated: Bool)
+        case popToRoot(animated: Bool)
+    }
+
+    private var deferredStackMutations: [DeferredStackMutation] = []
+
+    private var isTransitionInFlight: Bool {
+        isInteractivePopActive || isAnimatingTransition
+    }
+
     // MARK: - Lifecycle
 
     public override func loadView() {
@@ -229,6 +241,7 @@ public class ZynaNavigationController: UIViewController {
             self.fpsBoostToken?.invalidate()
             self.fpsBoostToken = nil
             self.setNeedsStatusBarAppearanceUpdate()
+            self.flushDeferredStackMutationsIfPossible()
             UIAccessibility.post(
                 notification: .screenChanged,
                 argument: Self.accessibilityFocusTarget(for: revealedVC)
@@ -245,6 +258,7 @@ public class ZynaNavigationController: UIViewController {
             self.isInteractivePopActive = false
             self.fpsBoostToken?.invalidate()
             self.fpsBoostToken = nil
+            self.flushDeferredStackMutationsIfPossible()
         }
     }
 
@@ -252,14 +266,16 @@ public class ZynaNavigationController: UIViewController {
 
     /// Push a new controller onto the stack.
     public func push(_ viewController: UIViewController, animated: Bool = true) {
-        precondition(
-            !stack.contains(where: { $0 === viewController }),
-            "ZynaNavigationController cannot push a controller that's already on the stack"
-        )
-        precondition(
-            !isInteractivePopActive,
-            "ZynaNavigationController cannot push while an interactive pop is in flight"
-        )
+        guard !stack.contains(where: { $0 === viewController }) else {
+            assertionFailure(
+                "ZynaNavigationController cannot push a controller that's already on the stack"
+            )
+            return
+        }
+        guard !isTransitionInFlight else {
+            deferredStackMutations.append(.push(viewController, animated: animated))
+            return
+        }
 
         let previousTop = topViewController
         addChild(viewController)
@@ -280,6 +296,7 @@ public class ZynaNavigationController: UIViewController {
                 }
             }
             viewController.didMove(toParent: self)
+            flushDeferredStackMutationsIfPossible()
         }
     }
 
@@ -288,10 +305,10 @@ public class ZynaNavigationController: UIViewController {
     @discardableResult
     public func pop(animated: Bool = true) -> UIViewController? {
         guard stack.count > 1 else { return nil }
-        precondition(
-            !isInteractivePopActive,
-            "ZynaNavigationController cannot pop programmatically while an interactive pop is in flight"
-        )
+        guard !isTransitionInFlight else {
+            deferredStackMutations.append(.pop(animated: animated))
+            return nil
+        }
 
         let popped = stack.removeLast()
         let revealed = topViewController!  // safe: count was > 1
@@ -309,6 +326,7 @@ public class ZynaNavigationController: UIViewController {
                 detachView(of: popped)
             }
             popped.removeFromParent()
+            flushDeferredStackMutationsIfPossible()
         }
 
         return popped
@@ -319,10 +337,10 @@ public class ZynaNavigationController: UIViewController {
     @discardableResult
     public func popToRoot(animated: Bool = true) -> [UIViewController] {
         guard stack.count > 1 else { return [] }
-        precondition(
-            !isInteractivePopActive,
-            "ZynaNavigationController cannot popToRoot while an interactive pop is in flight"
-        )
+        guard !isTransitionInFlight else {
+            deferredStackMutations.append(.popToRoot(animated: animated))
+            return []
+        }
 
         let root = stack[0]
         let currentTop = topViewController!  // safe: count was > 1
@@ -354,6 +372,7 @@ public class ZynaNavigationController: UIViewController {
                 }
             }
             finalize()
+            flushDeferredStackMutationsIfPossible()
         }
 
         return popped
@@ -428,6 +447,7 @@ public class ZynaNavigationController: UIViewController {
             self.view.isUserInteractionEnabled = true
             self.isAnimatingTransition = false
             completion()
+            self.flushDeferredStackMutationsIfPossible()
             UIAccessibility.post(
                 notification: .screenChanged,
                 argument: Self.accessibilityFocusTarget(for: newTop)
@@ -519,6 +539,7 @@ public class ZynaNavigationController: UIViewController {
             self.view.isUserInteractionEnabled = true
             self.isAnimatingTransition = false
             completion()
+            self.flushDeferredStackMutationsIfPossible()
             UIAccessibility.post(
                 notification: .screenChanged,
                 argument: Self.accessibilityFocusTarget(for: revealedVC)
@@ -611,6 +632,21 @@ public class ZynaNavigationController: UIViewController {
 
     private func detachView(of vc: UIViewController) {
         vc.view.removeFromSuperview()
+    }
+
+    private func flushDeferredStackMutationsIfPossible() {
+        guard !isTransitionInFlight,
+              !deferredStackMutations.isEmpty else { return }
+
+        let mutation = deferredStackMutations.removeFirst()
+        switch mutation {
+        case .push(let viewController, let animated):
+            push(viewController, animated: animated)
+        case .pop(let animated):
+            _ = pop(animated: animated)
+        case .popToRoot(let animated):
+            _ = popToRoot(animated: animated)
+        }
     }
 
     /// VoiceOver Z-scrub dismiss. Called via `ZynaNavBackingView`

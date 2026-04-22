@@ -8,6 +8,7 @@ import UIKit
 enum MessageCellHelpers {
 
     static let maxBubbleWidthRatio: CGFloat = 0.75
+    static let maxImageBubbleHeight: CGFloat = 400
     static let cellInsets = UIEdgeInsets(top: 1, left: 8, bottom: 1, right: 8)
     /// Top inset for the first bubble of a cluster — the "breather"
     /// between different senders (or a long same-sender pause, or a

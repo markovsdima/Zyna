@@ -5,7 +5,7 @@
 
 import UIKit
 
-/// Invisible marker view placed in the main UI hierarchy.
+/// Invisible marker view placed in the regular UI hierarchy.
 /// Defines where a glass effect should appear and its optical parameters.
 ///
 /// Automatically detects when it's being animated (navigation push/pop,
@@ -45,6 +45,13 @@ final class GlassAnchor: UIView {
     /// If nil, falls back to the anchor's window.
     weak var sourceView: UIView?
 
+    /// Common container that should host the shared glass renderer overlay.
+    /// Usually the screen/root view that contains both the content and the bar.
+    weak var renderHostContainerView: UIView?
+
+    /// Debug-only semantic name for probe logs (`nav`, `input`, etc.).
+    var debugName: String = "glass"
+
     /// Color used to fill the capture buffer before sublayers are
     /// rendered into it. GlassService renders only `sourceView`'s
     /// sublayers (an optimization that skips off-screen Texture cells),
@@ -65,11 +72,6 @@ final class GlassAnchor: UIView {
 
     private var registration: GlassRegistration?
 
-    /// Metal renderer. Created once, owned by the bar that hosts us.
-    /// GlassService drives its content; the bar places it in the
-    /// view hierarchy.
-    let renderer = GlassRenderer()
-
     // MARK: - Init
 
     init() {
@@ -86,7 +88,7 @@ final class GlassAnchor: UIView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil {
-            registration = GlassService.shared.register(anchor: self, renderer: renderer)
+            registration = GlassService.shared.register(anchor: self)
             recomputeClearPattern()
         } else {
             registration = nil

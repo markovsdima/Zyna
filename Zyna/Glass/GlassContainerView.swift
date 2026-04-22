@@ -39,7 +39,6 @@ final class GlassContainerView: UIView {
 
         anchor.cornerRadius = cornerRadius
         addSubview(anchor)
-        addSubview(anchor.renderer)
 
         contentView.backgroundColor = .clear
         addSubview(contentView)
@@ -50,6 +49,7 @@ final class GlassContainerView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         anchor.frame = bounds
+        anchor.renderHostContainerView = superview
         contentView.frame = bounds
     }
 }

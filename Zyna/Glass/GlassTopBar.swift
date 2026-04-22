@@ -36,7 +36,7 @@ final class GlassTopBar: ASDisplayNode {
                 guard let tv = entry.titleView else { continue }
                 tv.subtitle = subtitle
                 fittedTitleW = tv.contentWidth + titleHPad * 2
-                setNeedsLayout()
+                invalidateGlassGeometry()
                 break
             }
         }
@@ -105,13 +105,9 @@ final class GlassTopBar: ASDisplayNode {
                 ?? GlassRenderer.ShapeParams()
         }
         view.addSubview(anchor)
-        view.addSubview(anchor.renderer)
         anchor.accessibilityElementsHidden = true
-        anchor.renderer.accessibilityElementsHidden = true
 
         // Subnodes may already exist (items set before node loaded).
-        // Ensure renderer stays behind them.
-        view.sendSubviewToBack(anchor.renderer)
         view.sendSubviewToBack(anchor)
     }
 
@@ -124,6 +120,7 @@ final class GlassTopBar: ASDisplayNode {
 
         frame = CGRect(x: sideInset, y: safeTop, width: barWidth, height: barHeight)
         anchor.frame = bounds
+        anchor.renderHostContainerView = parentView
     }
 
     override func layout() {
@@ -211,11 +208,19 @@ final class GlassTopBar: ASDisplayNode {
 
         // Ensure glass renderer stays behind interactive content
         if isNodeLoaded {
-            view.sendSubviewToBack(anchor.renderer)
             view.sendSubviewToBack(anchor)
         }
 
+        invalidateGlassGeometry()
+    }
+
+    private func invalidateGlassGeometry() {
         setNeedsLayout()
+        layoutIfNeeded()
+        guard isNodeLoaded else { return }
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        GlassService.shared.setNeedsCapture()
     }
 
     /// Accessibility targets (title + circle buttons) in items-array
@@ -319,7 +324,11 @@ final class GlassTopBar: ASDisplayNode {
 private final class GlassTopBarTitleView: UIView {
 
     var text: String = "" {
-        didSet { titleLabel.text = text; updateAccessibilityLabel() }
+        didSet {
+            titleLabel.text = text
+            updateAccessibilityLabel()
+            setNeedsLayout()
+        }
     }
 
     var subtitle: String? {
@@ -327,6 +336,7 @@ private final class GlassTopBarTitleView: UIView {
             subtitleLabel.text = subtitle
             subtitleLabel.isHidden = subtitle == nil
             updateAccessibilityLabel()
+            setNeedsLayout()
         }
     }
 

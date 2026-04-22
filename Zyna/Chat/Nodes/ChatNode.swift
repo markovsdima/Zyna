@@ -57,7 +57,7 @@ final class ChatNode: ASDisplayNode {
         }
     }
 
-    func bubbleGradientSource(for message: ChatMessage) -> UIView? {
+    func bubbleGradientSource(for message: ChatMessage) -> PortalSourceView? {
         guard message.zynaAttributes.color == nil else { return nil }
         return bubbleGradientSources[message.isOutgoing ? .outgoing : .incoming]
     }

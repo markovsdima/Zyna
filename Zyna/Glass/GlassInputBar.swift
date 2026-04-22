@@ -62,6 +62,7 @@ final class GlassInputBar: ASDisplayNode {
 
     override init() {
         super.init()
+        anchor.debugName = "input"
         inputNode.backgroundColor = .clear
     }
 
@@ -83,16 +84,12 @@ final class GlassInputBar: ASDisplayNode {
             self?.buildBarData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
         }
         view.addSubview(anchor)
-        view.addSubview(anchor.renderer)
         anchor.accessibilityElementsHidden = true
-        anchor.renderer.accessibilityElementsHidden = true
 
         // Input node as subnode (already ASDisplayNode)
         addSubnode(inputNode)
         inputNode.view.backgroundColor = .clear
 
-        // Ensure glass renderer stays behind interactive content
-        view.sendSubviewToBack(anchor.renderer)
         view.sendSubviewToBack(anchor)
 
         inputNode.onWaveformUpdate = { [weak self] waveform in
@@ -130,6 +127,7 @@ final class GlassInputBar: ASDisplayNode {
 
         frame = CGRect(x: insetH, y: barY, width: barWidth, height: fittedSize.height)
         anchor.frame = bounds
+        anchor.renderHostContainerView = parentView
         inputNode.frame = CGRect(x: 0, y: 0, width: barWidth, height: fittedSize.height)
 
         // Bar position changed — scroll button position must follow
@@ -254,7 +252,7 @@ final class GlassInputBar: ASDisplayNode {
             let scrollCurrentR = scrollR * radiusFactor
 
             // Volume-preserving mic inflation:
-            // When scroll overlaps mic, mic absorbs its area → swells.
+            // When scroll overlaps mic, mic absorbs its area -> swells.
             // mergeFactor: 1 = fully overlapping, 0 = separated.
             let dx = scrollCX - micCX
             let dy = scrollCY - micCY
@@ -262,7 +260,7 @@ final class GlassInputBar: ASDisplayNode {
             let sumR = micR + scrollCurrentR
             let mergeFactor = max(0, min(1, 1 - dist / max(sumR, 0.001)))
 
-            // mic area + scroll area × mergeFactor → inflated radius
+            // mic area + scroll area x mergeFactor -> inflated radius
             let micArea = micR * micR
             let scrollArea = scrollCurrentR * scrollCurrentR
             effectiveMicR = sqrt(micArea + scrollArea * mergeFactor)

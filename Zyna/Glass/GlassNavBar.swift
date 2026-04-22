@@ -72,6 +72,7 @@ final class GlassNavBar: ASDisplayNode {
 
     override init() {
         super.init()
+        anchor.debugName = "nav"
 
         // Images: pre-rendered via AppIcon (safe off-main)
         backButtonNode.setImage(
@@ -123,17 +124,13 @@ final class GlassNavBar: ASDisplayNode {
                 ?? GlassRenderer.ShapeParams()
         }
         view.addSubview(anchor)
-        view.addSubview(anchor.renderer)
         anchor.accessibilityElementsHidden = true
-        anchor.renderer.accessibilityElementsHidden = true
 
         // Subnodes on top of renderer
         addSubnode(backButtonNode)
         addSubnode(titleNode)
         addSubnode(callButtonNode)
 
-        // Ensure glass renderer stays behind interactive content
-        view.sendSubviewToBack(anchor.renderer)
         view.sendSubviewToBack(anchor)
 
         backButtonNode.addTarget(self, action: #selector(backTapped), forControlEvents: .touchUpInside)
@@ -150,6 +147,7 @@ final class GlassNavBar: ASDisplayNode {
 
         frame = CGRect(x: sideInset, y: safeTop, width: barWidth, height: barHeight)
         anchor.frame = bounds
+        anchor.renderHostContainerView = parentView
     }
 
     override func layout() {

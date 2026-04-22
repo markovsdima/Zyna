@@ -34,7 +34,7 @@ final class ImageMessageCellNode: MessageCellNode {
     private var aspectRatio: CGFloat
     private let mediaSource: MediaSource?
     private let hasSDKDimensions: Bool
-    private let messageId: String
+    private let usesDirectImageContent: Bool
 
     // MARK: - Init
 
@@ -76,8 +76,6 @@ final class ImageMessageCellNode: MessageCellNode {
         }
 
         self.mediaSource = source
-        self.messageId = message.id
-
         if let width = imageWidth, let height = imageHeight, height > 0 {
             self.aspectRatio = CGFloat(width) / CGFloat(height)
             self.hasSDKDimensions = true
@@ -85,13 +83,13 @@ final class ImageMessageCellNode: MessageCellNode {
             self.aspectRatio = 4.0 / 3.0
             self.hasSDKDimensions = false
         }
+        let hasHeader = message.replyInfo != nil || message.zynaAttributes.forwardedFrom != nil
+        let hasCaption = self.captionNode != nil
+        self.usesDirectImageContent = !hasHeader && !hasCaption
 
         super.init(message: message, isGroupChat: isGroupChat)
 
         // Image — precomposited per-corner rounding via RoundedImageNode
-        let hasHeader = forwardedHeaderNode != nil || replyHeaderNode != nil
-        let hasCaption = captionNode != nil
-
         imageNode.radius = 18
         imageNode.imageContentMode = .scaleAspectFill
 
@@ -105,14 +103,19 @@ final class ImageMessageCellNode: MessageCellNode {
             corners.remove(.bottomRight)
         }
         imageNode.roundedCorners = corners
+        setShowsBubbleChrome(!usesDirectImageContent)
+        setUsesBareBubbleContent(usesDirectImageContent)
 
-        // Bubble layout
-        bubbleNode.layoutSpecBlock = { [weak self] _, _ in
+        let buildImageWithTime: () -> ASLayoutSpec = { [weak self] in
             guard let self else { return ASLayoutSpec() }
+
             let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
             let imgHeight = maxWidth / self.aspectRatio
 
-            self.imageNode.style.preferredSize = CGSize(width: maxWidth, height: min(imgHeight, 400))
+            self.imageNode.style.preferredSize = CGSize(
+                width: maxWidth,
+                height: min(imgHeight, MessageCellHelpers.maxImageBubbleHeight)
+            )
 
             let timePadded = ASInsetLayoutSpec(
                 insets: UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6),
@@ -130,7 +133,13 @@ final class ImageMessageCellNode: MessageCellNode {
                 )
             )
 
-            let imageWithTime = ASOverlayLayoutSpec(child: self.imageNode, overlay: timeOverlay)
+            return ASOverlayLayoutSpec(child: self.imageNode, overlay: timeOverlay)
+        }
+
+        // Bubble layout
+        bubbleNode.layoutSpecBlock = { [weak self] _, _ in
+            guard let self else { return ASLayoutSpec() }
+            let imageWithTime = buildImageWithTime()
 
             var headerChildren: [ASLayoutElement] = []
             if let fwd = self.forwardedHeaderNode {
@@ -170,6 +179,10 @@ final class ImageMessageCellNode: MessageCellNode {
             return imageWithTime
         }
 
+        directBubbleContentNode.layoutSpecBlock = { _, _ in
+            buildImageWithTime()
+        }
+
         // Time badge
         timeBadgeNode.backgroundColor = UIColor.black.withAlphaComponent(0.4)
         timeBadgeNode.cornerRadius = 8
@@ -199,62 +212,106 @@ final class ImageMessageCellNode: MessageCellNode {
 
         // Load image
         if let source = mediaSource {
-            let dims = thumbnailPixelDimensions()
-            if let cached = MediaCache.shared.image(
-                for: source, width: dims.width, height: dims.height
+            let recipe = bubbleCacheRecipe()
+            if let cached = MediaCache.shared.bubbleImage(
+                for: source,
+                maxPixelWidth: recipe.maxPixelWidth,
+                maxPixelHeight: recipe.maxPixelHeight
             ) {
-                imageNode.image = cached
-                if !hasSDKDimensions, cached.size.height > 0 {
-                    aspectRatio = cached.size.width / cached.size.height
-                    persistDimensions(cached.size)
-                }
+                imageNode.image = cached.image
+                applyLoadedSourcePixelSize(cached.sourcePixelSize, relayout: false)
             } else {
-                loadThumbnailAsync(source: source)
+                loadBubbleImageAsync(source: source)
             }
         }
     }
 
     // MARK: - Async Loading
 
-    /// Pixel size requested from the server. Shared between the sync
-    /// memory-hit lookup and the async fetch so they cache-key the
-    /// same way. When SDK didn't provide dimensions we ask for a
-    /// large square so the server returns the image at its natural
-    /// aspect ratio.
-    private func thumbnailPixelDimensions() -> (width: Int, height: Int) {
-        let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
-        let scale = UIScreen.main.scale
-        if hasSDKDimensions {
-            return (Int(maxWidth * scale), Int(maxWidth / aspectRatio * scale))
+    override func didLoad() {
+        super.didLoad()
+        assignProbeName("imageMessage.imageNode", to: imageNode)
+        assignProbeName("imageMessage.timeBadge", to: timeBadgeNode)
+        if let captionNode {
+            assignProbeName("imageMessage.caption", to: captionNode)
         }
-        let dim = Int(maxWidth * scale)
-        return (dim, dim)
     }
 
-    private func loadThumbnailAsync(source: MediaSource) {
-        let dims = thumbnailPixelDimensions()
-        let thumbWidth = UInt64(dims.width)
-        let thumbHeight = UInt64(dims.height)
+    override func highlightBubble() {
+        guard usesDirectImageContent else {
+            super.highlightBubble()
+            return
+        }
+        guard imageNode.isNodeLoaded else { return }
 
+        let highlight = CAShapeLayer()
+        highlight.frame = imageNode.bounds
+        let path = UIBezierPath(
+            roundedRect: imageNode.bounds,
+            byRoundingCorners: imageNode.roundedCorners,
+            cornerRadii: CGSize(width: imageNode.radius, height: imageNode.radius)
+        )
+        highlight.path = path.cgPath
+        highlight.fillColor = bubbleForegroundColor.withAlphaComponent(0.3).cgColor
+        highlight.opacity = 0
+        imageNode.layer.addSublayer(highlight)
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak highlight] in
+            highlight?.removeFromSuperlayer()
+        }
+
+        let anim = CAKeyframeAnimation(keyPath: "opacity")
+        anim.values = [0, 1, 1, 0]
+        anim.keyTimes = [0, 0.2, 0.6, 1.0]
+        anim.duration = 0.8
+        anim.isRemovedOnCompletion = false
+        anim.fillMode = .forwards
+        highlight.add(anim, forKey: "highlight")
+
+        CATransaction.commit()
+    }
+
+    /// Fixed chat-bubble display recipe. The cache stores a bitmap
+    /// already normalized to this width plus the shared max-height cap.
+    private func bubbleCacheRecipe() -> (maxPixelWidth: Int, maxPixelHeight: Int) {
+        let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
+        let scale = UIScreen.main.scale
+        return (
+            maxPixelWidth: Int(round(maxWidth * scale)),
+            maxPixelHeight: Int(round(MessageCellHelpers.maxImageBubbleHeight * scale))
+        )
+    }
+
+    private func loadBubbleImageAsync(source: MediaSource) {
+        let recipe = bubbleCacheRecipe()
+        let knownAspectRatio = hasSDKDimensions ? aspectRatio : nil
         Task { [weak self] in
             guard let self,
-                  let image = await MediaCache.shared.loadThumbnail(
+                  let bubbleImage = await MediaCache.shared.loadBubbleImage(
                     source: source,
-                    width: thumbWidth,
-                    height: thumbHeight
+                    maxPixelWidth: recipe.maxPixelWidth,
+                    maxPixelHeight: recipe.maxPixelHeight,
+                    knownAspectRatio: knownAspectRatio
                   ) else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.imageNode.image = image
-                if !self.hasSDKDimensions, image.size.height > 0 {
-                    let realRatio = image.size.width / image.size.height
-                    if abs(realRatio - self.aspectRatio) > 0.01 {
-                        self.aspectRatio = realRatio
-                        self.persistDimensions(image.size)
-                        self.setNeedsLayout()
-                    }
-                }
+                self.imageNode.image = bubbleImage.image
+                self.applyLoadedSourcePixelSize(bubbleImage.sourcePixelSize, relayout: true)
             }
+        }
+    }
+
+    private func applyLoadedSourcePixelSize(_ sourcePixelSize: CGSize, relayout: Bool) {
+        guard !hasSDKDimensions, sourcePixelSize.height > 0 else { return }
+
+        let realRatio = sourcePixelSize.width / sourcePixelSize.height
+        persistDimensions(sourcePixelSize)
+
+        guard abs(realRatio - aspectRatio) > 0.01 else { return }
+        aspectRatio = realRatio
+        if relayout {
+            setNeedsLayout()
         }
     }
 

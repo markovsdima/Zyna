@@ -95,6 +95,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        GlassService.shared.captureFor(duration: 0.5)
         viewModel.registerPresence()
         GlassService.shared.setNeedsCapture()
     }
