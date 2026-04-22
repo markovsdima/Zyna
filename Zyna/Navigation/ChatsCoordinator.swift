@@ -84,24 +84,12 @@ final class ChatsCoordinator {
     }
 
     func showChat(_ room: Room) {
-        let viewModel = ChatViewModel(room: room)
-        let vc = ChatViewController(viewModel: viewModel)
-        vc.onBack = { [weak self] in
-            self?.navigationController.pop()
-        }
-        vc.onCallTapped = { [weak self] in
-            self?.startCall(in: room, timelineService: viewModel.timelineService)
-        }
-        vc.onTitleTapped = { [weak self] userId in
-            self?.showProfile(userId: userId)
-        }
-        vc.onRoomDetailsTapped = { [weak self] in
-            self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
-        }
-        vc.onForwardMessage = { [weak self] message in
-            self?.showForwardPicker(message: message, timelineService: viewModel.timelineService)
-        }
-        navigationController.push(vc)
+        showChat(room, animated: true)
+    }
+
+    func showChat(_ room: Room, animated: Bool) {
+        let (vc, _) = makeChatScreen(room: room)
+        navigationController.push(vc, animated: animated)
     }
 
     private func showForwardPicker(message: ChatMessage, timelineService: TimelineService) {
@@ -133,6 +121,27 @@ final class ChatsCoordinator {
         }
 
         navigationController.present(nav, animated: true)
+    }
+
+    private func makeChatScreen(room: Room) -> (controller: ChatViewController, viewModel: ChatViewModel) {
+        let viewModel = ChatViewModel(room: room)
+        let vc = ChatViewController(viewModel: viewModel)
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
+        vc.onCallTapped = { [weak self] in
+            self?.startCall(in: room, timelineService: viewModel.timelineService)
+        }
+        vc.onTitleTapped = { [weak self] userId in
+            self?.showProfile(userId: userId)
+        }
+        vc.onRoomDetailsTapped = { [weak self] in
+            self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
+        }
+        vc.onForwardMessage = { [weak self] message in
+            self?.showForwardPicker(message: message, timelineService: viewModel.timelineService)
+        }
+        return (vc, viewModel)
     }
 
     private func openChatWithForward(
@@ -290,20 +299,7 @@ final class ChatsCoordinator {
     /// Opens a chat and immediately starts a call. Used by the Calls tab.
     func showChatAndCall(room: Room) {
         navigationController.popToRoot(animated: false)
-        let viewModel = ChatViewModel(room: room)
-        let vc = ChatViewController(viewModel: viewModel)
-        vc.onBack = { [weak self] in
-            self?.navigationController.pop()
-        }
-        vc.onCallTapped = { [weak self] in
-            self?.startCall(in: room, timelineService: viewModel.timelineService)
-        }
-        vc.onTitleTapped = { [weak self] userId in
-            self?.showProfile(userId: userId)
-        }
-        vc.onRoomDetailsTapped = { [weak self] in
-            self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
-        }
+        let (vc, viewModel) = makeChatScreen(room: room)
         navigationController.push(vc, animated: false)
         startCall(in: room, timelineService: viewModel.timelineService)
     }

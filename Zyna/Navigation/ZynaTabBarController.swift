@@ -29,7 +29,7 @@ public class ZynaTabBarController: UIViewController {
 
     public var selectedIndex: Int {
         get { _selectedIndex }
-        set { setSelectedIndex(newValue) }
+        set { setSelectedIndex(newValue, animated: true, completion: nil) }
     }
     private var _selectedIndex: Int = 0
 
@@ -120,9 +120,20 @@ public class ZynaTabBarController: UIViewController {
     /// Programmatic selection. Tap-driven selection routes through
     /// `handleTabTapped(_:)` so it can do the pop-to-root behavior.
     public func setSelectedIndex(_ newIndex: Int) {
+        setSelectedIndex(newIndex, animated: true, completion: nil)
+    }
+
+    public func setSelectedIndex(
+        _ newIndex: Int,
+        animated: Bool,
+        completion: (() -> Void)?
+    ) {
         guard newIndex >= 0, newIndex < controllers.count else { return }
         let oldIndex = _selectedIndex
-        guard oldIndex != newIndex else { return }
+        guard oldIndex != newIndex else {
+            completion?()
+            return
+        }
 
         _selectedIndex = newIndex
 
@@ -130,17 +141,28 @@ public class ZynaTabBarController: UIViewController {
             let incoming = controllers[newIndex]
             attachControllerView(incoming)
 
-            // Crossfade
-            incoming.view.alpha = 0
-            UIView.animate(withDuration: 0.1, delay: 0, options: .curveEaseOut) {
-                incoming.view.alpha = 1
-            } completion: { _ in
+            let finishSelection = {
                 if oldIndex >= 0, oldIndex < self.controllers.count {
                     self.controllers[oldIndex].view.removeFromSuperview()
                 }
+                completion?()
+            }
+
+            if animated {
+                incoming.view.alpha = 0
+                UIView.animate(withDuration: 0.1, delay: 0, options: .curveEaseOut) {
+                    incoming.view.alpha = 1
+                } completion: { _ in
+                    finishSelection()
+                }
+            } else {
+                incoming.view.alpha = 1
+                finishSelection()
             }
 
             setNeedsStatusBarAppearanceUpdate()
+        } else {
+            completion?()
         }
 
         tabBar.setSelectedIndex(newIndex)
@@ -198,6 +220,15 @@ public class ZynaTabBarController: UIViewController {
         v.frame = view.bounds
         v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.insertSubview(v, belowSubview: tabBar)
+    }
+
+    func reattachSelectedControllerViewIfNeeded() {
+        guard let current = selectedController else { return }
+        if current.view.superview !== view {
+            attachControllerView(current)
+        } else {
+            layoutSelectedControllerView()
+        }
     }
 
     // MARK: - Layout

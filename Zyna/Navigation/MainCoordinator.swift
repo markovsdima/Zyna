@@ -56,45 +56,89 @@ final class MainCoordinator {
         self.profileCoordinator = profile
 
         contacts.onOpenChat = { [weak self] room in
-            self?.switchToChat(room: room)
+            self?.routeToChat(room: room)
         }
         contacts.onStartCall = { [weak self] room in
-            self?.switchToChatAndCall(room: room)
+            self?.routeToChatAndCall(room: room)
         }
 
         calls.onRoomSelected = { [weak self] roomId in
-            self?.callFromHistory(roomId: roomId)
+            self?.routeToCallHistory(roomId: roomId)
         }
     }
 
-    private func switchToChat(room: Room) {
+    // MARK: - Route entry points
+
+    private func routeToChat(room: Room) {
         guard let chats = chatsCoordinator else { return }
-        selectChatsTab(chats)
-        chats.navigationController.popToRoot(animated: false)
-        chats.showChat(room)
+        if tabBarController.selectedController === chats.navigationController {
+            chats.navigationController.popToRoot(animated: false)
+            chats.showChat(room)
+            return
+        }
+
+        guard let sourceNavigationController = tabBarController.selectedController as? ZynaNavigationController else {
+            selectChatsTab(chats) { [weak chats] in
+                guard let chats else { return }
+                chats.navigationController.popToRoot(animated: false)
+                chats.showChat(room)
+            }
+            return
+        }
+
+        CrossStackTransitionCoordinator.runPushTransition(
+            in: tabBarController,
+            sourceNavigationController: sourceNavigationController,
+            destinationNavigationController: chats.navigationController,
+            prepareDestination: { [weak self, weak chats] in
+                guard let self, let chats else { return }
+                self.selectChatsTab(chats, animated: false)
+                self.tabBarController.setTabBarHidden(
+                    chats.navigationController.topViewController?.hidesBottomBarWhenPushed ?? false,
+                    animated: false
+                )
+                chats.navigationController.popToRoot(animated: false)
+                chats.showChat(room, animated: false)
+                self.tabBarController.setTabBarHidden(
+                    chats.navigationController.topViewController?.hidesBottomBarWhenPushed ?? false,
+                    animated: false
+                )
+            },
+            cleanupSource: { [weak sourceNavigationController] in
+                sourceNavigationController?.popToRoot(animated: false)
+            },
+            completion: nil
+        )
     }
 
-    private func switchToChatAndCall(room: Room) {
+    private func routeToChatAndCall(room: Room) {
         guard let chats = chatsCoordinator else { return }
-        selectChatsTab(chats)
-        chats.showChatAndCall(room: room)
+        selectChatsTab(chats) { [weak chats] in
+            chats?.showChatAndCall(room: room)
+        }
     }
 
-    private func callFromHistory(roomId: String) {
+    private func routeToCallHistory(roomId: String) {
         guard let client = MatrixClientService.shared.client,
               let room = try? client.getRoom(roomId: roomId) else { return }
 
-        // Switch to Chats tab and open the chat
         guard let chats = chatsCoordinator else { return }
-        selectChatsTab(chats)
-        chats.showChatAndCall(room: room)
+        selectChatsTab(chats) { [weak chats] in
+            chats?.showChatAndCall(room: room)
+        }
     }
 
-    private func selectChatsTab(_ chats: ChatsCoordinator) {
+    private func selectChatsTab(
+        _ chats: ChatsCoordinator,
+        animated: Bool = true,
+        completion: (() -> Void)? = nil
+    ) {
         if let index = tabBarController.controllers.firstIndex(where: {
             $0 === chats.navigationController
         }) {
-            tabBarController.selectedIndex = index
+            tabBarController.setSelectedIndex(index, animated: animated, completion: completion)
+        } else {
+            completion?()
         }
     }
 }
