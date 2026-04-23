@@ -287,12 +287,231 @@ final class TimelineService {
         }
     }
 
+    private static func currentUserId() -> String? {
+        try? MatrixClientService.shared.client?.userId()
+    }
+
+    private static func senderDisplayName(from event: EventTimelineItem) -> String {
+        if case .ready(let displayName, _, _) = event.senderProfile,
+           let displayName,
+           !displayName.isEmpty {
+            return displayName
+        }
+        return event.sender
+    }
+
+    private static func memberDisplayName(userId: String, displayName: String?) -> String {
+        guard let displayName, !displayName.isEmpty else { return userId }
+        return displayName
+    }
+
+    private static func reasonSuffix(_ reason: String?) -> String {
+        guard let reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return ""
+        }
+        return ": \(reason)"
+    }
+
+    private static func membershipEventText(
+        userId: String,
+        userDisplayName: String?,
+        change: MembershipChange?,
+        reason: String?,
+        event: EventTimelineItem
+    ) -> String? {
+        guard let change else { return nil }
+
+        let senderIsYou = event.isOwn
+        let sender = senderDisplayName(from: event)
+        let memberIsYou = userId == currentUserId()
+        let member = memberDisplayName(userId: userId, displayName: userDisplayName)
+        let reasonText = reasonSuffix(reason)
+
+        switch change {
+        case .joined:
+            return memberIsYou ? "You joined the room" : "\(member) joined the room"
+        case .left:
+            return memberIsYou ? "You left the room" : "\(member) left the room"
+        case .banned, .kickedAndBanned:
+            if senderIsYou { return "You banned \(member)\(reasonText)" }
+            if memberIsYou { return "\(sender) banned you\(reasonText)" }
+            return "\(sender) banned \(member)\(reasonText)"
+        case .unbanned:
+            if senderIsYou { return "You unbanned \(member)" }
+            if memberIsYou { return "\(sender) unbanned you" }
+            return "\(sender) unbanned \(member)"
+        case .kicked:
+            if senderIsYou { return "You removed \(member)\(reasonText)" }
+            if memberIsYou { return "\(sender) removed you\(reasonText)" }
+            return "\(sender) removed \(member)\(reasonText)"
+        case .invited:
+            if senderIsYou { return "You invited \(member)" }
+            if memberIsYou { return "\(sender) invited you" }
+            return "\(sender) invited \(member)"
+        case .invitationAccepted:
+            return memberIsYou ? "You accepted the invitation" : "\(member) accepted the invitation"
+        case .invitationRejected:
+            return memberIsYou ? "You declined the invitation" : "\(member) declined the invitation"
+        case .invitationRevoked:
+            if senderIsYou { return "You revoked \(member)'s invitation" }
+            if memberIsYou { return "\(sender) revoked your invitation" }
+            return "\(sender) revoked \(member)'s invitation"
+        case .knocked:
+            return memberIsYou ? "You requested to join" : "\(member) requested to join"
+        case .knockAccepted:
+            if senderIsYou { return "You accepted \(member)'s join request" }
+            if memberIsYou { return "\(sender) accepted your join request" }
+            return "\(sender) accepted \(member)'s join request"
+        case .knockRetracted:
+            return memberIsYou ? "You withdrew your join request" : "\(member) withdrew their join request"
+        case .knockDenied:
+            if senderIsYou { return "You denied \(member)'s join request" }
+            if memberIsYou { return "\(sender) denied your join request" }
+            return "\(sender) denied \(member)'s join request"
+        case .none, .error, .notImplemented:
+            return nil
+        }
+    }
+
+    private static func profileChangeEventText(
+        displayName: String?,
+        prevDisplayName: String?,
+        avatarUrl: String?,
+        prevAvatarUrl: String?,
+        event: EventTimelineItem
+    ) -> String? {
+        let member = senderDisplayName(from: event)
+        let memberIsYou = event.isOwn
+        let displayNameChanged = displayName != prevDisplayName
+        let avatarChanged = avatarUrl != prevAvatarUrl
+
+        var parts: [String] = []
+
+        if displayNameChanged {
+            switch (prevDisplayName, displayName, memberIsYou) {
+            case (.some(let previous), .some(let current), true):
+                parts.append("You changed your display name from \(previous) to \(current)")
+            case (.some(let previous), .some(let current), false):
+                parts.append("\(member) changed their display name from \(previous) to \(current)")
+            case (nil, .some(let current), true):
+                parts.append("You set your display name to \(current)")
+            case (nil, .some(let current), false):
+                parts.append("\(member) set their display name to \(current)")
+            case (.some(let previous), nil, true):
+                parts.append("You removed your display name (\(previous))")
+            case (.some(let previous), nil, false):
+                parts.append("\(member) removed their display name (\(previous))")
+            case (nil, nil, _):
+                break
+            }
+        }
+
+        if avatarChanged {
+            parts.append(memberIsYou ? "You changed your avatar" : "\(member) changed their avatar")
+        }
+
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: "\n")
+    }
+
+    private static func roomStateEventText(
+        state: OtherState,
+        event: EventTimelineItem
+    ) -> String? {
+        let sender = senderDisplayName(from: event)
+        let senderIsYou = event.isOwn
+
+        switch state {
+        case .roomAvatar(url: let url):
+            if senderIsYou {
+                return url == nil ? "You removed the room avatar" : "You changed the room avatar"
+            }
+            return url == nil ? "\(sender) removed the room avatar" : "\(sender) changed the room avatar"
+        case .roomCreate(federate: _):
+            return senderIsYou ? "You created the room" : "\(sender) created the room"
+        case .roomEncryption:
+            return "Encryption enabled"
+        case .roomName(name: let name):
+            if let name, !name.isEmpty {
+                return senderIsYou
+                    ? "You changed the room name to \(name)"
+                    : "\(sender) changed the room name to \(name)"
+            }
+            return senderIsYou ? "You removed the room name" : "\(sender) removed the room name"
+        case .roomPinnedEvents(change: let change):
+            switch change {
+            case .added:
+                return senderIsYou ? "You pinned messages" : "\(sender) pinned messages"
+            case .removed:
+                return senderIsYou ? "You unpinned messages" : "\(sender) unpinned messages"
+            case .changed:
+                return senderIsYou ? "You updated pinned messages" : "\(sender) updated pinned messages"
+            }
+        case .roomThirdPartyInvite(displayName: let displayName):
+            guard let displayName, !displayName.isEmpty else { return nil }
+            return senderIsYou ? "You invited \(displayName)" : "\(sender) invited \(displayName)"
+        case .roomTopic(topic: let topic):
+            if let topic, !topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return senderIsYou
+                    ? "You changed the room topic to \(topic)"
+                    : "\(sender) changed the room topic to \(topic)"
+            }
+            return senderIsYou ? "You removed the room topic" : "\(sender) removed the room topic"
+        case .roomPowerLevels(events: _, previousEvents: _, users: _, previousUsers: _, thresholds: _, previousThresholds: _):
+            return nil
+        case .policyRuleRoom,
+             .policyRuleServer,
+             .policyRuleUser,
+             .roomAliases,
+             .roomCanonicalAlias,
+             .roomGuestAccess,
+             .roomHistoryVisibility(historyVisibility: _),
+             .roomJoinRules(joinRule: _),
+             .roomServerAcl,
+             .roomTombstone,
+             .spaceChild,
+             .spaceParent,
+             .custom(eventType: _):
+            return nil
+        }
+    }
+
     private static func contentFromEvent(_ event: EventTimelineItem) -> ChatMessageContent? {
         // Call events: invite is native SDK, signaling rides in span.
         // CallService writes call events to GRDB directly — skip here.
         switch event.content {
         case .callInvite:
             return nil
+
+        case .roomMembership(userId: let userId, userDisplayName: let userDisplayName, change: let change, reason: let reason):
+            guard let text = membershipEventText(
+                userId: userId,
+                userDisplayName: userDisplayName,
+                change: change,
+                reason: reason,
+                event: event
+            ) else {
+                return nil
+            }
+            return .systemEvent(text: text, kind: .membership)
+
+        case .profileChange(displayName: let displayName, prevDisplayName: let prevDisplayName, avatarUrl: let avatarUrl, prevAvatarUrl: let prevAvatarUrl):
+            guard let text = profileChangeEventText(
+                displayName: displayName,
+                prevDisplayName: prevDisplayName,
+                avatarUrl: avatarUrl,
+                prevAvatarUrl: prevAvatarUrl,
+                event: event
+            ) else {
+                return nil
+            }
+            return .systemEvent(text: text, kind: .profileChange)
+
+        case .state(stateKey: _, content: let state):
+            guard let text = roomStateEventText(state: state, event: event) else {
+                return nil
+            }
+            return .systemEvent(text: text, kind: .roomState)
 
         case .msgLike(let msgContent):
             let attrs = extractZynaAttributes(from: event)
@@ -313,6 +532,8 @@ final class TimelineService {
                 return .text(body: "Encrypted message")
             case .other:
                 return nil
+            case .liveLocation(content: _):
+                return .unsupported(typeName: "location")
             @unknown default:
                 return nil
             }

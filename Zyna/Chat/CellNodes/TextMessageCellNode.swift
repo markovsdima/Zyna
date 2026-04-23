@@ -43,6 +43,8 @@ final class TextMessageCellNode: MessageCellNode {
             bodyText = "📎 \(filename)"
         case .callEvent(let type, _, let reason):
             bodyText = "📞 \(type.displayText(reason: reason))"
+        case .systemEvent(let text, _):
+            bodyText = text
         case .unsupported(let typeName):
             bodyText = "[\(typeName)]"
         case .redacted:

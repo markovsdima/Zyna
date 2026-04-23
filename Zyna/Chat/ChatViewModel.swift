@@ -614,7 +614,7 @@ final class ChatViewModel {
     private static let clusterGap: TimeInterval = 10 * 60
 
     /// Assigns isFirstInCluster / isLastInCluster. A cluster breaks on
-    /// sender change, a gap > clusterGap, or a call event between.
+    /// sender change, a gap > clusterGap, or a standalone event between.
     ///
     /// Array is newest → oldest (table is inverted). "First in cluster"
     /// is the visually top bubble — the OLDER one, higher-index.
@@ -632,7 +632,7 @@ final class ChatViewModel {
 
         for i in 0..<result.count {
             let current = result[i]
-            if case .callEvent = current.content {
+            if current.content.isStandaloneEvent {
                 result[i].isFirstInCluster = true
                 result[i].isLastInCluster = true
                 continue
@@ -647,18 +647,16 @@ final class ChatViewModel {
     }
 
     private static func neighbor(from message: ChatMessage) -> ClusterNeighbor {
-        let isCall: Bool
-        if case .callEvent = message.content { isCall = true } else { isCall = false }
         return ClusterNeighbor(
             senderId: message.senderId,
             timestamp: message.timestamp,
-            isCallEvent: isCall
+            isStandaloneEvent: message.content.isStandaloneEvent
         )
     }
 
     private static func isClusterBoundary(current: ChatMessage, neighbor: ClusterNeighbor?) -> Bool {
         guard let neighbor else { return true }
-        if neighbor.isCallEvent { return true }
+        if neighbor.isStandaloneEvent { return true }
         if neighbor.senderId != current.senderId { return true }
         let gap = abs(current.timestamp.timeIntervalSince(neighbor.timestamp))
         return gap > clusterGap

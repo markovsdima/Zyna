@@ -223,7 +223,7 @@ final class MessageWindow {
         return ClusterNeighbor(
             senderId: msg.senderId,
             timestamp: Date(timeIntervalSince1970: msg.timestamp),
-            isCallEvent: msg.contentType == "call"
+            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system"
         )
     }
 
@@ -235,7 +235,7 @@ final class MessageWindow {
         return ClusterNeighbor(
             senderId: msg.senderId,
             timestamp: Date(timeIntervalSince1970: msg.timestamp),
-            isCallEvent: msg.contentType == "call"
+            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system"
         )
     }
 

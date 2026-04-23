@@ -16,6 +16,7 @@ enum ChatMessageContent: Equatable {
     case voice(source: MediaSource, duration: TimeInterval, waveform: [UInt16])
     case file(source: MediaSource, filename: String, mimetype: String?, size: UInt64?)
     case callEvent(type: CallEventType, callId: String, reason: String?)
+    case systemEvent(text: String, kind: SystemEventKind)
     case unsupported(typeName: String)
     case redacted
 
@@ -30,6 +31,8 @@ enum ChatMessageContent: Equatable {
         case (.unsupported(let a), .unsupported(let b)): return a == b
         case (.callEvent(let t1, let c1, let r1), .callEvent(let t2, let c2, let r2)):
             return t1 == t2 && c1 == c2 && r1 == r2
+        case (.systemEvent(let t1, let k1), .systemEvent(let t2, let k2)):
+            return t1 == t2 && k1 == k2
         case (.image(let s1, let w1, let h1, let c1), .image(let s2, let w2, let h2, let c2)):
             // Treat nil dimensions as "not yet loaded" — don't trigger
             // cell recreation when SDK sends the same image without/with size.
@@ -80,10 +83,20 @@ enum ChatMessageContent: Equatable {
         case .voice: return "Voice message"
         case .file(_, let filename, _, _): return filename
         case .callEvent(let type, _, let reason): return type.displayText(reason: reason)
+        case .systemEvent(let text, _): return text
         case .notice(let body): return body
         case .emote(let body): return body
         case .unsupported: return "Message"
         case .redacted: return "Deleted message"
+        }
+    }
+
+    var isStandaloneEvent: Bool {
+        switch self {
+        case .callEvent, .systemEvent:
+            return true
+        default:
+            return false
         }
     }
 
@@ -108,6 +121,14 @@ enum CallEventType: String, Codable, Equatable {
             }
         }
     }
+}
+
+// MARK: - System Event Kind
+
+enum SystemEventKind: String, Codable, Equatable {
+    case membership
+    case profileChange
+    case roomState
 }
 
 // MARK: - Reply Info
@@ -187,7 +208,7 @@ enum ChatItemIdentifier: Equatable {
 struct ClusterNeighbor {
     let senderId: String
     let timestamp: Date
-    let isCallEvent: Bool
+    let isStandaloneEvent: Bool
 }
 
 // MARK: - Chat Message

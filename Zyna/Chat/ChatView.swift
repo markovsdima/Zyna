@@ -537,6 +537,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             if case .callEvent = message.content {
                 return CallEventCellNode(message: message)
             }
+            if case .systemEvent = message.content {
+                return StateEventCellNode(message: message)
+            }
 
             let cellNode: MessageCellNode
             switch message.content {
@@ -556,6 +559,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     self.handleFileTap(message: message, cellNode: fileCell)
                 }
                 cellNode = fileCell
+            case .systemEvent:
+                cellNode = TextMessageCellNode(message: message, isGroupChat: isGroup)
             default:
                 cellNode = TextMessageCellNode(message: message, isGroupChat: isGroup)
             }

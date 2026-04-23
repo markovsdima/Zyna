@@ -105,6 +105,10 @@ extension StoredMessage {
             contentBody = callId
             contentCaption = type.rawValue
             contentMimetype = reason
+        case .systemEvent(let text, let kind):
+            contentType = "system"
+            contentBody = text
+            contentCaption = kind.rawValue
         case .unsupported(let typeName):
             contentType = "unsupported"
             contentBody = typeName
@@ -209,6 +213,11 @@ extension StoredMessage {
                   let typeRaw = contentCaption,
                   let type = CallEventType(rawValue: typeRaw) else { return nil }
             return .callEvent(type: type, callId: callId, reason: contentMimetype)
+        case "system":
+            guard let text = contentBody,
+                  let kindRaw = contentCaption,
+                  let kind = SystemEventKind(rawValue: kindRaw) else { return nil }
+            return .systemEvent(text: text, kind: kind)
         case "unsupported":
             return .unsupported(typeName: contentBody ?? "unknown")
         case "redacted":
