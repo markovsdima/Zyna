@@ -305,11 +305,10 @@ final class TimelineService {
         return displayName
     }
 
-    private static func reasonSuffix(_ reason: String?) -> String {
-        guard let reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return ""
-        }
-        return ": \(reason)"
+    private static func normalizedReason(_ reason: String?) -> String? {
+        guard let reason else { return nil }
+        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func membershipEventText(
@@ -325,49 +324,71 @@ final class TimelineService {
         let sender = senderDisplayName(from: event)
         let memberIsYou = userId == currentUserId()
         let member = memberDisplayName(userId: userId, displayName: userDisplayName)
-        let reasonText = reasonSuffix(reason)
+        let reason = normalizedReason(reason)
 
         switch change {
         case .joined:
-            return memberIsYou ? "You joined the room" : "\(member) joined the room"
+            return memberIsYou
+                ? String(localized: "You joined the room")
+                : String(localized: "\(member) joined the room")
         case .left:
-            return memberIsYou ? "You left the room" : "\(member) left the room"
+            return memberIsYou
+                ? String(localized: "You left the room")
+                : String(localized: "\(member) left the room")
         case .banned, .kickedAndBanned:
-            if senderIsYou { return "You banned \(member)\(reasonText)" }
-            if memberIsYou { return "\(sender) banned you\(reasonText)" }
-            return "\(sender) banned \(member)\(reasonText)"
+            if let reason {
+                if senderIsYou { return String(localized: "You banned \(member): \(reason)") }
+                if memberIsYou { return String(localized: "\(sender) banned you: \(reason)") }
+                return String(localized: "\(sender) banned \(member): \(reason)")
+            }
+            if senderIsYou { return String(localized: "You banned \(member)") }
+            if memberIsYou { return String(localized: "\(sender) banned you") }
+            return String(localized: "\(sender) banned \(member)")
         case .unbanned:
-            if senderIsYou { return "You unbanned \(member)" }
-            if memberIsYou { return "\(sender) unbanned you" }
-            return "\(sender) unbanned \(member)"
+            if senderIsYou { return String(localized: "You unbanned \(member)") }
+            if memberIsYou { return String(localized: "\(sender) unbanned you") }
+            return String(localized: "\(sender) unbanned \(member)")
         case .kicked:
-            if senderIsYou { return "You removed \(member)\(reasonText)" }
-            if memberIsYou { return "\(sender) removed you\(reasonText)" }
-            return "\(sender) removed \(member)\(reasonText)"
+            if let reason {
+                if senderIsYou { return String(localized: "You removed \(member): \(reason)") }
+                if memberIsYou { return String(localized: "\(sender) removed you: \(reason)") }
+                return String(localized: "\(sender) removed \(member): \(reason)")
+            }
+            if senderIsYou { return String(localized: "You removed \(member)") }
+            if memberIsYou { return String(localized: "\(sender) removed you") }
+            return String(localized: "\(sender) removed \(member)")
         case .invited:
-            if senderIsYou { return "You invited \(member)" }
-            if memberIsYou { return "\(sender) invited you" }
-            return "\(sender) invited \(member)"
+            if senderIsYou { return String(localized: "You invited \(member)") }
+            if memberIsYou { return String(localized: "\(sender) invited you") }
+            return String(localized: "\(sender) invited \(member)")
         case .invitationAccepted:
-            return memberIsYou ? "You accepted the invitation" : "\(member) accepted the invitation"
+            return memberIsYou
+                ? String(localized: "You accepted the invitation")
+                : String(localized: "\(member) accepted the invitation")
         case .invitationRejected:
-            return memberIsYou ? "You declined the invitation" : "\(member) declined the invitation"
+            return memberIsYou
+                ? String(localized: "You declined the invitation")
+                : String(localized: "\(member) declined the invitation")
         case .invitationRevoked:
-            if senderIsYou { return "You revoked \(member)'s invitation" }
-            if memberIsYou { return "\(sender) revoked your invitation" }
-            return "\(sender) revoked \(member)'s invitation"
+            if senderIsYou { return String(localized: "You revoked \(member)'s invitation") }
+            if memberIsYou { return String(localized: "\(sender) revoked your invitation") }
+            return String(localized: "\(sender) revoked \(member)'s invitation")
         case .knocked:
-            return memberIsYou ? "You requested to join" : "\(member) requested to join"
+            return memberIsYou
+                ? String(localized: "You requested to join")
+                : String(localized: "\(member) requested to join")
         case .knockAccepted:
-            if senderIsYou { return "You accepted \(member)'s join request" }
-            if memberIsYou { return "\(sender) accepted your join request" }
-            return "\(sender) accepted \(member)'s join request"
+            if senderIsYou { return String(localized: "You accepted \(member)'s join request") }
+            if memberIsYou { return String(localized: "\(sender) accepted your join request") }
+            return String(localized: "\(sender) accepted \(member)'s join request")
         case .knockRetracted:
-            return memberIsYou ? "You withdrew your join request" : "\(member) withdrew their join request"
+            return memberIsYou
+                ? String(localized: "You withdrew your join request")
+                : String(localized: "\(member) withdrew their join request")
         case .knockDenied:
-            if senderIsYou { return "You denied \(member)'s join request" }
-            if memberIsYou { return "\(sender) denied your join request" }
-            return "\(sender) denied \(member)'s join request"
+            if senderIsYou { return String(localized: "You denied \(member)'s join request") }
+            if memberIsYou { return String(localized: "\(sender) denied your join request") }
+            return String(localized: "\(sender) denied \(member)'s join request")
         case .none, .error, .notImplemented:
             return nil
         }
@@ -390,24 +411,28 @@ final class TimelineService {
         if displayNameChanged {
             switch (prevDisplayName, displayName, memberIsYou) {
             case (.some(let previous), .some(let current), true):
-                parts.append("You changed your display name from \(previous) to \(current)")
+                parts.append(String(localized: "You changed your display name from \(previous) to \(current)"))
             case (.some(let previous), .some(let current), false):
-                parts.append("\(member) changed their display name from \(previous) to \(current)")
+                parts.append(String(localized: "\(member) changed their display name from \(previous) to \(current)"))
             case (nil, .some(let current), true):
-                parts.append("You set your display name to \(current)")
+                parts.append(String(localized: "You set your display name to \(current)"))
             case (nil, .some(let current), false):
-                parts.append("\(member) set their display name to \(current)")
+                parts.append(String(localized: "\(member) set their display name to \(current)"))
             case (.some(let previous), nil, true):
-                parts.append("You removed your display name (\(previous))")
+                parts.append(String(localized: "You removed your display name (\(previous))"))
             case (.some(let previous), nil, false):
-                parts.append("\(member) removed their display name (\(previous))")
+                parts.append(String(localized: "\(member) removed their display name (\(previous))"))
             case (nil, nil, _):
                 break
             }
         }
 
         if avatarChanged {
-            parts.append(memberIsYou ? "You changed your avatar" : "\(member) changed their avatar")
+            parts.append(
+                memberIsYou
+                    ? String(localized: "You changed your avatar")
+                    : String(localized: "\(member) changed their avatar")
+            )
         }
 
         guard !parts.isEmpty else { return nil }
@@ -424,39 +449,57 @@ final class TimelineService {
         switch state {
         case .roomAvatar(url: let url):
             if senderIsYou {
-                return url == nil ? "You removed the room avatar" : "You changed the room avatar"
+                return url == nil
+                    ? String(localized: "You removed the room avatar")
+                    : String(localized: "You changed the room avatar")
             }
-            return url == nil ? "\(sender) removed the room avatar" : "\(sender) changed the room avatar"
+            return url == nil
+                ? String(localized: "\(sender) removed the room avatar")
+                : String(localized: "\(sender) changed the room avatar")
         case .roomCreate(federate: _):
-            return senderIsYou ? "You created the room" : "\(sender) created the room"
+            return senderIsYou
+                ? String(localized: "You created the room")
+                : String(localized: "\(sender) created the room")
         case .roomEncryption:
-            return "Encryption enabled"
+            return String(localized: "Encryption enabled")
         case .roomName(name: let name):
             if let name, !name.isEmpty {
                 return senderIsYou
-                    ? "You changed the room name to \(name)"
-                    : "\(sender) changed the room name to \(name)"
+                    ? String(localized: "You changed the room name to \(name)")
+                    : String(localized: "\(sender) changed the room name to \(name)")
             }
-            return senderIsYou ? "You removed the room name" : "\(sender) removed the room name"
+            return senderIsYou
+                ? String(localized: "You removed the room name")
+                : String(localized: "\(sender) removed the room name")
         case .roomPinnedEvents(change: let change):
             switch change {
             case .added:
-                return senderIsYou ? "You pinned messages" : "\(sender) pinned messages"
+                return senderIsYou
+                    ? String(localized: "You pinned messages")
+                    : String(localized: "\(sender) pinned messages")
             case .removed:
-                return senderIsYou ? "You unpinned messages" : "\(sender) unpinned messages"
+                return senderIsYou
+                    ? String(localized: "You unpinned messages")
+                    : String(localized: "\(sender) unpinned messages")
             case .changed:
-                return senderIsYou ? "You updated pinned messages" : "\(sender) updated pinned messages"
+                return senderIsYou
+                    ? String(localized: "You updated pinned messages")
+                    : String(localized: "\(sender) updated pinned messages")
             }
         case .roomThirdPartyInvite(displayName: let displayName):
             guard let displayName, !displayName.isEmpty else { return nil }
-            return senderIsYou ? "You invited \(displayName)" : "\(sender) invited \(displayName)"
+            return senderIsYou
+                ? String(localized: "You invited \(displayName)")
+                : String(localized: "\(sender) invited \(displayName)")
         case .roomTopic(topic: let topic):
             if let topic, !topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return senderIsYou
-                    ? "You changed the room topic to \(topic)"
-                    : "\(sender) changed the room topic to \(topic)"
+                    ? String(localized: "You changed the room topic to \(topic)")
+                    : String(localized: "\(sender) changed the room topic to \(topic)")
             }
-            return senderIsYou ? "You removed the room topic" : "\(sender) removed the room topic"
+            return senderIsYou
+                ? String(localized: "You removed the room topic")
+                : String(localized: "\(sender) removed the room topic")
         case .roomPowerLevels(events: _, previousEvents: _, users: _, previousUsers: _, thresholds: _, previousThresholds: _):
             return nil
         case .policyRuleRoom,

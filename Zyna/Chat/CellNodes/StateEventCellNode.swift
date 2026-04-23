@@ -15,7 +15,7 @@ final class StateEventCellNode: SystemEventCellNode {
         if case .systemEvent(let value, _) = message.content {
             text = value
         } else {
-            text = "Room event"
+            text = String(localized: "Room event")
         }
 
         labelNode.attributedText = NSAttributedString(
