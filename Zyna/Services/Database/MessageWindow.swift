@@ -183,6 +183,13 @@ final class MessageWindow {
         if !combined.contains(where: { $0.id == target.id }) {
             combined.append(target)
         }
+        // Deduplicate by eventId — DB may briefly have two records
+        // with the same eventId but different id (local echo → server echo race)
+        var seenEventIds = Set<String>()
+        combined = combined.filter { msg in
+            guard let eid = msg.eventId, !eid.isEmpty else { return true }
+            return seenEventIds.insert(eid).inserted
+        }
         combined.sort { $0.timestamp > $1.timestamp }
 
         updateCursors(from: combined)
@@ -203,6 +210,33 @@ final class MessageWindow {
         hasNewerInDB = checkHasNewerInDB()
         emitChange(stored)
         log("jumpToOldest: window=\(stored.count)")
+    }
+
+    // MARK: - Cluster Peek
+
+    /// One row just outside the top edge of the window, used by
+    /// cluster decoration so the oldest visible message sees its
+    /// real predecessor instead of nil.
+    func peekOlderNeighbor() -> ClusterNeighbor? {
+        guard let oldestTs = oldestTimestamp else { return nil }
+        guard let msg = queryOlderThan(timestamp: oldestTs, limit: 1).first else { return nil }
+        return ClusterNeighbor(
+            senderId: msg.senderId,
+            timestamp: Date(timeIntervalSince1970: msg.timestamp),
+            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system"
+        )
+    }
+
+    /// Bottom-edge mirror of peekOlderNeighbor. Non-nil only after a
+    /// trim or jumpTo — at live edge nothing newer exists yet.
+    func peekNewerNeighbor() -> ClusterNeighbor? {
+        guard let newestTs = newestTimestamp else { return nil }
+        guard let msg = queryNewerThan(timestamp: newestTs, limit: 1).first else { return nil }
+        return ClusterNeighbor(
+            senderId: msg.senderId,
+            timestamp: Date(timeIntervalSince1970: msg.timestamp),
+            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system"
+        )
     }
 
     // MARK: - GRDB Queries

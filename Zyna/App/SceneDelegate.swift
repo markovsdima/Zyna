@@ -23,7 +23,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
-        PresenceService.shared.stopHeartbeatLoop()
+        PresenceTracker.shared.disconnect()
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {

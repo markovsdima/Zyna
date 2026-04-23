@@ -11,12 +11,6 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
 
     private let viewModel: SelectMembersViewModel
     private var cancellables = Set<AnyCancellable>()
-    private let searchController = UISearchController(searchResultsController: nil)
-    private var nextButton: UIBarButtonItem!
-
-    // Chips scroll view for selected users
-    private let chipsScrollView = UIScrollView()
-    private let chipsStack = UIStackView()
 
     init(viewModel: SelectMembersViewModel) {
         self.viewModel = viewModel
@@ -36,45 +30,14 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
         node.tableNode.view.separatorStyle = .none
         node.tableNode.view.keyboardDismissMode = .onDrag
 
-        setupNavigation()
-        setupSearch()
-        setupChipsView()
+        node.headerNode.onNextTapped = { [weak self] in
+            self?.viewModel.proceed()
+        }
+        node.headerNode.onSearchQueryChanged = { [weak self] query in
+            self?.viewModel.searchUsers(query)
+        }
+
         bindViewModel()
-    }
-
-    // MARK: - Setup
-
-    private func setupNavigation() {
-        nextButton = UIBarButtonItem(title: "Next", style: .done, target: self, action: #selector(nextTapped))
-        navigationItem.rightBarButtonItem = nextButton
-    }
-
-    private func setupSearch() {
-        searchController.searchResultsUpdater = self
-        searchController.obscuresBackgroundDuringPresentation = false
-        searchController.searchBar.placeholder = "Search users"
-        navigationItem.searchController = searchController
-        navigationItem.hidesSearchBarWhenScrolling = false
-        definesPresentationContext = true
-    }
-
-    private func setupChipsView() {
-        chipsScrollView.showsHorizontalScrollIndicator = false
-        chipsScrollView.alwaysBounceHorizontal = true
-
-        chipsStack.axis = .horizontal
-        chipsStack.spacing = 8
-        chipsStack.alignment = .center
-
-        chipsScrollView.addSubview(chipsStack)
-        chipsStack.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            chipsStack.leadingAnchor.constraint(equalTo: chipsScrollView.contentLayoutGuide.leadingAnchor, constant: 16),
-            chipsStack.trailingAnchor.constraint(equalTo: chipsScrollView.contentLayoutGuide.trailingAnchor, constant: -16),
-            chipsStack.topAnchor.constraint(equalTo: chipsScrollView.contentLayoutGuide.topAnchor),
-            chipsStack.bottomAnchor.constraint(equalTo: chipsScrollView.contentLayoutGuide.bottomAnchor),
-            chipsStack.heightAnchor.constraint(equalTo: chipsScrollView.frameLayoutGuide.heightAnchor)
-        ])
     }
 
     private func bindViewModel() {
@@ -88,49 +51,22 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
         viewModel.$selectedUsers
             .receive(on: DispatchQueue.main)
             .sink { [weak self] users in
-                self?.updateChips(users)
-                self?.node.tableNode.reloadData()
+                guard let self else { return }
+                self.node.chipsStripNode.setUsers(users) { [weak self] user in
+                    self?.removeSelected(user: user)
+                }
+                self.node.showChips = !users.isEmpty
             }
             .store(in: &cancellables)
     }
 
-    // MARK: - Chips
-
-    private func updateChips(_ users: [UserProfile]) {
-        chipsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-
-        for user in users {
-            let chipNode = SelectedUserChipNode(user: user)
-            chipNode.onRemove = { [weak self] in
-                self?.viewModel.removeUser(user)
-            }
-            let chipView = chipNode.view
-            chipView.translatesAutoresizingMaskIntoConstraints = false
-            chipsStack.addArrangedSubview(chipView)
+    private func removeSelected(user: UserProfile) {
+        viewModel.removeUser(user)
+        guard let row = viewModel.searchResults.firstIndex(where: { $0.userId == user.userId }) else { return }
+        let indexPath = IndexPath(row: row, section: 0)
+        if let cell = node.tableNode.nodeForRow(at: indexPath) as? UserCellNode {
+            cell.isChecked = false
         }
-
-        let hasChips = !users.isEmpty
-        let targetHeight: CGFloat = hasChips ? 44 : 0
-        if chipsScrollView.superview == nil && hasChips {
-            node.view.addSubview(chipsScrollView)
-            chipsScrollView.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                chipsScrollView.topAnchor.constraint(equalTo: node.view.safeAreaLayoutGuide.topAnchor),
-                chipsScrollView.leadingAnchor.constraint(equalTo: node.view.leadingAnchor),
-                chipsScrollView.trailingAnchor.constraint(equalTo: node.view.trailingAnchor),
-                chipsScrollView.heightAnchor.constraint(equalToConstant: targetHeight)
-            ])
-            node.tableNode.contentInset.top = targetHeight
-        } else if !hasChips {
-            chipsScrollView.removeFromSuperview()
-            node.tableNode.contentInset.top = 0
-        }
-    }
-
-    // MARK: - Actions
-
-    @objc private func nextTapped() {
-        viewModel.proceed()
     }
 
     // MARK: - ASTableDataSource
@@ -154,14 +90,10 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
     func tableNode(_ tableNode: ASTableNode, didSelectRowAt indexPath: IndexPath) {
         tableNode.deselectRow(at: indexPath, animated: true)
         guard indexPath.row < viewModel.searchResults.count else { return }
-        viewModel.toggleUser(viewModel.searchResults[indexPath.row])
-    }
-}
-
-// MARK: - UISearchResultsUpdating
-
-extension SelectMembersViewController: UISearchResultsUpdating {
-    func updateSearchResults(for searchController: UISearchController) {
-        viewModel.searchUsers(searchController.searchBar.text ?? "")
+        let user = viewModel.searchResults[indexPath.row]
+        viewModel.toggleUser(user)
+        if let cell = tableNode.nodeForRow(at: indexPath) as? UserCellNode {
+            cell.isChecked = viewModel.isSelected(user)
+        }
     }
 }

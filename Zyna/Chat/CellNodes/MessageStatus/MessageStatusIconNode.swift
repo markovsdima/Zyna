@@ -49,11 +49,20 @@ final class MessageStatusIconNode: ASDisplayNode {
     init(size: CGFloat = MessageStatusIconConfig.defaultSize) {
         self.iconSize = size
         super.init()
-        style.preferredSize = CGSize(width: size * 1.6, height: size)
+        // Fixed slot sized for double-check; single-icon states
+        // right-align within it so bubble width doesn't shift on
+        // sent → read.
+        let offset = size * MessageStatusIconConfig.doubleCheckOffsetRatio
+        style.preferredSize = CGSize(width: size + offset, height: size)
         automaticallyManagesSubnodes = true
         backgroundColor = .clear
         isOpaque = false
         isLayerBacked = true
+    }
+
+    /// Reserved slot width; single-icon states right-align within it.
+    private var slotWidth: CGFloat {
+        style.preferredSize.width
     }
 
     // MARK: - Lifecycle
@@ -89,8 +98,8 @@ final class MessageStatusIconNode: ASDisplayNode {
         case .pending:
             addPendingClockNodes()
         case .sent:
-            addCheckNode(offset: 0)
-        case .delivered:
+            addCheckNode(offset: slotWidth - MessageStatusIconImages.check.size.width)
+        case .read:
             addDoubleCheckNodes()
         case .failed:
             addFailedBadgeNode()
@@ -105,10 +114,11 @@ final class MessageStatusIconNode: ASDisplayNode {
         let frame = makeTemplateImageNode(image: MessageStatusIconImages.clockFrame)
         let hand = makeTemplateImageNode(image: MessageStatusIconImages.clockHand)
         let square = CGSize(width: iconSize, height: iconSize)
+        let position = CGPoint(x: slotWidth - iconSize, y: 0)
         frame.style.preferredSize = square
-        frame.style.layoutPosition = .zero
+        frame.style.layoutPosition = position
         hand.style.preferredSize = square
-        hand.style.layoutPosition = .zero
+        hand.style.layoutPosition = position
         imageNodes = [frame, hand]
         rotatingNode = hand
     }
@@ -122,9 +132,7 @@ final class MessageStatusIconNode: ASDisplayNode {
     }
 
     private func addDoubleCheckNodes() {
-        // Two full V-ticks layered with a horizontal offset — the
-        // second one lands on top of the first's ascending leg, so
-        // they read as one "delivered" glyph.
+        // Two V-ticks overlap so they read as one "delivered" glyph.
         let offset = iconSize * MessageStatusIconConfig.doubleCheckOffsetRatio
         addCheckNode(offset: 0)
         addCheckNode(offset: offset)
@@ -138,7 +146,7 @@ final class MessageStatusIconNode: ASDisplayNode {
         node.isLayerBacked = true
         node.style.preferredSize = image.size
         node.style.layoutPosition = CGPoint(
-            x: (iconSize - image.size.width) / 2,
+            x: slotWidth - image.size.width,
             y: (iconSize - image.size.height) / 2
         )
         imageNodes.append(node)

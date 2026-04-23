@@ -100,8 +100,12 @@ final class MatrixClientService {
     func login(username: String, password: String, homeserver: String = Brand.current.defaultHomeserver) async throws {
         stateSubject.send(.loggingIn)
 
-        // Clear stale crypto store to avoid device ID mismatch
+        // Clear stale crypto store and verification flag so the
+        // verification screen shows after a fresh login.
         clearSessionDirectories()
+        if let existingUserId = UserDefaults.standard.string(forKey: userIdKey) {
+            SessionVerificationService.clearLocalSecretsFlag(userId: existingUserId)
+        }
 
         do {
             let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
@@ -114,6 +118,9 @@ final class MatrixClientService {
                 .setSessionDelegate(sessionDelegate: sessionDelegate)
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
                 .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+                .autoEnableCrossSigning(autoEnableCrossSigning: true)
+                .autoEnableBackups(autoEnableBackups: true)
+                .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
                 .build()
 
             try await client.login(
@@ -164,6 +171,9 @@ final class MatrixClientService {
                 .setSessionDelegate(sessionDelegate: sessionDelegate)
                 .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
                 .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+                .autoEnableCrossSigning(autoEnableCrossSigning: true)
+                .autoEnableBackups(autoEnableBackups: true)
+                .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
                 .build()
 
             try await client.restoreSession(session: session)

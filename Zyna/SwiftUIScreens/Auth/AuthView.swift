@@ -27,9 +27,7 @@ struct AuthView: View {
                 RadialPatternView()
             }
             .edgesIgnoringSafeArea(.all)
-            .onTapGesture {
-                UIApplication.shared.endEditing()
-            }
+            .allowsHitTesting(false)
 
             // MARK: - Content
 
@@ -67,6 +65,10 @@ struct AuthView: View {
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(!viewModel.isLoading)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            UIApplication.shared.endEditing()
         }
         .preferredColorScheme(.light)
         .onAppear {

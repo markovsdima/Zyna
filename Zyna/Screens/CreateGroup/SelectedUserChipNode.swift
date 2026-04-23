@@ -8,6 +8,7 @@ import MatrixRustSDK
 
 final class SelectedUserChipNode: ASDisplayNode {
 
+    let userId: String
     var onRemove: (() -> Void)?
 
     private let nameNode = ASTextNode()
@@ -15,6 +16,7 @@ final class SelectedUserChipNode: ASDisplayNode {
     private let backgroundNode = ASDisplayNode()
 
     init(user: UserProfile) {
+        self.userId = user.userId
         super.init()
         automaticallyManagesSubnodes = true
 

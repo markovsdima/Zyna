@@ -5,16 +5,19 @@
 
 import AsyncDisplayKit
 
-class RoomsCellNode: ASCellNode {
+class RoomsCellNode: ZynaCellNode {
 
     private let chat: RoomModel
     private let avatarImageNode = ASImageNode()
-    private let avatarBackgroundNode = ASDisplayNode()
-    private let avatarTextNode = ASTextNode()
+    private let avatarBackgroundNode = ASImageNode()
     private let nameNode = ASTextNode()
     private let messageNode = ASTextNode()
     private let timestampNode = ASTextNode()
-    private let onlineIndicatorNode = ASDisplayNode()
+    private let onlineIndicatorNode = ASImageNode()
+    private static let onlineIndicatorDiameter: CGFloat = 12
+    private static let onlineIndicatorBorderWidth: CGFloat = 2
+    private static let avatarDiameter: CGFloat = 50
+    private static let avatarThumbSize: Int = Int(avatarDiameter * ScreenConstants.scale)
     private let unreadBadgeNode = ASDisplayNode()
     private let unreadCountNode = ASTextNode()
     private let separatorNode = ASDisplayNode()
@@ -25,30 +28,42 @@ class RoomsCellNode: ASCellNode {
 
         automaticallyManagesSubnodes = true
         setupNodes()
+        setupAccessibility()
+    }
+
+    private func updateOnlineIndicatorImage() {
+        onlineIndicatorNode.image = OnlineIndicatorImage.render(
+            diameter: Self.onlineIndicatorDiameter,
+            borderWidth: Self.onlineIndicatorBorderWidth,
+            userInterfaceStyle: view.traitCollection.userInterfaceStyle
+        )
+    }
+
+    /// Flips the indicator alpha without rebuilding the cell.
+    /// Driven by RoomsViewModel.onInPlacePresence on presence change.
+    func updatePresence(isOnline: Bool) {
+        onlineIndicatorNode.alpha = isOnline ? 1 : 0
     }
 
     private func setupNodes() {
-        // Avatar background (colored circle with initials as fallback)
-        avatarBackgroundNode.backgroundColor = chat.avatar.color
-        avatarBackgroundNode.cornerRadius = 25
-        avatarBackgroundNode.borderWidth = 0.5
-        avatarBackgroundNode.borderColor = UIColor.separator.cgColor
-
-        avatarTextNode.attributedText = NSAttributedString(
-            string: chat.avatar.initials,
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 18, weight: .medium),
-                .foregroundColor: UIColor.white
-            ]
-        )
+        // Avatar background (pre-rendered circle with baked initials)
+        avatarBackgroundNode.image = chat.avatar.circleImage(diameter: 50, fontSize: 18)
+        avatarBackgroundNode.isLayerBacked = true
 
         // Avatar image (authenticated media, loaded async)
+        avatarImageNode.cornerRoundingType = .precomposited
         avatarImageNode.cornerRadius = 25
         avatarImageNode.clipsToBounds = true
         avatarImageNode.contentMode = .scaleAspectFill
         avatarImageNode.isLayerBacked = true
-        if chat.avatar.mxcAvatarURL != nil {
-            loadAvatarImage()
+        if let mxc = chat.avatar.mxcAvatarURL {
+            // Synchronous memory hit — safe from Texture's bg thread,
+            // node appears with image immediately, no flash.
+            if let cached = MediaCache.shared.cachedImage(forUrl: mxc, size: Self.avatarThumbSize) {
+                avatarImageNode.image = cached
+            } else {
+                loadAvatarImage()
+            }
         }
 
         // Name
@@ -83,11 +98,12 @@ class RoomsCellNode: ASCellNode {
         )
         timestampNode.maximumNumberOfLines = 1
 
-        // Online indicator
-        onlineIndicatorNode.backgroundColor = UIColor.systemGreen
-        onlineIndicatorNode.cornerRadius = 6
-        onlineIndicatorNode.borderWidth = 2
-        onlineIndicatorNode.borderColor = UIColor.systemBackground.cgColor
+        // Online indicator — pre-rendered UIImage from
+        // OnlineIndicatorImage, set in didLoad when the trait
+        // collection is on main. Layer-backed, no cornerRadius work.
+        onlineIndicatorNode.isLayerBacked = true
+        onlineIndicatorNode.isOpaque = false
+        onlineIndicatorNode.contentMode = .center
 
         // Unread badge
         unreadBadgeNode.backgroundColor = UIColor.systemBlue
@@ -107,30 +123,34 @@ class RoomsCellNode: ASCellNode {
 
     private func loadAvatarImage() {
         guard let mxc = chat.avatar.mxcAvatarURL else { return }
-        Task { @MainActor in
-            guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: 100) else { return }
-            self.avatarImageNode.image = image
+        let size = Self.avatarThumbSize
+        Task { [weak self] in
+            if let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: size) {
+                self?.avatarImageNode.image = image
+                return
+            }
+            // Client may not be ready on first attempt (rooms load
+            // from GRDB cache before SDK session restores).
+            try? await Task.sleep(for: .seconds(1))
+            guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: size) else { return }
+            self?.avatarImageNode.image = image
         }
     }
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
-        // Avatar: colored background with centered initials, image overlaid on top
+        // Avatar: pre-rendered circle background, photo overlaid on top
         avatarBackgroundNode.style.preferredSize = CGSize(width: 50, height: 50)
         avatarImageNode.style.preferredSize = CGSize(width: 50, height: 50)
-        let initials = ASCenterLayoutSpec(centeringOptions: .XY, sizingOptions: .minimumXY, child: avatarTextNode)
-        let withInitials = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: initials)
-        let avatar: ASLayoutSpec = ASOverlayLayoutSpec(child: withInitials, overlay: avatarImageNode)
+        let avatar: ASLayoutSpec = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: avatarImageNode)
 
-        // Avatar with optional online indicator
-        let avatarSection: ASLayoutSpec
-        if chat.isOnline {
-            onlineIndicatorNode.style.preferredSize = CGSize(width: 12, height: 12)
-            onlineIndicatorNode.style.layoutPosition = CGPoint(x: 38, y: 38)
-            avatarSection = ASAbsoluteLayoutSpec(children: [avatar, onlineIndicatorNode])
-            avatarSection.style.preferredSize = CGSize(width: 50, height: 50)
-        } else {
-            avatarSection = ASWrapperLayoutSpec(layoutElement: avatar)
-        }
+        // Always in layout — alpha=0 is compositor-skipped, no
+        // flicker on presence flips.
+        let d = Self.onlineIndicatorDiameter
+        onlineIndicatorNode.style.preferredSize = CGSize(width: d, height: d)
+        onlineIndicatorNode.style.layoutPosition = CGPoint(x: 38, y: 38)
+        onlineIndicatorNode.alpha = chat.isOnline ? 1 : 0
+        let avatarSection = ASAbsoluteLayoutSpec(children: [avatar, onlineIndicatorNode])
+        avatarSection.style.preferredSize = CGSize(width: 50, height: 50)
 
         // Right side: timestamp + optional unread badge
         var rightElements: [ASLayoutElement] = [timestampNode]
@@ -187,6 +207,27 @@ class RoomsCellNode: ASCellNode {
         )
     }
 
+    private func setupAccessibility() {
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+
+        var label = chat.name
+        if !chat.lastMessage.isEmpty {
+            label += ", \(chat.lastMessage)"
+        }
+        if chat.unreadCount > 0 {
+            label += ", \(chat.unreadCount) unread"
+        }
+        if chat.isOnline {
+            label += ", online"
+        }
+        accessibilityLabel = label
+
+        if !chat.timestamp.isEmpty {
+            accessibilityValue = chat.timestamp
+        }
+    }
+
     override func didLoad() {
         super.didLoad()
         backgroundColor = UIColor.systemBackground
@@ -194,5 +235,16 @@ class RoomsCellNode: ASCellNode {
         let highlightedBackground = UIView()
         highlightedBackground.backgroundColor = UIColor.systemGray6
         selectedBackgroundView = highlightedBackground
+
+        updateOnlineIndicatorImage()
+        // Border depends on trait; cells aren't re-created on flip.
+        // didLoad is on main but not @MainActor in the bridge.
+        if #available(iOS 17, *) {
+            MainActor.assumeIsolated {
+                view.registerForTraitChanges([UITraitUserInterfaceStyle.self]) { [weak self] (_: UIView, _) in
+                    self?.updateOnlineIndicatorImage()
+                }
+            }
+        }
     }
 }

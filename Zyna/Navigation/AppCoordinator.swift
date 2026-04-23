@@ -5,11 +5,13 @@
 
 import AsyncDisplayKit
 import SwiftUI
+import Combine
 
 final class AppCoordinator {
 
     weak var window: UIWindow?
     private var mainCoordinator: MainCoordinator?
+    private var cancellables = Set<AnyCancellable>()
 
     func start() {
         if MatrixClientService.shared.hasStoredSession {
@@ -25,7 +27,11 @@ final class AppCoordinator {
     private func showAuth() {
         let viewModel = AuthViewModel()
         viewModel.onAuthenticated = { [weak self] in
-            Task { await self?.showVerificationIfNeeded() }
+            PushService.shared.registerIfNeeded()
+            Task {
+                await self?.showVerificationIfNeeded()
+                await self?.setupVerificationRequestListener()
+            }
         }
         let authView = AuthView(viewModel: viewModel)
         let vc = authView.wrapped()
@@ -36,10 +42,12 @@ final class AppCoordinator {
         Task {
             do {
                 try await MatrixClientService.shared.restoreSession()
+                PushService.shared.registerIfNeeded()
                 await MainActor.run { [weak self] in
                     self?.resumeHeartbeatIfNeeded()
                 }
                 await self.showVerificationIfNeeded(modal: true)
+                await self.setupVerificationRequestListener()
             } catch {
                 await MainActor.run { [weak self] in
                     self?.showAuth()
@@ -49,7 +57,7 @@ final class AppCoordinator {
     }
 
     private func showVerificationIfNeeded(modal: Bool = false) async {
-        let service = SessionVerificationService()
+        let service = SessionVerificationService.shared
         let verified = await service.awaitVerificationState()
         await MainActor.run { [weak self] in
             self?.presentVerification(verified: verified, modal: modal)
@@ -84,6 +92,47 @@ final class AppCoordinator {
         }
     }
 
+    // MARK: - Incoming Verification Requests
+
+    /// Sets up the verification controller and subscribes to incoming
+    /// verification requests from other devices. When a request arrives,
+    /// presents the verification screen in responder mode.
+    private func setupVerificationRequestListener() async {
+        do {
+            try await SessionVerificationService.shared.setup()
+        } catch {
+            return
+        }
+
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+
+            SessionVerificationService.shared.incomingRequestSubject
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] request in
+                    self?.presentResponderVerification(request: request)
+                }
+                .store(in: &self.cancellables)
+        }
+    }
+
+    @MainActor
+    private func presentResponderVerification(request: IncomingVerificationRequest) {
+        // Don't present if already showing a verification screen
+        guard window?.rootViewController?.presentedViewController == nil else { return }
+
+        let viewModel = SessionVerificationViewModel(incomingRequest: request)
+        viewModel.onVerified = { [weak self] in
+            self?.window?.rootViewController?.dismiss(animated: true)
+        }
+        viewModel.onSkipped = { [weak self] in
+            self?.window?.rootViewController?.dismiss(animated: true)
+        }
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        vc.modalPresentationStyle = .fullScreen
+        window?.rootViewController?.present(vc, animated: true)
+    }
+
     private func showMain() {
         let coordinator = MainCoordinator()
         coordinator.onLogout = { [weak self] in
@@ -92,21 +141,17 @@ final class AppCoordinator {
         coordinator.start()
         self.mainCoordinator = coordinator
 
-        if let userId = MatrixClientService.shared.client.flatMap({ try? $0.userId() }) {
-            PresenceService.shared.startHeartbeatLoop(userId: userId)
-        }
+        PresenceTracker.shared.connect()
 
-        guard let tabBar = coordinator.tabBarController as? UIViewController else { return }
-        window?.rootViewController = tabBar
+        window?.rootViewController = coordinator.tabBarController
     }
 
     func resumeHeartbeatIfNeeded() {
-        guard let userId = MatrixClientService.shared.client.flatMap({ try? $0.userId() }) else { return }
-        PresenceService.shared.startHeartbeatLoop(userId: userId)
+        PresenceTracker.shared.connect()
     }
 
     private func performLogout() {
-        PresenceService.shared.stopHeartbeatLoop()
+        PresenceTracker.shared.disconnect()
         Task { @MainActor in
             await MatrixClientService.shared.logout()
             self.mainCoordinator = nil

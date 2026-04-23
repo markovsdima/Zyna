@@ -5,12 +5,11 @@
 
 import AsyncDisplayKit
 
-final class ContactsCellNode: ASCellNode {
+final class ContactsCellNode: ZynaCellNode {
 
     var onCallTapped: (() -> Void)?
 
-    private let avatarBackgroundNode = ASDisplayNode()
-    private let avatarTextNode = ASTextNode()
+    private let avatarBackgroundNode = ASImageNode()
     private let avatarImageNode = ASImageNode()
     private let nameNode = ASTextNode()
     private let userIdNode = ASTextNode()
@@ -26,23 +25,15 @@ final class ContactsCellNode: ASCellNode {
         super.init()
         automaticallyManagesSubnodes = true
         setupNodes()
+        setupAccessibility()
     }
 
     private func setupNodes() {
-        // Avatar
-        avatarBackgroundNode.backgroundColor = model.avatar.color
-        avatarBackgroundNode.cornerRadius = 22
-        avatarBackgroundNode.borderWidth = 0.5
-        avatarBackgroundNode.borderColor = UIColor.separator.cgColor
+        // Avatar background (pre-rendered circle with baked initials)
+        avatarBackgroundNode.image = model.avatar.circleImage(diameter: 44, fontSize: 16)
+        avatarBackgroundNode.isLayerBacked = true
 
-        avatarTextNode.attributedText = NSAttributedString(
-            string: model.avatar.initials,
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 16, weight: .medium),
-                .foregroundColor: UIColor.white
-            ]
-        )
-
+        avatarImageNode.cornerRoundingType = .precomposited
         avatarImageNode.cornerRadius = 22
         avatarImageNode.clipsToBounds = true
         avatarImageNode.contentMode = .scaleAspectFill
@@ -101,15 +92,8 @@ final class ContactsCellNode: ASCellNode {
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
         avatarBackgroundNode.style.preferredSize = CGSize(width: 44, height: 44)
         avatarImageNode.style.preferredSize = CGSize(width: 44, height: 44)
-        let initials = ASCenterLayoutSpec(
-            centeringOptions: .XY, sizingOptions: .minimumXY,
-            child: avatarTextNode
-        )
-        let withInitials = ASOverlayLayoutSpec(
-            child: avatarBackgroundNode, overlay: initials
-        )
         let avatar = ASOverlayLayoutSpec(
-            child: withInitials, overlay: avatarImageNode
+            child: avatarBackgroundNode, overlay: avatarImageNode
         )
 
         let textStack = ASStackLayoutSpec(
@@ -148,6 +132,15 @@ final class ContactsCellNode: ASCellNode {
             alignItems: .stretch,
             children: [contentInset, separatorNode]
         )
+    }
+
+    private func setupAccessibility() {
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        accessibilityLabel = model.displayName
+        accessibilityValue = model.userId
+
+        callButtonNode.accessibilityLabel = "Call \(model.displayName)"
     }
 
     override func didLoad() {

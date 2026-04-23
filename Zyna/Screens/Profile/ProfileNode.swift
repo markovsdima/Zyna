@@ -5,6 +5,38 @@
 
 import AsyncDisplayKit
 
+/// Orders `accessibilityElements` bar-before-content so VoiceOver reads the
+/// glass bar first, regardless of subnode insertion order.
+final class ProfileScreenNode: ScreenNode {
+
+    let content: ProfileNode
+    weak var glassTopBar: ASDisplayNode?
+
+    init(mode: ProfileMode) {
+        self.content = ProfileNode(mode: mode)
+        super.init()
+        automaticallyManagesSubnodes = false
+        addSubnode(content)
+    }
+
+    override func layout() {
+        super.layout()
+        content.frame = bounds
+    }
+
+    override var accessibilityElements: [Any]? {
+        get {
+            var elements: [Any] = []
+            if let bar = glassTopBar?.view, bar.superview === view {
+                elements.append(bar)
+            }
+            elements.append(content.view)
+            return elements
+        }
+        set { }
+    }
+}
+
 final class ProfileNode: ScreenNode {
 
     // MARK: - Callbacks
@@ -68,10 +100,12 @@ final class ProfileNode: ScreenNode {
 
     override func didLoad() {
         super.didLoad()
+        // avatarImageNode renders a pre-rounded image (corners baked
+        // into the bitmap by CircularImageCache), so no cornerRadius
+        // mask here — masks on overlapping circular nodes leak a 1-2px
+        // antialiased ring of the underlying bg through the seam.
         avatarBackgroundNode.cornerRadius = 50
         avatarBackgroundNode.clipsToBounds = true
-        avatarImageNode.cornerRadius = 50
-        avatarImageNode.clipsToBounds = true
         editAvatarOverlayNode.cornerRadius = 50
         editAvatarOverlayNode.clipsToBounds = true
         messageButtonNode.cornerRadius = 12
@@ -104,6 +138,7 @@ final class ProfileNode: ScreenNode {
             loadAvatarImage(mxcUrl: mxc)
         } else {
             avatarImageNode.image = nil
+            setBackgroundVisible(true)
         }
 
         let name = displayName ?? userId
@@ -134,14 +169,38 @@ final class ProfileNode: ScreenNode {
     }
 
     func updateAvatarLocally(image: UIImage) {
-        avatarImageNode.image = image
+        // One-shot local image (just-cropped, before SDK upload). No
+        // stable cache key, so we use a UUID — adds one disposable
+        // entry that LRU will rotate out.
+        avatarImageNode.image = CircularImageCache.roundedImage(
+            source: image, diameter: 100, cacheKey: UUID().uuidString
+        )
+        setBackgroundVisible(false)
     }
 
     private func loadAvatarImage(mxcUrl: String) {
-        Task { @MainActor in
-            guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxcUrl, size: 200) else { return }
-            self.avatarImageNode.image = image
+        // Fetch + circle bake stay off-main. Both UIKit mutations
+        // (image set + bg hide) land in the same main-thread tick so
+        // the bg disappears in the same frame the image appears —
+        // otherwise a single frame can leak the antialiased ring.
+        let pixelSize = Int(100 * ScreenConstants.scale)
+        Task { [weak self] in
+            guard let source = await MediaCache.shared.loadThumbnail(mxcUrl: mxcUrl, size: pixelSize) else { return }
+            let rounded = CircularImageCache.roundedImage(
+                source: source, diameter: 100, cacheKey: mxcUrl
+            )
+            await MainActor.run {
+                self?.avatarImageNode.image = rounded
+                self?.setBackgroundVisible(false)
+            }
         }
+    }
+
+    /// Bg + initials show only when there's no avatar image. Hiding
+    /// (rather than alpha=0) skips the layer from compositing entirely.
+    private func setBackgroundVisible(_ visible: Bool) {
+        avatarBackgroundNode.isHidden = !visible
+        avatarInitialsNode.isHidden = !visible
     }
 
     func updatePresence(_ presence: UserPresence?) {
@@ -150,10 +209,10 @@ final class ProfileNode: ScreenNode {
             let text: String
             let color: UIColor
             if presence.online {
-                text = "online"
+                text = String(localized: "online")
                 color = .systemGreen
             } else if let lastSeen = presence.lastSeen {
-                text = lastSeen.presenceLastSeenString
+                text = lastSeen.presenceLastSeenString(style: .expanded)
                 color = .secondaryLabel
             } else {
                 presenceNode.attributedText = nil
@@ -181,9 +240,9 @@ final class ProfileNode: ScreenNode {
 
     private func setupNodes() {
         avatarBackgroundNode.backgroundColor = .systemGray4
-        avatarImageNode.clipsToBounds = true
         avatarImageNode.contentMode = .scaleAspectFill
         avatarImageNode.isLayerBacked = true
+        avatarImageNode.isOpaque = false
 
         // Edit overlay on avatar
         editAvatarOverlayNode.backgroundColor = UIColor.black.withAlphaComponent(0.4)
@@ -200,7 +259,7 @@ final class ProfileNode: ScreenNode {
 
         // Message button (visible only when onMessageTapped is set)
         messageButtonNode.setAttributedTitle(NSAttributedString(
-            string: "Message",
+            string: String(localized: "Message"),
             attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .semibold), .foregroundColor: UIColor.white]
         ), for: .normal)
         messageButtonNode.backgroundColor = .systemBlue
@@ -214,7 +273,7 @@ final class ProfileNode: ScreenNode {
         )
         searchButtonNode.setImage(searchIcon, for: .normal)
         searchButtonNode.setAttributedTitle(NSAttributedString(
-            string: "  Search Messages",
+            string: "  " + String(localized: "Search Messages"),
             attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
         ), for: .normal)
         searchButtonNode.contentHorizontalAlignment = .middle
@@ -222,7 +281,7 @@ final class ProfileNode: ScreenNode {
 
         // Settings (own only)
         settingsButtonNode.setAttributedTitle(NSAttributedString(
-            string: "Settings",
+            string: String(localized: "Settings"),
             attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
         ), for: .normal)
         settingsButtonNode.contentHorizontalAlignment = .left
@@ -230,7 +289,7 @@ final class ProfileNode: ScreenNode {
 
         // Logout (own only)
         logoutButtonNode.setAttributedTitle(NSAttributedString(
-            string: "Выйти",
+            string: String(localized: "Sign Out"),
             attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .semibold), .foregroundColor: UIColor.white]
         ), for: .normal)
         logoutButtonNode.backgroundColor = .systemRed

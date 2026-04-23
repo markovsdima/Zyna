@@ -22,7 +22,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     var onComposeTapped: (() -> Void)?
 
     override init() {
-        super.init(node: ScreenNode())
+        super.init(node: RoomsScreenNode())
 
         setupTableNode()
         bindViewModel()
@@ -38,39 +38,66 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         tableNode.backgroundColor = UIColor.systemBackground
         node.backgroundColor = UIColor.systemBackground
 
-        node.layoutSpecBlock = { [weak self] _, constrainedSize in
-            guard let self else { return ASLayoutSpec() }
-            return ASWrapperLayoutSpec(layoutElement: self.tableNode)
-        }
+        // Manual subnode management — automaticallyManagesSubnodes
+        // would fight with our manual frame setting in viewDidLayoutSubviews.
+        node.automaticallyManagesSubnodes = false
+        node.addSubnode(tableNode)
     }
 
     private func bindViewModel() {
-        viewModel.$chats
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.tableNode.reloadData()
+        viewModel.onTableUpdate = { [weak self] update in
+            self?.applyTableUpdate(update)
+        }
+
+        viewModel.onInPlacePresence = { [weak self] updates in
+            guard let self else { return }
+            for (indexPath, isOnline) in updates {
+                guard let cell = self.tableNode.nodeForRow(at: indexPath) as? RoomsCellNode else { continue }
+                cell.updatePresence(isOnline: isOnline)
             }
-            .store(in: &cancellables)
+        }
 
         MatrixClientService.shared.stateSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
                 switch state {
                 case .syncing:
-                    self?.title = "Chats"
+                    self?.glassTopBar.subtitle = nil
                 case .error:
-                    self?.title = "Connection error"
+                    self?.glassTopBar.subtitle = "Connection error"
                 default:
-                    self?.title = "Connecting..."
+                    self?.glassTopBar.subtitle = "Connecting..."
                 }
             }
             .store(in: &cancellables)
     }
 
-override func viewWillAppear(_ animated: Bool) {
+    private func applyTableUpdate(_ update: RoomsTableUpdate) {
+        switch update {
+        case .none:
+            break
+        case .reload:
+            tableNode.reloadData()
+        case .batch(let deletions, let insertions, let reloads):
+            tableNode.performBatch(animated: true, updates: {
+                if !deletions.isEmpty {
+                    tableNode.deleteRows(at: deletions, with: .fade)
+                }
+                if !insertions.isEmpty {
+                    tableNode.insertRows(at: insertions, with: .fade)
+                }
+                if !reloads.isEmpty {
+                    tableNode.reloadRows(at: reloads, with: .none)
+                }
+            }, completion: nil)
+        }
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        GlassService.shared.captureFor(duration: 0.5)
         viewModel.registerPresence()
+        GlassService.shared.setNeedsCapture()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -80,19 +107,52 @@ override func viewWillAppear(_ animated: Bool) {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-
-        // UIKit view access — safe in viewDidLoad (main thread, view loaded)
         tableNode.view.separatorStyle = .none
-        let composeButton = UIBarButtonItem(
-            barButtonSystemItem: .compose,
-            target: self,
-            action: #selector(composeButtonTapped)
-        )
-        navigationItem.rightBarButtonItem = composeButton
+        tableNode.view.keyboardDismissMode = .onDrag
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
+        tap.cancelsTouchesInView = false
+        tableNode.view.addGestureRecognizer(tap)
+
+        setupHeaderBar()
     }
 
-    @objc private func composeButtonTapped() {
-        onComposeTapped?()
+    @objc private func dismissKeyboard() {
+        view.endEditing(true)
+    }
+
+    // MARK: - Glass Top Bar
+
+    private let glassTopBar = GlassTopBar()
+
+    private func setupHeaderBar() {
+        glassTopBar.sourceView = tableNode.view
+        glassTopBar.backdropClearColor = .systemBackground
+
+        let composeIcon = AppIcon.compose.rendered(size: 17, weight: .medium, color: AppColor.accent)
+
+        glassTopBar.items = [
+            .title(text: "Chats test", subtitle: nil),
+            .circleButton(icon: composeIcon, accessibilityLabel: "New chat", action: { [weak self] in
+                self?.onComposeTapped?()
+            })
+        ]
+
+        node.addSubnode(glassTopBar)
+        (node as? RoomsScreenNode)?.glassTopBar = glassTopBar
+        (node as? RoomsScreenNode)?.tableNode = tableNode
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        tableNode.frame = node.bounds
+        glassTopBar.updateLayout(in: view)
+
+        let covered = glassTopBar.coveredHeight
+        if tableNode.contentInset.top != covered {
+            tableNode.contentInset.top = covered
+            tableNode.view.verticalScrollIndicatorInsets.top = covered
+        }
     }
 }
 
@@ -117,6 +177,7 @@ extension RoomsViewController: ASTableDataSource, ASTableDelegate {
 
     func tableNode(_ tableNode: ASTableNode, didSelectRowAt indexPath: IndexPath) {
         tableNode.deselectRow(at: indexPath, animated: true)
+        view.endEditing(true)
         viewModel.selectChat(at: indexPath.row)
     }
 }
@@ -137,6 +198,10 @@ extension RoomsViewController {
 // MARK: - 120fps Scroll Boost
 
 extension RoomsViewController {
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        GlassService.shared.setNeedsCapture()
+    }
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if decelerate {
             fpsBooster.start()
@@ -145,5 +210,28 @@ extension RoomsViewController {
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         fpsBooster.stop()
+    }
+}
+
+// MARK: - Screen node with accessibility-friendly element order
+
+/// Glass top bar must be first in the accessibility tree so VoiceOver
+/// hit-tests it before the table cells visually behind it.
+final class RoomsScreenNode: ScreenNode {
+    weak var glassTopBar: ASDisplayNode?
+    weak var tableNode: ASDisplayNode?
+
+    override var accessibilityElements: [Any]? {
+        get {
+            var elements: [Any] = []
+            if let bar = glassTopBar?.view, bar.superview === view {
+                elements.append(bar)
+            }
+            if let table = tableNode?.view {
+                elements.append(table)
+            }
+            return elements
+        }
+        set { }
     }
 }

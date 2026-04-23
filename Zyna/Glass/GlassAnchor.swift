@@ -5,7 +5,7 @@
 
 import UIKit
 
-/// Invisible marker view placed in the main UI hierarchy.
+/// Invisible marker view placed in the regular UI hierarchy.
 /// Defines where a glass effect should appear and its optical parameters.
 ///
 /// Automatically detects when it's being animated (navigation push/pop,
@@ -45,6 +45,29 @@ final class GlassAnchor: UIView {
     /// If nil, falls back to the anchor's window.
     weak var sourceView: UIView?
 
+    /// Common container that should host the shared glass renderer overlay.
+    /// Usually the screen/root view that contains both the content and the bar.
+    weak var renderHostContainerView: UIView?
+
+    /// Debug-only semantic name for probe logs (`nav`, `input`, etc.).
+    var debugName: String = "glass"
+
+    /// Color used to fill the capture buffer before sublayers are
+    /// rendered into it. GlassService renders only `sourceView`'s
+    /// sublayers (an optimization that skips off-screen Texture cells),
+    /// which means the source view's own backgroundColor is never
+    /// drawn — empty regions would otherwise read as black. This color
+    /// stands in for that missing background and should match what the
+    /// user actually sees behind the cells.
+    var backdropClearColor: UIColor = AppColor.chatBackground {
+        didSet { recomputeClearPattern() }
+    }
+
+    /// Pre-resolved BGRA8 pattern for `backdropClearColor`, ready for
+    /// `memset_pattern4` on the capture buffer. Cached so the per-frame
+    /// path skips color resolution. Updated on color or trait changes.
+    private(set) var clearPatternBGRA: UInt32 = 0xFF000000
+
     // MARK: - Registration
 
     private var registration: GlassRegistration?
@@ -55,6 +78,7 @@ final class GlassAnchor: UIView {
         super.init(frame: .zero)
         isUserInteractionEnabled = false
         isHidden = true
+        recomputeClearPattern()
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -65,32 +89,59 @@ final class GlassAnchor: UIView {
         super.didMoveToWindow()
         if window != nil {
             registration = GlassService.shared.register(anchor: self)
+            recomputeClearPattern()
         } else {
             registration = nil
         }
     }
 
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        if traitCollection.userInterfaceStyle != previousTraitCollection?.userInterfaceStyle {
+            recomputeClearPattern()
+            GlassService.shared.setNeedsCapture()
+        }
+    }
+
+    private func recomputeClearPattern() {
+        let resolved = backdropClearColor.resolvedColor(with: traitCollection)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
+        resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let rb = UInt32(max(0, min(1, r)) * 255)
+        let gb = UInt32(max(0, min(1, g)) * 255)
+        let bb = UInt32(max(0, min(1, b)) * 255)
+        // BGRA8 premultiplied, opaque alpha → RGB unmodified.
+        // Byte order in memory is B, G, R, A; on little-endian
+        // ARM64 that packs into a UInt32 as 0xAARRGGBB.
+        clearPatternBGRA = (UInt32(0xFF) << 24) | (rb << 16) | (gb << 8) | bb
+    }
+
     // MARK: - Frame Queries
 
-    /// Frame from presentation layer (in-flight animation state).
+    /// Frame in window coordinates, including any in-flight ancestor
+    /// animation. `CALayer.convert(_:to:)` started from a presentation
+    /// layer already walks ancestor presentation layers, so a plain
+    /// delegation is enough — no manual transform accumulation.
     func presentationFrame() -> CGRect? {
         guard let window else { return nil }
         let currentLayer = layer.presentation() ?? layer
         return currentLayer.convert(currentLayer.bounds, to: window.layer)
     }
 
-    /// Frame from model layer (final/resting state).
-    func modelFrame() -> CGRect? {
-        guard let window else { return nil }
-        return layer.convert(layer.bounds, to: window.layer)
-    }
-
-    /// Whether the anchor is currently being animated (push/pop, keyboard, etc.)
+    /// True if this layer or any ancestor has an active CAAnimation.
+    /// Comparing presentation vs. model frames doesn't work here:
+    /// `convert(_:to:)` walks ancestor presentation layers, so both
+    /// reads return the same animated value and the diff is always
+    /// zero. Walk the chain and check `animationKeys()` directly.
     var isAnimating: Bool {
-        guard let pf = presentationFrame(), let mf = modelFrame() else { return false }
-        return abs(pf.origin.x - mf.origin.x) > 0.5 ||
-               abs(pf.origin.y - mf.origin.y) > 0.5 ||
-               abs(pf.width - mf.width) > 0.5 ||
-               abs(pf.height - mf.height) > 0.5
+        guard let windowLayer = window?.layer else { return false }
+        var current: CALayer? = layer
+        while let l = current, l !== windowLayer {
+            if let keys = l.animationKeys(), !keys.isEmpty {
+                return true
+            }
+            current = l.superlayer
+        }
+        return false
     }
 }

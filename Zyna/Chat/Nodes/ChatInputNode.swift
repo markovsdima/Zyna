@@ -9,9 +9,9 @@ import Combine
 final class ChatInputNode: ASDisplayNode {
 
     let textInputNode = ASEditableTextNode()
-    let sendButtonNode = ASButtonNode()
-    let micButtonNode = ASButtonNode()
-    let attachButtonNode = ASButtonNode()
+    let sendButtonNode = AccessibleButtonNode()
+    let micButtonNode = AccessibleButtonNode()
+    let attachButtonNode = AccessibleButtonNode()
     private let separatorNode = ASDisplayNode()
 
     private let overlayNode = VoiceRecordingOverlayNode()
@@ -41,7 +41,7 @@ final class ChatInputNode: ASDisplayNode {
     private var colorPalette: SendColorPaletteView?
     private var colorPaletteLongPress: UILongPressGestureRecognizer?
     private var pendingFlashTask: DispatchWorkItem?
-    private static let sendButtonDefaultTint: UIColor = .systemBlue
+    private static let sendButtonDefaultTint: UIColor = AppColor.accent
 
     var onSend: ((String, UIColor?) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
@@ -58,6 +58,23 @@ final class ChatInputNode: ASDisplayNode {
     private let replyBodyNode = ASTextNode()
     private let replyCancelNode = ASButtonNode()
     private var isShowingReply = false
+    private var isShowingForward = false
+
+    func setForwardPreview(senderName: String?, body: String?) {
+        let showing = senderName != nil
+        guard showing != isShowingForward else { return }
+        isShowingForward = showing
+        // Reuse reply UI — just change the label
+        if showing {
+            updateReplyText(
+                senderName: "↗ \(senderName ?? "")",
+                body: body
+            )
+        }
+        isShowingReply = showing
+        setNeedsLayout()
+        onSizeChanged?()
+    }
 
     func setReplyPreview(senderName: String?, body: String?) {
         let showing = senderName != nil
@@ -80,7 +97,7 @@ final class ChatInputNode: ASDisplayNode {
             string: senderName ?? "",
             attributes: [
                 .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
-                .foregroundColor: UIColor.systemBlue
+                .foregroundColor: AppColor.accent
             ]
         )
         replyBodyNode.attributedText = NSAttributedString(
@@ -109,11 +126,11 @@ final class ChatInputNode: ASDisplayNode {
         separatorNode.style.height = ASDimension(unit: .points, value: 0)
         separatorNode.backgroundColor = .clear
 
-        replyBackgroundNode.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+        replyBackgroundNode.backgroundColor = AppColor.inputReplyBackground
         replyBackgroundNode.cornerRadius = 20
         replyBackgroundNode.clipsToBounds = true
 
-        replyBarNode.backgroundColor = .systemBlue
+        replyBarNode.backgroundColor = AppColor.accent
         replyBarNode.cornerRadius = 1
         replyBarNode.style.width = ASDimension(unit: .points, value: 2)
         replyNameNode.maximumNumberOfLines = 1
@@ -128,7 +145,7 @@ final class ChatInputNode: ASDisplayNode {
 
         textInputNode.typingAttributes = [
             NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
-            NSAttributedString.Key.foregroundColor.rawValue: UIColor.white
+            NSAttributedString.Key.foregroundColor.rawValue: UIColor.label
         ]
         textInputNode.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
         textInputNode.style.flexGrow = 1
@@ -137,15 +154,26 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.style.maxHeight = ASDimension(unit: .points, value: 220)
         textInputNode.scrollEnabled = false
         textInputNode.backgroundColor = .clear
+        textInputNode.isAccessibilityElement = true
+        textInputNode.accessibilityLabel = "Message"
 
         attachButtonNode.setImage(AppIcon.attach.rendered(size: 24, color: .gray), for: .normal)
         attachButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
+        attachButtonNode.isAccessibilityElement = true
+        attachButtonNode.accessibilityLabel = "Attach"
+        attachButtonNode.accessibilityTraits = .button
 
-        sendButtonNode.setImage(AppIcon.send.rendered(size: 24, weight: .semibold, color: .systemBlue), for: .normal)
+        sendButtonNode.setImage(AppIcon.send.rendered(size: 24, weight: .semibold, color: AppColor.accent), for: .normal)
         sendButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
+        sendButtonNode.isAccessibilityElement = true
+        sendButtonNode.accessibilityLabel = "Send"
+        sendButtonNode.accessibilityTraits = .button
 
         micButtonNode.setImage(AppIcon.mic.rendered(size: 24, color: .gray), for: .normal)
         micButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
+        micButtonNode.isAccessibilityElement = true
+        micButtonNode.accessibilityLabel = "Record voice message"
+        micButtonNode.accessibilityTraits = .button
 
         overlayNode.alpha = 0
         overlayNode.isUserInteractionEnabled = false
@@ -164,6 +192,11 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.view.clipsToBounds = true
         sendButtonNode.addTarget(self, action: #selector(sendTapped), forControlEvents: .touchUpInside)
         attachButtonNode.addTarget(self, action: #selector(attachTapped), forControlEvents: .touchUpInside)
+
+        // Block the navigation back-swipe from this entire area —
+        // the mic long-press and text input both need horizontal
+        // touch freedom.
+        view.disablesInteractiveTransitionGestureRecognizer = true
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleMicGesture(_:)))
         longPress.minimumPressDuration = 0.05
@@ -199,7 +232,8 @@ final class ChatInputNode: ASDisplayNode {
             children: [attachButtonNode]
         )
 
-        let rightButton = isTextEmpty ? micButtonNode : sendButtonNode
+        let showSend = !isTextEmpty || isShowingForward
+        let rightButton = showSend ? sendButtonNode : micButtonNode
         let rightSpec = ASStackLayoutSpec(
             direction: .vertical, spacing: 0, justifyContent: .end, alignItems: .center,
             children: [rightButton]
@@ -420,7 +454,7 @@ final class ChatInputNode: ASDisplayNode {
             y: micCenter.y - size / 2,
             width: size, height: size
         ))
-        pulse.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.25)
+        pulse.backgroundColor = AppColor.accent.withAlphaComponent(0.25)
         pulse.layer.cornerRadius = size / 2
         pulse.alpha = 0
         view.addSubview(pulse)
@@ -556,9 +590,15 @@ final class ChatInputNode: ASDisplayNode {
 
     private func sendCurrentText(color: UIColor?) {
         let text = textInputNode.textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        // Allow empty text when forwarding — the content comes from
+        // the forwarded message, not the text field.
+        guard !text.isEmpty || isShowingForward else { return }
         onSend?(text, color)
         textInputNode.textView.text = ""
+        if isShowingForward {
+            isShowingForward = false
+            isShowingReply = false
+        }
         updateTextEmptyState()
         setNeedsLayout()
         onSizeChanged?()

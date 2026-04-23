@@ -7,7 +7,13 @@ import AsyncDisplayKit
 
 /// Base class for all message cell nodes.
 /// Handles context menu protocol, sender name, bubble styling, and the outer layout.
-class MessageCellNode: ASCellNode, ContextMenuCellNode {
+class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
+
+    private static let portalFallbackBackgroundEnabled = false
+
+    /// Matches a single-line text bubble
+    fileprivate static let avatarDiameter: CGFloat = 32
+    fileprivate static let avatarThumbSize: Int = Int(avatarDiameter * ScreenConstants.scale)
 
     // MARK: - Context Menu
 
@@ -32,31 +38,79 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
 
     var onReactionTapped: ((String) -> Void)?
 
+    // MARK: - Sender
+
+    /// Fires with the sender's Matrix user ID on tap of the name or avatar.
+    var onSenderTapped: ((String) -> Void)?
+
     // MARK: - Reply
 
     var onReplyHeaderTapped: ((String) -> Void)?
     private(set) var replyHeaderNode: ReplyHeaderNode?
+    private(set) var forwardedHeaderNode: ASTextNode?
+
 
     // MARK: - Subnodes
 
-    let bubbleNode = ASDisplayNode()
+    let bubbleNode = RoundedBackgroundNode()
+    private let bubbleBackgroundNode = RoundedBackgroundNode()
+    private let bubblePortalBackgroundNode = BubblePortalBackgroundNode()
+    let directBubbleContentNode = ASDisplayNode()
+    private let bubbleWrapperNode = ASDisplayNode()
     let contextSourceNode: ContextSourceNode
     let timeNode = ASTextNode()
     let statusIconNode: MessageStatusIconNode?
     let senderNameNode = ASTextNode()
     private(set) var reactionsNode: ReactionsNode?
+    private let avatarBackgroundNode = ASImageNode()
+    private let avatarImageNode = ASImageNode()
+
+    // MARK: - Gradient bubble
+
+    /// Shared source host resolved by `ChatNode` on the main thread.
+    /// The bubble background mirrors this source through a thin portal
+    /// node; nil means the bubble falls back to its solid fill color.
+    weak var bubbleGradientSource: PortalSourceView? {
+        didSet {
+            applyBubbleChrome()
+            bubblePortalBackgroundNode.sourceView = usesBubblePortal ? bubbleGradientSource : nil
+        }
+    }
+    private let bubbleBaseFillColor: UIColor
 
     // MARK: - State
 
     let isOutgoing: Bool
+    let messageId: String
     let showSenderName: Bool
+    /// Left-gutter slot is reserved (incoming + group); image
+    /// visibility then depends on isLastInCluster.
+    let reservesAvatarGutter: Bool
+    private let senderId: String
+    private let isFirstInCluster: Bool
+    private var isLastInCluster: Bool
+    let usesAccentBubbleStyle: Bool
+    private var showsBubbleChrome = true
+    private var usesBareBubbleContent = false
 
     // MARK: - Init
 
     init(message: ChatMessage, isGroupChat: Bool = false) {
         self.isOutgoing = message.isOutgoing
-        self.showSenderName = !message.isOutgoing && isGroupChat
-        self.contextSourceNode = ContextSourceNode(contentNode: bubbleNode)
+        self.messageId = message.id
+        self.showSenderName = !message.isOutgoing && isGroupChat && message.isFirstInCluster
+        self.reservesAvatarGutter = !message.isOutgoing && isGroupChat
+        self.senderId = message.senderId
+        self.isFirstInCluster = message.isFirstInCluster
+        self.isLastInCluster = message.isLastInCluster
+        let customColor = message.zynaAttributes.color
+        let usesAccentBubbleStyle = message.isOutgoing || customColor != nil
+        self.usesAccentBubbleStyle = usesAccentBubbleStyle
+        let defaultFill = customColor
+            ?? (message.isOutgoing ? AppColor.bubbleBackgroundOutgoing
+                                   : AppColor.bubbleBackgroundIncoming)
+        self.bubbleBaseFillColor = defaultFill
+        self.contextSourceNode = ContextSourceNode(contentNode: bubbleWrapperNode)
 
         // Status icon only on the sender's own bubbles. For incoming
         // messages it carries no information and would just clutter.
@@ -64,12 +118,18 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
            let iconState = MessageStatusIcon.from(sendStatus: message.sendStatus) {
             let node = MessageStatusIconNode()
             node.icon = iconState
-            node.tintColour = UIColor.white.withAlphaComponent(0.7)
+            node.tintColour = usesAccentBubbleStyle
+                ? AppColor.bubbleTimestampOutgoing
+                : AppColor.bubbleTimestampIncoming
             self.statusIconNode = node
         } else {
             self.statusIconNode = nil
         }
         super.init()
+
+        isAccessibilityElement = true
+        accessibilityTraits = .staticText
+        accessibilityLabel = Self.makeAccessibilityLabel(for: message)
 
         contextSourceNode.activated = { [weak self] _ in
             self?.onContextMenuActivated?()
@@ -77,24 +137,49 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
 
         automaticallyManagesSubnodes = true
         selectionStyle = .none
+        // ASCellNode is wrapped in a UITableViewCell whose default
+        // backgroundColor (.systemBackground) would otherwise occlude
+        // the table's own background and break glass backdrop sampling.
+        backgroundColor = .clear
 
-        // Bubble defaults — custom color from Zyna attributes wins if set.
-        let customColor = message.zynaAttributes.color
-        bubbleNode.backgroundColor = customColor
-            ?? (isOutgoing ? .systemBlue : .systemGray5)
-        bubbleNode.cornerRadius = 18
-        bubbleNode.clipsToBounds = true
+        bubbleNode.radius = 14
+        bubbleNode.fillColor = .clear
         bubbleNode.automaticallyManagesSubnodes = true
+        directBubbleContentNode.automaticallyManagesSubnodes = true
+        directBubbleContentNode.isHidden = true
+        bubbleBackgroundNode.radius = 14
+        bubbleBackgroundNode.isUserInteractionEnabled = false
+        bubblePortalBackgroundNode.isUserInteractionEnabled = false
+        bubbleWrapperNode.addSubnode(bubbleBackgroundNode)
+        bubbleWrapperNode.addSubnode(bubblePortalBackgroundNode)
+        bubbleWrapperNode.addSubnode(bubbleNode)
+        bubbleWrapperNode.addSubnode(directBubbleContentNode)
+        bubbleWrapperNode.layoutSpecBlock = { [weak self] _, _ in
+            guard let self else { return ASLayoutSpec() }
+            if self.usesBareBubbleContent {
+                return ASWrapperLayoutSpec(layoutElement: self.directBubbleContentNode)
+            }
+            guard self.showsBubbleChrome else {
+                return ASWrapperLayoutSpec(layoutElement: self.bubbleNode)
+            }
+            let layeredBackground = ASOverlayLayoutSpec(
+                child: self.bubbleBackgroundNode,
+                overlay: self.bubblePortalBackgroundNode
+            )
+            return ASBackgroundLayoutSpec(
+                child: self.bubbleNode,
+                background: layeredBackground
+            )
+        }
+        applyBubbleChrome()
 
         // Timestamp (default colors — override in subclass if needed)
         timeNode.attributedText = NSAttributedString(
-            string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 11),
-                .foregroundColor: isOutgoing
-                    ? UIColor.white.withAlphaComponent(0.7)
-                    : UIColor.secondaryLabel
-            ]
+                string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 11),
+                    .foregroundColor: bubbleTimestampColor
+                ]
         )
 
         // Sender name
@@ -107,11 +192,88 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
                     .foregroundColor: MessageCellHelpers.senderColors[colorIndex]
                 ]
             )
+            senderNameNode.onDidLoad { [weak self] node in
+                node.view.isUserInteractionEnabled = true
+                let tap = UITapGestureRecognizer(
+                    target: self,
+                    action: #selector(MessageCellNode.handleSenderTap)
+                )
+                node.view.addGestureRecognizer(tap)
+            }
+        }
+
+        if reservesAvatarGutter {
+            let avatarModel = AvatarViewModel(
+                userId: message.senderId,
+                displayName: message.senderDisplayName,
+                mxcAvatarURL: message.senderAvatarUrl
+            )
+            avatarBackgroundNode.image = avatarModel.circleImage(
+                diameter: Self.avatarDiameter, fontSize: 13
+            )
+            avatarBackgroundNode.isOpaque = false
+            avatarBackgroundNode.backgroundColor = .clear
+            // Image comes in already-rounded from CircularImageCache,
+            // so the node does no corner work. Layer-only so taps fall
+            // through to the background node which owns the gesture.
+            avatarImageNode.isOpaque = false
+            avatarImageNode.backgroundColor = .clear
+            avatarImageNode.contentMode = .scaleAspectFill
+            avatarImageNode.isLayerBacked = true
+
+            let visible = isLastInCluster
+            avatarBackgroundNode.alpha = visible ? 1 : 0
+            avatarImageNode.alpha = visible ? 1 : 0
+
+            if let mxc = message.senderAvatarUrl {
+                let diameter = Self.avatarDiameter
+                if let source = MediaCache.shared.cachedImage(forUrl: mxc, size: Self.avatarThumbSize) {
+                    avatarImageNode.image = CircularImageCache.roundedImage(
+                        source: source, diameter: diameter, cacheKey: mxc
+                    )
+                } else {
+                    // Don't annotate this Task @MainActor. A single
+                    // render is cheap but bursts of new avatars on
+                    // scroll pile up and drop frames. Everything
+                    // touched here is thread-safe:
+                    // UIGraphicsImageRenderer, NSCache, ASImageNode.image.
+                    Task { [weak self] in
+                        guard let source = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: Self.avatarThumbSize) else { return }
+                        let rounded = CircularImageCache.roundedImage(
+                            source: source, diameter: diameter, cacheKey: mxc
+                        )
+                        self?.avatarImageNode.image = rounded
+                    }
+                }
+            }
+
+            avatarBackgroundNode.onDidLoad { [weak self] node in
+                node.view.isUserInteractionEnabled = true
+                let tap = UITapGestureRecognizer(
+                    target: self,
+                    action: #selector(MessageCellNode.handleSenderTap)
+                )
+                node.view.addGestureRecognizer(tap)
+            }
+        }
+
+        // Forwarded header
+        if let forwarderName = message.zynaAttributes.forwardedFrom {
+            let node = ASTextNode()
+            node.attributedText = NSAttributedString(
+                string: "↗ " + String(localized: "Forwarded from \(forwarderName)"),
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: bubbleTimestampColor
+                ]
+            )
+            node.maximumNumberOfLines = 1
+            self.forwardedHeaderNode = node
         }
 
         // Reply header
         if let replyInfo = message.replyInfo {
-            let rh = ReplyHeaderNode(replyInfo: replyInfo, isOutgoing: isOutgoing)
+            let rh = ReplyHeaderNode(replyInfo: replyInfo, usesAccentStyle: usesAccentBubbleStyle)
             self.replyHeaderNode = rh
 
             // Handle quick taps on reply header via ContextSourceNode
@@ -125,22 +287,128 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
             }
         }
 
-        // Reactions
         if !message.reactions.isEmpty {
-            let rNode = ReactionsNode(reactions: message.reactions)
-            rNode.onReactionTapped = { [weak self] key in
-                self?.onReactionTapped?(key)
-            }
-            rNode.style.maxWidth = ASDimension(
-                unit: .points,
-                value: ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
-            )
-            self.reactionsNode = rNode
+            self.reactionsNode = makeReactionsNode(message.reactions)
         }
+    }
+
+    private static func makeAccessibilityLabel(for message: ChatMessage) -> String {
+        var parts: [String] = []
+        if let sender = message.senderDisplayName, !message.isOutgoing {
+            parts.append(sender)
+        }
+        parts.append(message.content.textPreview)
+        parts.append(MessageCellHelpers.timeFormatter.string(from: message.timestamp))
+        if let reactionsText = reactionCountAccessibilityText(for: message.reactions) {
+            parts.append(reactionsText)
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private static func reactionCountAccessibilityText(for reactions: [MessageReaction]) -> String? {
+        let totalCount = reactions.reduce(0) { $0 + $1.count }
+        guard totalCount > 0 else { return nil }
+        return String(localized: "\(totalCount) reactions")
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    override func didLoad() {
+        super.didLoad()
+        assignProbeLayerNames()
+    }
+
+    @objc private func handleSenderTap() {
+        onSenderTapped?(senderId)
+    }
+
+    private func makeReactionsNode(_ reactions: [MessageReaction]) -> ReactionsNode {
+        let node = ReactionsNode(reactions: reactions)
+        node.onReactionTapped = { [weak self] key in
+            self?.onReactionTapped?(key)
+        }
+        node.style.maxWidth = ASDimension(
+            unit: .points,
+            value: ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
+        )
+        return node
+    }
+
+    private var usesFallbackBubbleBackground: Bool {
+        return usesBubblePortal && Self.portalFallbackBackgroundEnabled
+    }
+
+    private func applyBubbleChrome() {
+        directBubbleContentNode.isHidden = !usesBareBubbleContent
+        bubbleNode.isHidden = usesBareBubbleContent
+
+        guard !usesBareBubbleContent else {
+            bubbleBackgroundNode.fillColor = .clear
+            bubbleBackgroundNode.isHidden = true
+            bubblePortalBackgroundNode.isHidden = true
+            bubblePortalBackgroundNode.sourceView = nil
+            bubbleNode.fillColor = .clear
+            return
+        }
+
+        bubbleNode.radius = 14
+        bubbleBackgroundNode.radius = bubbleNode.radius
+        bubblePortalBackgroundNode.radius = bubbleNode.radius
+        bubbleNode.roundedCorners = .allCorners
+        bubbleBackgroundNode.roundedCorners = bubbleNode.roundedCorners
+        bubblePortalBackgroundNode.roundedCorners = bubbleNode.roundedCorners
+
+        guard showsBubbleChrome else {
+            bubbleBackgroundNode.fillColor = .clear
+            bubbleBackgroundNode.isHidden = true
+            bubblePortalBackgroundNode.isHidden = true
+            bubblePortalBackgroundNode.sourceView = nil
+            bubbleNode.fillColor = .clear
+            return
+        }
+
+        bubbleBackgroundNode.isHidden = usesBubblePortal && !usesFallbackBubbleBackground
+        bubblePortalBackgroundNode.isHidden = !usesBubblePortal
+
+        if usesBubblePortal {
+            bubbleBackgroundNode.fillColor = usesFallbackBubbleBackground ? bubbleBaseFillColor : .clear
+            bubbleNode.fillColor = .clear
+        } else {
+            bubbleBackgroundNode.fillColor = .clear
+            bubbleNode.fillColor = bubbleBaseFillColor
+        }
+    }
+
+    private var usesBubblePortal: Bool {
+        showsBubbleChrome && bubbleGradientSource != nil
+    }
+
+    func setShowsBubbleChrome(_ enabled: Bool) {
+        guard showsBubbleChrome != enabled else { return }
+        showsBubbleChrome = enabled
+        applyBubbleChrome()
+        bubbleWrapperNode.setNeedsLayout()
+        contextSourceNode.setNeedsLayout()
+        setNeedsLayout()
+    }
+
+    func setUsesBareBubbleContent(_ enabled: Bool) {
+        guard usesBareBubbleContent != enabled else { return }
+        usesBareBubbleContent = enabled
+        applyBubbleChrome()
+        bubbleWrapperNode.setNeedsLayout()
+        contextSourceNode.setNeedsLayout()
+        setNeedsLayout()
+    }
+
+    var bubbleForegroundColor: UIColor {
+        usesAccentBubbleStyle ? AppColor.bubbleForegroundOutgoing : AppColor.bubbleForegroundIncoming
+    }
+
+    var bubbleTimestampColor: UIColor {
+        usesAccentBubbleStyle ? AppColor.bubbleTimestampOutgoing : AppColor.bubbleTimestampIncoming
+    }
 
     // MARK: - Layout
 
@@ -178,21 +446,94 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
         let hStack = ASStackLayoutSpec.horizontal()
         hStack.spacing = 4
         hStack.alignItems = .start
-        hStack.children = isOutgoing
-            ? [spacer, column]
-            : [column, spacer]
 
-        return ASInsetLayoutSpec(insets: MessageCellHelpers.cellInsets, child: hStack)
+        if isOutgoing {
+            hStack.children = [spacer, column]
+        } else if reservesAvatarGutter {
+            hStack.children = [buildAvatarSlot(), column, spacer]
+        } else {
+            hStack.children = [column, spacer]
+        }
+
+        // Only top is cluster-aware; bottom stays fixed so cell
+        // height doesn't jump when isLastInCluster flips in place.
+        var insets = MessageCellHelpers.cellInsets
+        if isFirstInCluster {
+            insets.top = MessageCellHelpers.clusterBreakTopInset
+        }
+        return ASInsetLayoutSpec(insets: insets, child: hStack)
+    }
+
+    /// Fixed-width slot; the avatar image is hidden via alpha on
+    /// non-last bubbles so the whole cluster stays horizontally aligned.
+    private func buildAvatarSlot() -> ASLayoutElement {
+        let overlay = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: avatarImageNode)
+        overlay.style.preferredSize = CGSize(width: Self.avatarDiameter, height: Self.avatarDiameter)
+        // Anchored to the bottom so the avatar sits by the last bubble
+        // of the cluster, not the first.
+        overlay.style.alignSelf = .end
+        return overlay
+    }
+
+    // MARK: - In-Place Update
+
+    /// Returns true if the change between old and new can be applied
+    /// without recreating the cell (send-status, cluster-membership,
+    /// or reactions change — all are lightweight).
+    static func canUpdateInPlace(old: ChatMessage, new: ChatMessage) -> Bool {
+        old.id == new.id
+            && old.content == new.content
+            && old.zynaAttributes == new.zynaAttributes
+            && old.replyInfo == new.replyInfo
+            && old.senderDisplayName == new.senderDisplayName
+            && old.senderAvatarUrl == new.senderAvatarUrl
+    }
+
+    /// Update send-status icon without recreating the cell.
+    func updateSendStatus(_ status: String) {
+        guard let iconNode = statusIconNode,
+              let newIcon = MessageStatusIcon.from(sendStatus: status)
+        else { return }
+        iconNode.icon = newIcon
+    }
+
+    /// Alpha-toggles the avatar when a new same-sender message pushes
+    /// this cell out of the "last in cluster" slot. Layout is stable,
+    /// and alpha=0 layers are compositor-skipped — hiding is free.
+    func updateClusterMembership(isLastInCluster: Bool) {
+        guard reservesAvatarGutter, self.isLastInCluster != isLastInCluster else { return }
+        self.isLastInCluster = isLastInCluster
+        let alpha: CGFloat = isLastInCluster ? 1 : 0
+        avatarBackgroundNode.alpha = alpha
+        avatarImageNode.alpha = alpha
+    }
+
+    func updateReactions(_ reactions: [MessageReaction]) {
+        switch (reactionsNode, reactions.isEmpty) {
+        case let (node?, false):
+            node.update(reactions: reactions)
+        case (.none, false):
+            reactionsNode = makeReactionsNode(reactions)
+        case (.some, true):
+            reactionsNode = nil
+        case (.none, true):
+            return
+        }
+        setNeedsLayout()
+    }
+
+    func updateAccessibilityMessage(_ message: ChatMessage) {
+        accessibilityLabel = Self.makeAccessibilityLabel(for: message)
     }
 
     // MARK: - Highlight
 
     func highlightBubble() {
         guard isNodeLoaded else { return }
-        let highlight = CALayer()
+        let highlight = CAShapeLayer()
         highlight.frame = bubbleNode.bounds
-        highlight.cornerRadius = bubbleNode.cornerRadius
-        highlight.backgroundColor = (isOutgoing ? UIColor.white : UIColor.label)
+        highlight.path = bubbleNode.currentPath().cgPath
+        highlight.fillColor = bubbleForegroundColor
             .withAlphaComponent(0.3).cgColor
         highlight.opacity = 0
         bubbleNode.layer.addSublayer(highlight)
@@ -222,5 +563,38 @@ class MessageCellNode: ASCellNode, ContextMenuCellNode {
 
     func restoreBubbleFromMenu() {
         contextSourceNode.restoreContentFromMenu()
+    }
+
+    func assignProbeName(_ name: String, to node: ASDisplayNode) {
+        if node.isNodeLoaded {
+            node.layer.name = name
+        } else {
+            node.onDidLoad { loadedNode in
+                loadedNode.layer.name = name
+            }
+        }
+    }
+
+    fileprivate func assignProbeLayerNames() {
+        assignProbeName("message.contextSource", to: contextSourceNode)
+        assignProbeName("message.bubbleWrapper", to: bubbleWrapperNode)
+        assignProbeName("message.bubbleFallbackBackground", to: bubbleBackgroundNode)
+        assignProbeName("message.bubblePortalBackground", to: bubblePortalBackgroundNode)
+        assignProbeName("message.bubbleNode", to: bubbleNode)
+        assignProbeName("message.directBubbleContent", to: directBubbleContentNode)
+        assignProbeName("message.timeNode", to: timeNode)
+        assignProbeName("message.senderName", to: senderNameNode)
+        assignProbeName("message.avatarBackground", to: avatarBackgroundNode)
+        assignProbeName("message.avatarImage", to: avatarImageNode)
+
+        if let reactionsNode {
+            assignProbeName("message.reactions", to: reactionsNode)
+        }
+        if let replyHeaderNode {
+            assignProbeName("message.replyHeader", to: replyHeaderNode)
+        }
+        if let forwardedHeaderNode {
+            assignProbeName("message.forwardedHeader", to: forwardedHeaderNode)
+        }
     }
 }

@@ -34,16 +34,8 @@ enum WebRTCAudioConfig {
         optionalConstraints: nil
     )
 
-    /// STUN servers (Google public). Sufficient for most P2P connections.
-    static let iceServers: [RTCIceServer] = [
-        RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"]),
-        RTCIceServer(urlStrings: ["stun:stun1.l.google.com:19302"]),
-        RTCIceServer(urlStrings: ["stun:stun2.l.google.com:19302"]),
-        RTCIceServer(urlStrings: ["stun:stun3.l.google.com:19302"])
-    ]
-
-    /// RTCConfiguration for peer connections.
-    static func peerConnectionConfig() -> RTCConfiguration {
+    /// RTCConfiguration for peer connections with TURN credentials from the homeserver.
+    static func peerConnectionConfig(iceServers: [RTCIceServer]) -> RTCConfiguration {
         let config = RTCConfiguration()
         config.iceServers = iceServers
         config.bundlePolicy = .maxBundle

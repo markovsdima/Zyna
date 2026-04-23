@@ -9,22 +9,23 @@ import Foundation
 enum DynamicAction {
 
     /// Resolves a selector from a mapped byte array.
-    /// - Parameters:
-    ///   - bytes: Encoded ASCII bytes.
-    ///   - mask: Byte mask applied to each element.
-    /// - Returns: The resolved `Selector`, or `nil` if
-    ///   decoding produces invalid UTF-8.
     static func resolve(
         bytes: [UInt8],
         mask: UInt8
     ) -> Selector? {
+        resolveString(bytes: bytes, mask: mask).map(NSSelectorFromString)
+    }
+
+    /// Decodes a masked byte array into a plain `String`.
+    /// Used for KVC keys that aren't selectors.
+    static func resolveString(
+        bytes: [UInt8],
+        mask: UInt8
+    ) -> String? {
         var decoded = [UInt8](repeating: 0, count: bytes.count)
         for i in bytes.indices {
             decoded[i] = bytes[i] ^ mask
         }
-        guard let name = String(bytes: decoded, encoding: .utf8) else {
-            return nil
-        }
-        return NSSelectorFromString(name)
+        return String(bytes: decoded, encoding: .utf8)
     }
 }

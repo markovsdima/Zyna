@@ -40,7 +40,12 @@ final class ZynaRoomListService: NSObject {
     private var isListening = false
 
     func room(for id: String) -> Room? {
-        rooms.first { $0.id() == id }
+        if let cached = rooms.first(where: { $0.id() == id }) {
+            return cached
+        }
+        // Rooms from GRDB cache may be visible before the SDK room
+        // list populates. Fall back to the client directly.
+        return try? MatrixClientService.shared.client?.getRoom(roomId: id)
     }
     private var cancellables = Set<AnyCancellable>()
 
@@ -228,15 +233,27 @@ final class ZynaRoomListService: NSObject {
 
     // MARK: - Last Message Extraction
 
-    private static func extractLastMessage(from event: EventTimelineItem?) -> (String?, Date?) {
-        guard let event else { return (nil, nil) }
+    private static func extractLastMessage(from value: LatestEventValue) -> (String?, Date?) {
+        let timestamp: Date
+        let content: TimelineItemContent
 
-        let timestamp = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
+        switch value {
+        case .none:
+            return (nil, nil)
+        case .remote(let ts, _, _, _, let c):
+            timestamp = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
+            content = c
+        case .local(let ts, _, _, let c, _):
+            timestamp = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
+            content = c
+        case .remoteInvite(let ts, _, _):
+            return (nil, Date(timeIntervalSince1970: TimeInterval(ts) / 1000))
+        }
 
-        guard case .msgLike(let content) = event.content else { return (nil, nil) }
+        guard case .msgLike(let msgContent) = content else { return (nil, timestamp) }
 
         let text: String
-        switch content.kind {
+        switch msgContent.kind {
         case .message(let message):
             text = textForMessageType(message.msgType)
         case .sticker:
@@ -248,6 +265,8 @@ final class ZynaRoomListService: NSObject {
         case .unableToDecrypt:
             text = "Encrypted message"
         case .other:
+            return (nil, timestamp)
+        @unknown default:
             return (nil, timestamp)
         }
 

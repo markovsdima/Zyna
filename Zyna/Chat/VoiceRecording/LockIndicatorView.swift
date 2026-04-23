@@ -70,7 +70,7 @@ final class LockIndicatorView: UIView {
 
     /// Animate the "snap to locked" effect and disappear.
     func snapAndDismiss(completion: @escaping () -> Void) {
-        lockImageView.image = AppIcon.lockClosed.rendered(size: 20, color: .systemBlue)
+        lockImageView.image = AppIcon.lockClosed.rendered(size: 20, color: AppColor.accent)
 
         UIView.animate(withDuration: 0.15, animations: {
             self.transform = CGAffineTransform(scaleX: 1.3, y: 1.3)

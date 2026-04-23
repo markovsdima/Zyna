@@ -48,7 +48,7 @@ final class ContactsViewController: ASDKViewController<ASDisplayNode> {
     private func setupSearch() {
         searchController.searchResultsUpdater = self
         searchController.obscuresBackgroundDuringPresentation = false
-        searchController.searchBar.placeholder = "Search employees"
+        searchController.searchBar.placeholder = String(localized: "Search employees")
         definesPresentationContext = true
     }
 

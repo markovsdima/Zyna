@@ -370,4 +370,22 @@ final class CallService {
             logCall("Failed to deactivate audio session: \(error)")
         }
     }
+
+    // MARK: - Mute
+
+    func setMuted(_ muted: Bool) {
+        webRTCClient.setMuted(muted)
+    }
+
+    // MARK: - Speaker
+
+    func setSpeaker(enabled: Bool) {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.overrideOutputAudioPort(enabled ? .speaker : .none)
+            logCall("Speaker \(enabled ? "enabled" : "disabled")")
+        } catch {
+            logCall("Failed to set speaker: \(error)")
+        }
+    }
 }

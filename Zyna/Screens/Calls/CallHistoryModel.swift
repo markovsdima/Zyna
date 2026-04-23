@@ -5,7 +5,7 @@
 
 import UIKit
 
-struct CallHistoryModel {
+struct CallHistoryModel: Equatable {
     let callId: String
     let roomId: String
     let roomName: String
