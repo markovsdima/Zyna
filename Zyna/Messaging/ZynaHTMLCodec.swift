@@ -70,6 +70,7 @@ enum ZynaHTMLCodec {
         static let color = "color"
         static let checklist = "checklist"
         static let callSignal = "call"
+        static let forwardedFrom = "fwd"
     }
 
     private static func buildJSON(from attrs: ZynaMessageAttributes) -> String? {
@@ -90,6 +91,10 @@ enum ZynaHTMLCodec {
                 "type": signal.type,
                 "payload": signal.payload
             ] as [String: Any]
+        }
+
+        if let fwd = attrs.forwardedFrom {
+            obj[JSONKey.forwardedFrom] = fwd
         }
 
         guard let data = try? JSONSerialization.data(
@@ -117,6 +122,10 @@ enum ZynaHTMLCodec {
            let type = s["type"] as? String,
            let payload = s["payload"] as? String {
             result.callSignal = CallSignalData(type: type, payload: payload)
+        }
+
+        if let fwd = obj[JSONKey.forwardedFrom] as? String {
+            result.forwardedFrom = fwd
         }
 
         return result

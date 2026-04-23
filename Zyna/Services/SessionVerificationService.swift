@@ -13,11 +13,14 @@ enum VerificationStep: Equatable {
     case initial
     case requestingVerification
     case waitingForAcceptance
+    case acceptingRequest // responder: user tapped Accept, calling SDK
     case showingEmojis([SessionVerificationEmoji])
     case generatingRecoveryKey
     case showingRecoveryKey(String)
     case enteringRecoveryKey
     case restoringFromRecoveryKey
+    case waitingForSecrets // waiting for secret gossiping after SAS
+    case needsRecoveryKey  // after emoji verification, recovery still incomplete
     case verified
     case cancelled
     case failed
@@ -27,9 +30,12 @@ enum VerificationStep: Equatable {
         case (.initial, .initial),
              (.requestingVerification, .requestingVerification),
              (.waitingForAcceptance, .waitingForAcceptance),
+             (.acceptingRequest, .acceptingRequest),
              (.generatingRecoveryKey, .generatingRecoveryKey),
              (.enteringRecoveryKey, .enteringRecoveryKey),
              (.restoringFromRecoveryKey, .restoringFromRecoveryKey),
+             (.waitingForSecrets, .waitingForSecrets),
+             (.needsRecoveryKey, .needsRecoveryKey),
              (.verified, .verified),
              (.cancelled, .cancelled),
              (.failed, .failed):
@@ -44,16 +50,37 @@ enum VerificationStep: Equatable {
     }
 }
 
+// MARK: - Incoming Verification Request
+
+struct IncomingVerificationRequest {
+    let senderId: String
+    let flowId: String
+    let deviceId: String
+    let deviceDisplayName: String?
+}
+
 private let logVerify = ScopedLog(.auth)
 
 // MARK: - Session Verification Service
 
 final class SessionVerificationService {
 
+    static let shared = SessionVerificationService()
+
     let stepSubject = CurrentValueSubject<VerificationStep, Never>(.initial)
+
+    /// Fires when another device sends a verification request to this device.
+    let incomingRequestSubject = PassthroughSubject<IncomingVerificationRequest, Never>()
 
     private let matrixService = MatrixClientService.shared
     private var controller: SessionVerificationController?
+    private var delegate: VerificationDelegate?
+    private var isControllerReady = false
+    /// True when this device initiated the verification request.
+    /// Only the initiator calls startSasVerification() after acceptance.
+    private(set) var isInitiator = false
+
+    private init() {}
 
     // MARK: - Local Cross-Signing Secrets Flag
     //
@@ -101,10 +128,11 @@ final class SessionVerificationService {
     // MARK: - State Check
 
     /// Decides whether to skip the verification screen on launch.
-    /// Returns true if `hasLocalSecrets` is set, or if the SDK
-    /// reports `.verified` on `verificationState` within `timeout`
-    /// (cross-device SAS path). Defaults to false on timeout — the
-    /// safe choice is to show the screen.
+    ///
+    /// On single-device accounts `verificationState` never becomes
+    /// `.verified` (no other device to verify against), so we also
+    /// trust the `hasLocalSecrets` flag. The flag is cleared on
+    /// login, so a fresh login always shows the verification screen.
     func awaitVerificationState(timeout: TimeInterval = 3.0) async -> Bool {
         if hasLocalSecrets {
             logVerify("awaitVerificationState: positive (local secrets flag)")
@@ -155,13 +183,11 @@ final class SessionVerificationService {
         return try await client.encryption().isLastDevice()
     }
 
-    /// Bootstrap cross-signing and generate a recovery key.
-    ///
-    /// If the account already has recovery set up on the server
-    /// (`recoveryState != .disabled`), we call `resetRecoveryKey()`
-    /// instead — calling `enableRecovery` on top of an existing
-    /// setup throws `RecoveryError.BackupExistsOnServer`. This is
-    /// the same approach Element X uses.
+    /// Bootstraps cross-signing and key backup from scratch.
+    /// Only safe when recovery is not fully set up yet (first device,
+    /// or incomplete/broken state). If recovery is `.enabled`, the
+    /// user must restore via `recover(key:)` instead — calling
+    /// resetRecoveryKey() would destroy the existing backup.
     func enableRecovery() async throws -> String {
         guard let client = matrixService.client else {
             throw VerificationError.clientNotAvailable
@@ -171,20 +197,49 @@ final class SessionVerificationService {
         logVerify("enableRecovery: starting; verificationState=\(encryption.verificationState()) recoveryState=\(initialRecoveryState)")
 
         do {
-            let key: String
-            if initialRecoveryState == .disabled {
-                let progress = RecoveryProgressListener { state in
-                    logVerify("Recovery progress: \(state)")
-                }
-                key = try await encryption.enableRecovery(
-                    waitForBackupsToUpload: false,
-                    passphrase: nil,
-                    progressListener: progress
-                )
-            } else {
-                logVerify("enableRecovery: existing recovery detected, calling resetRecoveryKey")
-                key = try await encryption.resetRecoveryKey()
+            let userId = try client.userId()
+            let identity = try? await encryption.userIdentity(userId: userId, fallbackToServer: true)
+            let hasCrossSigning = identity != nil
+            logVerify("enableRecovery: cross-signing identity = \(hasCrossSigning)")
+
+            // Recovery fully set up with active backup — don't destroy it.
+            // The user should enter their existing recovery key instead.
+            // `.incomplete` means partial/broken state with nothing to protect,
+            // so we allow bootstrapping over it.
+            if hasCrossSigning && initialRecoveryState == .enabled {
+                logVerify("enableRecovery: recovery already enabled, refusing to reset")
+                throw VerificationError.recoveryAlreadyExists
             }
+
+            // Clean up orphaned recovery state before bootstrapping.
+            // This handles both: no cross-signing at all, or cross-signing
+            // with incomplete/broken recovery (e.g. after a failed setup).
+            if initialRecoveryState != .disabled {
+                logVerify("enableRecovery: clearing orphaned recovery state")
+                do {
+                    try await encryption.disableRecovery()
+                    logVerify("enableRecovery: disableRecovery succeeded, recoveryState=\(encryption.recoveryState())")
+                } catch {
+                    logVerify("enableRecovery: disableRecovery failed: \(error)")
+                }
+
+                let backupExists = try? await encryption.backupExistsOnServer()
+                logVerify("enableRecovery: backupExistsOnServer = \(String(describing: backupExists))")
+                if backupExists == true {
+                    logVerify("enableRecovery: deleting orphaned backup via API")
+                    await deleteBackupFromServer()
+                }
+            }
+
+            logVerify("enableRecovery: bootstrapping cross-signing from scratch")
+            let progress = RecoveryProgressListener { state in
+                logVerify("Recovery progress: \(state)")
+            }
+            let key = try await encryption.enableRecovery(
+                waitForBackupsToUpload: false,
+                passphrase: nil,
+                progressListener: progress
+            )
             logVerify("enableRecovery: done; key length=\(key.count) recoveryState=\(encryption.recoveryState())")
             return key
         } catch {
@@ -193,38 +248,145 @@ final class SessionVerificationService {
         }
     }
 
-    // MARK: - Setup
+    /// Destructive reset: wipes existing recovery key and backup,
+    /// then bootstraps new ones from scratch. Only use when the user
+    /// has explicitly confirmed they accept losing old messages.
+    func forceResetRecovery() async throws -> String {
+        guard let client = matrixService.client else {
+            throw VerificationError.clientNotAvailable
+        }
+        let encryption = client.encryption()
+        logVerify("forceResetRecovery: resetting recovery key (destructive)")
+        let key = try await encryption.resetRecoveryKey()
+        logVerify("forceResetRecovery: done; key length=\(key.count) recoveryState=\(encryption.recoveryState())")
+        return key
+    }
 
+    // MARK: - Setup (controller + delegate)
+
+    /// Sets up the verification controller and delegate. Call this
+    /// once after sync starts so incoming requests are detected.
+    ///
+    /// `getSessionVerificationController()` internally calls
+    /// `encryption().get_user_identity(userId)` without a server
+    /// fallback. On a fresh login the cross-signing identity may
+    /// not be in the local crypto store yet, causing "Failed
+    /// retrieving user identity". We retry with back-off to give
+    /// sync time to deliver the keys.
     func setup() async throws {
+        guard !isControllerReady else { return }
         guard let client = matrixService.client else {
             throw VerificationError.clientNotAvailable
         }
 
+        // `getSessionVerificationController()` calls
+        // `get_user_identity(userId)` without server fallback.
+        // On a fresh login the crypto store may be empty.
+        // Pre-fetch the identity with server fallback to warm the store.
+        let userId = try client.userId()
+        let encryption = client.encryption()
+
+        logVerify("setup: pre-fetching user identity for \(userId)")
+        let identity = try? await encryption.userIdentity(userId: userId, fallbackToServer: true)
+        logVerify("setup: userIdentity(fallbackToServer: true) = \(identity != nil ? "found" : "nil")")
+
         let controller = try await client.getSessionVerificationController()
         self.controller = controller
 
-        let delegate = VerificationDelegate { [weak self] step in
-            DispatchQueue.main.async {
-                self?.stepSubject.send(step)
+        let delegate = VerificationDelegate(
+            onStep: { [weak self] step in
+                DispatchQueue.main.async {
+                    self?.stepSubject.send(step)
+                }
+            },
+            onIncomingRequest: { [weak self] request in
+                DispatchQueue.main.async {
+                    self?.incomingRequestSubject.send(request)
+                }
+            },
+            checkIsInitiator: { [weak self] in
+                self?.isInitiator ?? false
             }
-        }
+        )
         delegate.setController(controller)
         controller.setDelegate(delegate: delegate)
         self.delegate = delegate
+        self.isControllerReady = true
 
-        logVerify("Verification controller ready")
+        logVerify("Verification controller ready (persistent)")
     }
 
-    private var delegate: VerificationDelegate?
-
-    // MARK: - Actions
+    // MARK: - Initiator Actions (this device requests verification)
 
     func requestDeviceVerification() async throws {
         guard let controller else { throw VerificationError.controllerNotReady }
+        isInitiator = true
         stepSubject.send(.requestingVerification)
-        try await controller.requestDeviceVerification()
-        logVerify("Device verification requested")
+
+        // The SDK needs the user's cross-signing identity to be
+        // downloaded before it can request verification. On a fresh
+        // login the sync may not have delivered it yet, causing
+        // "Failed retrieving user identity". Wait for verification
+        // state to leave `.unknown`, then retry once on failure.
+        await waitForIdentityReady(timeout: 10)
+
+        do {
+            try await controller.requestDeviceVerification()
+            logVerify("Device verification requested")
+        } catch {
+            logVerify("requestDeviceVerification failed: \(error); retrying after 2s")
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try await controller.requestDeviceVerification()
+            logVerify("Device verification requested (retry)")
+        }
     }
+
+    /// Waits for the SDK to know our verification state (i.e. it has
+    /// downloaded the user's cross-signing identity from the server).
+    /// `.unknown` means "still loading"; any other value means the
+    /// identity is available.
+    private func waitForIdentityReady(timeout: TimeInterval) async {
+        let vSubject = matrixService.verificationStateSubject
+        if vSubject.value != .unknown { return }
+
+        logVerify("waitForIdentityReady: verificationState=\(vSubject.value), waiting…")
+        let work = Task {
+            for await state in vSubject.values {
+                if state != .unknown {
+                    logVerify("waitForIdentityReady: ready, verificationState=\(state)")
+                    return
+                }
+            }
+        }
+        let timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            work.cancel()
+        }
+        _ = await work.value
+        timeoutTask.cancel()
+    }
+
+    // MARK: - Responder Actions (another device requested verification)
+
+    /// Acknowledge receipt of the incoming request (tells the SDK we saw it).
+    func acknowledgeVerificationRequest(_ request: IncomingVerificationRequest) async throws {
+        guard let controller else { throw VerificationError.controllerNotReady }
+        try await controller.acknowledgeVerificationRequest(
+            senderId: request.senderId,
+            flowId: request.flowId
+        )
+        logVerify("Acknowledged verification request from \(request.deviceId)")
+    }
+
+    /// Accept the incoming verification request (user tapped Accept).
+    func acceptVerificationRequest() async throws {
+        guard let controller else { throw VerificationError.controllerNotReady }
+        stepSubject.send(.acceptingRequest)
+        try await controller.acceptVerificationRequest()
+        logVerify("Accepted verification request")
+    }
+
+    // MARK: - Shared Actions
 
     func approveVerification() async throws {
         guard let controller else { throw VerificationError.controllerNotReady }
@@ -320,6 +482,51 @@ final class SessionVerificationService {
         try await controller.cancelVerification()
         logVerify("Verification cancelled")
     }
+
+    /// Resets step back to initial for a new verification attempt.
+    func resetStep() {
+        stepSubject.send(.initial)
+    }
+
+    // MARK: - Private — Orphaned Backup Cleanup
+
+    /// Deletes the key backup from the server via Matrix API.
+    /// Used when a previous broken enableRecovery() left a backup
+    /// without cross-signing keys, blocking a fresh bootstrap.
+    private func deleteBackupFromServer() async {
+        guard let client = matrixService.client,
+              let session = try? client.session() else { return }
+
+        var baseURL = session.homeserverUrl
+        while baseURL.hasSuffix("/") { baseURL.removeLast() }
+
+        // First get the current backup version
+        guard let versionURL = URL(string: "\(baseURL)/_matrix/client/v3/room_keys/version") else { return }
+
+        var versionReq = URLRequest(url: versionURL)
+        versionReq.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: versionReq)
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let version = json["version"] as? String else {
+                logVerify("deleteBackupFromServer: no backup version found")
+                return
+            }
+
+            // Delete that version
+            guard let deleteURL = URL(string: "\(baseURL)/_matrix/client/v3/room_keys/version/\(version)") else { return }
+            var deleteReq = URLRequest(url: deleteURL)
+            deleteReq.httpMethod = "DELETE"
+            deleteReq.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+
+            let (_, resp) = try await URLSession.shared.data(for: deleteReq)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            logVerify("deleteBackupFromServer: deleted version \(version), HTTP \(code)")
+        } catch {
+            logVerify("deleteBackupFromServer: failed: \(error)")
+        }
+    }
 }
 
 // MARK: - Errors
@@ -327,11 +534,13 @@ final class SessionVerificationService {
 enum VerificationError: LocalizedError {
     case clientNotAvailable
     case controllerNotReady
+    case recoveryAlreadyExists
 
     var errorDescription: String? {
         switch self {
         case .clientNotAvailable: return "Matrix client is not available"
         case .controllerNotReady: return "Verification controller is not ready"
+        case .recoveryAlreadyExists: return "Recovery key already exists. Use your existing recovery key to restore access."
         }
     }
 }
@@ -340,10 +549,16 @@ enum VerificationError: LocalizedError {
 
 private final class VerificationDelegate: SessionVerificationControllerDelegate {
     private let onStep: (VerificationStep) -> Void
+    private let onIncomingRequest: (IncomingVerificationRequest) -> Void
+    private let checkIsInitiator: () -> Bool
     private var controller: SessionVerificationController?
 
-    init(onStep: @escaping (VerificationStep) -> Void) {
+    init(onStep: @escaping (VerificationStep) -> Void,
+         onIncomingRequest: @escaping (IncomingVerificationRequest) -> Void,
+         checkIsInitiator: @escaping () -> Bool) {
         self.onStep = onStep
+        self.onIncomingRequest = onIncomingRequest
+        self.checkIsInitiator = checkIsInitiator
     }
 
     func setController(_ controller: SessionVerificationController) {
@@ -351,14 +566,25 @@ private final class VerificationDelegate: SessionVerificationControllerDelegate 
     }
 
     func didReceiveVerificationRequest(details: SessionVerificationRequestDetails) {
-        logVerify("Received verification request from \(details.deviceId)")
+        logVerify("Received verification request from device \(details.deviceId) (flow: \(details.flowId))")
+        let request = IncomingVerificationRequest(
+            senderId: details.senderProfile.userId,
+            flowId: details.flowId,
+            deviceId: details.deviceId,
+            deviceDisplayName: details.deviceDisplayName
+        )
+        onIncomingRequest(request)
     }
 
     func didAcceptVerificationRequest() {
-        logVerify("Verification request accepted, starting SAS")
+        logVerify("Verification request accepted (isInitiator=\(checkIsInitiator()))")
         onStep(.waitingForAcceptance)
-        Task {
-            try? await controller?.startSasVerification()
+
+        // Only the initiator starts SAS to avoid both sides racing.
+        if checkIsInitiator() {
+            Task {
+                try? await controller?.startSasVerification()
+            }
         }
     }
 

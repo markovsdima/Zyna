@@ -33,6 +33,10 @@ final class TimelineDiffBatcher {
     private var debounceWork: DispatchWorkItem?
     private static let debounceInterval: TimeInterval = 0.05
 
+    /// Timestamp of the newest own message read by someone else.
+    /// Updated from TimelineService when SDK delivers read receipts.
+    private var readCursorTimestamp: TimeInterval?
+
     /// Called on main queue after each successful flush.
     var onFlush: (() -> Void)?
 
@@ -41,6 +45,14 @@ final class TimelineDiffBatcher {
     init(roomId: String, dbQueue: DatabaseQueue) {
         self.roomId = roomId
         self.dbQueue = dbQueue
+    }
+
+    /// Update read cursor from SDK read receipts. Called from main queue.
+    func updateReadCursor(timestamp: TimeInterval) {
+        if readCursorTimestamp == nil || timestamp > readCursorTimestamp! {
+            readCursorTimestamp = timestamp
+            scheduleFlush()
+        }
     }
 
     // MARK: - Public
@@ -88,7 +100,10 @@ final class TimelineDiffBatcher {
     private func flush() {
         let ops = pendingOps
         pendingOps.removeAll()
-        guard !ops.isEmpty else { return }
+        let cursorTs = readCursorTimestamp
+        readCursorTimestamp = nil
+
+        guard !ops.isEmpty || cursorTs != nil else { return }
 
         let roomId = self.roomId
         let dbQueue = self.dbQueue
@@ -96,18 +111,47 @@ final class TimelineDiffBatcher {
         writeQueue.async { [weak self] in
             do {
                 try dbQueue.write { db in
+                    // Collect eventIds already marked as read so upserts don't downgrade them
+                    let readEventIds = try Set(String.fetchAll(db,
+                        sql: "SELECT eventId FROM storedMessage WHERE roomId = ? AND sendStatus = 'read' AND isOutgoing = 1 AND eventId IS NOT NULL",
+                        arguments: [roomId]))
+
                     for op in ops {
                         switch op {
-                        case .upsert(let record):
+                        case .upsert(var record):
+                            if record.sendStatus != "read",
+                               let eventId = record.eventId,
+                               readEventIds.contains(eventId) {
+                                record.sendStatus = "read"
+                            }
+
                             if let eventId = record.eventId {
                                 try StoredMessage
-                                    .filter(Column("eventId") == eventId && Column("id") != record.id)
+                                    .filter(Column("roomId") == record.roomId && Column("eventId") == eventId && Column("id") != record.id)
+                                    .deleteAll(db)
+                            }
+                            if let txnId = record.transactionId {
+                                try StoredMessage
+                                    .filter(Column("roomId") == record.roomId && Column("transactionId") == txnId && Column("id") != record.id)
                                     .deleteAll(db)
                             }
                             try record.save(db)
                         case .delete(let id):
                             _ = try StoredMessage.deleteOne(db, key: id)
                         }
+                    }
+
+                    // Mark all outgoing messages up to the read cursor as "read"
+                    if let cursorTs {
+                        try db.execute(
+                            sql: """
+                                UPDATE storedMessage
+                                SET sendStatus = 'read'
+                                WHERE roomId = ? AND isOutgoing = 1
+                                  AND timestamp <= ? AND sendStatus != 'read'
+                                """,
+                            arguments: [roomId, cursorTs]
+                        )
                     }
                 }
 
@@ -146,7 +190,7 @@ final class TimelineDiffBatcher {
 
         case .pushFront(let item):
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(msg?.id, at: 0)
+            shadowItems.insert(msg.map { storedId($0.id) }, at: 0)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
@@ -155,7 +199,7 @@ final class TimelineDiffBatcher {
             let idx = Int(index)
             guard idx <= shadowItems.count else { return }
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(msg?.id, at: idx)
+            shadowItems.insert(msg.map { storedId($0.id) }, at: idx)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
@@ -165,10 +209,11 @@ final class TimelineDiffBatcher {
             guard idx < shadowItems.count else { return }
             let oldId = shadowItems[idx]
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems[idx] = msg?.id
+            shadowItems[idx] = msg.map { storedId($0.id) }
 
             if let msg {
-                if let oldId, oldId != msg.id {
+                let newStoredId = storedId(msg.id)
+                if let oldId, oldId != newStoredId {
                     pendingOps.append(.delete(oldId))
                 }
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
@@ -206,9 +251,13 @@ final class TimelineDiffBatcher {
 
     // MARK: - Helpers
 
+    private func storedId(_ msgId: String) -> String {
+        "\(roomId):\(msgId)"
+    }
+
     private func appendItem(_ item: TimelineItem) {
         let msg = TimelineService.mapTimelineItem(item)
-        shadowItems.append(msg?.id)
+        shadowItems.append(msg.map { storedId($0.id) })
         if let msg {
             pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
         }

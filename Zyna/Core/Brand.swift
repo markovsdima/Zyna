@@ -19,4 +19,18 @@ enum Brand {
         case .sds:  return ""
         }
     }
+
+    var presenceEnabled: Bool {
+        switch self {
+        case .zyna: return true
+        case .sds:  return true
+        }
+    }
+
+    var theme: AppTheme {
+        switch self {
+        case .zyna: return ZynaTheme()
+        case .sds:  return SDSTheme()
+        }
+    }
 }

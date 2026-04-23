@@ -8,9 +8,8 @@ import AsyncDisplayKit
 
 /// Glass input bar with 3 shapes: attach (circle), text field (rounded rect), mic (circle).
 /// Optional 4th shape: scroll-to-live button (metaball with mic).
-/// Lives in the main window, content placed above glass renderer via GlassService.
 /// Tracks keyboard position and triggers glass capture on changes.
-final class GlassInputBar: UIView {
+final class GlassInputBar: ASDisplayNode {
 
     // MARK: - Public
 
@@ -21,6 +20,13 @@ final class GlassInputBar: UIView {
         didSet { anchor.sourceView = sourceView }
     }
 
+    /// Background color the glass should sample where `sourceView`
+    /// has no cells. Defaults to the chat background; override only
+    /// if hosting glass over a non-chat surface.
+    var backdropClearColor: UIColor = AppColor.chatBackground {
+        didSet { anchor.backdropClearColor = backdropClearColor }
+    }
+
     /// Show/hide the scroll-to-live button. Animates from/to mic button.
     var scrollButtonVisible: Bool = false {
         didSet {
@@ -29,13 +35,16 @@ final class GlassInputBar: UIView {
         }
     }
 
-    /// Called when scroll-to-live button is tapped.
-    var onScrollToLive: (() -> Void)?
+    /// Called each animation frame with the scroll button's current
+    /// icon frame, icon alpha, tap frame, tap alpha — in this bar's
+    /// parent view coordinate space. The owner (ChatViewController)
+    /// positions the actual UIViews at its level.
+    /// Driven by the spring animation in `scrollButtonTick`.
+    var onScrollButtonLayoutChanged: ((CGRect, CGFloat, CGRect, CGFloat) -> Void)?
 
     // MARK: - Private
 
     private let anchor = GlassAnchor()
-    private let contentView = ScrollButtonContentView()
     private var keyboardHeight: CGFloat = 0
 
     // Chrome bars state
@@ -49,73 +58,50 @@ final class GlassInputBar: UIView {
     private var scrollButtonDisplayLink: CADisplayLink?
     private var scrollButtonLastTime: CFTimeInterval = 0
 
-    // Scroll button views (positioned in contentView, clipping disabled)
-    private let scrollButtonIcon = UIImageView()
-    private let scrollButtonTap = UIButton(type: .custom)
-
     // MARK: - Init
 
-    init() {
-        super.init(frame: .zero)
-        backgroundColor = .clear
-        isUserInteractionEnabled = false
+    override init() {
+        super.init()
+        anchor.debugName = "input"
+        inputNode.backgroundColor = .clear
+    }
 
+    // MARK: - didLoad
+
+    override func didLoad() {
+        super.didLoad()
+        view.backgroundColor = .clear
+        view.clipsToBounds = false
+
+        // Glass UIView parts — below subnode views
         anchor.cornerRadius = 24
         anchor.extendsCaptureToScreenBottom = false
         anchor.shapeProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
                 ?? GlassRenderer.ShapeParams()
         }
-        addSubview(anchor)
-
-        contentView.backgroundColor = .clear
-        contentView.addSubview(inputNode.view)
-
-        // Remove default background — glass is our background
-        inputNode.backgroundColor = .clear
-        inputNode.view.backgroundColor = .clear
-
         anchor.barProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildBarData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
         }
+        view.addSubview(anchor)
+        anchor.accessibilityElementsHidden = true
+
+        // Input node as subnode (already ASDisplayNode)
+        addSubnode(inputNode)
+        inputNode.view.backgroundColor = .clear
+
+        view.sendSubviewToBack(anchor)
 
         inputNode.onWaveformUpdate = { [weak self] waveform in
             self?.updateBarHeights(waveform)
         }
 
-        // Scroll button icon + tap target (in contentView, above glass)
-        scrollButtonIcon.image = AppIcon.chevronDown.rendered(size: 24, color: .gray)
-        scrollButtonIcon.contentMode = .center
-        scrollButtonIcon.alpha = 0
-        contentView.addSubview(scrollButtonIcon)
-
-        scrollButtonTap.alpha = 0
-        scrollButtonTap.addTarget(self, action: #selector(scrollButtonTapped), for: .touchUpInside)
-        contentView.addSubview(scrollButtonTap)
-
-        // Allow scroll button to render above contentView bounds
-        contentView.clipsToBounds = false
-
         observeKeyboard()
         observeInputSize()
     }
 
-    required init?(coder: NSCoder) { fatalError() }
-
-    // MARK: - Lifecycle
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            GlassService.shared.attachContent(contentView, for: anchor)
-        } else {
-            contentView.removeFromSuperview()
-        }
-    }
-
     // MARK: - Layout
 
-    /// Call from ChatViewController.viewDidLayoutSubviews()
     private let barInsetClosed: CGFloat = 6
     private let barInsetOpen: CGFloat = 0
 
@@ -141,14 +127,17 @@ final class GlassInputBar: UIView {
 
         frame = CGRect(x: insetH, y: barY, width: barWidth, height: fittedSize.height)
         anchor.frame = bounds
-
+        anchor.renderHostContainerView = parentView
         inputNode.frame = CGRect(x: 0, y: 0, width: barWidth, height: fittedSize.height)
+
+        // Bar position changed — scroll button position must follow
+        emitScrollButtonLayout()
     }
 
     /// Returns how much space the input bar + keyboard covers at the bottom.
     var coveredHeight: CGFloat {
-        guard let superview else { return 0 }
-        let safeBottom = superview.safeAreaInsets.bottom
+        guard let parentView = view.superview else { return 0 }
+        let safeBottom = parentView.safeAreaInsets.bottom
         if keyboardHeight > 0 {
             return bounds.height + keyboardHeight + safeBottom + 4
         } else {
@@ -169,13 +158,13 @@ final class GlassInputBar: UIView {
         guard let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
               let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double,
               let curve = note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt,
-              let superview else { return }
+              let parentView = view.superview else { return }
 
         let screenH = UIScreen.main.bounds.height
         let newKeyboardH = max(0, screenH - endFrame.origin.y)
 
         // Subtract safe area — we handle it ourselves
-        let safeBottom = superview.safeAreaInsets.bottom
+        let safeBottom = parentView.safeAreaInsets.bottom
         keyboardHeight = max(0, newKeyboardH - safeBottom)
 
         // Enable liquid pool for keyboard animation splash
@@ -188,10 +177,10 @@ final class GlassInputBar: UIView {
             delay: 0,
             options: UIView.AnimationOptions(rawValue: curve << 16),
             animations: {
-                self.updateLayout(in: superview)
+                self.updateLayout(in: parentView)
                 // Notify ChatViewController to update table insets
-                self.superview?.setNeedsLayout()
-                self.superview?.layoutIfNeeded()
+                parentView.setNeedsLayout()
+                parentView.layoutIfNeeded()
             }
         )
     }
@@ -263,7 +252,7 @@ final class GlassInputBar: UIView {
             let scrollCurrentR = scrollR * radiusFactor
 
             // Volume-preserving mic inflation:
-            // When scroll overlaps mic, mic absorbs its area → swells.
+            // When scroll overlaps mic, mic absorbs its area -> swells.
             // mergeFactor: 1 = fully overlapping, 0 = separated.
             let dx = scrollCX - micCX
             let dy = scrollCY - micCY
@@ -271,7 +260,7 @@ final class GlassInputBar: UIView {
             let sumR = micR + scrollCurrentR
             let mergeFactor = max(0, min(1, 1 - dist / max(sumR, 0.001)))
 
-            // mic area + scroll area × mergeFactor → inflated radius
+            // mic area + scroll area x mergeFactor -> inflated radius
             let micArea = micR * micR
             let scrollArea = scrollCurrentR * scrollCurrentR
             effectiveMicR = sqrt(micArea + scrollArea * mergeFactor)
@@ -283,25 +272,8 @@ final class GlassInputBar: UIView {
                 0
             )
             p.scrollButtonVisible = 1
-
-            // Position icon + tap area in contentView coords (contentView.frame = glassFrame)
-            let iconCX = scrollCX - glassFrame.origin.x
-            let iconCY = scrollCY - glassFrame.origin.y
-            let iconSize = scrollCurrentR * 2
-            scrollButtonIcon.frame = CGRect(
-                x: iconCX - iconSize / 2,
-                y: iconCY - iconSize / 2,
-                width: iconSize,
-                height: iconSize
-            )
-            scrollButtonIcon.alpha = radiusFactor
-
-            scrollButtonTap.frame = scrollButtonIcon.frame.insetBy(dx: -8, dy: -8)
-            scrollButtonTap.alpha = t > 0.3 ? 1 : 0
         } else {
             p.scrollButtonVisible = 0
-            scrollButtonIcon.alpha = 0
-            scrollButtonTap.alpha = 0
         }
 
         // Shape 2: mic (circle) — inflated when absorbing scroll button volume
@@ -321,9 +293,9 @@ final class GlassInputBar: UIView {
 
     private func observeInputSize() {
         inputNode.onSizeChanged = { [weak self] in
-            guard let self, let superview = self.superview else { return }
-            self.updateLayout(in: superview)
-            superview.setNeedsLayout()
+            guard let self, let parentView = self.view.superview else { return }
+            self.updateLayout(in: parentView)
+            parentView.setNeedsLayout()
             // Sustain capture while layout settles (reply show/hide, text grow/shrink)
             GlassService.shared.captureFor(duration: 0.5)
         }
@@ -354,8 +326,47 @@ final class GlassInputBar: UIView {
 
     // MARK: - Scroll Button
 
-    @objc private func scrollButtonTapped() {
-        onScrollToLive?()
+    /// Computes the scroll button icon/tap frame + alpha based on the
+    /// current spring progress, in this bar's parent view coordinates.
+    private func computeScrollButtonLayout() -> (CGRect, CGFloat, CGRect, CGFloat) {
+        guard scrollButtonProgress > 0.001 else {
+            return (.zero, 0, .zero, 0)
+        }
+        let barFrame = frame
+        let hPad: CGFloat = 14
+        let vPad: CGFloat = 6
+        let btnSize: CGFloat = 48
+        let scrollR: CGFloat = btnSize / 2
+
+        let micCX = barFrame.maxX - hPad - btnSize / 2
+        let contentY = barFrame.origin.y + vPad
+        let contentH = barFrame.height - vPad * 2
+        let micCY = contentY + contentH - btnSize / 2
+
+        let scrollTargetCX = micCX
+        let scrollTargetCY = barFrame.origin.y - 12 - scrollR
+
+        let t = scrollButtonProgress
+        let scrollCX = micCX + (scrollTargetCX - micCX) * t
+        let scrollCY = micCY + (scrollTargetCY - micCY) * t
+        let radiusFactor = min(1, t * 4)
+        let scrollCurrentR = scrollR * radiusFactor
+        let iconSize = scrollCurrentR * 2
+
+        let iconFrame = CGRect(
+            x: scrollCX - iconSize / 2,
+            y: scrollCY - iconSize / 2,
+            width: iconSize,
+            height: iconSize
+        )
+        let tapFrame = iconFrame.insetBy(dx: -8, dy: -8)
+        let tapAlpha: CGFloat = t > 0.3 ? 1 : 0
+        return (iconFrame, radiusFactor, tapFrame, tapAlpha)
+    }
+
+    private func emitScrollButtonLayout() {
+        let (icon, iconAlpha, tap, tapAlpha) = computeScrollButtonLayout()
+        onScrollButtonLayoutChanged?(icon, iconAlpha, tap, tapAlpha)
     }
 
     private func animateScrollButton(visible: Bool) {
@@ -403,9 +414,11 @@ final class GlassInputBar: UIView {
             }
             // Sustain capture to ensure glass redraws with new capture frame
             GlassService.shared.captureFor(duration: 0.15)
+            emitScrollButtonLayout()
             return
         }
 
+        emitScrollButtonLayout()
         GlassService.shared.setNeedsCapture()
     }
 
@@ -441,33 +454,5 @@ final class GlassInputBar: UIView {
                 Float(maxBarHeight / ch)
             )
         )
-    }
-}
-
-// MARK: - Content view with extended hit testing
-
-/// Extends hit testing to subviews outside bounds (scroll button above the input bar).
-private final class ScrollButtonContentView: UIView {
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        // Check subviews even if point is outside our bounds
-        for sub in subviews.reversed() {
-            guard sub.alpha > 0, !sub.isHidden, sub.isUserInteractionEnabled else { continue }
-            let local = sub.convert(point, from: self)
-            if let hit = sub.hitTest(local, with: event) {
-                return hit
-            }
-        }
-        return super.hitTest(point, with: event)
-    }
-
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        if super.point(inside: point, with: event) { return true }
-        // Accept touches that hit subviews outside bounds
-        for sub in subviews {
-            guard sub.alpha > 0, !sub.isHidden, sub.isUserInteractionEnabled else { continue }
-            let local = sub.convert(point, from: self)
-            if sub.point(inside: local, with: event) { return true }
-        }
-        return false
     }
 }

@@ -1,6 +1,6 @@
 # Glass Effect: Исследование и Архитектура
 
-> Исследование проведено 22 марта 2026. iOS 26.3, iPhone 16 pro max.
+> Базовое исследование проведено 22 марта 2026. Обновлено по итогам production-профилинга чата 22 апреля 2026. iOS 26.3, iPhone 16 Pro Max.
 
 ## Цель
 
@@ -142,28 +142,34 @@ Glass рендерится в отдельном `PassthroughWindow` (overlay), 
 
 Первоначально использовалась two-window архитектура (overlay `PassthroughWindow` + `createIOSurfaceWithFrame:`) для обхода self-capture. Позже упрощена до **single-window + `layer.render()`**: рендерим только `sourceView` (без glass UI), что автоматически исключает self-capture без второго окна.
 
+Финальная production-схема после профилинга чата:
+- **capture остаётся раздельным** для `nav` и `input`
+- **output renderer общий**: один shared `CAMetalLayer`/`GlassRenderer` на весь экран
+- если shared renderer ещё держит предыдущий drawable, новый тик **пропускается до capture**, чтобы не тратить main-thread время впустую
+
 ### Компоненты
 
 ```
-GlassAnchor (UIView)                — невидимый маркер, указывает sourceView для захвата
+GlassAnchor (UIView)                   — невидимый маркер, указывает sourceView для захвата
     ↓ didMoveToWindow
-GlassService (singleton)            — capture + render loop, single window
-    ├─ CaptureCache                 — double-buffered MTLBuffer-backed CGContext (zero-copy CPU→GPU)
-    ├─ GlassRenderer (CAMetalLayer) — MPS blur + Metal fragment shader
-    └─ DisplayLinkDriver            — 120fps tick
+GlassService (singleton)               — capture + render loop, single window
+    ├─ CaptureCache                    — double-buffered MTLBuffer-backed CGContext (zero-copy CPU→GPU)
+    ├─ shared GlassRenderer            — один CAMetalLayer на все glass-элементы
+    └─ DisplayLinkDriver               — 120fps tick
 ```
 
 ### Flow
 
 1. Разработчик добавляет `GlassAnchor` как subview, устанавливает `sourceView`
 2. `didMoveToWindow()` → `GlassService.shared.register(anchor:)`
-3. GlassService создаёт GlassRenderer в main window
+3. GlassService создаёт shared GlassRenderer в host container'е экрана
 4. Каждый tick (120fps, event-driven):
    - Опрос frame через `presentation layer → convert(bounds, to: window)`
-   - `sourceView.layer.render(in: ctx)` — рендер только контента, не glass UI
+   - Отдельный capture для `nav` и `input`: `sourceView.layer.render(in: ctx)`
    - CGContext пишет напрямую в MTLBuffer (zero-copy CPU→GPU, без memcpy)
    - Double-buffered: CPU пишет slot A, GPU читает slot B, flip
-   - MPS Gaussian blur + Metal fragment shader (refraction, chromatic aberration, tint)
+   - Shared `GlassRenderer` в одном drawable рисует оба logical item (`nav` + `input`)
+   - Если drawable ещё in-flight, render-tick пропускается **до capture**
 5. Anchor убран → `GlassRegistration.deinit` → deregister → cleanup
 
 ### Capture: layer.render() оптимизации
@@ -175,9 +181,13 @@ GlassService (singleton)            — capture + render loop, single window
 - **memset вместо ctx.clear()**: прямое обнуление буфера, минуя CG pipeline
 - **Fallback** на texture.replace() для Intel simulator (buffer-backed textures не поддерживаются)
 
-### Каждая glass зона = отдельный pipeline
+### Capture раздельный, output общий
 
-Nav bar и input bar — два независимых capture+render. Это быстрее fullscreen: capture масштабируется с пикселями, а два маленьких региона (~416K px) дешевле одного fullscreen (~1.34M px). Sublayer culling тоже эффективнее на маленьких регионах.
+Nav bar и input bar **не объединяются в один capture rect**. Это оказалось важным: один большой union-rect через весь экран дороже двух маленьких регионов. Capture масштабируется с пикселями, а sublayer culling эффективнее на локальных областях.
+
+Но output renderer теперь **общий**. Два отдельных `CAMetalLayer` давали stall на `nextDrawable()` у второго renderer в кадре. После перевода на один shared `CAMetalLayer` stall исчез как user-facing проблема. Если drawable ещё в полёте, кадр просто пропускается без capture.
+
+Важно: при переходе на shared output renderer появился отдельный bug на navigation transition. Сам backdrop внутри стекла был правильный, но **сам glass output quad** слегка отставал от анимирующегося nav bar. Причина оказалась не в capture и не в Metal, а в финальном позиционировании output: `anchor.presentationFrame()` уже использовал presentation layers, а вот destination frame для shared renderer считался через обычный `UIView.convert(...)`, то есть по model-координатам контейнера. Во время push/pop это давало плавное, но запаздывающее следование стекла. Фикс: считать destination frame через `renderHostContainer.layer.presentation()?.convert(... from: window.layer.presentation())`.
 
 ### Trigger-система (event-driven capture)
 
@@ -192,13 +202,33 @@ Idle = **~0% CPU**: display link останавливается после 3 idl
 
 ### Производительность
 
+Финальная картина после профилинга реального чата:
+
 ```
 iPhone 16 Pro Max, iOS 26.3, 120fps:
-capture=~1.5ms  render=~0.3ms  total=~1.8ms (типичный)
-capture=~2.5ms  render=~1.0ms  total=~3.5ms (worst case)
+nav capture   ≈ 0.7–1.8ms
+input capture ≈ 1.5–3.5ms
+shared render ≈ 0.2–0.4ms
+total         ≈ 3.7–5.6ms (типично)
 ```
 
-Budget 8.33ms — запас ~60%. До оптимизаций (IOSurface + overlay) было total=~6.2ms.
+Редкие spike'и всё ещё возможны в `input capture` (например большая image bubble под input glass), вплоть до ~10ms, но:
+- `nextDrawable()` stall у второго renderer больше не влияет на UX
+- skipped frame при `in_flight` стоит почти 0ms и не забивает main thread
+
+Практический результат: визуальная тряска ушла; остались только редкие backend-spike'и capture.
+
+### Профилинг и выводы (апрель 2026)
+
+- Проблема была не в самом шейдере: `pass/blur` обычно занимали десятые доли миллисекунды.
+- Главный render-stall сидел в `CAMetalLayer.nextDrawable()` у второго metal layer в кадре.
+- Перестановка порядка рендера просто переносила stall между `input` и `nav`, что доказало: bottleneck был в двух output layer, а не в конкретном баре.
+- Решение: один shared output renderer + пропуск тика, если drawable ещё in-flight.
+- После этого всплыл отдельный transition-drift: output quad shared renderer считался в model coords контейнера и отставал от nav bar на push/pop. Исправлено переводом destination-frame на presentation-layer conversion.
+- Capture оптимизируется отдельно и остаётся раздельным для `nav`/`input`.
+- Попытки заменить прямой table capture на generic portal/source-proxy как общий backdrop path не взлетели: в наших manual capture path generic `_UIPortalView` просто не рендерился. Portal полезен только как compositor effect или как узкий special-case.
+- Для bubble portal background пришлось сделать manual fallback: стекло рисует `PortalSourceView` под bubble-mask вручную, а не полагается на snapshot `_UIPortalView`.
+- Синий fallback под portal bubbles оказался не нужен и был удалён: это и убрало артефакты, и немного снизило цену capture.
 
 ### API
 

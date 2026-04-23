@@ -7,6 +7,11 @@ import AsyncDisplayKit
 
 final class ContextMenuController: NSObject {
 
+    private enum ActionsMode: Equatable {
+        case actions
+        case reactionsSummary
+    }
+
     // MARK: - Init Data
 
     private let contentNode: ASDisplayNode
@@ -23,6 +28,7 @@ final class ContextMenuController: NSObject {
     private let contentScroll = UIScrollView()
     private let dimmingView = UIView()
     private let actionsContainer = UIView()
+    private let actionsScrollView = UIScrollView()
     private let actionsStack = UIStackView()
     private let reactionsBar = UIView()
 
@@ -37,6 +43,8 @@ final class ContextMenuController: NSObject {
     private var actionRows: [(control: HighlightControl, action: ContextMenuAction)] = []
     private weak var highlightedRow: HighlightControl?
     private let selectionFeedback = UISelectionFeedbackGenerator()
+    private var actionsMode: ActionsMode = .actions
+    private var reactionSummaryEntries: [ReactionSummaryEntry] = []
 
     // MARK: - Layout State
 
@@ -44,10 +52,11 @@ final class ContextMenuController: NSObject {
     private var targetActionsY: CGFloat = 0
     private var targetReactionsY: CGFloat = 0
     private var reactionsAboveBubble = true
+    private var maxActionsHeight: CGFloat = 0
 
     // MARK: - Constants
 
-    private static let quickEmojis = ["👍", "❤️", "😂", "😮", "😢", "🔥"]
+    static let quickEmojis = ["👍", "❤️", "😂", "😮", "😢", "🔥"]
     private static let actionsWidth: CGFloat = 250
     private static let actionsCornerRadius: CGFloat = 14
     private static let actionRowHeight: CGFloat = 44
@@ -144,6 +153,7 @@ final class ContextMenuController: NSObject {
         )
         targetActionsY = actionsY
         targetReactionsY = reactionsY
+        maxActionsHeight = max(0, maxBottom - actionsY)
 
         // 4. Content scroll view
         contentScroll.clipsToBounds = true
@@ -219,7 +229,7 @@ final class ContextMenuController: NSObject {
     // MARK: - Drag-to-Select
 
     func trackFinger(at screenPoint: CGPoint) {
-        guard !isEmojiGridVisible else { return }
+        guard !isEmojiGridVisible, actionsMode == .actions else { return }
         let row = hitTestRow(at: screenPoint)
 
         guard row !== highlightedRow else { return }
@@ -235,13 +245,13 @@ final class ContextMenuController: NSObject {
     }
 
     func releaseFinger(at screenPoint: CGPoint) {
-        guard !isEmojiGridVisible else { return }
+        guard !isEmojiGridVisible, actionsMode == .actions else { return }
         guard let row = highlightedRow else { return }
         row.backgroundColor = .clear
         highlightedRow = nil
 
         guard let match = actionRows.first(where: { $0.control === row }) else { return }
-        dismissMenu { match.action.handler() }
+        handleAction(match.action)
     }
 
     private func hitTestRow(at screenPoint: CGPoint) -> HighlightControl? {
@@ -334,7 +344,7 @@ final class ContextMenuController: NSObject {
         }
 
         emojiGridNode.onSearchActivated = { [weak self] in
-            guard let self, let window = self.overlayWindow as? OverlayWindow else { return }
+            guard let self, let window = self.overlayWindow else { return }
             window.allowKeyStatus = true
             window.makeKey()
         }
@@ -429,7 +439,7 @@ final class ContextMenuController: NSObject {
 
         // Dismiss keyboard and revoke key status
         emojiGridContainer.endEditing(true)
-        (overlayWindow as? OverlayWindow)?.allowKeyStatus = false
+        overlayWindow?.allowKeyStatus = false
 
         UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseIn) {
             self.emojiGridContainer.alpha = 0
@@ -452,33 +462,135 @@ final class ContextMenuController: NSObject {
         actionsContainer.layer.shadowRadius = 12
         actionsContainer.layer.shadowOffset = CGSize(width: 0, height: 4)
 
+        actionsScrollView.showsVerticalScrollIndicator = false
+        actionsScrollView.alwaysBounceVertical = false
+        actionsScrollView.translatesAutoresizingMaskIntoConstraints = false
+
         actionsStack.axis = .vertical
         actionsStack.alignment = .fill
         actionsStack.distribution = .fill
-        actionsContainer.addSubview(actionsStack)
+        actionsStack.translatesAutoresizingMaskIntoConstraints = false
 
+        actionsContainer.addSubview(actionsScrollView)
+        actionsScrollView.addSubview(actionsStack)
+        NSLayoutConstraint.activate([
+            actionsScrollView.leadingAnchor.constraint(equalTo: actionsContainer.leadingAnchor),
+            actionsScrollView.trailingAnchor.constraint(equalTo: actionsContainer.trailingAnchor),
+            actionsScrollView.topAnchor.constraint(equalTo: actionsContainer.topAnchor),
+            actionsScrollView.bottomAnchor.constraint(equalTo: actionsContainer.bottomAnchor),
+            actionsStack.leadingAnchor.constraint(equalTo: actionsScrollView.contentLayoutGuide.leadingAnchor),
+            actionsStack.trailingAnchor.constraint(equalTo: actionsScrollView.contentLayoutGuide.trailingAnchor),
+            actionsStack.topAnchor.constraint(equalTo: actionsScrollView.contentLayoutGuide.topAnchor),
+            actionsStack.bottomAnchor.constraint(equalTo: actionsScrollView.contentLayoutGuide.bottomAnchor),
+            actionsStack.widthAnchor.constraint(equalTo: actionsScrollView.frameLayoutGuide.widthAnchor)
+        ])
+
+        container.addSubview(actionsContainer)
+        actionsContainer.frame.size.width = Self.actionsWidth
+        reloadActionsContent()
+    }
+
+    func showReactionSummary(entries: [ReactionSummaryEntry]) {
+        reactionSummaryEntries = entries
+        actionsMode = .reactionsSummary
+        reloadActionsContent(animated: true)
+    }
+
+    func updateReactionSummary(entries: [ReactionSummaryEntry]) {
+        guard actionsMode == .reactionsSummary else {
+            reactionSummaryEntries = entries
+            return
+        }
+        reactionSummaryEntries = entries
+        reloadActionsContent(animated: false)
+    }
+
+    private func showActionsMenu() {
+        actionsMode = .actions
+        reloadActionsContent(animated: true)
+    }
+
+    private func reloadActionsContent(animated: Bool = false) {
+        clearActionsStack()
+        actionsScrollView.setContentOffset(.zero, animated: false)
+
+        switch actionsMode {
+        case .actions:
+            rebuildActionRows()
+        case .reactionsSummary:
+            rebuildReactionSummaryRows()
+        }
+
+        layoutActionsContainer(animated: animated)
+    }
+
+    private func clearActionsStack() {
+        highlightedRow?.backgroundColor = .clear
+        highlightedRow = nil
+        actionRows.removeAll()
+        actionsStack.arrangedSubviews.forEach {
+            actionsStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+    }
+
+    private func rebuildActionRows() {
         for (index, action) in actions.enumerated() {
             if index > 0 {
-                let separator = UIView()
-                separator.backgroundColor = .separator
-                separator.translatesAutoresizingMaskIntoConstraints = false
-                separator.heightAnchor.constraint(equalToConstant: 1.0 / UIScreen.main.scale).isActive = true
-                actionsStack.addArrangedSubview(separator)
+                actionsStack.addArrangedSubview(makeSeparator())
             }
             let row = makeActionRow(action)
             actionsStack.addArrangedSubview(row)
             actionRows.append((control: row, action: action))
         }
+        actionsScrollView.isScrollEnabled = false
+    }
 
-        container.addSubview(actionsContainer)
+    private func rebuildReactionSummaryRows() {
+        let backRow = makeBackRow()
+        actionsStack.addArrangedSubview(backRow)
 
-        let fittingHeight = actionsStack.systemLayoutSizeFitting(
+        if !reactionSummaryEntries.isEmpty {
+            actionsStack.addArrangedSubview(makeSeparator())
+        }
+
+        for (index, entry) in reactionSummaryEntries.enumerated() {
+            if index > 0 {
+                actionsStack.addArrangedSubview(makeSeparator())
+            }
+            actionsStack.addArrangedSubview(makeReactionSummaryRow(entry))
+        }
+    }
+
+    private func layoutActionsContainer(animated: Bool) {
+        actionsContainer.layoutIfNeeded()
+        let contentHeight = actionsStack.systemLayoutSizeFitting(
             CGSize(width: Self.actionsWidth, height: UIView.layoutFittingCompressedSize.height),
             withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel
         ).height
-        actionsStack.frame = CGRect(x: 0, y: 0, width: Self.actionsWidth, height: fittingHeight)
-        actionsContainer.frame.size = actionsStack.frame.size
+        let height = min(contentHeight, maxActionsHeight > 0 ? maxActionsHeight : contentHeight)
+        let applyLayout = {
+            self.actionsContainer.frame.size = CGSize(width: Self.actionsWidth, height: height)
+            self.actionsScrollView.contentSize = CGSize(width: self.actionsContainer.bounds.width, height: contentHeight)
+            self.actionsScrollView.isScrollEnabled = contentHeight > height
+        }
+
+        if animated {
+            UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseInOut) {
+                applyLayout()
+            }
+        } else {
+            applyLayout()
+        }
+    }
+
+    private func makeSeparator() -> UIView {
+        let separator = UIView()
+        separator.backgroundColor = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.heightAnchor.constraint(equalToConstant: 1.0 / UIScreen.main.scale).isActive = true
+        return separator
     }
 
     // MARK: - Action Row
@@ -517,10 +629,74 @@ final class ContextMenuController: NSObject {
         ])
 
         row.addAction(UIAction { [weak self] _ in
-            self?.dismissMenu { action.handler() }
+            self?.handleAction(action)
         }, for: .touchUpInside)
 
         return row
+    }
+
+    private func makeBackRow() -> HighlightControl {
+        let action = ContextMenuAction(
+            title: "Back",
+            image: UIImage(systemName: "chevron.left"),
+            behavior: .handleInMenu
+        ) { [weak self] in
+            self?.showActionsMenu()
+        }
+        return makeActionRow(action)
+    }
+
+    private func makeReactionSummaryRow(_ entry: ReactionSummaryEntry) -> UIView {
+        let row = UIView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(equalToConstant: Self.actionRowHeight).isActive = true
+
+        let nameLabel = UILabel()
+        nameLabel.text = entry.displayName
+        nameLabel.font = .systemFont(ofSize: 16)
+        nameLabel.textColor = .label
+        nameLabel.numberOfLines = 1
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let timeLabel = UILabel()
+        timeLabel.text = MessageCellHelpers.timeFormatter.string(from: entry.timestamp)
+        timeLabel.font = .systemFont(ofSize: 13)
+        timeLabel.textColor = .secondaryLabel
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let reactionLabel = UILabel()
+        reactionLabel.text = entry.reactionKey
+        reactionLabel.font = .systemFont(ofSize: 18)
+        reactionLabel.textAlignment = .right
+        reactionLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        reactionLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let stack = UIStackView(arrangedSubviews: [nameLabel, timeLabel, reactionLabel])
+        stack.axis = .horizontal
+        stack.spacing = 12
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: row.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: row.bottomAnchor)
+        ])
+
+        return row
+    }
+
+    private func handleAction(_ action: ContextMenuAction) {
+        switch action.behavior {
+        case .dismissBeforeHandling:
+            dismissMenu { action.handler() }
+        case .handleInMenu:
+            action.handler()
+        }
     }
 
     // MARK: - Dismiss
@@ -585,4 +761,3 @@ private final class HighlightControl: UIControl {
         }
     }
 }
-

@@ -13,7 +13,7 @@ final class SettingsViewController: ASDKViewController<ASDisplayNode> {
         super.init(node: ScreenNode())
 
         textNode.attributedText = NSAttributedString(
-            string: "Настройки",
+            string: String(localized: "Settings"),
             attributes: [
                 .font: UIFont.boldSystemFont(ofSize: 24),
                 .foregroundColor: UIColor.black

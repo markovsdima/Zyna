@@ -3,11 +3,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import UIKit
+import AsyncDisplayKit
 
 /// Glass navigation bar with 3 island shapes: back (circle), title (rounded rect), call (circle).
-/// Lives in the main window; interactive content placed above glass renderer via GlassService.
-final class GlassNavBar: UIView {
+final class GlassNavBar: ASDisplayNode {
 
     // MARK: - Public
 
@@ -16,19 +15,19 @@ final class GlassNavBar: UIView {
     var onTitleTapped: (() -> Void)?
 
     var name: String = "" {
-        didSet { titleView.name = name; setNeedsLayout() }
+        didSet { titleNode.name = name; setNeedsLayout() }
     }
 
     var presence: UserPresence? {
-        didSet { titleView.presence = presence; setNeedsLayout() }
+        didSet { titleNode.presence = presence; setNeedsLayout() }
     }
 
     var memberCount: Int? {
-        didSet { titleView.memberCount = memberCount; setNeedsLayout() }
+        didSet { titleNode.memberCount = memberCount; setNeedsLayout() }
     }
 
     var isTappable: Bool = false {
-        didSet { titleView.isTappable = isTappable }
+        didSet { titleNode.isTappable = isTappable }
     }
 
     /// The view to capture as glass background (e.g. the table/scroll view).
@@ -36,20 +35,30 @@ final class GlassNavBar: UIView {
         didSet { anchor.sourceView = sourceView }
     }
 
-    /// Total height from top of screen (safeArea + bar).
-    var coveredHeight: CGFloat {
-        guard let superview else { return 0 }
-        return superview.safeAreaInsets.top + barHeight
+    /// Background color the glass should sample where `sourceView`
+    /// has no cells. Defaults to the chat background; override only
+    /// if hosting glass over a non-chat surface.
+    var backdropClearColor: UIColor = AppColor.chatBackground {
+        didSet { anchor.backdropClearColor = backdropClearColor }
     }
 
-    // MARK: - Private
+    /// Total height from top of screen (safeArea + bar).
+    var coveredHeight: CGFloat {
+        guard let supernode else { return 0 }
+        return supernode.view.safeAreaInsets.top + barHeight
+    }
+
+    // MARK: - Subnodes
+
+    let backButtonNode = AccessibleButtonNode()
+    let callButtonNode = AccessibleButtonNode()
+    let titleNode = PresenceTitleNode()
+
+    // MARK: - Glass (UIView, added in didLoad)
 
     private let anchor = GlassAnchor()
-    private let contentView = UIView()
 
-    private let backButton = UIButton(type: .system)
-    private let callButton = UIButton(type: .system)
-    private let titleView = PresenceTitleView()
+    // MARK: - Constants
 
     private let barHeight: CGFloat = 44
     private let sideInset: CGFloat = 6
@@ -61,51 +70,72 @@ final class GlassNavBar: UIView {
 
     // MARK: - Init
 
-    init() {
-        super.init(frame: .zero)
-        backgroundColor = .clear
-        isUserInteractionEnabled = false
+    override init() {
+        super.init()
+        anchor.debugName = "nav"
 
+        // Images: pre-rendered via AppIcon (safe off-main)
+        backButtonNode.setImage(
+            AppIcon.chevronLeft.rendered(size: 17, weight: .semibold, color: AppColor.accent),
+            for: .normal
+        )
+        backButtonNode.isAccessibilityElement = true
+        backButtonNode.accessibilityLabel = "Back"
+        backButtonNode.accessibilityTraits = .button
+        backButtonNode.style.preferredSize = CGSize(width: btnSize, height: btnSize)
+
+        callButtonNode.setImage(
+            AppIcon.phone.rendered(size: 16, weight: .medium, color: AppColor.accent),
+            for: .normal
+        )
+        callButtonNode.isAccessibilityElement = true
+        callButtonNode.accessibilityLabel = "Call"
+        callButtonNode.accessibilityTraits = .button
+        callButtonNode.style.preferredSize = CGSize(width: btnSize, height: btnSize)
+    }
+
+    // MARK: - Accessibility
+
+    /// Override to enforce reading order: back → title → call.
+    /// Without this, Texture iterates subviews and may interleave with
+    /// anchor/renderer or sort by frame in unexpected ways.
+    override var accessibilityElements: [Any]? {
+        get {
+            var elements: [Any] = []
+            if backButtonNode.isNodeLoaded { elements.append(backButtonNode.view) }
+            if titleNode.isNodeLoaded { elements.append(titleNode.view) }
+            if callButtonNode.isNodeLoaded { elements.append(callButtonNode.view) }
+            return elements
+        }
+        set { }
+    }
+
+    // MARK: - didLoad
+
+    override func didLoad() {
+        super.didLoad()
+        view.backgroundColor = .clear
+        view.clipsToBounds = false
+
+        // Glass UIView parts — below subnode views
         anchor.cornerRadius = cornerR
         anchor.shapeProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
                 ?? GlassRenderer.ShapeParams()
         }
-        addSubview(anchor)
+        view.addSubview(anchor)
+        anchor.accessibilityElementsHidden = true
 
-        // Content (placed above glass renderer in main window)
-        contentView.backgroundColor = .clear
+        // Subnodes on top of renderer
+        addSubnode(backButtonNode)
+        addSubnode(titleNode)
+        addSubnode(callButtonNode)
 
-        backButton.setImage(
-            UIImage(systemName: "chevron.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)),
-            for: .normal
-        )
-        backButton.addTarget(self, action: #selector(backTapped), for: .touchUpInside)
+        view.sendSubviewToBack(anchor)
 
-        callButton.setImage(
-            UIImage(systemName: "phone.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)),
-            for: .normal
-        )
-        callButton.addTarget(self, action: #selector(callTapped), for: .touchUpInside)
-
-        titleView.onTapped = { [weak self] in self?.onTitleTapped?() }
-
-        contentView.addSubview(backButton)
-        contentView.addSubview(titleView)
-        contentView.addSubview(callButton)
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    // MARK: - Lifecycle
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil {
-            GlassService.shared.attachContent(contentView, for: anchor)
-        } else {
-            contentView.removeFromSuperview()
-        }
+        backButtonNode.addTarget(self, action: #selector(backTapped), forControlEvents: .touchUpInside)
+        callButtonNode.addTarget(self, action: #selector(callTapped), forControlEvents: .touchUpInside)
+        titleNode.onTapped = { [weak self] in self?.onTitleTapped?() }
     }
 
     // MARK: - Layout
@@ -117,20 +147,16 @@ final class GlassNavBar: UIView {
 
         frame = CGRect(x: sideInset, y: safeTop, width: barWidth, height: barHeight)
         anchor.frame = bounds
+        anchor.renderHostContainerView = parentView
     }
 
-    /// Called by GlassService when positioning content above renderer.
-    /// Content frame is set to glassFrame by the service, so we layout relative to bounds.
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        layoutContent(in: bounds)
-    }
-
-    private func layoutContent(in rect: CGRect) {
+    override func layout() {
+        super.layout()
+        let rect = bounds
         let cy = rect.height / 2
 
         // Back button (left circle)
-        backButton.frame = CGRect(
+        backButtonNode.frame = CGRect(
             x: btnPad,
             y: cy - btnSize / 2,
             width: btnSize,
@@ -138,7 +164,7 @@ final class GlassNavBar: UIView {
         )
 
         // Call button (right circle)
-        callButton.frame = CGRect(
+        callButtonNode.frame = CGRect(
             x: rect.width - btnPad - btnSize,
             y: cy - btnSize / 2,
             width: btnSize,
@@ -150,11 +176,11 @@ final class GlassNavBar: UIView {
         cachedTitleW = fittedTitleWidth(maxWidth: maxTitleW)
         let titleW = cachedTitleW
         let titleX = (rect.width - titleW) / 2
-        titleView.frame = CGRect(x: titleX, y: 0, width: titleW, height: rect.height)
+        titleNode.frame = CGRect(x: titleX, y: 0, width: titleW, height: rect.height)
     }
 
     private func fittedTitleWidth(maxWidth: CGFloat) -> CGFloat {
-        let fitWidth = titleView.contentWidth
+        let fitWidth = titleNode.contentWidth
         guard fitWidth > 0 else { return maxWidth }
         return min(fitWidth + titleHPad * 2, maxWidth)
     }
@@ -184,7 +210,7 @@ final class GlassNavBar: UIView {
         let callCY = cy
         let callR = btnSize / 2
 
-        // Title (rounded rect, center — use cached width from layoutContent)
+        // Title (rounded rect, center — use cached width from layout)
         let maxTitleW = glassFrame.width - (btnPad + btnSize + btnPad) * 2
         let titleW = cachedTitleW > 0 ? cachedTitleW : fittedTitleWidth(maxWidth: maxTitleW)
         let titleX = glassFrame.origin.x + (glassFrame.width - titleW) / 2

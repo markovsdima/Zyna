@@ -63,7 +63,7 @@ final class InlineEmojiGridNode: ASDisplayNode {
         searchIconNode.style.preferredSize = CGSize(width: 14, height: 14)
 
         searchTextNode.attributedPlaceholderText = NSAttributedString(
-            string: "Search",
+            string: String(localized: "Search"),
             attributes: [
                 .font: UIFont.systemFont(ofSize: 15),
                 .foregroundColor: UIColor.placeholderText

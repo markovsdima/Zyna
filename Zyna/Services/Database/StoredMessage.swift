@@ -17,6 +17,7 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var transactionId: String?
     var senderId: String
     var senderDisplayName: String?
+    var senderAvatarUrl: String?
     var isOutgoing: Bool
     var timestamp: TimeInterval
     var contentType: String
@@ -37,9 +38,6 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var replySenderName: String?
     var replyBody: String?
 
-    /// Serialised Zyna-specific message attributes (color, checklist,
-    /// callSignal etc.) extracted from the event's `formatted_body` HTML.
-    /// NULL when no attributes present.
     var zynaAttributesJSON: String?
 }
 
@@ -48,14 +46,17 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
 extension StoredMessage {
 
     init(from msg: ChatMessage, roomId: String) {
-        self.id = msg.id
+        // SDK uniqueId is a sequential number per-timeline, not globally
+        // unique. Prefix with roomId to avoid cross-room primary key collisions.
+        self.id = "\(roomId):\(msg.id)"
         self.roomId = roomId
         self.senderId = msg.senderId
         self.senderDisplayName = msg.senderDisplayName
+        self.senderAvatarUrl = msg.senderAvatarUrl
         self.isOutgoing = msg.isOutgoing
         self.timestamp = msg.timestamp.timeIntervalSince1970
         self.reactionsJSON = Self.encodeReactions(msg.reactions)
-        self.sendStatus = "synced"
+        self.sendStatus = msg.sendStatus
 
         switch msg.itemIdentifier {
         case .eventId(let id):
@@ -64,7 +65,9 @@ extension StoredMessage {
         case .transactionId(let id):
             self.transactionId = id
             self.eventId = nil
-            self.sendStatus = "sending"
+            if msg.sendStatus == "synced" || msg.sendStatus == "read" {
+                self.sendStatus = "sending"
+            }
         case nil:
             self.eventId = msg.eventId
             self.transactionId = nil
@@ -102,6 +105,10 @@ extension StoredMessage {
             contentBody = callId
             contentCaption = type.rawValue
             contentMimetype = reason
+        case .systemEvent(let text, let kind):
+            contentType = "system"
+            contentBody = text
+            contentCaption = kind.rawValue
         case .unsupported(let typeName):
             contentType = "unsupported"
             contentBody = typeName
@@ -154,6 +161,7 @@ extension StoredMessage {
             itemIdentifier: itemIdentifier,
             senderId: senderId,
             senderDisplayName: senderDisplayName,
+            senderAvatarUrl: senderAvatarUrl,
             isOutgoing: isOutgoing,
             timestamp: Date(timeIntervalSince1970: timestamp),
             content: content,
@@ -205,6 +213,11 @@ extension StoredMessage {
                   let typeRaw = contentCaption,
                   let type = CallEventType(rawValue: typeRaw) else { return nil }
             return .callEvent(type: type, callId: callId, reason: contentMimetype)
+        case "system":
+            guard let text = contentBody,
+                  let kindRaw = contentCaption,
+                  let kind = SystemEventKind(rawValue: kindRaw) else { return nil }
+            return .systemEvent(text: text, kind: kind)
         case "unsupported":
             return .unsupported(typeName: contentBody ?? "unknown")
         case "redacted":
@@ -219,23 +232,67 @@ extension StoredMessage {
 
 private extension StoredMessage {
 
+    struct ReactionSenderJSON: Codable {
+        let userId: String
+        let timestamp: TimeInterval
+    }
+
     struct ReactionJSON: Codable {
+        let key: String
+        let senders: [ReactionSenderJSON]
+        let isOwn: Bool
+        let legacyCount: Int?
+    }
+
+    struct LegacyReactionJSON: Codable {
         let key: String
         let count: Int
         let isOwn: Bool
     }
 
     static func encodeReactions(_ reactions: [MessageReaction]) -> String {
-        let items = reactions.map { ReactionJSON(key: $0.key, count: $0.count, isOwn: $0.isOwn) }
+        let items = reactions.map {
+            ReactionJSON(
+                key: $0.key,
+                senders: $0.senders.map {
+                    ReactionSenderJSON(userId: $0.userId, timestamp: $0.timestamp)
+                },
+                isOwn: $0.isOwn,
+                legacyCount: nil
+            )
+        }
         guard let data = try? JSONEncoder().encode(items),
               let json = String(data: data, encoding: .utf8) else { return "[]" }
         return json
     }
 
     static func decodeReactions(_ json: String) -> [MessageReaction] {
-        guard let data = json.data(using: .utf8),
-              let items = try? JSONDecoder().decode([ReactionJSON].self, from: data) else { return [] }
-        return items.map { MessageReaction(key: $0.key, count: $0.count, isOwn: $0.isOwn) }
+        guard let data = json.data(using: .utf8) else { return [] }
+
+        if let items = try? JSONDecoder().decode([ReactionJSON].self, from: data) {
+            return items.map {
+                MessageReaction(
+                    key: $0.key,
+                    senders: $0.senders.map {
+                        ReactionSender(userId: $0.userId, timestamp: $0.timestamp)
+                    },
+                    isOwn: $0.isOwn,
+                    legacyCount: $0.legacyCount
+                )
+            }
+        }
+
+        guard let legacyItems = try? JSONDecoder().decode([LegacyReactionJSON].self, from: data) else {
+            return []
+        }
+        return legacyItems.map {
+            MessageReaction(
+                key: $0.key,
+                senders: [],
+                isOwn: $0.isOwn,
+                legacyCount: $0.count
+            )
+        }
     }
 }
 
@@ -247,6 +304,7 @@ private extension StoredMessage {
         let color: String?
         let checklist: [ChecklistItem]?
         let callSignal: CallSignalData?
+        let forwardedFrom: String?
     }
 
     static func encodeZynaAttributes(_ attrs: ZynaMessageAttributes) -> String? {
@@ -254,7 +312,8 @@ private extension StoredMessage {
         let payload = ZynaAttributesJSON(
             color: attrs.color?.hexString,
             checklist: attrs.checklist,
-            callSignal: attrs.callSignal
+            callSignal: attrs.callSignal,
+            forwardedFrom: attrs.forwardedFrom
         )
         guard let data = try? JSONEncoder().encode(payload),
               let json = String(data: data, encoding: .utf8) else { return nil }
@@ -269,7 +328,8 @@ private extension StoredMessage {
         return ZynaMessageAttributes(
             color: payload.color.flatMap(UIColor.fromHexString),
             checklist: payload.checklist,
-            callSignal: payload.callSignal
+            callSignal: payload.callSignal,
+            forwardedFrom: payload.forwardedFrom
         )
     }
 }

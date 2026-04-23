@@ -12,12 +12,11 @@ enum MessageStatusIcon: Equatable {
     /// Not yet confirmed by the server. Rendered as a rotating clock.
     case pending
 
-    /// Server acknowledged receipt (one checkmark).
+    /// Server confirmed (one checkmark).
     case sent
 
-    /// Sync echoed the event back and it is considered delivered
-    /// (two overlapping checkmarks).
-    case delivered
+    /// Recipient has read the message (two checkmarks).
+    case read
 
     /// Terminal failure. Red circle with a white exclamation mark.
     case failed
@@ -29,10 +28,10 @@ enum MessageStatusIcon: Equatable {
         switch sendStatus {
         case "queued", "sending", "retrying":
             return .pending
-        case "sent":
+        case "sent", "synced":
             return .sent
-        case "synced":
-            return .delivered
+        case "read":
+            return .read
         case "failed":
             return .failed
         default:

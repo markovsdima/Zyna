@@ -30,23 +30,23 @@ final class VoicePreviewNode: ASDisplayNode {
     override init() {
         super.init()
         automaticallyManagesSubnodes = true
-        backgroundColor = .systemBackground
+        backgroundColor = AppColor.voiceRecordingBackground
         setupNodes()
     }
 
     private func setupNodes() {
-        deleteButton.setImage(AppIcon.trash.rendered(size: 22, color: .systemRed), for: .normal)
+        deleteButton.setImage(AppIcon.trash.rendered(size: 22, color: AppColor.destructive), for: .normal)
         deleteButton.style.preferredSize = CGSize(width: 36, height: 36)
 
-        playPauseButton.setImage(AppIcon.play.rendered(size: 22, color: .systemBlue), for: .normal)
+        playPauseButton.setImage(AppIcon.play.rendered(size: 22, color: AppColor.accent), for: .normal)
         playPauseButton.style.preferredSize = CGSize(width: 36, height: 36)
 
-        sendButton.setImage(AppIcon.send.rendered(size: 22, weight: .semibold, color: .systemBlue), for: .normal)
+        sendButton.setImage(AppIcon.send.rendered(size: 22, weight: .semibold, color: AppColor.accent), for: .normal)
         sendButton.style.preferredSize = CGSize(width: 36, height: 36)
 
         for _ in 0..<maxBars {
             let bar = ASDisplayNode()
-            bar.backgroundColor = .systemBlue
+            bar.backgroundColor = AppColor.accent
             bar.cornerRadius = 1.5
             bar.style.width = ASDimension(unit: .points, value: 3)
             waveformBars.append(bar)
@@ -71,7 +71,7 @@ final class VoicePreviewNode: ASDisplayNode {
     func updatePlayState(_ playing: Bool) {
         isPlaying = playing
         let icon: AppIcon = playing ? .pause : .play
-        playPauseButton.setImage(icon.rendered(size: 22, color: .systemBlue), for: .normal)
+        playPauseButton.setImage(icon.rendered(size: 22, color: AppColor.accent), for: .normal)
     }
 
     // MARK: - Layout

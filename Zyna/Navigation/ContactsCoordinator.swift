@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import AsyncDisplayKit
+import UIKit
 import MatrixRustSDK
 
 final class ContactsCoordinator {
 
-    let navigationController = ASDKNavigationController()
+    let navigationController = ZynaNavigationController()
 
     /// Opens a chat with the selected contact.
     var onOpenChat: ((Room) -> Void)?
@@ -27,7 +27,7 @@ final class ContactsCoordinator {
             self?.callContact(contact)
         }
 
-        navigationController.setViewControllers([vc], animated: false)
+        navigationController.setStack([vc], animated: false)
     }
 
     // MARK: - Private
@@ -38,7 +38,10 @@ final class ContactsCoordinator {
 
         let vc = ProfileViewController(mode: .other(userId: contact.userId))
         vc.onSearchTapped = { [weak self] in
-            self?.navigationController.popViewController(animated: true)
+            self?.navigationController.pop()
+        }
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
         }
         vc.onMessageTapped = { [weak self] in
             self?.openChat(for: contact)
@@ -46,55 +49,55 @@ final class ContactsCoordinator {
         vc.messageButtonTitle = hasDM
             ? "Перейти в чат"
             : "Новый чат с \(contact.displayName)"
-        navigationController.pushViewController(vc, animated: true)
+        navigationController.push(vc)
     }
 
     private func openChat(for contact: ContactModel) {
-        resolveRoom(for: contact) { [weak self] room in
-            self?.navigationController.popViewController(animated: false)
-            self?.onOpenChat?(room)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self, let room = await Self.resolveRoom(for: contact) else { return }
+            await MainActor.run {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onOpenChat?(room)
+                }
+            }
         }
     }
 
     private func callContact(_ contact: ContactModel) {
-        resolveRoom(for: contact) { [weak self] room in
-            self?.onStartCall?(room)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self, let room = await Self.resolveRoom(for: contact) else { return }
+            await MainActor.run {
+                self.onStartCall?(room)
+            }
         }
     }
 
-    private func resolveRoom(for contact: ContactModel, completion: @escaping (Room) -> Void) {
+    private static func resolveRoom(for contact: ContactModel) async -> Room? {
+        guard let client = MatrixClientService.shared.client else { return nil }
+
         if let roomId = contact.roomId,
-           let client = MatrixClientService.shared.client,
            let room = try? client.getRoom(roomId: roomId) {
-            completion(room)
-            return
+            return room
         }
 
-        if let client = MatrixClientService.shared.client,
-           let room = try? client.getDmRoom(userId: contact.userId) {
-            completion(room)
-            return
+        if let room = try? client.getDmRoom(userId: contact.userId) {
+            return room
         }
 
-        // Create DM only when explicitly calling
-        Task {
-            guard let client = MatrixClientService.shared.client else { return }
-            do {
-                let params = CreateRoomParameters(
-                    name: nil, topic: nil,
-                    isEncrypted: true, isDirect: true,
-                    visibility: .private, preset: .trustedPrivateChat,
-                    invite: [contact.userId], avatar: nil,
-                    powerLevelContentOverride: nil, joinRuleOverride: nil,
-                    historyVisibilityOverride: nil, canonicalAlias: nil
-                )
-                let roomId = try await client.createRoom(request: params)
-                if let room = try? client.getRoom(roomId: roomId) {
-                    await MainActor.run { completion(room) }
-                }
-            } catch {
-                ScopedLog(.ui)("Failed to create DM: \(error)")
-            }
+        do {
+            let params = CreateRoomParameters(
+                name: nil, topic: nil,
+                isEncrypted: true, isDirect: true,
+                visibility: .private, preset: .trustedPrivateChat,
+                invite: [contact.userId], avatar: nil,
+                powerLevelContentOverride: nil, joinRuleOverride: nil,
+                historyVisibilityOverride: nil, canonicalAlias: nil
+            )
+            let roomId = try await client.createRoom(request: params)
+            return try? client.getRoom(roomId: roomId)
+        } catch {
+            ScopedLog(.ui)("Failed to create DM: \(error)")
+            return nil
         }
     }
 }

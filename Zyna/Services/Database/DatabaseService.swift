@@ -64,7 +64,8 @@ final class DatabaseService {
             try db.create(
                 index: "idx_storedMessage_eventId",
                 on: "storedMessage",
-                columns: ["eventId"],
+                columns: ["roomId", "eventId"],
+                unique: true,
                 condition: Column("eventId") != nil
             )
             try db.create(
@@ -104,6 +105,12 @@ final class DatabaseService {
                 t.add(column: "contentFilename", .text)
                 t.add(column: "contentMimetype", .text)
                 t.add(column: "contentFileSize", .integer)
+            }
+        }
+
+        migrator.registerMigration("v4_senderAvatar") { db in
+            try db.alter(table: "storedMessage") { t in
+                t.add(column: "senderAvatarUrl", .text)
             }
         }
 

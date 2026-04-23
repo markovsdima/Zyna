@@ -38,6 +38,7 @@ struct LogScope: OptionSet {
     static let voiceRecording   = LogScope(rawValue: bit(11))
     static let presence         = LogScope(rawValue: bit(12))
     static let database         = LogScope(rawValue: bit(13))
+    static let push             = LogScope(rawValue: bit(14))
 
     // MARK: - Presets
 
@@ -55,7 +56,8 @@ struct LogScope: OptionSet {
         .displayLink,
         .voiceRecording,
         .presence,
-        .database
+        .database,
+        .push
     ]
 
     static let none: LogScope = []
@@ -80,7 +82,7 @@ enum LogConfig {
     /// - [.messageSend, .calls]
     /// - .all.subtracting(.network)
     /// - .all.subtracting([.network, .calls])
-    static var enabled: LogScope = .all.subtracting(.presence)
+    static var enabled: LogScope = .push
 
     static func enableAll() { enabled = .all }
     static func disableAll() { enabled = .none }

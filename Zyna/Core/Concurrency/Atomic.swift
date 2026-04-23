@@ -7,7 +7,7 @@ import Foundation
 import os.lock
 
 /// Thread-safe container for a value of type `T`, backed by
-/// `OSAllocatedUnfairLock`. Manual synchronisation via the lock
+/// `OSAllocatedUnfairLock`. Manual synchronization via the lock
 /// justifies `@unchecked Sendable` / `nonisolated(unsafe)`.
 final class Atomic<T>: @unchecked Sendable {
 

@@ -17,8 +17,16 @@ final class UserCellNode: ASCellNode {
 
     private let showCheckmark: Bool
 
+    var isChecked: Bool = false {
+        didSet {
+            guard showCheckmark, isChecked != oldValue else { return }
+            applyCheckmark(isSelected: isChecked)
+        }
+    }
+
     init(user: UserProfile, isSelected: Bool = false, showCheckmark: Bool = false) {
         self.showCheckmark = showCheckmark
+        self.isChecked = isSelected
         super.init()
         automaticallyManagesSubnodes = true
 
@@ -58,14 +66,19 @@ final class UserCellNode: ASCellNode {
         userIdNode.truncationMode = .byTruncatingTail
 
         if showCheckmark {
-            let imageName = isSelected ? "checkmark.circle.fill" : "circle"
-            let color: UIColor = isSelected ? .systemBlue : .systemGray3
-            checkmarkNode.image = UIImage(systemName: imageName)?.withTintColor(color, renderingMode: .alwaysOriginal)
             checkmarkNode.style.preferredSize = CGSize(width: 24, height: 24)
+            applyCheckmark(isSelected: isSelected)
         }
 
         separatorNode.backgroundColor = .separator
         separatorNode.style.height = ASDimension(unit: .points, value: 0.5)
+    }
+
+    private func applyCheckmark(isSelected: Bool) {
+        let imageName = isSelected ? "checkmark.circle.fill" : "circle"
+        let color: UIColor = isSelected ? .systemBlue : .systemGray3
+        checkmarkNode.image = UIImage(systemName: imageName)?
+            .withTintColor(color, renderingMode: .alwaysOriginal)
     }
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {

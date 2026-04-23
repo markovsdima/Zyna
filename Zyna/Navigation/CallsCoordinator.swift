@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import AsyncDisplayKit
+import UIKit
 
 final class CallsCoordinator {
 
-    let navigationController = ASDKNavigationController()
+    let navigationController = ZynaNavigationController()
 
     var onRoomSelected: ((String) -> Void)?
 
@@ -16,6 +16,6 @@ final class CallsCoordinator {
         vc.onCallTapped = { [weak self] roomId in
             self?.onRoomSelected?(roomId)
         }
-        navigationController.setViewControllers([vc], animated: false)
+        navigationController.setStack([vc], animated: false)
     }
 }

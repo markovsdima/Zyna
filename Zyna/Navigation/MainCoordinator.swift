@@ -8,7 +8,7 @@ import MatrixRustSDK
 
 final class MainCoordinator {
 
-    let tabBarController: ASTabBarController = MainTabBarController()
+    let tabBarController = ZynaTabBarController()
     var onLogout: (() -> Void)?
 
     private var chatsCoordinator: ChatsCoordinator?
@@ -19,49 +19,36 @@ final class MainCoordinator {
     func start() {
         let chats = ChatsCoordinator()
         chats.start()
-        chats.navigationController.tabBarItem = UITabBarItem(
-            title: "Чаты",
-            image: UIImage(systemName: "message"),
-            selectedImage: nil
-        )
 
         let contacts = ContactsCoordinator()
         contacts.start()
-        contacts.navigationController.tabBarItem = UITabBarItem(
-            title: "Контакты",
-            image: UIImage(systemName: "person.2"),
-            selectedImage: nil
-        )
 
         let calls = CallsCoordinator()
         calls.start()
-        calls.navigationController.tabBarItem = UITabBarItem(
-            title: "Звонки",
-            image: UIImage(systemName: "phone"),
-            selectedImage: nil
-        )
 
         let profile = ProfileCoordinator()
         profile.onLogout = { [weak self] in
             self?.onLogout?()
         }
         profile.start()
-        profile.navigationController.tabBarItem = UITabBarItem(
-            title: "Профиль",
-            image: UIImage(systemName: "person"),
-            selectedImage: nil
-        )
 
-        tabBarController.setViewControllers(
+        let items: [ZynaTabBarItem] = [
+            ZynaTabBarItem(title: String(localized: "Contacts"), icon: UIImage(systemName: "person.2")),
+            ZynaTabBarItem(title: String(localized: "Calls"),    icon: UIImage(systemName: "phone")),
+            ZynaTabBarItem(title: String(localized: "Chats"),    icon: UIImage(systemName: "message")),
+            ZynaTabBarItem(title: String(localized: "Profile"),  icon: UIImage(systemName: "person")),
+        ]
+
+        tabBarController.setControllers(
             [
                 contacts.navigationController,
                 calls.navigationController,
                 chats.navigationController,
-                profile.navigationController
+                profile.navigationController,
             ],
-            animated: false
+            items: items,
+            selectedIndex: 2
         )
-        tabBarController.selectedIndex = 2
 
         self.chatsCoordinator = chats
         self.contactsCoordinator = contacts
@@ -69,37 +56,89 @@ final class MainCoordinator {
         self.profileCoordinator = profile
 
         contacts.onOpenChat = { [weak self] room in
-            self?.switchToChat(room: room)
+            self?.routeToChat(room: room)
         }
         contacts.onStartCall = { [weak self] room in
-            self?.switchToChatAndCall(room: room)
+            self?.routeToChatAndCall(room: room)
         }
 
         calls.onRoomSelected = { [weak self] roomId in
-            self?.callFromHistory(roomId: roomId)
+            self?.routeToCallHistory(roomId: roomId)
         }
     }
 
-    private func switchToChat(room: Room) {
+    // MARK: - Route entry points
+
+    private func routeToChat(room: Room) {
         guard let chats = chatsCoordinator else { return }
-        tabBarController.selectedViewController = chats.navigationController
-        chats.navigationController.popToRootViewController(animated: false)
-        chats.showChat(room)
+        if tabBarController.selectedController === chats.navigationController {
+            chats.navigationController.popToRoot(animated: false)
+            chats.showChat(room)
+            return
+        }
+
+        guard let sourceNavigationController = tabBarController.selectedController as? ZynaNavigationController else {
+            selectChatsTab(chats) { [weak chats] in
+                guard let chats else { return }
+                chats.navigationController.popToRoot(animated: false)
+                chats.showChat(room)
+            }
+            return
+        }
+
+        CrossStackTransitionCoordinator.runPushTransition(
+            in: tabBarController,
+            sourceNavigationController: sourceNavigationController,
+            destinationNavigationController: chats.navigationController,
+            prepareDestination: { [weak self, weak chats] in
+                guard let self, let chats else { return }
+                self.selectChatsTab(chats, animated: false)
+                self.tabBarController.setTabBarHidden(
+                    chats.navigationController.topViewController?.hidesBottomBarWhenPushed ?? false,
+                    animated: false
+                )
+                chats.navigationController.popToRoot(animated: false)
+                chats.showChat(room, animated: false)
+                self.tabBarController.setTabBarHidden(
+                    chats.navigationController.topViewController?.hidesBottomBarWhenPushed ?? false,
+                    animated: false
+                )
+            },
+            cleanupSource: { [weak sourceNavigationController] in
+                sourceNavigationController?.popToRoot(animated: false)
+            },
+            completion: nil
+        )
     }
 
-    private func switchToChatAndCall(room: Room) {
+    private func routeToChatAndCall(room: Room) {
         guard let chats = chatsCoordinator else { return }
-        tabBarController.selectedViewController = chats.navigationController
-        chats.showChatAndCall(room: room)
+        selectChatsTab(chats) { [weak chats] in
+            chats?.showChatAndCall(room: room)
+        }
     }
 
-    private func callFromHistory(roomId: String) {
+    private func routeToCallHistory(roomId: String) {
         guard let client = MatrixClientService.shared.client,
               let room = try? client.getRoom(roomId: roomId) else { return }
 
-        // Switch to Chats tab and open the chat
         guard let chats = chatsCoordinator else { return }
-        tabBarController.selectedViewController = chats.navigationController
-        chats.showChatAndCall(room: room)
+        selectChatsTab(chats) { [weak chats] in
+            chats?.showChatAndCall(room: room)
+        }
+    }
+
+    private func selectChatsTab(
+        _ chats: ChatsCoordinator,
+        animated: Bool = true,
+        completion: (() -> Void)? = nil
+    ) {
+        if let index = tabBarController.controllers.firstIndex(where: {
+            $0 === chats.navigationController
+        }) {
+            tabBarController.setSelectedIndex(index, animated: animated, completion: completion)
+        } else {
+            completion?()
+        }
     }
 }

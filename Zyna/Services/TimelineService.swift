@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import Foundation
+import UIKit
 import Combine
 import UniformTypeIdentifiers
 import MatrixRustSDK
@@ -20,6 +20,9 @@ final class TimelineService {
 
     /// Raw SDK diffs forwarded to the diff batcher.
     var onDiffs: (([TimelineDiff]) -> Void)?
+
+    /// Timestamp of the newest own message read by someone else.
+    var onReadCursor: ((TimeInterval) -> Void)?
 
     private let room: Room
     private var timeline: Timeline?
@@ -74,13 +77,29 @@ final class TimelineService {
             }
         }
 
-        // Publish raw items for call signaling (deduplication happens in CallSignalingService)
         if !allItems.isEmpty {
             rawTimelineItemsSubject.send(allItems)
         }
 
-        // Forward raw diffs to the batcher
+        // Extract read cursor: the timestamp of the newest own message
+        // that has a read receipt from someone else.
+        var readCursorTimestamp: TimeInterval?
+        for item in allItems {
+            guard let event = item.asEvent(), event.isOwn else { continue }
+            let hasOtherReceipt = event.readReceipts.contains { $0.key != event.sender }
+            if hasOtherReceipt {
+                let ts = TimeInterval(event.timestamp) / 1000
+                if readCursorTimestamp == nil || ts > readCursorTimestamp! {
+                    readCursorTimestamp = ts
+                }
+            }
+        }
+
+        // Forward raw diffs + read cursor to the batcher
         onDiffs?(diffs)
+        if let cursor = readCursorTimestamp {
+            onReadCursor?(cursor)
+        }
 
         logTimeline("Timeline diffs forwarded: \(diffs.count) diffs")
     }
@@ -93,11 +112,14 @@ final class TimelineService {
         let timestamp = Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
 
         let senderName: String?
+        let senderAvatarUrl: String?
         switch event.senderProfile {
-        case .ready(let displayName, _, _):
+        case .ready(let displayName, _, let avatarUrl):
             senderName = displayName
+            senderAvatarUrl = avatarUrl
         default:
             senderName = nil
+            senderAvatarUrl = nil
         }
 
         guard let content = contentFromEvent(event) else { return nil }
@@ -126,6 +148,7 @@ final class TimelineService {
             itemIdentifier: itemIdentifier,
             senderId: event.sender,
             senderDisplayName: senderName,
+            senderAvatarUrl: senderAvatarUrl,
             isOutgoing: event.isOwn,
             timestamp: timestamp,
             content: content,
@@ -141,14 +164,25 @@ final class TimelineService {
     /// content or when no carrier span is present.
     static func extractZynaAttributes(from event: EventTimelineItem) -> ZynaMessageAttributes {
         guard case .msgLike(let msgContent) = event.content,
-              case .message(let message) = msgContent.kind,
-              case .text = message.msgType
+              case .message(let message) = msgContent.kind
         else { return ZynaMessageAttributes() }
 
-        // matrix-rust-sdk's typed path runs formatted_body through an HTML
-        // sanitiser that drops unknown attributes (including our data-zyna).
-        // Read the raw event JSON and extract formatted_body ourselves.
-        // Primary path: parse raw event JSON (unmodified by SDK sanitiser).
+        // For media types: check formattedCaption in raw JSON
+        // (SDK serialises formattedCaption into the same formatted_body field)
+        switch message.msgType {
+        case .image, .audio, .file, .video:
+            if let rawJSON = event.lazyProvider.debugInfo().originalJson,
+               let formatted = Self.extractFormattedBodyFromRawEvent(rawJSON) {
+                return ZynaHTMLCodec.decode(htmlBody: formatted)
+            }
+            return ZynaMessageAttributes()
+        case .text:
+            break
+        default:
+            return ZynaMessageAttributes()
+        }
+
+        // Text messages: extract from formatted_body
         if let rawJSON = event.lazyProvider.debugInfo().originalJson,
            let formatted = Self.extractFormattedBodyFromRawEvent(rawJSON) {
             return ZynaHTMLCodec.decode(htmlBody: formatted)
@@ -186,9 +220,17 @@ final class TimelineService {
         let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         return msgContent.reactions
             .map { reaction in
-                MessageReaction(
+                let senders = reaction.senders
+                    .map {
+                        ReactionSender(
+                            userId: $0.senderId,
+                            timestamp: TimeInterval($0.timestamp) / 1000
+                        )
+                    }
+                    .sorted { $0.timestamp > $1.timestamp }
+                return MessageReaction(
                     key: reaction.key,
-                    count: reaction.senders.count,
+                    senders: senders,
                     isOwn: reaction.senders.contains { $0.senderId == currentUserId }
                 )
             }
@@ -245,6 +287,238 @@ final class TimelineService {
         }
     }
 
+    private static func currentUserId() -> String? {
+        try? MatrixClientService.shared.client?.userId()
+    }
+
+    private static func senderDisplayName(from event: EventTimelineItem) -> String {
+        if case .ready(let displayName, _, _) = event.senderProfile,
+           let displayName,
+           !displayName.isEmpty {
+            return displayName
+        }
+        return event.sender
+    }
+
+    private static func memberDisplayName(userId: String, displayName: String?) -> String {
+        guard let displayName, !displayName.isEmpty else { return userId }
+        return displayName
+    }
+
+    private static func normalizedReason(_ reason: String?) -> String? {
+        guard let reason else { return nil }
+        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func membershipEventText(
+        userId: String,
+        userDisplayName: String?,
+        change: MembershipChange?,
+        reason: String?,
+        event: EventTimelineItem
+    ) -> String? {
+        guard let change else { return nil }
+
+        let senderIsYou = event.isOwn
+        let sender = senderDisplayName(from: event)
+        let memberIsYou = userId == currentUserId()
+        let member = memberDisplayName(userId: userId, displayName: userDisplayName)
+        let reason = normalizedReason(reason)
+
+        switch change {
+        case .joined:
+            return memberIsYou
+                ? String(localized: "You joined the room")
+                : String(localized: "\(member) joined the room")
+        case .left:
+            return memberIsYou
+                ? String(localized: "You left the room")
+                : String(localized: "\(member) left the room")
+        case .banned, .kickedAndBanned:
+            if let reason {
+                if senderIsYou { return String(localized: "You banned \(member): \(reason)") }
+                if memberIsYou { return String(localized: "\(sender) banned you: \(reason)") }
+                return String(localized: "\(sender) banned \(member): \(reason)")
+            }
+            if senderIsYou { return String(localized: "You banned \(member)") }
+            if memberIsYou { return String(localized: "\(sender) banned you") }
+            return String(localized: "\(sender) banned \(member)")
+        case .unbanned:
+            if senderIsYou { return String(localized: "You unbanned \(member)") }
+            if memberIsYou { return String(localized: "\(sender) unbanned you") }
+            return String(localized: "\(sender) unbanned \(member)")
+        case .kicked:
+            if let reason {
+                if senderIsYou { return String(localized: "You removed \(member): \(reason)") }
+                if memberIsYou { return String(localized: "\(sender) removed you: \(reason)") }
+                return String(localized: "\(sender) removed \(member): \(reason)")
+            }
+            if senderIsYou { return String(localized: "You removed \(member)") }
+            if memberIsYou { return String(localized: "\(sender) removed you") }
+            return String(localized: "\(sender) removed \(member)")
+        case .invited:
+            if senderIsYou { return String(localized: "You invited \(member)") }
+            if memberIsYou { return String(localized: "\(sender) invited you") }
+            return String(localized: "\(sender) invited \(member)")
+        case .invitationAccepted:
+            return memberIsYou
+                ? String(localized: "You accepted the invitation")
+                : String(localized: "\(member) accepted the invitation")
+        case .invitationRejected:
+            return memberIsYou
+                ? String(localized: "You declined the invitation")
+                : String(localized: "\(member) declined the invitation")
+        case .invitationRevoked:
+            if senderIsYou { return String(localized: "You revoked \(member)'s invitation") }
+            if memberIsYou { return String(localized: "\(sender) revoked your invitation") }
+            return String(localized: "\(sender) revoked \(member)'s invitation")
+        case .knocked:
+            return memberIsYou
+                ? String(localized: "You requested to join")
+                : String(localized: "\(member) requested to join")
+        case .knockAccepted:
+            if senderIsYou { return String(localized: "You accepted \(member)'s join request") }
+            if memberIsYou { return String(localized: "\(sender) accepted your join request") }
+            return String(localized: "\(sender) accepted \(member)'s join request")
+        case .knockRetracted:
+            return memberIsYou
+                ? String(localized: "You withdrew your join request")
+                : String(localized: "\(member) withdrew their join request")
+        case .knockDenied:
+            if senderIsYou { return String(localized: "You denied \(member)'s join request") }
+            if memberIsYou { return String(localized: "\(sender) denied your join request") }
+            return String(localized: "\(sender) denied \(member)'s join request")
+        case .none, .error, .notImplemented:
+            return nil
+        }
+    }
+
+    private static func profileChangeEventText(
+        displayName: String?,
+        prevDisplayName: String?,
+        avatarUrl: String?,
+        prevAvatarUrl: String?,
+        event: EventTimelineItem
+    ) -> String? {
+        let member = senderDisplayName(from: event)
+        let memberIsYou = event.isOwn
+        let displayNameChanged = displayName != prevDisplayName
+        let avatarChanged = avatarUrl != prevAvatarUrl
+
+        var parts: [String] = []
+
+        if displayNameChanged {
+            switch (prevDisplayName, displayName, memberIsYou) {
+            case (.some(let previous), .some(let current), true):
+                parts.append(String(localized: "You changed your display name from \(previous) to \(current)"))
+            case (.some(let previous), .some(let current), false):
+                parts.append(String(localized: "\(member) changed their display name from \(previous) to \(current)"))
+            case (nil, .some(let current), true):
+                parts.append(String(localized: "You set your display name to \(current)"))
+            case (nil, .some(let current), false):
+                parts.append(String(localized: "\(member) set their display name to \(current)"))
+            case (.some(let previous), nil, true):
+                parts.append(String(localized: "You removed your display name (\(previous))"))
+            case (.some(let previous), nil, false):
+                parts.append(String(localized: "\(member) removed their display name (\(previous))"))
+            case (nil, nil, _):
+                break
+            }
+        }
+
+        if avatarChanged {
+            parts.append(
+                memberIsYou
+                    ? String(localized: "You changed your avatar")
+                    : String(localized: "\(member) changed their avatar")
+            )
+        }
+
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: "\n")
+    }
+
+    private static func roomStateEventText(
+        state: OtherState,
+        event: EventTimelineItem
+    ) -> String? {
+        let sender = senderDisplayName(from: event)
+        let senderIsYou = event.isOwn
+
+        switch state {
+        case .roomAvatar(url: let url):
+            if senderIsYou {
+                return url == nil
+                    ? String(localized: "You removed the room avatar")
+                    : String(localized: "You changed the room avatar")
+            }
+            return url == nil
+                ? String(localized: "\(sender) removed the room avatar")
+                : String(localized: "\(sender) changed the room avatar")
+        case .roomCreate(federate: _):
+            return senderIsYou
+                ? String(localized: "You created the room")
+                : String(localized: "\(sender) created the room")
+        case .roomEncryption:
+            return String(localized: "Encryption enabled")
+        case .roomName(name: let name):
+            if let name, !name.isEmpty {
+                return senderIsYou
+                    ? String(localized: "You changed the room name to \(name)")
+                    : String(localized: "\(sender) changed the room name to \(name)")
+            }
+            return senderIsYou
+                ? String(localized: "You removed the room name")
+                : String(localized: "\(sender) removed the room name")
+        case .roomPinnedEvents(change: let change):
+            switch change {
+            case .added:
+                return senderIsYou
+                    ? String(localized: "You pinned messages")
+                    : String(localized: "\(sender) pinned messages")
+            case .removed:
+                return senderIsYou
+                    ? String(localized: "You unpinned messages")
+                    : String(localized: "\(sender) unpinned messages")
+            case .changed:
+                return senderIsYou
+                    ? String(localized: "You updated pinned messages")
+                    : String(localized: "\(sender) updated pinned messages")
+            }
+        case .roomThirdPartyInvite(displayName: let displayName):
+            guard let displayName, !displayName.isEmpty else { return nil }
+            return senderIsYou
+                ? String(localized: "You invited \(displayName)")
+                : String(localized: "\(sender) invited \(displayName)")
+        case .roomTopic(topic: let topic):
+            if let topic, !topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return senderIsYou
+                    ? String(localized: "You changed the room topic to \(topic)")
+                    : String(localized: "\(sender) changed the room topic to \(topic)")
+            }
+            return senderIsYou
+                ? String(localized: "You removed the room topic")
+                : String(localized: "\(sender) removed the room topic")
+        case .roomPowerLevels(events: _, previousEvents: _, users: _, previousUsers: _, thresholds: _, previousThresholds: _):
+            return nil
+        case .policyRuleRoom,
+             .policyRuleServer,
+             .policyRuleUser,
+             .roomAliases,
+             .roomCanonicalAlias,
+             .roomGuestAccess,
+             .roomHistoryVisibility(historyVisibility: _),
+             .roomJoinRules(joinRule: _),
+             .roomServerAcl,
+             .roomTombstone,
+             .spaceChild,
+             .spaceParent,
+             .custom(eventType: _):
+            return nil
+        }
+    }
+
     private static func contentFromEvent(_ event: EventTimelineItem) -> ChatMessageContent? {
         // Call events: invite is native SDK, signaling rides in span.
         // CallService writes call events to GRDB directly — skip here.
@@ -252,14 +526,44 @@ final class TimelineService {
         case .callInvite:
             return nil
 
+        case .roomMembership(userId: let userId, userDisplayName: let userDisplayName, change: let change, reason: let reason):
+            guard let text = membershipEventText(
+                userId: userId,
+                userDisplayName: userDisplayName,
+                change: change,
+                reason: reason,
+                event: event
+            ) else {
+                return nil
+            }
+            return .systemEvent(text: text, kind: .membership)
+
+        case .profileChange(displayName: let displayName, prevDisplayName: let prevDisplayName, avatarUrl: let avatarUrl, prevAvatarUrl: let prevAvatarUrl):
+            guard let text = profileChangeEventText(
+                displayName: displayName,
+                prevDisplayName: prevDisplayName,
+                avatarUrl: avatarUrl,
+                prevAvatarUrl: prevAvatarUrl,
+                event: event
+            ) else {
+                return nil
+            }
+            return .systemEvent(text: text, kind: .profileChange)
+
+        case .state(stateKey: _, content: let state):
+            guard let text = roomStateEventText(state: state, event: event) else {
+                return nil
+            }
+            return .systemEvent(text: text, kind: .roomState)
+
         case .msgLike(let msgContent):
-            // Filter span-based call signaling (answer, candidates, hangup)
             let attrs = extractZynaAttributes(from: event)
             if attrs.callSignal != nil { return nil }
 
             switch msgContent.kind {
             case .message(let messageContent):
-                return contentFromMessageType(messageContent.msgType)
+                guard let content = contentFromMessageType(messageContent.msgType) else { return nil }
+                return content
             case .sticker:
                 return .unsupported(typeName: "sticker")
             case .poll:
@@ -267,8 +571,13 @@ final class TimelineService {
             case .redacted:
                 return .redacted
             case .unableToDecrypt:
+                logTimeline("UTD: eventId=\(event.eventOrTransactionId) sender=\(event.sender)")
                 return .text(body: "Encrypted message")
             case .other:
+                return nil
+            case .liveLocation(content: _):
+                return .unsupported(typeName: "location")
+            @unknown default:
                 return nil
             }
 
@@ -277,9 +586,14 @@ final class TimelineService {
         }
     }
 
-    private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent {
+    private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent? {
         switch msgType {
         case .text(let content):
+            // Skip zero-width-space-only bodies — carrier messages
+            // (call signaling) that slipped past the span check.
+            let visible = content.body.replacingOccurrences(of: "\u{200B}", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if visible.isEmpty { return nil }
             return .text(body: content.body)
         case .image(let content):
             return .image(source: content.source, width: content.info?.width, height: content.info?.height, caption: content.caption)
@@ -318,6 +632,88 @@ final class TimelineService {
         }
 
         await MainActor.run { isPaginatingSubject.send(false) }
+    }
+
+    // MARK: - Forward
+
+    /// Extract message content suitable for forwarding to another room.
+    func extractForwardContent(eventId: String) async -> RoomMessageEventContentWithoutRelation? {
+        guard let timeline else { return nil }
+        do {
+            let event = try await timeline.getEventTimelineItemByEventId(eventId: eventId)
+            guard case .msgLike(let msgContent) = event.content,
+                  case .message(let message) = msgContent.kind
+            else { return nil }
+            return timeline.createMessageContent(msgType: message.msgType)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Send pre-extracted content (used for forwarding from another room).
+    func sendForwardedContent(_ content: RoomMessageEventContentWithoutRelation) async {
+        guard let timeline else { return }
+        do {
+            _ = try await timeline.send(msg: content)
+            logTimeline("Forwarded message sent")
+        } catch {
+            logTimeline("Forward send failed: \(error)")
+        }
+    }
+
+    /// Forward media by downloading from source and re-uploading
+    /// with Zyna attributes in the formattedCaption field.
+    func forwardMedia(source: MediaSource, mimetype: String, attrs: ZynaMessageAttributes, caption: String? = nil) async {
+        guard let timeline,
+              let client = MatrixClientService.shared.client
+        else { return }
+
+        do {
+            let data = try await client.getMediaContent(mediaSource: source)
+
+            let plainCaption = caption ?? "\u{200B}"
+            let encoded = ZynaHTMLCodec.encode(
+                userHTML: plainCaption,
+                attributes: attrs
+            )
+            let formattedCaption = FormattedBody(format: .html, body: encoded)
+
+            let tmpURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + "." + Self.extensionFor(mimetype))
+            try data.write(to: tmpURL)
+
+            let fileInfo = FileInfo(
+                mimetype: mimetype,
+                size: UInt64(data.count),
+                thumbnailInfo: nil,
+                thumbnailSource: nil
+            )
+            let params = UploadParameters(
+                source: .file(filename: tmpURL.path(percentEncoded: false)),
+                caption: plainCaption,
+                formattedCaption: formattedCaption,
+                mentions: nil,
+                inReplyTo: nil
+            )
+            _ = try timeline.sendFile(params: params, fileInfo: fileInfo)
+            logTimeline("Forwarded media sent with attributes")
+
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
+                try? FileManager.default.removeItem(at: tmpURL)
+            }
+        } catch {
+            logTimeline("Forward media failed: \(error)")
+        }
+    }
+
+    private static func extensionFor(_ mimetype: String) -> String {
+        switch mimetype {
+        case "image/jpeg": return "jpg"
+        case "image/png": return "png"
+        case "audio/mp4", "audio/m4a": return "m4a"
+        case "audio/ogg": return "ogg"
+        default: return "bin"
+        }
     }
 
     // MARK: - Send
@@ -401,7 +797,8 @@ final class TimelineService {
             return
         }
 
-        // sendImage throws InvalidAttachmentData — using sendFile as workaround
+        // sendImage throws InvalidAttachmentData — using sendFile
+        // as workaround until SDK issue is resolved.
         let fileInfo = FileInfo(
             mimetype: "image/jpeg", size: UInt64(imageData.count),
             thumbnailInfo: nil, thumbnailSource: nil
@@ -415,6 +812,10 @@ final class TimelineService {
             logTimeline("Image sent via sendFile, \(width)×\(height)")
         } catch {
             logTimeline("Image send failed: \(error)")
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            try? FileManager.default.removeItem(at: imageURL)
         }
     }
 
@@ -481,6 +882,16 @@ final class TimelineService {
             logTimeline("Call signaling sent via span")
         } catch {
             logTimeline("Call signaling send failed: \(error)")
+        }
+    }
+
+    // MARK: - Read Receipts
+
+    func markAsRead() async {
+        do {
+            try await timeline?.markAsRead(receiptType: .read)
+        } catch {
+            logTimeline("markAsRead failed: \(error)")
         }
     }
 
