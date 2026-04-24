@@ -193,7 +193,8 @@ final class TimelineService {
                     body: body,
                     senderId: event.sender,
                     kind: .image,
-                    transactionId: transactionId
+                    transactionId: transactionId,
+                    messageTimestamp: Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
                 ) ?? ZynaMessageAttributes()
             case .file(let content):
                 let body = content.caption ?? content.filename
@@ -201,7 +202,8 @@ final class TimelineService {
                     body: body,
                     senderId: event.sender,
                     kind: .file,
-                    transactionId: transactionId
+                    transactionId: transactionId,
+                    messageTimestamp: Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
                 ) ?? ZynaMessageAttributes()
             case .audio(let content):
                 let body = content.caption ?? content.filename
@@ -209,7 +211,8 @@ final class TimelineService {
                     body: body,
                     senderId: event.sender,
                     kind: .audio,
-                    transactionId: transactionId
+                    transactionId: transactionId,
+                    messageTimestamp: Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
                 ) ?? ZynaMessageAttributes()
             case .video(let content):
                 let body = content.caption ?? content.filename
@@ -217,7 +220,8 @@ final class TimelineService {
                     body: body,
                     senderId: event.sender,
                     kind: .video,
-                    transactionId: transactionId
+                    transactionId: transactionId,
+                    messageTimestamp: Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
                 ) ?? ZynaMessageAttributes()
             default:
                 return ZynaMessageAttributes()
@@ -251,7 +255,8 @@ final class TimelineService {
             transactionId: {
                 guard case .transactionId(let id) = event.eventOrTransactionId else { return nil }
                 return id
-            }()
+            }(),
+            messageTimestamp: Date(timeIntervalSince1970: TimeInterval(event.timestamp) / 1000)
         ) {
             return cached
         }

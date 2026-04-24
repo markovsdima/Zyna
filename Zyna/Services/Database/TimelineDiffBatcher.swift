@@ -353,6 +353,7 @@ final class TimelineDiffBatcher {
                   AND ifnull(contentCaption, '') = ?
                   AND ifnull(contentFilename, '') = ?
                   AND ifnull(contentMediaJSON, '') = ?
+                  AND ifnull(zynaAttributesJSON, '') = ?
                 ORDER BY ABS(timestamp - ?) ASC
                 LIMIT 1
                 """,
@@ -365,6 +366,7 @@ final class TimelineDiffBatcher {
                 record.contentCaption ?? "",
                 record.contentFilename ?? "",
                 record.contentMediaJSON ?? "",
+                record.zynaAttributesJSON ?? "",
                 record.timestamp
             ]
         )

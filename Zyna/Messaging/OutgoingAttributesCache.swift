@@ -28,9 +28,15 @@ final class OutgoingAttributesCache {
     /// Long enough to cover sync delays, short enough to avoid cross-
     /// contamination with an unrelated later message of the same body.
     private static let ttl: TimeInterval = 8
+    /// When two own messages have the same body, prefer the optimistic
+    /// attrs remembered closest to the event timestamp. This keeps a
+    /// freshly-forwarded message from leaking its header onto an older
+    /// message with identical text.
+    private static let timestampMatchWindow: TimeInterval = 10
 
     private struct Entry {
         let attributes: ZynaMessageAttributes
+        let createdAt: Date
         let expiresAt: Date
     }
 
@@ -65,6 +71,7 @@ final class OutgoingAttributesCache {
         queue.sync {
             pendingEntries[key, default: []].append(Entry(
                 attributes: attributes,
+                createdAt: Date(),
                 expiresAt: Date().addingTimeInterval(Self.ttl)
             ))
             pruneExpiredLocked()
@@ -78,7 +85,8 @@ final class OutgoingAttributesCache {
         body: String,
         senderId: String,
         kind: MessageKind = .text,
-        transactionId: String? = nil
+        transactionId: String? = nil,
+        messageTimestamp: Date? = nil
     ) -> ZynaMessageAttributes? {
         let key = Key(body: body, senderId: senderId, kind: kind)
         return queue.sync {
@@ -91,11 +99,26 @@ final class OutgoingAttributesCache {
             }
 
             guard var entries = pendingEntries[key], !entries.isEmpty else { return nil }
-            guard let entry = entries.first else { return nil }
+            let entryIndex: Int
+            if let messageTimestamp {
+                let ts = messageTimestamp.timeIntervalSince1970
+                let indexed = entries.enumerated().map { index, entry in
+                    (index, abs(entry.createdAt.timeIntervalSince1970 - ts))
+                }
+                guard let best = indexed.min(by: { $0.1 < $1.1 }),
+                      best.1 <= Self.timestampMatchWindow else {
+                    return nil
+                }
+                entryIndex = best.0
+            } else {
+                entryIndex = 0
+            }
+
+            let entry = entries[entryIndex]
 
             if let transactionId {
                 transactionAssignments[transactionId] = entry
-                entries.removeFirst()
+                entries.remove(at: entryIndex)
                 pendingEntries[key] = entries.isEmpty ? nil : entries
             }
 
