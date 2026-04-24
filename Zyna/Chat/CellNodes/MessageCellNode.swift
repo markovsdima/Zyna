@@ -89,6 +89,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     private let senderId: String
     private let isFirstInCluster: Bool
     private var isLastInCluster: Bool
+    let mediaGroupPosition: MediaGroupPosition?
+    private let rendersCompositeMediaBubble: Bool
     let usesAccentBubbleStyle: Bool
     private var showsBubbleChrome = true
     private var usesBareBubbleContent = false
@@ -103,6 +105,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         self.senderId = message.senderId
         self.isFirstInCluster = message.isFirstInCluster
         self.isLastInCluster = message.isLastInCluster
+        self.mediaGroupPosition = message.mediaGroupPresentation?.position
+        self.rendersCompositeMediaBubble = message.mediaGroupPresentation?.rendersCompositeBubble == true
         let customColor = message.zynaAttributes.color
         let usesAccentBubbleStyle = message.isOutgoing || customColor != nil
         self.usesAccentBubbleStyle = usesAccentBubbleStyle
@@ -142,12 +146,12 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         // the table's own background and break glass backdrop sampling.
         backgroundColor = .clear
 
-        bubbleNode.radius = 14
+        bubbleNode.radius = MessageCellHelpers.bubbleCornerRadius
         bubbleNode.fillColor = .clear
         bubbleNode.automaticallyManagesSubnodes = true
         directBubbleContentNode.automaticallyManagesSubnodes = true
         directBubbleContentNode.isHidden = true
-        bubbleBackgroundNode.radius = 14
+        bubbleBackgroundNode.radius = MessageCellHelpers.bubbleCornerRadius
         bubbleBackgroundNode.isUserInteractionEnabled = false
         bubblePortalBackgroundNode.isUserInteractionEnabled = false
         bubbleWrapperNode.addSubnode(bubbleBackgroundNode)
@@ -352,7 +356,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             return
         }
 
-        bubbleNode.radius = 14
+        bubbleNode.radius = MessageCellHelpers.bubbleCornerRadius
         bubbleBackgroundNode.radius = bubbleNode.radius
         bubblePortalBackgroundNode.radius = bubbleNode.radius
         bubbleNode.roundedCorners = .allCorners
@@ -455,10 +459,19 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             hStack.children = [column, spacer]
         }
 
-        // Only top is cluster-aware; bottom stays fixed so cell
-        // height doesn't jump when isLastInCluster flips in place.
         var insets = MessageCellHelpers.cellInsets
-        if isFirstInCluster {
+        if rendersCompositeMediaBubble {
+            if isFirstInCluster {
+                insets.top = MessageCellHelpers.clusterBreakTopInset
+            }
+        } else if let mediaGroupPosition {
+            insets.top = mediaGroupPosition == .top
+                ? MessageCellHelpers.clusterBreakTopInset
+                : 0
+            insets.bottom = mediaGroupPosition == .bottom
+                ? MessageCellHelpers.cellInsets.bottom
+                : 0
+        } else if isFirstInCluster {
             insets.top = MessageCellHelpers.clusterBreakTopInset
         }
         return ASInsetLayoutSpec(insets: insets, child: hStack)
@@ -481,12 +494,90 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     /// without recreating the cell (send-status, cluster-membership,
     /// or reactions change — all are lightweight).
     static func canUpdateInPlace(old: ChatMessage, new: ChatMessage) -> Bool {
-        old.id == new.id
-            && old.content == new.content
+        guard stableDisplayIdentity(for: old) == stableDisplayIdentity(for: new),
+              old.replyInfo == new.replyInfo,
+              old.senderDisplayName == new.senderDisplayName,
+              old.senderAvatarUrl == new.senderAvatarUrl,
+              mediaGroupPresentationIsVisuallyEquivalent(old: old.mediaGroupPresentation, new: new.mediaGroupPresentation)
+        else {
+            return false
+        }
+
+        if isVisuallyEquivalentCompositeMediaGroupRow(old: old, new: new) {
+            return true
+        }
+
+        return old.content == new.content
             && old.zynaAttributes == new.zynaAttributes
-            && old.replyInfo == new.replyInfo
-            && old.senderDisplayName == new.senderDisplayName
-            && old.senderAvatarUrl == new.senderAvatarUrl
+    }
+
+    private static func stableDisplayIdentity(for message: ChatMessage) -> String {
+        if let presentation = message.mediaGroupPresentation {
+            if presentation.rendersCompositeBubble {
+                return "media-group:\(presentation.id):composite"
+            }
+            if presentation.hidesStandaloneBubble,
+               let mediaGroup = message.zynaAttributes.mediaGroup {
+                return "media-group:\(presentation.id):hidden:\(mediaGroup.index)"
+            }
+        }
+        return message.transactionId ?? message.eventId ?? message.id
+    }
+
+    private static func isVisuallyEquivalentCompositeMediaGroupRow(old: ChatMessage, new: ChatMessage) -> Bool {
+        guard let oldPresentation = old.mediaGroupPresentation,
+              let newPresentation = new.mediaGroupPresentation,
+              oldPresentation.rendersCompositeBubble,
+              newPresentation.rendersCompositeBubble,
+              oldPresentation.id == newPresentation.id
+        else {
+            return false
+        }
+        return true
+    }
+
+    private static func mediaGroupPresentationIsVisuallyEquivalent(
+        old: MediaGroupPresentation?,
+        new: MediaGroupPresentation?
+    ) -> Bool {
+        switch (old, new) {
+        case (nil, nil):
+            return true
+        case let (lhs?, rhs?):
+            if lhs.rendersCompositeBubble && rhs.rendersCompositeBubble {
+                return lhs.id == rhs.id
+                    && lhs.position == rhs.position
+                    && lhs.totalHint == rhs.totalHint
+                    && lhs.caption == rhs.caption
+                    && lhs.captionPlacement == rhs.captionPlacement
+                    && lhs.suppressIndividualCaption == rhs.suppressIndividualCaption
+                    && lhs.rendersCompositeBubble == rhs.rendersCompositeBubble
+                    && lhs.hidesStandaloneBubble == rhs.hidesStandaloneBubble
+                    && lhs.items.count == rhs.items.count
+            }
+
+            guard lhs.id == rhs.id,
+                  lhs.position == rhs.position,
+                  lhs.totalHint == rhs.totalHint,
+                  lhs.caption == rhs.caption,
+                  lhs.captionPlacement == rhs.captionPlacement,
+                  lhs.suppressIndividualCaption == rhs.suppressIndividualCaption,
+                  lhs.rendersCompositeBubble == rhs.rendersCompositeBubble,
+                  lhs.hidesStandaloneBubble == rhs.hidesStandaloneBubble
+            else {
+                return false
+            }
+
+            guard lhs.items.count == rhs.items.count else { return false }
+            return zip(lhs.items, rhs.items).allSatisfy { oldItem, newItem in
+                oldItem.source.url() == newItem.source.url()
+                    && oldItem.width == newItem.width
+                    && oldItem.height == newItem.height
+                    && oldItem.caption == newItem.caption
+            }
+        default:
+            return false
+        }
     }
 
     /// Update send-status icon without recreating the cell.

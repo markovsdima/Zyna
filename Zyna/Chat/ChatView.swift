@@ -24,6 +24,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     var onForwardMessage: ((ChatMessage) -> Void)?
 
     private let viewModel: ChatViewModel
+    private let composerController = ChatComposerController()
     private var cancellables = Set<AnyCancellable>()
     private var batchFetchCancellable: AnyCancellable?
     private let glassNavBar = GlassNavBar()
@@ -65,6 +66,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
     private var isGroupChat = false
+    private weak var photoPreviewController: PhotoGroupPreviewController?
+    private weak var filePreviewController: FileAttachmentPreviewController?
+    private var shouldPresentAttachmentPreviewAfterDismiss = false
 
     // MARK: - Init
 
@@ -103,6 +107,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         setupNavigationBar()
         bindViewModel()
         bindInput()
+        bindComposer()
 
         // Glass nav bar (replaces system nav bar)
         glassNavBar.name = viewModel.roomName
@@ -217,6 +222,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         super.viewDidAppear(animated)
         // Force glass recapture after navigation push completes
         GlassService.shared.setNeedsCapture()
+        if shouldPresentAttachmentPreviewAfterDismiss {
+            presentComposerPreviewIfNeeded()
+        }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -399,6 +407,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                   let cellNode = self.node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode
             else { return }
             self.configureMessageDrivenInteractions(for: cellNode, message: message)
+            if let groupCell = cellNode as? PhotoGroupMessageCellNode {
+                groupCell.updateMediaGroupPresentation(message.mediaGroupPresentation)
+            }
             cellNode.updateAccessibilityMessage(message)
             cellNode.updateSendStatus(message.sendStatus)
             cellNode.updateClusterMembership(isLastInCluster: message.isLastInCluster)
@@ -455,12 +466,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         switch update {
         case .reload:
             node.tableNode.reloadData()
-        case .batch(let deletions, let insertions, let updates, let animated):
-            if deletions.isEmpty && insertions.isEmpty && updates.isEmpty { return }
+        case .batch(let deletions, let insertions, let moves, let updates, let animated):
+            if deletions.isEmpty && insertions.isEmpty && moves.isEmpty && updates.isEmpty { return }
             let rowAnimation: UITableView.RowAnimation = animated ? .automatic : .none
             node.tableNode.performBatch(animated: animated, updates: {
                 if !deletions.isEmpty { node.tableNode.deleteRows(at: deletions, with: rowAnimation) }
                 if !insertions.isEmpty { node.tableNode.insertRows(at: insertions, with: rowAnimation) }
+                for move in moves {
+                    node.tableNode.moveRow(at: move.from, to: move.to)
+                }
                 if !updates.isEmpty { node.tableNode.reloadRows(at: updates, with: .none) }
             }, completion: nil)
         }
@@ -488,6 +502,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.viewModel.clearPendingForward()
         }
 
+        glassInputBar.inputNode.onPastedImages = { [weak self] images in
+            self?.enqueuePastedImages(images)
+        }
+
         glassInputBar.onScrollButtonLayoutChanged = { [weak self] iconFrame, iconAlpha, tapFrame, tapAlpha in
             guard let self else { return }
             self.scrollButtonIcon.frame = iconFrame
@@ -500,6 +518,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     @objc private func scrollToLiveTapped() {
         navigateToLive()
         glassInputBar.scrollButtonVisible = false
+    }
+
+    private func bindComposer() {
+        composerController.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.presentComposerPreviewIfNeeded()
+            }
+            .store(in: &cancellables)
     }
 
     private func scrollToLiveAfterUserSend() {
@@ -541,17 +568,30 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 return StateEventCellNode(message: message)
             }
 
+            if message.mediaGroupPresentation?.hidesStandaloneBubble == true {
+                return HiddenMessagePlaceholderCellNode()
+            }
+
             let cellNode: MessageCellNode
             switch message.content {
             case .voice:
                 cellNode = VoiceMessageCellNode(message: message, audioPlayer: audioPlayer, isGroupChat: isGroup)
             case .image:
-                let imageCell = ImageMessageCellNode(message: message, isGroupChat: isGroup)
-                imageCell.onImageTapped = { [weak self, weak imageCell] in
-                    guard let self, let imageCell else { return }
-                    self.presentImageViewer(for: message, from: imageCell)
+                if message.mediaGroupPresentation?.rendersCompositeBubble == true {
+                    let groupCell = PhotoGroupMessageCellNode(message: message, isGroupChat: isGroup)
+                    groupCell.onPhotoTapped = { [weak self, weak groupCell] index in
+                        guard let self, let groupCell else { return }
+                        self.presentImageViewer(for: groupCell, itemIndex: index)
+                    }
+                    cellNode = groupCell
+                } else {
+                    let imageCell = ImageMessageCellNode(message: message, isGroupChat: isGroup)
+                    imageCell.onImageTapped = { [weak self, weak imageCell] in
+                        guard let self, let imageCell else { return }
+                        self.presentImageViewer(for: message, from: imageCell)
+                    }
+                    cellNode = imageCell
                 }
-                cellNode = imageCell
             case .file:
                 let fileCell = FileCellNode(message: message, isGroupChat: isGroup)
                 fileCell.onFileTapped = { [weak self] in
@@ -1106,6 +1146,146 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         present(sheet, animated: true)
     }
 
+    private func enqueueImageAttachments(_ imageDataItems: [Data]) {
+        guard !imageDataItems.isEmpty else { return }
+        viewModel.clearPendingForward()
+        if composerController.state.hasAttachments,
+           composerController.state.imageAttachments.count != composerController.state.attachments.count {
+            composerController.clearAttachments()
+        }
+        Task { [weak self] in
+            await self?.composerController.addImageData(imageDataItems)
+        }
+    }
+
+    private func enqueuePastedImages(_ images: [UIImage]) {
+        guard !images.isEmpty else { return }
+        viewModel.clearPendingForward()
+        if composerController.state.hasAttachments,
+           composerController.state.imageAttachments.count != composerController.state.attachments.count {
+            composerController.clearAttachments()
+        }
+        Task { [weak self] in
+            await self?.composerController.addImages(images)
+        }
+    }
+
+    private func enqueueFileAttachments(_ urls: [URL]) {
+        let files = Array(urls.prefix(10))
+        guard !files.isEmpty else { return }
+        viewModel.clearPendingForward()
+        if composerController.state.hasAttachments,
+           composerController.state.fileAttachments.count != composerController.state.attachments.count {
+            composerController.clearAttachments()
+        }
+        composerController.addFileURLs(files)
+    }
+
+    private func presentComposerPreviewIfNeeded() {
+        let state = composerController.state
+        guard !state.attachments.isEmpty else {
+            shouldPresentAttachmentPreviewAfterDismiss = false
+            return
+        }
+
+        if state.imageAttachments.count == state.attachments.count {
+            presentPhotoGroupPreviewIfNeeded()
+        } else if state.fileAttachments.count == state.attachments.count {
+            presentFileAttachmentPreviewIfNeeded()
+        } else {
+            assertionFailure("Mixed attachment drafts are unsupported")
+            composerController.clearAttachments()
+        }
+    }
+
+    private func presentPhotoGroupPreviewIfNeeded() {
+        let state = composerController.state
+        guard !state.imageAttachments.isEmpty,
+              state.imageAttachments.count == state.attachments.count
+        else { return }
+
+        guard photoPreviewController == nil, filePreviewController == nil else { return }
+        guard presentedViewController == nil else {
+            shouldPresentAttachmentPreviewAfterDismiss = true
+            return
+        }
+        shouldPresentAttachmentPreviewAfterDismiss = false
+
+        let controller = PhotoGroupPreviewController(
+            attachments: state.imageAttachments,
+            initialCaption: glassInputBar.inputNode.currentText,
+            initialCaptionPlacement: state.photoGroupCaptionPlacement
+        )
+        controller.onDiscard = { [weak self, weak controller] in
+            guard let self else { return }
+            if self.photoPreviewController === controller {
+                self.photoPreviewController = nil
+            }
+            self.composerController.clearAttachments()
+        }
+        controller.onSend = { [weak self, weak controller] attachments, caption, captionPlacement in
+            guard let self else { return }
+            if self.photoPreviewController === controller {
+                self.photoPreviewController = nil
+            }
+            self.composerController.clearAttachments()
+            self.glassInputBar.inputNode.setCurrentText("")
+            let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.viewModel.sendComposerAttachments(
+                attachments,
+                caption: trimmedCaption.isEmpty ? nil : trimmedCaption,
+                captionPlacement: captionPlacement
+            )
+            self.scrollToLiveAfterUserSend()
+        }
+        photoPreviewController = controller
+        glassInputBar.inputNode.textInputNode.resignFirstResponder()
+        present(controller, animated: true)
+    }
+
+    private func presentFileAttachmentPreviewIfNeeded() {
+        let state = composerController.state
+        guard !state.fileAttachments.isEmpty,
+              state.fileAttachments.count == state.attachments.count
+        else { return }
+
+        guard photoPreviewController == nil, filePreviewController == nil else { return }
+        guard presentedViewController == nil else {
+            shouldPresentAttachmentPreviewAfterDismiss = true
+            return
+        }
+        shouldPresentAttachmentPreviewAfterDismiss = false
+
+        let controller = FileAttachmentPreviewController(
+            attachments: state.fileAttachments,
+            initialCaption: glassInputBar.inputNode.currentText
+        )
+        controller.onDiscard = { [weak self, weak controller] in
+            guard let self else { return }
+            if self.filePreviewController === controller {
+                self.filePreviewController = nil
+            }
+            self.composerController.clearAttachments()
+        }
+        controller.onSend = { [weak self, weak controller] attachments, caption in
+            guard let self else { return }
+            if self.filePreviewController === controller {
+                self.filePreviewController = nil
+            }
+            self.composerController.clearAttachments()
+            self.glassInputBar.inputNode.setCurrentText("")
+            let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.viewModel.sendComposerAttachments(
+                attachments,
+                caption: trimmedCaption.isEmpty ? nil : trimmedCaption
+            )
+            self.scrollToLiveAfterUserSend()
+        }
+        filePreviewController = controller
+        glassInputBar.inputNode.textInputNode.resignFirstResponder()
+        present(controller, animated: true)
+    }
+
     // MARK: - Photo Picker
 
     private func presentPhotoPicker() {
@@ -1134,7 +1314,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - File Tap → Download + Quick Look
 
     private func handleFileTap(message: ChatMessage, cellNode: FileCellNode) {
-        guard case .file(let source, let filename, let mimetype, _) = message.content
+        guard case .file(let source, let filename, let mimetype, _, _) = message.content
         else { return }
 
         // Already cached — show immediately
@@ -1179,10 +1359,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         let cellImageView = cell.imageNodeView
         let sourceFrame = cellImageView.convert(cellImageView.bounds, to: nil)
+        presentImageViewer(image: image, mediaSource: source, sourceFrame: sourceFrame)
+    }
 
-        let viewer = ImageViewerController(image: image, mediaSource: source)
+    private func presentImageViewer(for cell: PhotoGroupMessageCellNode, itemIndex: Int) {
+        guard let image = cell.currentImage(at: itemIndex),
+              let mediaSource = cell.mediaSource(at: itemIndex),
+              let sourceFrame = cell.imageFrameInWindow(at: itemIndex) else { return }
+        presentImageViewer(image: image, mediaSource: mediaSource, sourceFrame: sourceFrame)
+    }
+
+    private func presentImageViewer(image: UIImage, mediaSource: MediaSource?, sourceFrame: CGRect) {
+        let viewer = ImageViewerController(image: image, mediaSource: mediaSource)
         viewer.sourceFrame = sourceFrame
-
         present(viewer, animated: false) {
             viewer.animateIn(from: sourceFrame)
         }
@@ -1209,28 +1398,21 @@ extension ChatViewController: PHPickerViewControllerDelegate {
             guard let self else { return }
             self.isPickerPresented = false
             self.becomeFirstResponder()
+            if self.shouldPresentAttachmentPreviewAfterDismiss {
+                self.presentComposerPreviewIfNeeded()
+            }
         }
         guard !results.isEmpty else { return }
 
-        let captionText = glassInputBar.inputNode.textInputNode.textView.text?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let caption = (captionText?.isEmpty == false) ? captionText : nil
-        if caption != nil {
-            glassInputBar.inputNode.textInputNode.textView.text = ""
-        }
-
         Task {
-            var processed: [ProcessedImage] = []
+            var imageDataItems: [Data] = []
             for result in results {
                 guard let data = await loadImageData(from: result) else { continue }
-                if let image = try? await MediaPreprocessor.processImage(from: data) {
-                    processed.append(image)
-                }
+                imageDataItems.append(data)
             }
-            guard !processed.isEmpty else { return }
+            guard !imageDataItems.isEmpty else { return }
             await MainActor.run {
-                viewModel.sendImages(processed, caption: caption)
-                self.scrollToLiveAfterUserSend()
+                self.enqueueImageAttachments(imageDataItems)
             }
         }
     }
@@ -1251,10 +1433,12 @@ extension ChatViewController: PHPickerViewControllerDelegate {
 extension ChatViewController: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         isPickerPresented = false
-        for url in urls.prefix(10) {
-            viewModel.sendFile(url: url)
+        enqueueFileAttachments(urls)
+        DispatchQueue.main.async { [weak self] in
+            if self?.shouldPresentAttachmentPreviewAfterDismiss == true {
+                self?.presentComposerPreviewIfNeeded()
+            }
         }
-        scrollToLiveAfterUserSend()
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
@@ -1868,5 +2052,21 @@ private final class AccessibilityEmojiPickerCell: UITableViewCell {
     private static func displayName(for emoji: String) -> String {
         guard let rawName = EmojiData.names[emoji], !rawName.isEmpty else { return emoji }
         return rawName.capitalized
+    }
+}
+
+private final class HiddenMessagePlaceholderCellNode: ASCellNode {
+    override init() {
+        super.init()
+        selectionStyle = .none
+        backgroundColor = .clear
+        style.preferredSize = CGSize(width: 1, height: 0.01)
+        isAccessibilityElement = false
+    }
+
+    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
+        let spacer = ASDisplayNode()
+        spacer.style.preferredSize = CGSize(width: constrainedSize.max.width, height: 0.01)
+        return ASWrapperLayoutSpec(layoutElement: spacer)
     }
 }

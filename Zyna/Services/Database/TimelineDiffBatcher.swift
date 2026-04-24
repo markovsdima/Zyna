@@ -19,8 +19,14 @@ final class TimelineDiffBatcher {
 
     // MARK: - Shadow array
 
-    /// Mirrors SDK timeline positions. Stores ChatMessage.id if mappable, nil otherwise.
-    private var shadowItems: [String?] = []
+    /// Mirrors SDK timeline positions. Keeps just enough identity to
+    /// stitch a local echo to the synced event that later replaces it.
+    private struct ShadowItem {
+        let storedId: String?
+        let transactionId: String?
+    }
+
+    private var shadowItems: [ShadowItem] = []
 
     // MARK: - Pending ops
 
@@ -119,6 +125,15 @@ final class TimelineDiffBatcher {
                     for op in ops {
                         switch op {
                         case .upsert(var record):
+                            if record.eventId != nil,
+                               record.transactionId == nil,
+                               record.isOutgoing {
+                                record.transactionId = try Self.findMatchingPendingTransactionId(
+                                    for: record,
+                                    in: db
+                                )
+                            }
+
                             if record.sendStatus != "read",
                                let eventId = record.eventId,
                                readEventIds.contains(eventId) {
@@ -190,7 +205,7 @@ final class TimelineDiffBatcher {
 
         case .pushFront(let item):
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(msg.map { storedId($0.id) }, at: 0)
+            shadowItems.insert(shadowItem(for: msg), at: 0)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
@@ -199,7 +214,7 @@ final class TimelineDiffBatcher {
             let idx = Int(index)
             guard idx <= shadowItems.count else { return }
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(msg.map { storedId($0.id) }, at: idx)
+            shadowItems.insert(shadowItem(for: msg), at: idx)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
@@ -207,16 +222,20 @@ final class TimelineDiffBatcher {
         case .set(let index, let item):
             let idx = Int(index)
             guard idx < shadowItems.count else { return }
-            let oldId = shadowItems[idx]
+            let oldShadowItem = shadowItems[idx]
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems[idx] = msg.map { storedId($0.id) }
+            shadowItems[idx] = shadowItem(for: msg, fallbackTransactionId: oldShadowItem.transactionId)
 
             if let msg {
+                var record = StoredMessage(from: msg, roomId: roomId)
+                if record.transactionId == nil {
+                    record.transactionId = oldShadowItem.transactionId
+                }
                 let newStoredId = storedId(msg.id)
-                if let oldId, oldId != newStoredId {
+                if let oldId = oldShadowItem.storedId, oldId != newStoredId {
                     pendingOps.append(.delete(oldId))
                 }
-                pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
+                pendingOps.append(.upsert(record))
             }
 
         case .remove(let index):
@@ -257,9 +276,97 @@ final class TimelineDiffBatcher {
 
     private func appendItem(_ item: TimelineItem) {
         let msg = TimelineService.mapTimelineItem(item)
-        shadowItems.append(msg.map { storedId($0.id) })
+        shadowItems.append(shadowItem(for: msg))
         if let msg {
             pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
         }
+    }
+
+    private func shadowItem(
+        for message: ChatMessage?,
+        fallbackTransactionId: String? = nil
+    ) -> ShadowItem {
+        ShadowItem(
+            storedId: message.map { storedId($0.id) },
+            transactionId: message?.transactionId ?? fallbackTransactionId
+        )
+    }
+
+    private static func findMatchingPendingTransactionId(
+        for record: StoredMessage,
+        in db: Database
+    ) throws -> String? {
+        guard record.eventId != nil,
+              record.transactionId == nil,
+              record.isOutgoing else {
+            return record.transactionId
+        }
+
+        if record.contentType == "image" {
+            return try String.fetchOne(
+                db,
+                sql: """
+                    SELECT transactionId
+                    FROM storedMessage
+                    WHERE roomId = ?
+                      AND eventId IS NULL
+                      AND transactionId IS NOT NULL
+                      AND isOutgoing = 1
+                      AND senderId = ?
+                      AND contentType = 'image'
+                      AND ABS(timestamp - ?) < 3
+                      AND ifnull(contentCaption, '') = ?
+                      AND ifnull(zynaAttributesJSON, '') = ?
+                      AND (? = -1 OR ifnull(contentImageWidth, -1) = ? OR ifnull(contentImageWidth, -1) = -1)
+                      AND (? = -1 OR ifnull(contentImageHeight, -1) = ? OR ifnull(contentImageHeight, -1) = -1)
+                    ORDER BY ABS(timestamp - ?) ASC
+                    LIMIT 1
+                    """,
+                arguments: [
+                    record.roomId,
+                    record.senderId,
+                    record.timestamp,
+                    record.contentCaption ?? "",
+                    record.zynaAttributesJSON ?? "",
+                    record.contentImageWidth ?? -1,
+                    record.contentImageWidth ?? -1,
+                    record.contentImageHeight ?? -1,
+                    record.contentImageHeight ?? -1,
+                    record.timestamp
+                ]
+            )
+        }
+
+        return try String.fetchOne(
+            db,
+            sql: """
+                SELECT transactionId
+                FROM storedMessage
+                WHERE roomId = ?
+                  AND eventId IS NULL
+                  AND transactionId IS NOT NULL
+                  AND isOutgoing = 1
+                  AND senderId = ?
+                  AND contentType = ?
+                  AND ABS(timestamp - ?) < 1
+                  AND ifnull(contentBody, '') = ?
+                  AND ifnull(contentCaption, '') = ?
+                  AND ifnull(contentFilename, '') = ?
+                  AND ifnull(contentMediaJSON, '') = ?
+                ORDER BY ABS(timestamp - ?) ASC
+                LIMIT 1
+                """,
+            arguments: [
+                record.roomId,
+                record.senderId,
+                record.contentType,
+                record.timestamp,
+                record.contentBody ?? "",
+                record.contentCaption ?? "",
+                record.contentFilename ?? "",
+                record.contentMediaJSON ?? "",
+                record.timestamp
+            ]
+        )
     }
 }

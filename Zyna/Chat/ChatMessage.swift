@@ -14,7 +14,7 @@ enum ChatMessageContent: Equatable {
     case notice(body: String)
     case emote(body: String)
     case voice(source: MediaSource, duration: TimeInterval, waveform: [UInt16])
-    case file(source: MediaSource, filename: String, mimetype: String?, size: UInt64?)
+    case file(source: MediaSource, filename: String, mimetype: String?, size: UInt64?, caption: String?)
     case callEvent(type: CallEventType, callId: String, reason: String?)
     case systemEvent(text: String, kind: SystemEventKind)
     case unsupported(typeName: String)
@@ -41,8 +41,8 @@ enum ChatMessageContent: Equatable {
             return s1.url() == s2.url() && wMatch && hMatch && c1 == c2
         case (.voice(let s1, let d1, let w1), .voice(let s2, let d2, let w2)):
             return s1.url() == s2.url() && d1 == d2 && w1 == w2
-        case (.file(let s1, let f1, let m1, let sz1), .file(let s2, let f2, let m2, let sz2)):
-            return s1.url() == s2.url() && f1 == f2 && m1 == m2 && sz1 == sz2
+        case (.file(let s1, let f1, let m1, let sz1, let c1), .file(let s2, let f2, let m2, let sz2, let c2)):
+            return s1.url() == s2.url() && f1 == f2 && m1 == m2 && sz1 == sz2 && c1 == c2
         default: return false
         }
     }
@@ -69,7 +69,7 @@ enum ChatMessageContent: Equatable {
             return (source, "image/jpeg")
         case .voice(let source, _, _):
             return (source, "audio/mp4")
-        case .file(let source, _, let mime, _):
+        case .file(let source, _, let mime, _, _):
             return (source, mime ?? "application/octet-stream")
         default:
             return nil
@@ -81,7 +81,7 @@ enum ChatMessageContent: Equatable {
         case .text(let body): return body
         case .image: return "Photo"
         case .voice: return "Voice message"
-        case .file(_, let filename, _, _): return filename
+        case .file(_, let filename, _, _, _): return filename
         case .callEvent(let type, _, let reason): return type.displayText(reason: reason)
         case .systemEvent(let text, _): return text
         case .notice(let body): return body
@@ -98,6 +98,26 @@ enum ChatMessageContent: Equatable {
         default:
             return false
         }
+    }
+
+    var visibleImageCaption: String? {
+        guard case .image(_, _, _, let caption) = self,
+              let caption
+        else { return nil }
+        let visible = caption
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return visible.isEmpty ? nil : visible
+    }
+
+    var visibleFileCaption: String? {
+        guard case .file(_, _, _, _, let caption) = self,
+              let caption
+        else { return nil }
+        let visible = caption
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return visible.isEmpty ? nil : visible
     }
 
 }
@@ -209,6 +229,47 @@ struct ClusterNeighbor {
     let senderId: String
     let timestamp: Date
     let isStandaloneEvent: Bool
+    let mediaGroupId: String?
+}
+
+enum MediaGroupPosition: String, Equatable {
+    case top
+    case middle
+    case bottom
+}
+
+struct MediaGroupItem: Equatable {
+    let messageId: String
+    let eventId: String?
+    let transactionId: String?
+    let source: MediaSource
+    let width: UInt64?
+    let height: UInt64?
+    let caption: String?
+    let sendStatus: String
+
+    static func == (lhs: MediaGroupItem, rhs: MediaGroupItem) -> Bool {
+        lhs.messageId == rhs.messageId
+            && lhs.eventId == rhs.eventId
+            && lhs.transactionId == rhs.transactionId
+            && lhs.source.url() == rhs.source.url()
+            && lhs.width == rhs.width
+            && lhs.height == rhs.height
+            && lhs.caption == rhs.caption
+            && lhs.sendStatus == rhs.sendStatus
+    }
+}
+
+struct MediaGroupPresentation: Equatable {
+    let id: String
+    let position: MediaGroupPosition
+    let totalHint: Int
+    let caption: String?
+    let captionPlacement: CaptionPlacement
+    let suppressIndividualCaption: Bool
+    let items: [MediaGroupItem]
+    let rendersCompositeBubble: Bool
+    let hidesStandaloneBubble: Bool
 }
 
 // MARK: - Chat Message
@@ -216,6 +277,7 @@ struct ClusterNeighbor {
 struct ChatMessage: Identifiable, Equatable, Hashable {
     let id: String
     let eventId: String?
+    let transactionId: String?
     let itemIdentifier: ChatItemIdentifier?
     let senderId: String
     let senderDisplayName: String?
@@ -234,11 +296,14 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     /// standalone message so DMs and one-off callers don't need to set them.
     var isFirstInCluster: Bool = true
     var isLastInCluster: Bool = true
+    /// Populated by ChatViewModel for adjacent photo groups.
+    var mediaGroupPresentation: MediaGroupPresentation?
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         // id (SDK uniqueId) is unstable across timeline recreations.
         // Use eventId as the stable identity; compare other fields by value.
         lhs.eventId == rhs.eventId
+            && lhs.transactionId == rhs.transactionId
             && lhs.senderId == rhs.senderId
             && lhs.senderDisplayName == rhs.senderDisplayName
             && lhs.senderAvatarUrl == rhs.senderAvatarUrl
@@ -250,6 +315,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.zynaAttributes == rhs.zynaAttributes
             && lhs.sendStatus == rhs.sendStatus
             && lhs.isLastInCluster == rhs.isLastInCluster
+            && lhs.mediaGroupPresentation == rhs.mediaGroupPresentation
     }
 
     func hash(into hasher: inout Hasher) {

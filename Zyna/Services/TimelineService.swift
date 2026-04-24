@@ -145,6 +145,10 @@ final class TimelineService {
         return ChatMessage(
             id: item.uniqueId().id,
             eventId: eventId,
+            transactionId: {
+                guard case .transactionId(let id) = event.eventOrTransactionId else { return nil }
+                return id
+            }(),
             itemIdentifier: itemIdentifier,
             senderId: event.sender,
             senderDisplayName: senderName,
@@ -175,7 +179,49 @@ final class TimelineService {
                let formatted = Self.extractFormattedBodyFromRawEvent(rawJSON) {
                 return ZynaHTMLCodec.decode(htmlBody: formatted)
             }
-            return ZynaMessageAttributes()
+            guard event.isOwn else { return ZynaMessageAttributes() }
+
+            let transactionId: String? = {
+                guard case .transactionId(let id) = event.eventOrTransactionId else { return nil }
+                return id
+            }()
+
+            switch message.msgType {
+            case .image(let content):
+                let body = content.caption ?? "\u{200B}"
+                return OutgoingAttributesCache.shared.peek(
+                    body: body,
+                    senderId: event.sender,
+                    kind: .image,
+                    transactionId: transactionId
+                ) ?? ZynaMessageAttributes()
+            case .file(let content):
+                let body = content.caption ?? content.filename
+                return OutgoingAttributesCache.shared.peek(
+                    body: body,
+                    senderId: event.sender,
+                    kind: .file,
+                    transactionId: transactionId
+                ) ?? ZynaMessageAttributes()
+            case .audio(let content):
+                let body = content.caption ?? content.filename
+                return OutgoingAttributesCache.shared.peek(
+                    body: body,
+                    senderId: event.sender,
+                    kind: .audio,
+                    transactionId: transactionId
+                ) ?? ZynaMessageAttributes()
+            case .video(let content):
+                let body = content.caption ?? content.filename
+                return OutgoingAttributesCache.shared.peek(
+                    body: body,
+                    senderId: event.sender,
+                    kind: .video,
+                    transactionId: transactionId
+                ) ?? ZynaMessageAttributes()
+            default:
+                return ZynaMessageAttributes()
+            }
         case .text:
             break
         default:
@@ -200,7 +246,12 @@ final class TimelineService {
 
         if let cached = OutgoingAttributesCache.shared.peek(
             body: t.body,
-            senderId: event.sender
+            senderId: event.sender,
+            kind: .text,
+            transactionId: {
+                guard case .transactionId(let id) = event.eventOrTransactionId else { return nil }
+                return id
+            }()
         ) {
             return cached
         }
@@ -610,7 +661,8 @@ final class TimelineService {
                 source: content.source,
                 filename: content.filename,
                 mimetype: content.info?.mimetype,
-                size: content.info?.size
+                size: content.info?.size,
+                caption: content.caption
             )
         default:
             return .unsupported(typeName: "message")
@@ -673,7 +725,7 @@ final class TimelineService {
 
             let plainCaption = caption ?? "\u{200B}"
             let encoded = ZynaHTMLCodec.encode(
-                userHTML: plainCaption,
+                userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(plainCaption),
                 attributes: attrs
             )
             let formattedCaption = FormattedBody(format: .html, body: encoded)
@@ -747,7 +799,8 @@ final class TimelineService {
         OutgoingAttributesCache.shared.remember(
             attributes: zynaAttributes,
             body: text,
-            senderId: senderId
+            senderId: senderId,
+            kind: .text
         )
 
         do {
@@ -788,13 +841,44 @@ final class TimelineService {
         }
     }
 
-    func sendImage(imageData: Data, width: UInt64, height: UInt64, caption: String?) async {
+    func sendImage(
+        imageData: Data,
+        width: UInt64,
+        height: UInt64,
+        caption: String?,
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        replyEventId: String? = nil
+    ) async {
         guard let timeline else { return }
 
         let imageURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
         do { try imageData.write(to: imageURL) } catch {
             logTimeline("Image write to temp failed: \(error)")
             return
+        }
+
+        let plainCaption: String?
+        let formattedCaption: FormattedBody?
+        if zynaAttributes.isEmpty {
+            plainCaption = caption
+            formattedCaption = nil
+        } else {
+            let visibleCaption = caption?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let userCaption = (visibleCaption?.isEmpty == false) ? visibleCaption! : "\u{200B}"
+            plainCaption = userCaption
+            let encoded = ZynaHTMLCodec.encode(
+                userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(userCaption),
+                attributes: zynaAttributes
+            )
+            formattedCaption = FormattedBody(format: .html, body: encoded)
+
+            let senderId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+            OutgoingAttributesCache.shared.remember(
+                attributes: zynaAttributes,
+                body: userCaption,
+                senderId: senderId,
+                kind: .image
+            )
         }
 
         // sendImage throws InvalidAttachmentData — using sendFile
@@ -805,7 +889,7 @@ final class TimelineService {
         )
         let params = UploadParameters(
             source: .file(filename: imageURL.path(percentEncoded: false)),
-            caption: caption, formattedCaption: nil, mentions: nil, inReplyTo: nil
+            caption: plainCaption, formattedCaption: formattedCaption, mentions: nil, inReplyTo: replyEventId
         )
         do {
             _ = try timeline.sendFile(params: params, fileInfo: fileInfo)
@@ -819,7 +903,11 @@ final class TimelineService {
         }
     }
 
-    func sendFile(url: URL) async {
+    func sendFile(
+        url: URL,
+        caption: String? = nil,
+        replyEventId: String? = nil
+    ) async {
         guard let timeline else { return }
 
         let filename = url.lastPathComponent
@@ -840,7 +928,7 @@ final class TimelineService {
         )
         let params = UploadParameters(
             source: .file(filename: url.path(percentEncoded: false)),
-            caption: nil, formattedCaption: nil, mentions: nil, inReplyTo: nil
+            caption: caption, formattedCaption: nil, mentions: nil, inReplyTo: replyEventId
         )
         do {
             _ = try timeline.sendFile(params: params, fileInfo: fileInfo)

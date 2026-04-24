@@ -13,6 +13,17 @@ import GRDB
 /// designed for use from Texture's background batch-fetch queue.
 final class MessageWindow {
 
+    private struct PendingDuplicateFingerprint: Hashable {
+        let senderId: String
+        let contentType: String
+        let body: String
+        let caption: String
+        let filename: String
+        let imageWidth: Int64
+        let imageHeight: Int64
+        let zynaAttributesJSON: String
+    }
+
     // MARK: - Configuration
 
     static let windowSize = 200
@@ -223,7 +234,8 @@ final class MessageWindow {
         return ClusterNeighbor(
             senderId: msg.senderId,
             timestamp: Date(timeIntervalSince1970: msg.timestamp),
-            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system"
+            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system",
+            mediaGroupId: msg.toChatMessage()?.zynaAttributes.mediaGroup?.id
         )
     }
 
@@ -235,7 +247,8 @@ final class MessageWindow {
         return ClusterNeighbor(
             senderId: msg.senderId,
             timestamp: Date(timeIntervalSince1970: msg.timestamp),
-            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system"
+            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system",
+            mediaGroupId: msg.toChatMessage()?.zynaAttributes.mediaGroup?.id
         )
     }
 
@@ -325,13 +338,129 @@ final class MessageWindow {
     // MARK: - Helpers
 
     private func updateCursors(from stored: [StoredMessage]) {
-        newestTimestamp = stored.first?.timestamp
-        oldestTimestamp = stored.last?.timestamp
+        let normalized = normalizedStored(stored)
+        newestTimestamp = normalized.first?.timestamp
+        oldestTimestamp = normalized.last?.timestamp
     }
 
     private func emitChange(_ stored: [StoredMessage]) {
+        let normalized = normalizedStored(stored)
         let prev = previousStored
-        previousStored = stored
-        onChange?(stored, prev)
+        previousStored = normalized
+        onChange?(normalized, prev)
+    }
+
+    private func normalizedStored(_ stored: [StoredMessage]) -> [StoredMessage] {
+        guard stored.count > 1 else { return stored }
+
+        let sorted = stored.sorted { lhs, rhs in
+            if lhs.timestamp == rhs.timestamp {
+                return lhs.id > rhs.id
+            }
+            return lhs.timestamp > rhs.timestamp
+        }
+
+        func winner(_ lhs: StoredMessage, _ rhs: StoredMessage) -> StoredMessage {
+            let lhsScore = messageScore(lhs)
+            let rhsScore = messageScore(rhs)
+            if lhsScore != rhsScore {
+                return lhsScore > rhsScore ? lhs : rhs
+            }
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp > rhs.timestamp ? lhs : rhs
+            }
+            return lhs.id > rhs.id ? lhs : rhs
+        }
+
+        var bestByEventId: [String: StoredMessage] = [:]
+        var bestByTransactionId: [String: StoredMessage] = [:]
+
+        for message in sorted {
+            if let eventId = message.eventId, !eventId.isEmpty {
+                if let existing = bestByEventId[eventId] {
+                    bestByEventId[eventId] = winner(existing, message)
+                } else {
+                    bestByEventId[eventId] = message
+                }
+            }
+            if let transactionId = message.transactionId, !transactionId.isEmpty {
+                if let existing = bestByTransactionId[transactionId] {
+                    bestByTransactionId[transactionId] = winner(existing, message)
+                } else {
+                    bestByTransactionId[transactionId] = message
+                }
+            }
+        }
+
+        let exactDeduped = sorted.filter { message in
+            if let eventId = message.eventId, !eventId.isEmpty {
+                return bestByEventId[eventId]?.id == message.id
+            }
+            if let transactionId = message.transactionId, !transactionId.isEmpty {
+                return bestByTransactionId[transactionId]?.id == message.id
+            }
+            return true
+        }
+
+        var syncedTimestampsByFingerprint: [PendingDuplicateFingerprint: [TimeInterval]] = [:]
+        for message in exactDeduped
+        where message.isOutgoing && message.eventId != nil {
+            let fingerprint = PendingDuplicateFingerprint(
+                senderId: message.senderId,
+                contentType: message.contentType,
+                body: message.contentBody ?? "",
+                caption: message.contentCaption ?? "",
+                filename: message.contentFilename ?? "",
+                imageWidth: message.contentImageWidth ?? -1,
+                imageHeight: message.contentImageHeight ?? -1,
+                zynaAttributesJSON: message.zynaAttributesJSON ?? ""
+            )
+            syncedTimestampsByFingerprint[fingerprint, default: []].append(message.timestamp)
+        }
+
+        return exactDeduped.filter { message in
+            guard message.isOutgoing,
+                  message.eventId == nil,
+                  message.transactionId != nil else {
+                return true
+            }
+
+            let fingerprint = PendingDuplicateFingerprint(
+                senderId: message.senderId,
+                contentType: message.contentType,
+                body: message.contentBody ?? "",
+                caption: message.contentCaption ?? "",
+                filename: message.contentFilename ?? "",
+                imageWidth: message.contentImageWidth ?? -1,
+                imageHeight: message.contentImageHeight ?? -1,
+                zynaAttributesJSON: message.zynaAttributesJSON ?? ""
+            )
+            guard let timestamps = syncedTimestampsByFingerprint[fingerprint] else {
+                return true
+            }
+            return !timestamps.contains(where: { abs($0 - message.timestamp) < 3 })
+        }
+    }
+
+    private func messageScore(_ message: StoredMessage) -> Int {
+        var score = 0
+        if message.eventId != nil { score += 100 }
+        if message.transactionId != nil { score += 20 }
+        switch message.sendStatus {
+        case "read":
+            score += 12
+        case "synced":
+            score += 10
+        case "sent":
+            score += 8
+        case "sending":
+            score += 2
+        default:
+            score += 4
+        }
+        if !(message.zynaAttributesJSON ?? "").isEmpty {
+            score += 1
+        }
+        return score
     }
 }

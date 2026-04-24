@@ -61,7 +61,7 @@ extension StoredMessage {
         switch msg.itemIdentifier {
         case .eventId(let id):
             self.eventId = id
-            self.transactionId = nil
+            self.transactionId = msg.transactionId
         case .transactionId(let id):
             self.transactionId = id
             self.eventId = nil
@@ -94,12 +94,13 @@ extension StoredMessage {
         case .emote(let body):
             contentType = "emote"
             contentBody = body
-        case .file(let source, let filename, let mimetype, let size):
+        case .file(let source, let filename, let mimetype, let size, let caption):
             contentType = "file"
             contentMediaJSON = source.toJson()
             contentFilename = filename
             contentMimetype = mimetype
             contentFileSize = size.map(Int64.init)
+            contentCaption = caption
         case .callEvent(let type, let callId, let reason):
             contentType = "call"
             contentBody = callId
@@ -158,6 +159,7 @@ extension StoredMessage {
         return ChatMessage(
             id: id,
             eventId: eventId,
+            transactionId: transactionId,
             itemIdentifier: itemIdentifier,
             senderId: senderId,
             senderDisplayName: senderDisplayName,
@@ -206,7 +208,8 @@ extension StoredMessage {
                 source: source,
                 filename: contentFilename ?? "file",
                 mimetype: contentMimetype,
-                size: contentFileSize.map(UInt64.init)
+                size: contentFileSize.map(UInt64.init),
+                caption: contentCaption
             )
         case "call":
             guard let callId = contentBody,
@@ -305,6 +308,7 @@ private extension StoredMessage {
         let checklist: [ChecklistItem]?
         let callSignal: CallSignalData?
         let forwardedFrom: String?
+        let mediaGroup: MediaGroupInfo?
     }
 
     static func encodeZynaAttributes(_ attrs: ZynaMessageAttributes) -> String? {
@@ -313,7 +317,8 @@ private extension StoredMessage {
             color: attrs.color?.hexString,
             checklist: attrs.checklist,
             callSignal: attrs.callSignal,
-            forwardedFrom: attrs.forwardedFrom
+            forwardedFrom: attrs.forwardedFrom,
+            mediaGroup: attrs.mediaGroup
         )
         guard let data = try? JSONEncoder().encode(payload),
               let json = String(data: data, encoding: .utf8) else { return nil }
@@ -329,7 +334,8 @@ private extension StoredMessage {
             color: payload.color.flatMap(UIColor.fromHexString),
             checklist: payload.checklist,
             callSignal: payload.callSignal,
-            forwardedFrom: payload.forwardedFrom
+            forwardedFrom: payload.forwardedFrom,
+            mediaGroup: payload.mediaGroup
         )
     }
 }

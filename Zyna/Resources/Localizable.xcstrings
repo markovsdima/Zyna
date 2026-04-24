@@ -4,6 +4,386 @@
     "" : {
 
     },
+    "%@ accepted %@'s join request" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ одобрил(а) заявку %2$@"
+          }
+        }
+      }
+    },
+    "%@ accepted the invitation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ принял(а) приглашение"
+          }
+        }
+      }
+    },
+    "%@ accepted your join request" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ одобрил(а) вашу заявку"
+          }
+        }
+      }
+    },
+    "%@ banned %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ забанил(а) %2$@"
+          }
+        }
+      }
+    },
+    "%@ banned %@: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ забанил(а) %2$@: %3$@"
+          }
+        }
+      }
+    },
+    "%@ banned you" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ забанил(а) вас"
+          }
+        }
+      }
+    },
+    "%@ banned you: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ забанил(а) вас: %2$@"
+          }
+        }
+      }
+    },
+    "%@ changed the room avatar" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ изменил(а) аватар комнаты"
+          }
+        }
+      }
+    },
+    "%@ changed the room name to %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ изменил(а) название комнаты на %2$@"
+          }
+        }
+      }
+    },
+    "%@ changed the room topic to %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ изменил(а) тему комнаты на %2$@"
+          }
+        }
+      }
+    },
+    "%@ changed their avatar" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ изменил(а) аватар"
+          }
+        }
+      }
+    },
+    "%@ changed their display name from %@ to %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ изменил(а) отображаемое имя с %2$@ на %3$@"
+          }
+        }
+      }
+    },
+    "%@ created the room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ создал(а) комнату"
+          }
+        }
+      }
+    },
+    "%@ declined the invitation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ отклонил(а) приглашение"
+          }
+        }
+      }
+    },
+    "%@ denied %@'s join request" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ отклонил(а) заявку %2$@"
+          }
+        }
+      }
+    },
+    "%@ denied your join request" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ отклонил(а) вашу заявку"
+          }
+        }
+      }
+    },
+    "%@ invited %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ пригласил(а) %2$@"
+          }
+        }
+      }
+    },
+    "%@ invited you" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ пригласил(а) вас"
+          }
+        }
+      }
+    },
+    "%@ joined the room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ вошёл(ла) в комнату"
+          }
+        }
+      }
+    },
+    "%@ left the room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ вышел(ла) из комнаты"
+          }
+        }
+      }
+    },
+    "%@ pinned messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ закрепил(а) сообщения"
+          }
+        }
+      }
+    },
+    "%@ removed %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ исключил(а) %2$@"
+          }
+        }
+      }
+    },
+    "%@ removed %@: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ исключил(а) %2$@: %3$@"
+          }
+        }
+      }
+    },
+    "%@ removed the room avatar" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ удалил(а) аватар комнаты"
+          }
+        }
+      }
+    },
+    "%@ removed the room name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ удалил(а) название комнаты"
+          }
+        }
+      }
+    },
+    "%@ removed the room topic" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ удалил(а) тему комнаты"
+          }
+        }
+      }
+    },
+    "%@ removed their display name (%@)" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ удалил(а) отображаемое имя (%2$@)"
+          }
+        }
+      }
+    },
+    "%@ removed you" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ исключил(а) вас"
+          }
+        }
+      }
+    },
+    "%@ removed you: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ исключил(а) вас: %2$@"
+          }
+        }
+      }
+    },
+    "%@ requested to join" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ запросил(а) вступление"
+          }
+        }
+      }
+    },
+    "%@ revoked %@'s invitation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ отозвал(а) приглашение для %2$@"
+          }
+        }
+      }
+    },
+    "%@ revoked your invitation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ отозвал(а) ваше приглашение"
+          }
+        }
+      }
+    },
+    "%@ set their display name to %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ установил(а) отображаемое имя %2$@"
+          }
+        }
+      }
+    },
+    "%@ unbanned %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ разбанил(а) %2$@"
+          }
+        }
+      }
+    },
+    "%@ unbanned you" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ разбанил(а) вас"
+          }
+        }
+      }
+    },
+    "%@ unpinned messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ открепил(а) сообщения"
+          }
+        }
+      }
+    },
+    "%@ updated pinned messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ обновил(а) закреплённые сообщения"
+          }
+        }
+      }
+    },
+    "%@ withdrew their join request" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ отозвал(а) свою заявку"
+          }
+        }
+      }
+    },
     "%lld members" : {
       "localizations" : {
         "en" : {
@@ -264,6 +644,9 @@
         }
       }
     },
+    "Caption" : {
+
+    },
     "Change" : {
       "localizations" : {
         "ru" : {
@@ -400,6 +783,9 @@
         }
       }
     },
+    "Discard" : {
+
+    },
     "Done" : {
       "localizations" : {
         "ru" : {
@@ -422,6 +808,16 @@
     },
     "emoji" : {
 
+    },
+    "Encryption enabled" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включено шифрование"
+          }
+        }
+      }
     },
     "Encryption keys couldn't be transferred automatically. Enter the recovery key you saved when setting up this account to restore access to message history." : {
       "localizations" : {
@@ -911,6 +1307,16 @@
         }
       }
     },
+    "Room event" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Событие комнаты"
+          }
+        }
+      }
+    },
     "Safe chats. Stunning vibes." : {
       "localizations" : {
         "ru" : {
@@ -1003,6 +1409,9 @@
           }
         }
       }
+    },
+    "Send" : {
+
     },
     "Send Message" : {
       "localizations" : {
@@ -1227,436 +1636,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Без этого ключа вы потеряете доступ к зашифрованным сообщениям при входе на другом устройстве."
-          }
-        }
-      }
-    },
-    "You've been invited to this chat" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Вас пригласили в этот чат"
-          }
-        }
-      }
-    },
-    "Your device is now verified. Messages will be trusted by other sessions." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Устройство верифицировано. Сообщения будут доверенными для других сессий."
-          }
-        }
-      }
-    },
-    "Your Recovery Key" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ваш ключ восстановления"
-          }
-        }
-      }
-    },
-    "%@ accepted %@'s join request" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ одобрил(а) заявку %2$@"
-          }
-        }
-      }
-    },
-    "%@ accepted the invitation" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ принял(а) приглашение"
-          }
-        }
-      }
-    },
-    "%@ accepted your join request" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ одобрил(а) вашу заявку"
-          }
-        }
-      }
-    },
-    "%@ banned %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ забанил(а) %2$@"
-          }
-        }
-      }
-    },
-    "%@ banned %@: %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ забанил(а) %2$@: %3$@"
-          }
-        }
-      }
-    },
-    "%@ banned you" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ забанил(а) вас"
-          }
-        }
-      }
-    },
-    "%@ banned you: %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ забанил(а) вас: %2$@"
-          }
-        }
-      }
-    },
-    "%@ changed the room avatar" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ изменил(а) аватар комнаты"
-          }
-        }
-      }
-    },
-    "%@ changed the room name to %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ изменил(а) название комнаты на %2$@"
-          }
-        }
-      }
-    },
-    "%@ changed the room topic to %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ изменил(а) тему комнаты на %2$@"
-          }
-        }
-      }
-    },
-    "%@ changed their avatar" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ изменил(а) аватар"
-          }
-        }
-      }
-    },
-    "%@ changed their display name from %@ to %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ изменил(а) отображаемое имя с %2$@ на %3$@"
-          }
-        }
-      }
-    },
-    "%@ created the room" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ создал(а) комнату"
-          }
-        }
-      }
-    },
-    "%@ declined the invitation" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ отклонил(а) приглашение"
-          }
-        }
-      }
-    },
-    "%@ denied %@'s join request" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ отклонил(а) заявку %2$@"
-          }
-        }
-      }
-    },
-    "%@ denied your join request" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ отклонил(а) вашу заявку"
-          }
-        }
-      }
-    },
-    "%@ invited %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ пригласил(а) %2$@"
-          }
-        }
-      }
-    },
-    "%@ invited you" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ пригласил(а) вас"
-          }
-        }
-      }
-    },
-    "%@ joined the room" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ вошёл(ла) в комнату"
-          }
-        }
-      }
-    },
-    "%@ left the room" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ вышел(ла) из комнаты"
-          }
-        }
-      }
-    },
-    "%@ pinned messages" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ закрепил(а) сообщения"
-          }
-        }
-      }
-    },
-    "%@ removed %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ исключил(а) %2$@"
-          }
-        }
-      }
-    },
-    "%@ removed %@: %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ исключил(а) %2$@: %3$@"
-          }
-        }
-      }
-    },
-    "%@ removed the room avatar" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ удалил(а) аватар комнаты"
-          }
-        }
-      }
-    },
-    "%@ removed the room name" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ удалил(а) название комнаты"
-          }
-        }
-      }
-    },
-    "%@ removed the room topic" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ удалил(а) тему комнаты"
-          }
-        }
-      }
-    },
-    "%@ removed their display name (%@)" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ удалил(а) отображаемое имя (%2$@)"
-          }
-        }
-      }
-    },
-    "%@ removed you" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ исключил(а) вас"
-          }
-        }
-      }
-    },
-    "%@ removed you: %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ исключил(а) вас: %2$@"
-          }
-        }
-      }
-    },
-    "%@ requested to join" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ запросил(а) вступление"
-          }
-        }
-      }
-    },
-    "%@ revoked %@'s invitation" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ отозвал(а) приглашение для %2$@"
-          }
-        }
-      }
-    },
-    "%@ revoked your invitation" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ отозвал(а) ваше приглашение"
-          }
-        }
-      }
-    },
-    "%@ set their display name to %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ установил(а) отображаемое имя %2$@"
-          }
-        }
-      }
-    },
-    "%@ unbanned %@" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%1$@ разбанил(а) %2$@"
-          }
-        }
-      }
-    },
-    "%@ unbanned you" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ разбанил(а) вас"
-          }
-        }
-      }
-    },
-    "%@ unpinned messages" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ открепил(а) сообщения"
-          }
-        }
-      }
-    },
-    "%@ updated pinned messages" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ обновил(а) закреплённые сообщения"
-          }
-        }
-      }
-    },
-    "%@ withdrew their join request" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ отозвал(а) свою заявку"
-          }
-        }
-      }
-    },
-    "Encryption enabled" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Включено шифрование"
-          }
-        }
-      }
-    },
-    "Room event" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Событие комнаты"
           }
         }
       }
@@ -1947,6 +1926,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Вы отозвали свою заявку"
+          }
+        }
+      }
+    },
+    "You've been invited to this chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вас пригласили в этот чат"
+          }
+        }
+      }
+    },
+    "Your device is now verified. Messages will be trusted by other sessions." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Устройство верифицировано. Сообщения будут доверенными для других сессий."
+          }
+        }
+      }
+    },
+    "Your Recovery Key" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ваш ключ восстановления"
           }
         }
       }

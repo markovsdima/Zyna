@@ -32,16 +32,22 @@ struct ZynaMessageAttributes: Equatable {
     /// Display name of the original sender when forwarded.
     var forwardedFrom: String?
 
+    /// Presentation-only metadata for photo groups. Foreign clients
+    /// ignore it; Zyna can use it to visually stitch adjacent media.
+    var mediaGroup: MediaGroupInfo?
+
     init(
         color: UIColor? = nil,
         checklist: [ChecklistItem]? = nil,
         callSignal: CallSignalData? = nil,
-        forwardedFrom: String? = nil
+        forwardedFrom: String? = nil,
+        mediaGroup: MediaGroupInfo? = nil
     ) {
         self.color = color
         self.checklist = checklist
         self.callSignal = callSignal
         self.forwardedFrom = forwardedFrom
+        self.mediaGroup = mediaGroup
     }
 
     var isEmpty: Bool {
@@ -49,6 +55,7 @@ struct ZynaMessageAttributes: Equatable {
             && (checklist == nil || checklist?.isEmpty == true)
             && callSignal == nil
             && forwardedFrom == nil
+            && mediaGroup == nil
     }
 
     static func == (lhs: ZynaMessageAttributes, rhs: ZynaMessageAttributes) -> Bool {
@@ -56,6 +63,7 @@ struct ZynaMessageAttributes: Equatable {
             && lhs.checklist == rhs.checklist
             && lhs.callSignal == rhs.callSignal
             && lhs.forwardedFrom == rhs.forwardedFrom
+            && lhs.mediaGroup == rhs.mediaGroup
     }
 }
 
@@ -74,6 +82,57 @@ struct CallSignalData: Codable, Equatable {
     /// CallCandidatesContent, etc.). Opaque to the codec —
     /// CallSignalingService decodes the concrete type.
     var payload: String
+}
+
+struct MediaGroupInfo: Codable, Equatable {
+    var id: String
+    /// Zero-based item position inside the original client-side order.
+    var index: Int
+    /// Intended group size. Treated as a hint; the actual visible set
+    /// may be smaller after failures, redactions, or edits.
+    var total: Int
+    var captionMode: CaptionMode
+    var captionPlacement: CaptionPlacement
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case index
+        case total
+        case captionMode
+        case captionPlacement
+    }
+
+    init(
+        id: String,
+        index: Int,
+        total: Int,
+        captionMode: CaptionMode,
+        captionPlacement: CaptionPlacement
+    ) {
+        self.id = id
+        self.index = index
+        self.total = total
+        self.captionMode = captionMode
+        self.captionPlacement = captionPlacement
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        index = try container.decode(Int.self, forKey: .index)
+        total = try container.decode(Int.self, forKey: .total)
+        captionMode = try container.decode(CaptionMode.self, forKey: .captionMode)
+        captionPlacement = try container.decodeIfPresent(CaptionPlacement.self, forKey: .captionPlacement) ?? .bottom
+    }
+}
+
+enum CaptionMode: String, Codable, Equatable {
+    case replicated
+}
+
+enum CaptionPlacement: String, Codable, Equatable {
+    case top
+    case bottom
 }
 
 // MARK: - UIColor hex helper

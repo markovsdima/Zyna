@@ -205,8 +205,13 @@ final class ChatViewModel {
         }
 
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
-        let newMessages = Self.decorateClusters(
+        let clusteredMessages = Self.decorateClusters(
             rawMessages,
+            olderBoundary: window.peekOlderNeighbor(),
+            newerBoundary: window.peekNewerNeighbor()
+        )
+        let newMessages = Self.decorateMediaGroups(
+            clusteredMessages,
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
         )
@@ -227,12 +232,18 @@ final class ChatViewModel {
         }
         // 5. Emit (filter redacted from normal updates, send separately for animation)
         if !newlyRedactedIds.isEmpty {
-            if case .batch(let del, let ins, let upd, let anim) = tableUpdate {
+            if case .batch(let del, let ins, let moves, let upd, let anim) = tableUpdate {
                 let filtered = upd.filter { ip in
                     guard ip.row < newMessages.count else { return true }
                     return !newMessages[ip.row].content.isRedacted
                 }
-                onTableUpdate?(.batch(deletions: del, insertions: ins, updates: filtered, animated: anim))
+                onTableUpdate?(.batch(
+                    deletions: del,
+                    insertions: ins,
+                    moves: moves,
+                    updates: filtered,
+                    animated: anim
+                ))
             } else {
                 onTableUpdate?(tableUpdate)
             }
@@ -258,27 +269,51 @@ final class ChatViewModel {
     }
 
     /// Stable key for diff comparison. Uses eventId (server-assigned,
-    /// immutable) when available; falls back to id (SDK uniqueId) for
-    /// local echoes that don't have an eventId yet.
+    /// immutable) or transactionId (local echo carried onto the synced
+    /// row) when available; falls back to id (SDK uniqueId) otherwise.
     private static func stableKey(_ msg: ChatMessage) -> String {
-        msg.eventId ?? msg.id
+        if let presentation = msg.mediaGroupPresentation {
+            if presentation.rendersCompositeBubble {
+                return "media-group:\(presentation.id):composite"
+            }
+            if presentation.hidesStandaloneBubble,
+               let mediaGroup = msg.zynaAttributes.mediaGroup {
+                return "media-group:\(presentation.id):hidden:\(mediaGroup.index)"
+            }
+        }
+        return msg.transactionId ?? msg.eventId ?? msg.id
     }
 
     private static func computeTableUpdate(old: [ChatMessage], new: [ChatMessage]) -> (TableUpdate, [(IndexPath, ChatMessage)]) {
         let oldKeys = old.map { stableKey($0) }
         let newKeys = new.map { stableKey($0) }
-        let keyDiff = newKeys.difference(from: oldKeys)
+        let keyDiff = newKeys.difference(from: oldKeys).inferringMoves()
 
         var deletions: [IndexPath] = []
         var insertions: [IndexPath] = []
         var removedOldOffsets = Set<Int>()
+        var movedOldOffsets = Set<Int>()
+        var movedNewOffsets = Set<Int>()
+        var moves: [(from: IndexPath, to: IndexPath)] = []
 
         for change in keyDiff {
             switch change {
-            case .remove(let offset, _, _):
+            case .remove(let offset, _, let associatedWith):
+                if let newOffset = associatedWith {
+                    movedOldOffsets.insert(offset)
+                    movedNewOffsets.insert(newOffset)
+                    moves.append((
+                        from: IndexPath(row: offset, section: 0),
+                        to: IndexPath(row: newOffset, section: 0)
+                    ))
+                    continue
+                }
                 deletions.append(IndexPath(row: offset, section: 0))
                 removedOldOffsets.insert(offset)
-            case .insert(let offset, _, _):
+            case .insert(let offset, _, let associatedWith):
+                if associatedWith != nil {
+                    continue
+                }
                 insertions.append(IndexPath(row: offset, section: 0))
             }
         }
@@ -293,12 +328,19 @@ final class ChatViewModel {
             if MessageCellNode.canUpdateInPlace(old: old[oldIdx], new: new[newIdx]) {
                 inPlaceUpdates.append((IndexPath(row: newIdx, section: 0), new[newIdx]))
             } else {
-                fullUpdates.append(IndexPath(row: oldIdx, section: 0))
+                let reloadRow = movedOldOffsets.contains(oldIdx) || movedNewOffsets.contains(newIdx) ? newIdx : oldIdx
+                fullUpdates.append(IndexPath(row: reloadRow, section: 0))
             }
         }
 
-        let animated = deletions.isEmpty && insertions.count == 1 && fullUpdates.isEmpty
-        let batch = TableUpdate.batch(deletions: deletions, insertions: insertions, updates: fullUpdates, animated: animated)
+        let animated = deletions.isEmpty && insertions.count == 1 && moves.isEmpty && fullUpdates.isEmpty
+        let batch = TableUpdate.batch(
+            deletions: deletions,
+            insertions: insertions,
+            moves: moves,
+            updates: fullUpdates,
+            animated: animated
+        )
         return (batch, inPlaceUpdates)
     }
 
@@ -438,19 +480,121 @@ final class ChatViewModel {
 
     func sendFile(url: URL) {
         Task {
-            await timelineService.sendFile(url: url)
+            await timelineService.sendFile(url: url, caption: nil, replyEventId: nil)
         }
     }
 
-    func sendImages(_ images: [ProcessedImage], caption: String?) {
-        for (i, image) in images.enumerated() {
-            let cap = (i == 0) ? caption : nil
-            Task {
-                await timelineService.sendImage(
-                    imageData: image.imageData,
-                    width: image.width, height: image.height, caption: cap
+    func sendImages(
+        _ images: [ProcessedImage],
+        caption: String?,
+        captionPlacement: CaptionPlacement = .bottom
+    ) {
+        Task { [timelineService] in
+            await Self.sendImageBatch(
+                images,
+                caption: caption,
+                captionPlacement: captionPlacement,
+                replyEventId: nil,
+                timelineService: timelineService
+            )
+        }
+    }
+
+    func sendComposerAttachments(
+        _ attachments: [ChatComposerAttachmentDraft],
+        caption: String?,
+        captionPlacement: CaptionPlacement = .bottom
+    ) {
+        guard !attachments.isEmpty else { return }
+
+        let replyEventId = replyingTo?.eventId
+        replyingTo = nil
+        pendingForwardContent = nil
+
+        let imageAttachments = attachments.compactMap { attachment -> ProcessedImage? in
+            guard case .image(let image) = attachment.payload else { return nil }
+            return image
+        }
+        let hasOnlyImages = imageAttachments.count == attachments.count
+
+        if hasOnlyImages {
+            Task { [timelineService] in
+                await Self.sendImageBatch(
+                    imageAttachments,
+                    caption: caption,
+                    captionPlacement: captionPlacement,
+                    replyEventId: replyEventId,
+                    timelineService: timelineService
                 )
             }
+            return
+        }
+
+        Task { [timelineService] in
+            for (index, attachment) in attachments.enumerated() {
+                let attachmentCaption = (index == 0) ? caption : nil
+                switch attachment.payload {
+                case .image(let image):
+                    await timelineService.sendImage(
+                        imageData: image.imageData,
+                        width: image.width,
+                        height: image.height,
+                        caption: attachmentCaption,
+                        replyEventId: replyEventId
+                    )
+                case .file(let url):
+                    await timelineService.sendFile(
+                        url: url,
+                        caption: attachmentCaption,
+                        replyEventId: replyEventId
+                    )
+                }
+            }
+        }
+    }
+
+    private static func sendImageBatch(
+        _ images: [ProcessedImage],
+        caption: String?,
+        captionPlacement: CaptionPlacement,
+        replyEventId: String?,
+        timelineService: TimelineService
+    ) async {
+        guard !images.isEmpty else { return }
+
+        let normalizedCaption: String? = {
+            guard let caption else { return nil }
+            let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }()
+
+        let needsCaptionPlacementMetadata = captionPlacement != .bottom
+        let mediaGroupId = (images.count > 1 || needsCaptionPlacementMetadata) ? UUID().uuidString : nil
+
+        for (index, image) in images.enumerated() {
+            let attrs: ZynaMessageAttributes
+            if let mediaGroupId {
+                attrs = ZynaMessageAttributes(
+                    mediaGroup: MediaGroupInfo(
+                        id: mediaGroupId,
+                        index: index,
+                        total: images.count,
+                        captionMode: .replicated,
+                        captionPlacement: captionPlacement
+                    )
+                )
+            } else {
+                attrs = ZynaMessageAttributes()
+            }
+
+            await timelineService.sendImage(
+                imageData: image.imageData,
+                width: image.width,
+                height: image.height,
+                caption: normalizedCaption,
+                zynaAttributes: attrs,
+                replyEventId: replyEventId
+            )
         }
     }
 
@@ -521,6 +665,7 @@ final class ChatViewModel {
         onTableUpdate?(.batch(
             deletions: [IndexPath(row: idx, section: 0)],
             insertions: [],
+            moves: [],
             updates: [],
             animated: false
         ))
@@ -650,7 +795,8 @@ final class ChatViewModel {
         return ClusterNeighbor(
             senderId: message.senderId,
             timestamp: message.timestamp,
-            isStandaloneEvent: message.content.isStandaloneEvent
+            isStandaloneEvent: message.content.isStandaloneEvent,
+            mediaGroupId: message.zynaAttributes.mediaGroup?.id
         )
     }
 
@@ -660,6 +806,160 @@ final class ChatViewModel {
         if neighbor.senderId != current.senderId { return true }
         let gap = abs(current.timestamp.timeIntervalSince(neighbor.timestamp))
         return gap > clusterGap
+    }
+
+    private static func decorateMediaGroups(
+        _ messages: [ChatMessage],
+        olderBoundary: ClusterNeighbor?,
+        newerBoundary: ClusterNeighbor?
+    ) -> [ChatMessage] {
+        guard !messages.isEmpty else { return messages }
+        var result = messages
+        var index = 0
+
+        while index < result.count {
+            guard case .image = result[index].content,
+                  let mediaGroup = result[index].zynaAttributes.mediaGroup
+            else {
+                index += 1
+                continue
+            }
+
+            let runStart = index
+            var runEnd = index
+
+            while runEnd + 1 < result.count,
+                  sharesMediaGroup(result[runEnd], result[runEnd + 1]) {
+                runEnd += 1
+            }
+
+            let sharesWithNewerBoundary = runStart == 0
+                && sharesMediaGroup(result[runStart], newerBoundary)
+            let sharesWithOlderBoundary = runEnd == result.count - 1
+                && sharesMediaGroup(result[runEnd], olderBoundary)
+
+            let runLength = runEnd - runStart + 1
+            let isVisualGroup = runLength > 1 || sharesWithNewerBoundary || sharesWithOlderBoundary
+
+            if isVisualGroup {
+                let groupItems = mediaGroupItems(from: Array(result[runStart...runEnd]))
+                let visibleCaptions = (runStart...runEnd).map { result[$0].content.visibleImageCaption }
+                let captionCollapse = groupCaptionCollapse(from: visibleCaptions)
+                let deduplicatedCaption = captionCollapse.caption
+                let suppressIndividualCaption = captionCollapse.caption != nil
+                let canRenderCompositeBubble =
+                    runLength > 1
+                    && !sharesWithNewerBoundary
+                    && !sharesWithOlderBoundary
+                    && captionCollapse.canCollapse
+                let captionCarrierPosition: MediaGroupPosition = mediaGroup.captionPlacement == .top ? .top : .bottom
+
+                if canRenderCompositeBubble {
+                    if captionCarrierPosition == .bottom {
+                        result[runStart].isFirstInCluster = result[runEnd].isFirstInCluster
+                    } else {
+                        result[runEnd].isLastInCluster = result[runStart].isLastInCluster
+                    }
+                }
+
+                for currentIndex in runStart...runEnd {
+                    let position: MediaGroupPosition
+                    let hasNewerSibling = currentIndex > runStart || sharesWithNewerBoundary
+                    let hasOlderSibling = currentIndex < runEnd || sharesWithOlderBoundary
+
+                    if hasNewerSibling && hasOlderSibling {
+                        position = .middle
+                    } else if hasNewerSibling {
+                        position = .top
+                    } else {
+                        position = .bottom
+                    }
+
+                    let caption = position == captionCarrierPosition ? deduplicatedCaption : nil
+                    result[currentIndex].mediaGroupPresentation = MediaGroupPresentation(
+                        id: mediaGroup.id,
+                        position: position,
+                        totalHint: mediaGroup.total,
+                        caption: caption,
+                        captionPlacement: mediaGroup.captionPlacement,
+                        suppressIndividualCaption: suppressIndividualCaption,
+                        items: (canRenderCompositeBubble && position == captionCarrierPosition) ? groupItems : [],
+                        rendersCompositeBubble: canRenderCompositeBubble && position == captionCarrierPosition,
+                        hidesStandaloneBubble: canRenderCompositeBubble && position != captionCarrierPosition
+                    )
+                }
+            }
+
+            index = runEnd + 1
+        }
+
+        return result
+    }
+
+    private static func sharesMediaGroup(_ lhs: ChatMessage, _ rhs: ChatMessage) -> Bool {
+        guard case .image = lhs.content,
+              case .image = rhs.content,
+              lhs.senderId == rhs.senderId,
+              let lhsGroup = lhs.zynaAttributes.mediaGroup,
+              let rhsGroup = rhs.zynaAttributes.mediaGroup
+        else {
+            return false
+        }
+        return lhsGroup.id == rhsGroup.id
+    }
+
+    private static func sharesMediaGroup(_ message: ChatMessage, _ neighbor: ClusterNeighbor?) -> Bool {
+        guard case .image = message.content,
+              let groupId = message.zynaAttributes.mediaGroup?.id,
+              let neighbor,
+              neighbor.senderId == message.senderId
+        else {
+            return false
+        }
+        return neighbor.mediaGroupId == groupId
+    }
+
+    private static func mediaGroupItems(from messages: [ChatMessage]) -> [MediaGroupItem] {
+        messages
+            .sorted {
+                let lhsIndex = $0.zynaAttributes.mediaGroup?.index ?? .max
+                let rhsIndex = $1.zynaAttributes.mediaGroup?.index ?? .max
+                if lhsIndex != rhsIndex {
+                    return lhsIndex < rhsIndex
+                }
+                return $0.timestamp < $1.timestamp
+            }
+            .compactMap { message in
+                guard case .image(let source, let width, let height, let caption) = message.content else {
+                    return nil
+                }
+                return MediaGroupItem(
+                    messageId: message.id,
+                    eventId: message.eventId,
+                    transactionId: message.transactionId,
+                    source: source,
+                    width: width,
+                    height: height,
+                    caption: caption,
+                    sendStatus: message.sendStatus
+                )
+            }
+    }
+
+    private static func groupCaptionCollapse(from captions: [String?]) -> (caption: String?, canCollapse: Bool) {
+        guard let first = captions.first else { return (nil, true) }
+        let normalized = first?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCaption = normalized?.isEmpty == false ? normalized : nil
+
+        for caption in captions.dropFirst() {
+            let trimmed = caption?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalizedCurrent = trimmed?.isEmpty == false ? trimmed : nil
+            if normalizedCurrent != normalizedCaption {
+                return (nil, false)
+            }
+        }
+
+        return (normalizedCaption, true)
     }
 
     // MARK: - Prefetch

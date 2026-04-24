@@ -37,18 +37,13 @@ enum MediaPreprocessor {
                 throw PreprocessorError.invalidImageData
             }
 
-            // Resize main image
-            let resized = resizeUIImage(original, maxDimension: maxDimension)
+            return try processDecodedImage(original)
+        }.value
+    }
 
-            guard let imageData = resized.jpegData(compressionQuality: jpegQuality) else {
-                throw PreprocessorError.encodingFailed
-            }
-
-            return ProcessedImage(
-                imageData: imageData,
-                width: UInt64(resized.size.width * resized.scale),
-                height: UInt64(resized.size.height * resized.scale)
-            )
+    static func processImage(from image: UIImage) async throws -> ProcessedImage {
+        try await Task.detached {
+            try processDecodedImage(image)
         }.value
     }
 
@@ -99,6 +94,20 @@ enum MediaPreprocessor {
         return renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: newSize))
         }
+    }
+
+    private static func processDecodedImage(_ original: UIImage) throws -> ProcessedImage {
+        let resized = resizeUIImage(original, maxDimension: maxDimension)
+
+        guard let imageData = resized.jpegData(compressionQuality: jpegQuality) else {
+            throw PreprocessorError.encodingFailed
+        }
+
+        return ProcessedImage(
+            imageData: imageData,
+            width: UInt64(resized.size.width * resized.scale),
+            height: UInt64(resized.size.height * resized.scale)
+        )
     }
 
     // MARK: - Errors

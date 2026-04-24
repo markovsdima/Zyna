@@ -34,13 +34,23 @@ final class OutgoingAttributesCache {
         let expiresAt: Date
     }
 
+    enum MessageKind: Hashable {
+        case text
+        case image
+        case file
+        case audio
+        case video
+    }
+
     private struct Key: Hashable {
         let body: String
         let senderId: String
+        let kind: MessageKind
     }
 
     private let queue = DispatchQueue(label: "com.zyna.outgoingAttributesCache")
-    private var entries: [Key: Entry] = [:]
+    private var pendingEntries: [Key: [Entry]] = [:]
+    private var transactionAssignments: [String: Entry] = [:]
 
     // MARK: - API
 
@@ -48,14 +58,15 @@ final class OutgoingAttributesCache {
     func remember(
         attributes: ZynaMessageAttributes,
         body: String,
-        senderId: String
+        senderId: String,
+        kind: MessageKind = .text
     ) {
-        let key = Key(body: body, senderId: senderId)
+        let key = Key(body: body, senderId: senderId, kind: kind)
         queue.sync {
-            entries[key] = Entry(
+            pendingEntries[key, default: []].append(Entry(
                 attributes: attributes,
                 expiresAt: Date().addingTimeInterval(Self.ttl)
-            )
+            ))
             pruneExpiredLocked()
         }
     }
@@ -63,10 +74,31 @@ final class OutgoingAttributesCache {
     /// Returns previously-remembered attributes for an own event whose
     /// raw JSON has not arrived yet. Does not remove the entry —
     /// multiple timeline diffs may hit the same row.
-    func peek(body: String, senderId: String) -> ZynaMessageAttributes? {
-        let key = Key(body: body, senderId: senderId)
+    func peek(
+        body: String,
+        senderId: String,
+        kind: MessageKind = .text,
+        transactionId: String? = nil
+    ) -> ZynaMessageAttributes? {
+        let key = Key(body: body, senderId: senderId, kind: kind)
         return queue.sync {
-            guard let entry = entries[key], entry.expiresAt > Date() else { return nil }
+            pruneExpiredLocked()
+
+            if let transactionId,
+               let entry = transactionAssignments[transactionId],
+               entry.expiresAt > Date() {
+                return entry.attributes
+            }
+
+            guard var entries = pendingEntries[key], !entries.isEmpty else { return nil }
+            guard let entry = entries.first else { return nil }
+
+            if let transactionId {
+                transactionAssignments[transactionId] = entry
+                entries.removeFirst()
+                pendingEntries[key] = entries.isEmpty ? nil : entries
+            }
+
             return entry.attributes
         }
     }
@@ -75,6 +107,12 @@ final class OutgoingAttributesCache {
 
     private func pruneExpiredLocked() {
         let now = Date()
-        entries = entries.filter { $0.value.expiresAt > now }
+        pendingEntries = pendingEntries.reduce(into: [:]) { result, item in
+            let filtered = item.value.filter { $0.expiresAt > now }
+            if !filtered.isEmpty {
+                result[item.key] = filtered
+            }
+        }
+        transactionAssignments = transactionAssignments.filter { $0.value.expiresAt > now }
     }
 }

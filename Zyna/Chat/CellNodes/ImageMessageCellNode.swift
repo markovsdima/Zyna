@@ -22,6 +22,7 @@ final class ImageMessageCellNode: MessageCellNode {
     private let imageNode = RoundedImageNode()
     private let timeBadgeNode = ASDisplayNode()
     private let captionNode: ASTextNode?
+    private let captionPlacement: CaptionPlacement?
 
     /// Current thumbnail for the viewer transition.
     var currentImage: UIImage? { imageNode.image }
@@ -42,18 +43,20 @@ final class ImageMessageCellNode: MessageCellNode {
         var source: MediaSource?
         var imageWidth: UInt64?
         var imageHeight: UInt64?
-        var captionText: String?
+        let mediaGroupPresentation = message.mediaGroupPresentation
+        let ownCaptionText = message.content.visibleImageCaption
+        let captionText: String?
 
-        if case .image(let src, let width, let height, let caption) = message.content {
+        if case .image(let src, let width, let height, _) = message.content {
             source = src
             imageWidth = width
             imageHeight = height
-            // Filter zero-width caption (carrier for Zyna span)
-            if let c = caption {
-                let visible = c.replacingOccurrences(of: "\u{200B}", with: "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !visible.isEmpty { captionText = visible }
-            }
+        }
+
+        if let mediaGroupPresentation, mediaGroupPresentation.suppressIndividualCaption {
+            captionText = mediaGroupPresentation.caption
+        } else {
+            captionText = ownCaptionText
         }
 
         // Caption node
@@ -74,6 +77,11 @@ final class ImageMessageCellNode: MessageCellNode {
         } else {
             self.captionNode = nil
         }
+        self.captionPlacement = captionText == nil
+            ? nil
+            : (mediaGroupPresentation?.captionPlacement
+                ?? message.zynaAttributes.mediaGroup?.captionPlacement
+                ?? .bottom)
 
         self.mediaSource = source
         if let width = imageWidth, let height = imageHeight, height > 0 {
@@ -90,15 +98,30 @@ final class ImageMessageCellNode: MessageCellNode {
         super.init(message: message, isGroupChat: isGroupChat)
 
         // Image — precomposited per-corner rounding via RoundedImageNode
-        imageNode.radius = 18
+        imageNode.radius = MessageCellHelpers.mediaBubbleCornerRadius
         imageNode.imageContentMode = .scaleAspectFill
 
-        var corners: UIRectCorner = .allCorners
+        var corners: UIRectCorner
+        if let mediaGroupPosition = mediaGroupPresentation?.position {
+            switch mediaGroupPosition {
+            case .top:
+                corners = [.topLeft, .topRight]
+            case .middle:
+                corners = []
+            case .bottom:
+                corners = [.bottomLeft, .bottomRight]
+            }
+        } else {
+            corners = .allCorners
+        }
         if hasHeader {
             corners.remove(.topLeft)
             corners.remove(.topRight)
         }
-        if hasCaption {
+        if captionPlacement == .top {
+            corners.remove(.topLeft)
+            corners.remove(.topRight)
+        } else if hasCaption {
             corners.remove(.bottomLeft)
             corners.remove(.bottomRight)
         }
@@ -116,6 +139,13 @@ final class ImageMessageCellNode: MessageCellNode {
                 width: maxWidth,
                 height: min(imgHeight, MessageCellHelpers.maxImageBubbleHeight)
             )
+
+            let showsTimeBadge = self.mediaGroupPosition == nil
+                || self.mediaGroupPosition == .bottom
+                || self.captionNode != nil
+            guard showsTimeBadge else {
+                return ASWrapperLayoutSpec(layoutElement: self.imageNode)
+            }
 
             let timePadded = ASInsetLayoutSpec(
                 insets: UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6),
@@ -155,15 +185,21 @@ final class ImageMessageCellNode: MessageCellNode {
                 ))
             }
 
-            // Build vertical stack: [headers] + image + [caption]
-            var stackChildren: [ASLayoutElement] = headerChildren
-            stackChildren.append(imageWithTime)
-
-            if let captionNode = self.captionNode {
-                stackChildren.append(ASInsetLayoutSpec(
+            let captionInset = self.captionNode.map {
+                ASInsetLayoutSpec(
                     insets: UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12),
-                    child: captionNode
-                ))
+                    child: $0
+                )
+            }
+
+            // Build vertical stack: [headers] + [caption?] + image or [headers] + image + [caption?]
+            var stackChildren: [ASLayoutElement] = headerChildren
+            if let captionInset, self.captionPlacement == .top {
+                stackChildren.append(captionInset)
+            }
+            stackChildren.append(imageWithTime)
+            if let captionInset, self.captionPlacement != .top {
+                stackChildren.append(captionInset)
             }
 
             if stackChildren.count > 1 {
