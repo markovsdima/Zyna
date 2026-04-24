@@ -25,6 +25,7 @@ final class ContextSourceNode: ASDisplayNode {
     let contentNode: ASDisplayNode
     private var didActivate = false
     private var touchStartLocation: CGPoint = .zero
+    private var latestLocation: CGPoint = .zero
 
     /// Horizontal pan distance (pt) past which we treat the touch as
     /// a back-swipe and bow out so the navigation pan can take over.
@@ -80,6 +81,7 @@ final class ContextSourceNode: ASDisplayNode {
 
     @objc private func handleGesture(_ gesture: UILongPressGestureRecognizer) {
         let location = gesture.location(in: view)
+        latestLocation = location
 
         switch gesture.state {
         case .began:
@@ -182,10 +184,7 @@ final class ContextSourceNode: ASDisplayNode {
         let generator = UIImpactFeedbackGenerator(style: .medium)
         generator.impactOccurred()
 
-        let location = CGPoint(
-            x: bounds.midX,
-            y: bounds.midY
-        )
+        let location = latestLocation
         activated?(location)
     }
 

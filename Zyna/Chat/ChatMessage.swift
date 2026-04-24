@@ -248,6 +248,16 @@ struct MediaGroupItem: Equatable {
     let caption: String?
     let sendStatus: String
 
+    var itemIdentifier: ChatItemIdentifier? {
+        if let eventId {
+            return .eventId(eventId)
+        }
+        if let transactionId {
+            return .transactionId(transactionId)
+        }
+        return nil
+    }
+
     static func == (lhs: MediaGroupItem, rhs: MediaGroupItem) -> Bool {
         lhs.messageId == rhs.messageId
             && lhs.eventId == rhs.eventId

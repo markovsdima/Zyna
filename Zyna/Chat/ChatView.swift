@@ -630,9 +630,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func configureMessageDrivenInteractions(for cellNode: MessageCellNode, message: ChatMessage) {
-        cellNode.onContextMenuActivated = { [weak self, weak cellNode] in
+        cellNode.onContextMenuActivated = { [weak self, weak cellNode] point in
             guard let self, let cellNode else { return }
-            self.presentContextMenu(for: message, from: cellNode)
+            self.presentContextMenu(for: message, from: cellNode, activationPoint: point)
         }
         cellNode.onReactionTapped = { [weak self] key in
             self?.viewModel.toggleReaction(key, for: message)
@@ -748,7 +748,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     // MARK: - Context Menu
 
-    private func presentContextMenu(for message: ChatMessage, from cellNode: ContextMenuCellNode) {
+    private func presentContextMenu(
+        for message: ChatMessage,
+        from cellNode: ContextMenuCellNode,
+        activationPoint: CGPoint
+    ) {
         guard let window = view.window,
               let info = cellNode.extractBubbleForMenu(in: window.coordinateSpace) else { return }
 
@@ -793,7 +797,33 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             ))
         }
 
-        if message.itemIdentifier != nil && !message.content.isRedacted {
+        if let groupCell = cellNode as? PhotoGroupMessageCellNode,
+           let presentation = message.mediaGroupPresentation,
+           presentation.rendersCompositeBubble,
+           !message.content.isRedacted {
+            if let tappedItem = groupCell.prepareContextMenuSelection(at: activationPoint) {
+                actions.append(ContextMenuAction(
+                    title: "Delete Photo",
+                    image: UIImage(systemName: "trash"),
+                    isDestructive: true,
+                    handler: { [weak self] in
+                        self?.viewModel.redactMediaGroupItem(tappedItem)
+                    }
+                ))
+            }
+
+            let groupItems = presentation.items.filter { $0.itemIdentifier != nil }
+            if !groupItems.isEmpty {
+                actions.append(ContextMenuAction(
+                    title: "Delete Group",
+                    image: UIImage(systemName: "square.stack.3d.down.forward"),
+                    isDestructive: true,
+                    handler: { [weak self] in
+                        self?.viewModel.redactMediaGroupItems(groupItems)
+                    }
+                ))
+            }
+        } else if message.itemIdentifier != nil && !message.content.isRedacted {
             actions.append(ContextMenuAction(
                 title: "Delete",
                 image: UIImage(systemName: "trash"),
@@ -810,6 +840,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             actions: actions
         )
         menuVC.onDismissComplete = { [weak self, weak cellNode] in
+            (cellNode as? PhotoGroupMessageCellNode)?.clearContextMenuSelection()
             cellNode?.restoreBubbleFromMenu()
             self?.unlockInteraction("contextMenu")
             self?.activeContextMenu = nil

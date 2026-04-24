@@ -6,6 +6,62 @@
 import AsyncDisplayKit
 import MatrixRustSDK
 
+private final class ContextMenuSelectionNode: ASDisplayNode {
+
+    private let shapeLayer = CAShapeLayer()
+
+    var radius: CGFloat = 0 {
+        didSet { setNeedsLayout() }
+    }
+
+    var roundedCorners: UIRectCorner = .allCorners {
+        didSet { setNeedsLayout() }
+    }
+
+    var isHighlightedSelection: Bool = false {
+        didSet {
+            if oldValue != isHighlightedSelection {
+                alpha = isHighlightedSelection ? 1 : 0
+            }
+        }
+    }
+
+    override init() {
+        super.init()
+        isOpaque = false
+        alpha = 0
+        isUserInteractionEnabled = false
+    }
+
+    override func didLoad() {
+        super.didLoad()
+        shapeLayer.fillColor = UIColor.white.withAlphaComponent(0.10).cgColor
+        shapeLayer.strokeColor = UIColor.white.withAlphaComponent(0.95).cgColor
+        shapeLayer.lineWidth = 2
+        shapeLayer.shadowColor = UIColor.black.withAlphaComponent(0.28).cgColor
+        shapeLayer.shadowOpacity = 1
+        shapeLayer.shadowRadius = 8
+        shapeLayer.shadowOffset = .zero
+        view.layer.addSublayer(shapeLayer)
+    }
+
+    override func layout() {
+        super.layout()
+        guard isNodeLoaded else { return }
+        shapeLayer.frame = bounds
+
+        let inset = max(1, shapeLayer.lineWidth / 2)
+        let pathBounds = bounds.insetBy(dx: inset, dy: inset)
+        let path = UIBezierPath(
+            roundedRect: pathBounds,
+            byRoundingCorners: roundedCorners,
+            cornerRadii: CGSize(width: max(0, radius - inset), height: max(0, radius - inset))
+        )
+        shapeLayer.path = path.cgPath
+        shapeLayer.shadowPath = path.cgPath
+    }
+}
+
 final class PhotoGroupMessageCellNode: MessageCellNode {
 
     var onPhotoTapped: ((Int) -> Void)?
@@ -13,6 +69,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
     private var mediaItems: [MediaGroupItem]
     private let mediaContainerNode = ASDisplayNode()
     private let imageNodes: [RoundedImageNode]
+    private let selectionNodes: [ContextMenuSelectionNode]
     private let timeBadgeNode = ASDisplayNode()
     private let overflowNode = ASDisplayNode()
     private let overflowTextNode = ASTextNode()
@@ -23,6 +80,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
     private let mediaHeight: CGFloat
     private var slotFrames: [CGRect] = []
     private var displayedSourceURLs: [String?]
+    private var contextMenuHighlightedIndex: Int?
 
     private var visibleItemCount: Int {
         PhotoGroupLayout.visibleItemCount(for: mediaItems.count)
@@ -77,6 +135,11 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
             node.imageContentMode = .scaleAspectFill
             return node
         }
+        self.selectionNodes = (0..<PhotoGroupLayout.maxVisibleItems).map { _ in
+            let node = ContextMenuSelectionNode()
+            node.radius = MessageCellHelpers.mediaBubbleCornerRadius
+            return node
+        }
         self.displayedSourceURLs = Array(repeating: nil, count: PhotoGroupLayout.maxVisibleItems)
 
         super.init(message: message, isGroupChat: isGroupChat)
@@ -87,6 +150,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
         overflowNode.cornerRadius = MessageCellHelpers.mediaBubbleCornerRadius
         overflowNode.addSubnode(overflowTextNode)
         mediaContainerNode.addSubnode(overflowNode)
+        selectionNodes.forEach(mediaContainerNode.addSubnode)
 
         timeBadgeNode.backgroundColor = UIColor.black.withAlphaComponent(0.4)
         timeBadgeNode.cornerRadius = 8
@@ -205,6 +269,19 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
             if imageNode.image != nil, previousFrame != imageNode.frame {
                 imageNode.setNeedsDisplay()
             }
+
+            let selectionNode = selectionNodes[index]
+            selectionNode.frame = slotFrames[index]
+            selectionNode.radius = MessageCellHelpers.mediaBubbleCornerRadius
+            selectionNode.roundedCorners = imageNode.roundedCorners
+            selectionNode.isHighlightedSelection = contextMenuHighlightedIndex == index
+        }
+
+        if slotFrames.count < selectionNodes.count {
+            for index in slotFrames.count..<selectionNodes.count {
+                selectionNodes[index].frame = .zero
+                selectionNodes[index].isHighlightedSelection = false
+            }
         }
 
         let overflowCount = mediaItems.count - visibleItemCount
@@ -248,6 +325,38 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
     func mediaSource(at index: Int) -> MediaSource? {
         guard mediaItems.indices.contains(index) else { return nil }
         return mediaItems[index].source
+    }
+
+    func contextMenuMediaItem(at point: CGPoint) -> MediaGroupItem? {
+        guard let index = mediaIndex(at: point),
+              mediaItems.indices.contains(index) else {
+            return nil
+        }
+        // The overflow tile represents multiple hidden items, so it
+        // cannot safely map to one specific photo deletion target.
+        if mediaItems.count > visibleItemCount, index == visibleItemCount - 1 {
+            return nil
+        }
+        return mediaItems[index]
+    }
+
+    func prepareContextMenuSelection(at point: CGPoint) -> MediaGroupItem? {
+        let item = contextMenuMediaItem(at: point)
+        if let index = mediaIndex(at: point), item != nil {
+            contextMenuHighlightedIndex = index
+        } else {
+            contextMenuHighlightedIndex = nil
+        }
+        mediaContainerNode.setNeedsLayout()
+        setNeedsLayout()
+        return item
+    }
+
+    func clearContextMenuSelection() {
+        guard contextMenuHighlightedIndex != nil else { return }
+        contextMenuHighlightedIndex = nil
+        mediaContainerNode.setNeedsLayout()
+        setNeedsLayout()
     }
 
     func updateMediaGroupPresentation(_ presentation: MediaGroupPresentation?) {

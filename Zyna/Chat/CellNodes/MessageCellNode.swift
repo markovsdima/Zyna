@@ -17,7 +17,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     // MARK: - Context Menu
 
-    var onContextMenuActivated: (() -> Void)?
+    var onContextMenuActivated: ((CGPoint) -> Void)?
 
     var onDragChanged: ((CGPoint) -> Void)? {
         get { contextSourceNode.onDragChanged }
@@ -135,8 +135,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         accessibilityTraits = .staticText
         accessibilityLabel = Self.makeAccessibilityLabel(for: message)
 
-        contextSourceNode.activated = { [weak self] _ in
-            self?.onContextMenuActivated?()
+        contextSourceNode.activated = { [weak self] point in
+            self?.onContextMenuActivated?(point)
         }
 
         automaticallyManagesSubnodes = true

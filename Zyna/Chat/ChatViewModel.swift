@@ -205,16 +205,11 @@ final class ChatViewModel {
         }
 
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
-        let clusteredMessages = Self.decorateClusters(
-            rawMessages,
+        let newMessages = Self.buildDisplayMessages(
+            from: rawMessages,
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
         )
-        let newMessages = Self.decorateMediaGroups(
-            clusteredMessages,
-            olderBoundary: window.peekOlderNeighbor(),
-            newerBoundary: window.peekNewerNeighbor()
-        ).filter { $0.mediaGroupPresentation?.hidesStandaloneBubble != true }
 
         // 3. Prefetch images
         Self.prefetchImages(newMessages)
@@ -647,12 +642,38 @@ final class ChatViewModel {
 
     func redactMessage(_ message: ChatMessage) {
         guard let itemId = message.itemIdentifier else { return }
+        redactItemIdentifier(itemId, messageId: message.id)
+    }
+
+    func redactMediaGroupItem(_ item: MediaGroupItem) {
+        guard let itemId = item.itemIdentifier else { return }
+        redactItemIdentifier(itemId, messageId: item.messageId)
+    }
+
+    func redactMediaGroupItems(_ items: [MediaGroupItem]) {
+        let identifiableItems = items.filter { $0.itemIdentifier != nil }
+        guard !identifiableItems.isEmpty else { return }
+        Task {
+            for item in identifiableItems {
+                guard let itemId = item.itemIdentifier else { continue }
+                do {
+                    try await timelineService.redactEvent(itemId)
+                } catch {
+                    await MainActor.run {
+                        onRedactionFailed?(item.messageId, error)
+                    }
+                }
+            }
+        }
+    }
+
+    private func redactItemIdentifier(_ itemId: ChatItemIdentifier, messageId: String) {
         Task {
             do {
                 try await timelineService.redactEvent(itemId)
             } catch {
                 await MainActor.run {
-                    onRedactionFailed?(message.id, error)
+                    onRedactionFailed?(messageId, error)
                 }
             }
         }
@@ -660,15 +681,32 @@ final class ChatViewModel {
 
     func hideMessage(_ messageId: String) {
         hiddenIds.insert(messageId)
-        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
-        messages.remove(at: idx)
-        onTableUpdate?(.batch(
-            deletions: [IndexPath(row: idx, section: 0)],
-            insertions: [],
-            moves: [],
-            updates: [],
-            animated: false
-        ))
+        let oldMessages = messages
+        let visibleRedactedIds = Set(
+            oldMessages
+                .filter { $0.content.isRedacted }
+                .map(\.id)
+        )
+        let displayStored = window.currentStoredMessages().filter { msg in
+            if hiddenIds.contains(msg.id) { return false }
+            if msg.contentType == "redacted" {
+                return visibleRedactedIds.contains(msg.id)
+            }
+            return true
+        }
+        let rawMessages = displayStored.compactMap { $0.toChatMessage() }
+        let newMessages = Self.buildDisplayMessages(
+            from: rawMessages,
+            olderBoundary: window.peekOlderNeighbor(),
+            newerBoundary: window.peekNewerNeighbor()
+        )
+        messages = newMessages
+
+        let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldMessages, new: newMessages)
+        onTableUpdate?(tableUpdate)
+        for (indexPath, message) in inPlaceUpdates {
+            onInPlaceUpdate?(indexPath, message)
+        }
     }
 
     // MARK: - Search
@@ -894,6 +932,32 @@ final class ChatViewModel {
         }
 
         return result
+    }
+
+    private static func buildDisplayMessages(
+        from rawMessages: [ChatMessage],
+        olderBoundary: ClusterNeighbor?,
+        newerBoundary: ClusterNeighbor?
+    ) -> [ChatMessage] {
+        let normalized = rawMessages.map { message -> ChatMessage in
+            var copy = message
+            copy.isFirstInCluster = true
+            copy.isLastInCluster = true
+            copy.mediaGroupPresentation = nil
+            return copy
+        }
+
+        let clusteredMessages = decorateClusters(
+            normalized,
+            olderBoundary: olderBoundary,
+            newerBoundary: newerBoundary
+        )
+
+        return decorateMediaGroups(
+            clusteredMessages,
+            olderBoundary: olderBoundary,
+            newerBoundary: newerBoundary
+        ).filter { $0.mediaGroupPresentation?.hidesStandaloneBubble != true }
     }
 
     private static func sharesMediaGroup(_ lhs: ChatMessage, _ rhs: ChatMessage) -> Bool {

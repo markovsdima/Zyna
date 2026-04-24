@@ -252,6 +252,10 @@ final class MessageWindow {
         )
     }
 
+    func currentStoredMessages() -> [StoredMessage] {
+        previousStored ?? []
+    }
+
     // MARK: - GRDB Queries
 
     private func queryNewest(limit: Int) -> [StoredMessage] {
