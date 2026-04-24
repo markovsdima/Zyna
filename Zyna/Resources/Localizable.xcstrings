@@ -1110,12 +1110,12 @@
         }
       }
     },
-    "Mod" : {
+    "Moderator" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Модер"
+            "value" : "Модератор"
           }
         }
       }

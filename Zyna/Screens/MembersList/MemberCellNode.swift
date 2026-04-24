@@ -11,9 +11,9 @@ final class MemberCellNode: ZynaCellNode {
     // MARK: - Model
 
     enum Role {
-        case owner      // PL 100
-        case admin      // PL 50..99
-        case moderator  // PL 1..49
+        case owner      // creator / infinite PL
+        case admin      // finite PL 100+
+        case moderator  // finite PL 1..<100
         case member     // PL 0
 
         /// Localized role name. Always non-nil — used in a11y labels
@@ -22,7 +22,7 @@ final class MemberCellNode: ZynaCellNode {
             switch self {
             case .owner:     return String(localized: "Owner")
             case .admin:     return String(localized: "Admin")
-            case .moderator: return String(localized: "Mod")
+            case .moderator: return String(localized: "Moderator")
             case .member:    return String(localized: "Member")
             }
         }
@@ -45,12 +45,23 @@ final class MemberCellNode: ZynaCellNode {
             }
         }
 
-        static func from(powerLevel: Int) -> Role {
+        static func from(powerLevel: PowerLevel) -> Role {
             switch powerLevel {
-            case 100...:  return .owner
-            case 50..<100: return .admin
-            case 1..<50:   return .moderator
-            default:       return .member
+            case .infinite:
+                return .owner
+            case .value(let value):
+                return from(powerLevelValue: Int(value))
+            }
+        }
+
+        static func from(powerLevelValue: Int) -> Role {
+            switch powerLevelValue {
+            case 100...:
+                return .admin
+            case 1..<100:
+                return .moderator
+            default:
+                return .member
             }
         }
     }
