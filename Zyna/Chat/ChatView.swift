@@ -1390,21 +1390,63 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         let cellImageView = cell.imageNodeView
         let sourceFrame = cellImageView.convert(cellImageView.bounds, to: nil)
-        presentImageViewer(image: image, mediaSource: source, sourceFrame: sourceFrame)
+        let items = [
+            ImageViewerController.Item(
+                previewImage: image,
+                mediaSource: source,
+                sourceFrame: sourceFrame
+            )
+        ]
+        presentImageViewer(items: items, initialIndex: 0)
     }
 
     private func presentImageViewer(for cell: PhotoGroupMessageCellNode, itemIndex: Int) {
-        guard let image = cell.currentImage(at: itemIndex),
-              let mediaSource = cell.mediaSource(at: itemIndex),
-              let sourceFrame = cell.imageFrameInWindow(at: itemIndex) else { return }
-        presentImageViewer(image: image, mediaSource: mediaSource, sourceFrame: sourceFrame)
+        guard let initialImage = cell.currentImage(at: itemIndex),
+              let initialMediaSource = cell.mediaSource(at: itemIndex),
+              let initialSourceFrame = cell.viewerSourceFrameInWindow(at: itemIndex) else { return }
+
+        var items: [ImageViewerController.Item] = []
+        items.reserveCapacity(cell.mediaItemCount)
+
+        for index in 0..<cell.mediaItemCount {
+            guard let mediaSource = cell.mediaSource(at: index) else { continue }
+            let previewImage: UIImage?
+            let sourceFrame: CGRect
+            if index == itemIndex {
+                previewImage = initialImage
+                sourceFrame = initialSourceFrame
+            } else {
+                previewImage = cell.currentImage(at: index)
+                sourceFrame = cell.viewerSourceFrameInWindow(at: index) ?? .zero
+            }
+
+            items.append(ImageViewerController.Item(
+                previewImage: previewImage,
+                mediaSource: mediaSource,
+                sourceFrame: sourceFrame
+            ))
+        }
+
+        guard !items.isEmpty else {
+            let items = [
+                ImageViewerController.Item(
+                    previewImage: initialImage,
+                    mediaSource: initialMediaSource,
+                    sourceFrame: initialSourceFrame
+                )
+            ]
+            presentImageViewer(items: items, initialIndex: 0)
+            return
+        }
+
+        presentImageViewer(items: items, initialIndex: itemIndex)
     }
 
-    private func presentImageViewer(image: UIImage, mediaSource: MediaSource?, sourceFrame: CGRect) {
-        let viewer = ImageViewerController(image: image, mediaSource: mediaSource)
-        viewer.sourceFrame = sourceFrame
+    private func presentImageViewer(items: [ImageViewerController.Item], initialIndex: Int) {
+        guard !items.isEmpty else { return }
+        let viewer = ImageViewerController(items: items, initialIndex: initialIndex)
         present(viewer, animated: false) {
-            viewer.animateIn(from: sourceFrame)
+            viewer.animateIn(from: items[max(0, min(initialIndex, items.count - 1))].sourceFrame)
         }
     }
 

@@ -389,6 +389,19 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
         return mediaContainerNode.view.convert(slotFrames[index], to: nil)
     }
 
+    func viewerSourceFrameInWindow(at index: Int) -> CGRect? {
+        guard mediaContainerNode.isNodeLoaded else { return nil }
+        if index < slotFrames.count {
+            return mediaContainerNode.view.convert(slotFrames[index], to: nil)
+        }
+        guard let overflowFrame = slotFrames.last else { return nil }
+        return mediaContainerNode.view.convert(overflowFrame, to: nil)
+    }
+
+    var mediaItemCount: Int {
+        mediaItems.count
+    }
+
     private func mediaIndex(at point: CGPoint) -> Int? {
         guard mediaContainerNode.isNodeLoaded else { return nil }
         let converted = contextSourceNode.view.convert(point, to: mediaContainerNode.view)
