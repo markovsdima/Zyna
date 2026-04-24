@@ -214,7 +214,7 @@ final class ChatViewModel {
             clusteredMessages,
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
-        )
+        ).filter { $0.mediaGroupPresentation?.hidesStandaloneBubble != true }
 
         // 3. Prefetch images
         Self.prefetchImages(newMessages)
