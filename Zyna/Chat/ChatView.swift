@@ -572,26 +572,42 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 return HiddenMessagePlaceholderCellNode()
             }
 
+            if message.mediaGroupPresentation?.rendersCompositeBubble == true {
+                let groupCell = PhotoGroupMessageCellNode(message: message, isGroupChat: isGroup)
+                groupCell.onPhotoTapped = { [weak self, weak groupCell] index in
+                    guard let self, let groupCell else { return }
+                    self.presentImageViewer(for: groupCell, itemIndex: index)
+                }
+                let cellNode = groupCell
+                cellNode.bubbleGradientSource = gradientSource
+
+                cellNode.onSenderTapped = { [weak self] userId in
+                    self?.onTitleTapped?(userId)
+                }
+
+                cellNode.onInteractionLockChanged = { [weak self] locked in
+                    if locked {
+                        self?.lockInteraction("contextMenu")
+                    } else {
+                        self?.unlockInteraction("contextMenu")
+                    }
+                }
+
+                self?.configureMessageDrivenInteractions(for: cellNode, message: message)
+                return cellNode
+            }
+
             let cellNode: MessageCellNode
             switch message.content {
             case .voice:
                 cellNode = VoiceMessageCellNode(message: message, audioPlayer: audioPlayer, isGroupChat: isGroup)
             case .image:
-                if message.mediaGroupPresentation?.rendersCompositeBubble == true {
-                    let groupCell = PhotoGroupMessageCellNode(message: message, isGroupChat: isGroup)
-                    groupCell.onPhotoTapped = { [weak self, weak groupCell] index in
-                        guard let self, let groupCell else { return }
-                        self.presentImageViewer(for: groupCell, itemIndex: index)
-                    }
-                    cellNode = groupCell
-                } else {
-                    let imageCell = ImageMessageCellNode(message: message, isGroupChat: isGroup)
-                    imageCell.onImageTapped = { [weak self, weak imageCell] in
-                        guard let self, let imageCell else { return }
-                        self.presentImageViewer(for: message, from: imageCell)
-                    }
-                    cellNode = imageCell
+                let imageCell = ImageMessageCellNode(message: message, isGroupChat: isGroup)
+                imageCell.onImageTapped = { [weak self, weak imageCell] in
+                    guard let self, let imageCell else { return }
+                    self.presentImageViewer(for: message, from: imageCell)
                 }
+                cellNode = imageCell
             case .file:
                 let fileCell = FileCellNode(message: message, isGroupChat: isGroup)
                 fileCell.onFileTapped = { [weak self] in
@@ -644,11 +660,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func buildAccessibilityActions(for message: ChatMessage) -> [UIAccessibilityCustomAction] {
         var actions: [UIAccessibilityCustomAction] = []
+        let isSyntheticOutgoingEnvelope = message.isSyntheticOutgoingEnvelope
 
-        actions.append(UIAccessibilityCustomAction(name: "Reply") { [weak self] _ in
-            self?.viewModel.setReplyTarget(message)
-            return true
-        })
+        if !isSyntheticOutgoingEnvelope {
+            actions.append(UIAccessibilityCustomAction(name: "Reply") { [weak self] _ in
+                self?.viewModel.setReplyTarget(message)
+                return true
+            })
+        }
 
         if message.itemIdentifier != nil {
             actions.append(UIAccessibilityCustomAction(name: "Add Reaction") { [weak self] _ in
@@ -664,7 +683,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             })
         }
 
-        if !message.content.isRedacted {
+        if !message.content.isRedacted && !isSyntheticOutgoingEnvelope {
             actions.append(UIAccessibilityCustomAction(name: "Forward") { [weak self] _ in
                 self?.onForwardMessage?(message)
                 return true
@@ -756,13 +775,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         guard let window = view.window,
               let info = cellNode.extractBubbleForMenu(in: window.coordinateSpace) else { return }
 
-        var actions = [
-            ContextMenuAction(
+        let isPendingOutgoingMessage = message.isSyntheticOutgoingEnvelope
+
+        var actions: [ContextMenuAction] = []
+        if !isPendingOutgoingMessage {
+            actions.append(ContextMenuAction(
                 title: "Reply",
                 image: UIImage(systemName: "arrowshape.turn.up.left"),
                 handler: { [weak self] in self?.viewModel.setReplyTarget(message) }
-            )
-        ]
+            ))
+        }
 
         if message.reactions.contains(where: \.hasDetailedSenders) {
             actions.append(ContextMenuAction(
@@ -787,7 +809,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             ))
         }
 
-        if !message.content.isRedacted {
+        if !message.content.isRedacted && !isPendingOutgoingMessage {
             actions.append(ContextMenuAction(
                 title: "Forward",
                 image: UIImage(systemName: "arrowshape.turn.up.right"),
@@ -800,6 +822,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if let groupCell = cellNode as? PhotoGroupMessageCellNode,
            let presentation = message.mediaGroupPresentation,
            presentation.rendersCompositeBubble,
+           !isPendingOutgoingMessage,
            !message.content.isRedacted {
             if let tappedItem = groupCell.prepareContextMenuSelection(at: activationPoint) {
                 actions.append(ContextMenuAction(
@@ -888,7 +911,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if isTableRubberBanding(tableView) {
             return false
         }
-        return !viewModel.isPaginating && !viewModel.sdkPaginationExhausted
+        return !viewModel.isPaginating && (viewModel.hasOlderInDB || !viewModel.sdkPaginationExhausted)
     }
 
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
@@ -922,14 +945,30 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                // If pagination returned but visible count didn't
-                // grow, we've hit the start (or only got filtered
-                // events like call signaling). Stop fetching.
-                if self.viewModel.messages.count <= countBefore {
-                    self.viewModel.sdkPaginationExhausted = true
+                // SDK pagination completes before the diff batcher
+                // necessarily flushes into GRDB. Give the DB path a
+                // brief moment, then try to materialize the new older
+                // rows into the window before declaring exhaustion.
+                // Keep the GRDB query off main and only apply UI-facing
+                // mutations back on the main thread.
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    guard let self else { return }
+                    let page = self.viewModel.queryOlderFromDB()
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        if let page {
+                            self.viewModel.sdkPaginationExhausted = false
+                            self.viewModel.applyOlderPageFromDB(page)
+                        } else if self.viewModel.messages.count <= countBefore {
+                            // If pagination returned but we still cannot
+                            // extend the window, we've likely reached the
+                            // true start or only fetched filtered events.
+                            self.viewModel.sdkPaginationExhausted = true
+                        }
+                        context.completeBatchFetching(true)
+                        self.batchFetchCancellable = nil
+                    }
                 }
-                context.completeBatchFetching(true)
-                self.batchFetchCancellable = nil
             }
     }
 
@@ -1345,7 +1384,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - File Tap → Download + Quick Look
 
     private func handleFileTap(message: ChatMessage, cellNode: FileCellNode) {
-        guard case .file(let source, let filename, let mimetype, _, _) = message.content
+        guard case .file(let source?, let filename, let mimetype, _, _) = message.content
         else { return }
 
         // Already cached — show immediately
@@ -1384,7 +1423,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         guard let image = cell.currentImage else { return }
 
         var source: MediaSource?
-        if case .image(let src, _, _, _) = message.content {
+        if case .image(let src, _, _, _, _) = message.content {
             source = src
         }
 
@@ -1402,14 +1441,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func presentImageViewer(for cell: PhotoGroupMessageCellNode, itemIndex: Int) {
         guard let initialImage = cell.currentImage(at: itemIndex),
-              let initialMediaSource = cell.mediaSource(at: itemIndex),
               let initialSourceFrame = cell.viewerSourceFrameInWindow(at: itemIndex) else { return }
+        let initialMediaSource = cell.mediaSource(at: itemIndex)
 
         var items: [ImageViewerController.Item] = []
         items.reserveCapacity(cell.mediaItemCount)
 
         for index in 0..<cell.mediaItemCount {
-            guard let mediaSource = cell.mediaSource(at: index) else { continue }
             let previewImage: UIImage?
             let sourceFrame: CGRect
             if index == itemIndex {
@@ -1422,7 +1460,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
             items.append(ImageViewerController.Item(
                 previewImage: previewImage,
-                mediaSource: mediaSource,
+                mediaSource: cell.mediaSource(at: index),
                 sourceFrame: sourceFrame
             ))
         }

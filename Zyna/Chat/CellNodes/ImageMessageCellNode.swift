@@ -34,6 +34,7 @@ final class ImageMessageCellNode: MessageCellNode {
 
     private var aspectRatio: CGFloat
     private let mediaSource: MediaSource?
+    private let previewImageData: Data?
     private let hasSDKDimensions: Bool
     private let usesDirectImageContent: Bool
 
@@ -43,14 +44,16 @@ final class ImageMessageCellNode: MessageCellNode {
         var source: MediaSource?
         var imageWidth: UInt64?
         var imageHeight: UInt64?
+        var previewImageData: Data?
         let mediaGroupPresentation = message.mediaGroupPresentation
         let ownCaptionText = message.content.visibleImageCaption
         let captionText: String?
 
-        if case .image(let src, let width, let height, _) = message.content {
+        if case .image(let src, let width, let height, _, let previewData) = message.content {
             source = src
             imageWidth = width
             imageHeight = height
+            previewImageData = previewData
         }
 
         if let mediaGroupPresentation, mediaGroupPresentation.suppressIndividualCaption {
@@ -84,6 +87,7 @@ final class ImageMessageCellNode: MessageCellNode {
                 ?? .bottom)
 
         self.mediaSource = source
+        self.previewImageData = previewImageData
         if let width = imageWidth, let height = imageHeight, height > 0 {
             self.aspectRatio = CGFloat(width) / CGFloat(height)
             self.hasSDKDimensions = true
@@ -259,6 +263,9 @@ final class ImageMessageCellNode: MessageCellNode {
             } else {
                 loadBubbleImageAsync(source: source)
             }
+        } else if let previewImageData,
+                  let previewImage = UIImage(data: previewImageData) {
+            imageNode.image = previewImage
         }
     }
 
@@ -312,7 +319,7 @@ final class ImageMessageCellNode: MessageCellNode {
     /// already normalized to this width plus the shared max-height cap.
     private func bubbleCacheRecipe() -> (maxPixelWidth: Int, maxPixelHeight: Int) {
         let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
-        let scale = UIScreen.main.scale
+        let scale = ScreenConstants.scale
         return (
             maxPixelWidth: Int(round(maxWidth * scale)),
             maxPixelHeight: Int(round(MessageCellHelpers.maxImageBubbleHeight * scale))

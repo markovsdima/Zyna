@@ -570,7 +570,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
             guard lhs.items.count == rhs.items.count else { return false }
             return zip(lhs.items, rhs.items).allSatisfy { oldItem, newItem in
-                oldItem.source.url() == newItem.source.url()
+                oldItem.sourceURL == newItem.sourceURL
+                    && oldItem.previewIdentity == newItem.previewIdentity
                     && oldItem.width == newItem.width
                     && oldItem.height == newItem.height
                     && oldItem.caption == newItem.caption

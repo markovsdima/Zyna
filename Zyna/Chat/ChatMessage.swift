@@ -10,11 +10,12 @@ import MatrixRustSDK
 
 enum ChatMessageContent: Equatable {
     case text(body: String)
-    case image(source: MediaSource, width: UInt64?, height: UInt64?, caption: String?)
+    case image(source: MediaSource?, width: UInt64?, height: UInt64?, caption: String?, previewImageData: Data?)
+    case pendingOutgoingMediaBatch
     case notice(body: String)
     case emote(body: String)
-    case voice(source: MediaSource, duration: TimeInterval, waveform: [UInt16])
-    case file(source: MediaSource, filename: String, mimetype: String?, size: UInt64?, caption: String?)
+    case voice(source: MediaSource?, duration: TimeInterval, waveform: [UInt16])
+    case file(source: MediaSource?, filename: String, mimetype: String?, size: UInt64?, caption: String?)
     case callEvent(type: CallEventType, callId: String, reason: String?)
     case systemEvent(text: String, kind: SystemEventKind)
     case unsupported(typeName: String)
@@ -27,22 +28,23 @@ enum ChatMessageContent: Equatable {
         case (.text(let a), .text(let b)): return a == b
         case (.notice(let a), .notice(let b)): return a == b
         case (.emote(let a), .emote(let b)): return a == b
+        case (.pendingOutgoingMediaBatch, .pendingOutgoingMediaBatch): return true
         case (.redacted, .redacted): return true
         case (.unsupported(let a), .unsupported(let b)): return a == b
         case (.callEvent(let t1, let c1, let r1), .callEvent(let t2, let c2, let r2)):
             return t1 == t2 && c1 == c2 && r1 == r2
         case (.systemEvent(let t1, let k1), .systemEvent(let t2, let k2)):
             return t1 == t2 && k1 == k2
-        case (.image(let s1, let w1, let h1, let c1), .image(let s2, let w2, let h2, let c2)):
+        case (.image(let s1, let w1, let h1, let c1, let p1), .image(let s2, let w2, let h2, let c2, let p2)):
             // Treat nil dimensions as "not yet loaded" — don't trigger
             // cell recreation when SDK sends the same image without/with size.
             let wMatch = w1 == w2 || w1 == nil || w2 == nil
             let hMatch = h1 == h2 || h1 == nil || h2 == nil
-            return s1.url() == s2.url() && wMatch && hMatch && c1 == c2
+            return s1?.url() == s2?.url() && wMatch && hMatch && c1 == c2 && p1 == p2
         case (.voice(let s1, let d1, let w1), .voice(let s2, let d2, let w2)):
-            return s1.url() == s2.url() && d1 == d2 && w1 == w2
+            return s1?.url() == s2?.url() && d1 == d2 && w1 == w2
         case (.file(let s1, let f1, let m1, let sz1, let c1), .file(let s2, let f2, let m2, let sz2, let c2)):
-            return s1.url() == s2.url() && f1 == f2 && m1 == m2 && sz1 == sz2 && c1 == c2
+            return s1?.url() == s2?.url() && f1 == f2 && m1 == m2 && sz1 == sz2 && c1 == c2
         default: return false
         }
     }
@@ -65,11 +67,11 @@ enum ChatMessageContent: Equatable {
     /// Media source + mimetype for re-upload during forwarding.
     var mediaForwardInfo: (source: MediaSource, mimetype: String)? {
         switch self {
-        case .image(let source, _, _, _):
+        case .image(let source?, _, _, _, _):
             return (source, "image/jpeg")
-        case .voice(let source, _, _):
+        case .voice(let source?, _, _):
             return (source, "audio/mp4")
-        case .file(let source, _, let mime, _, _):
+        case .file(let source?, _, let mime, _, _):
             return (source, mime ?? "application/octet-stream")
         default:
             return nil
@@ -80,6 +82,7 @@ enum ChatMessageContent: Equatable {
         switch self {
         case .text(let body): return body
         case .image: return "Photo"
+        case .pendingOutgoingMediaBatch: return "Photo"
         case .voice: return "Voice message"
         case .file(_, let filename, _, _, _): return filename
         case .callEvent(let type, _, let reason): return type.displayText(reason: reason)
@@ -101,7 +104,7 @@ enum ChatMessageContent: Equatable {
     }
 
     var visibleImageCaption: String? {
-        guard case .image(_, _, _, let caption) = self,
+        guard case .image(_, _, _, let caption, _) = self,
               let caption
         else { return nil }
         let visible = caption
@@ -242,11 +245,21 @@ struct MediaGroupItem: Equatable {
     let messageId: String
     let eventId: String?
     let transactionId: String?
-    let source: MediaSource
+    let source: MediaSource?
+    let previewImageData: Data?
+    let previewIdentity: String?
     let width: UInt64?
     let height: UInt64?
     let caption: String?
     let sendStatus: String
+
+    var sourceURL: String? {
+        source?.url()
+    }
+
+    var displayIdentity: String {
+        sourceURL ?? previewIdentity ?? messageId
+    }
 
     var itemIdentifier: ChatItemIdentifier? {
         if let eventId {
@@ -262,7 +275,8 @@ struct MediaGroupItem: Equatable {
         lhs.messageId == rhs.messageId
             && lhs.eventId == rhs.eventId
             && lhs.transactionId == rhs.transactionId
-            && lhs.source.url() == rhs.source.url()
+            && lhs.sourceURL == rhs.sourceURL
+            && lhs.previewIdentity == rhs.previewIdentity
             && lhs.width == rhs.width
             && lhs.height == rhs.height
             && lhs.caption == rhs.caption
@@ -308,6 +322,13 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     var isLastInCluster: Bool = true
     /// Populated by ChatViewModel for adjacent photo groups.
     var mediaGroupPresentation: MediaGroupPresentation?
+    /// Non-nil for synthetic sender-owned rows rendered from the
+    /// outgoing envelope layer instead of raw Matrix timeline items.
+    var outgoingEnvelopeId: String? = nil
+
+    var isSyntheticOutgoingEnvelope: Bool {
+        outgoingEnvelopeId != nil
+    }
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         // id (SDK uniqueId) is unstable across timeline recreations.
@@ -326,6 +347,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.sendStatus == rhs.sendStatus
             && lhs.isLastInCluster == rhs.isLastInCluster
             && lhs.mediaGroupPresentation == rhs.mediaGroupPresentation
+            && lhs.outgoingEnvelopeId == rhs.outgoingEnvelopeId
     }
 
     func hash(into hasher: inout Hasher) {

@@ -79,7 +79,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
     private let mediaLayoutBounds: CGRect
     private let mediaHeight: CGFloat
     private var slotFrames: [CGRect] = []
-    private var displayedSourceURLs: [String?]
+    private var displayedItemIdentities: [String?]
     private var contextMenuHighlightedIndex: Int?
 
     private var visibleItemCount: Int {
@@ -140,7 +140,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
             node.radius = MessageCellHelpers.mediaBubbleCornerRadius
             return node
         }
-        self.displayedSourceURLs = Array(repeating: nil, count: PhotoGroupLayout.maxVisibleItems)
+        self.displayedItemIdentities = Array(repeating: nil, count: PhotoGroupLayout.maxVisibleItems)
 
         super.init(message: message, isGroupChat: isGroupChat)
 
@@ -409,13 +409,18 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
     }
 
     private func loadImages() {
-        let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
-        let scale = UIScreen.main.scale
-        let maxPixelWidth = Int(round(maxWidth * scale))
-        let maxPixelHeight = Int(round(mediaHeight * scale))
+        let scale = ScreenConstants.scale
+        let layoutFrames = PhotoGroupLayout.frames(
+            in: mediaLayoutBounds,
+            itemCount: mediaItems.count
+        )
 
         for (index, item) in mediaItems.prefix(visibleItemCount).enumerated() {
-            let sourceURL = item.source.url()
+            guard layoutFrames.indices.contains(index) else { continue }
+
+            let slotFrame = layoutFrames[index]
+            let recipe = bubbleRecipe(for: slotFrame, scale: scale)
+            let renderIdentity = renderIdentity(for: item, recipe: recipe)
             let knownAspectRatio: CGFloat?
             if let width = item.width, let height = item.height, height > 0 {
                 knownAspectRatio = CGFloat(width) / CGFloat(height)
@@ -423,37 +428,68 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
                 knownAspectRatio = nil
             }
 
-            if displayedSourceURLs.indices.contains(index),
-               displayedSourceURLs[index] == sourceURL,
+            if displayedItemIdentities.indices.contains(index),
+               displayedItemIdentities[index] == renderIdentity,
                imageNodes[index].image != nil {
                 continue
             }
-            if displayedSourceURLs.indices.contains(index) {
-                displayedSourceURLs[index] = sourceURL
+            if displayedItemIdentities.indices.contains(index) {
+                displayedItemIdentities[index] = renderIdentity
             }
 
-            if let cached = MediaCache.shared.bubbleImage(
-                for: item.source,
-                maxPixelWidth: maxPixelWidth,
-                maxPixelHeight: maxPixelHeight
-            ) {
-                applyImage(cached.image, at: index, expectedSourceURL: sourceURL)
+            if let source = item.source,
+               let cached = MediaCache.shared.bubbleImage(
+                for: source,
+                maxPixelWidth: recipe.maxPixelWidth,
+                maxPixelHeight: recipe.maxPixelHeight
+               ) {
+                applyImage(cached.image, at: index, expectedRenderIdentity: renderIdentity)
                 continue
             }
+
+            if let previewImageData = item.previewImageData,
+               let previewIdentity = item.previewIdentity {
+                if let cached = MediaCache.shared.previewBubbleImage(
+                    previewIdentity: previewIdentity,
+                    maxPixelWidth: recipe.maxPixelWidth,
+                    maxPixelHeight: recipe.maxPixelHeight
+                ) {
+                    applyImage(cached.image, at: index, expectedRenderIdentity: renderIdentity)
+                } else {
+                    Task { [weak self] in
+                        guard let self,
+                              let bubbleImage = await MediaCache.shared.loadPreviewBubbleImage(
+                                previewIdentity: previewIdentity,
+                                imageData: previewImageData,
+                                maxPixelWidth: recipe.maxPixelWidth,
+                                maxPixelHeight: recipe.maxPixelHeight
+                              ) else { return }
+                        await MainActor.run { [weak self] in
+                            self?.applyImage(
+                                bubbleImage.image,
+                                at: index,
+                                expectedRenderIdentity: renderIdentity
+                            )
+                        }
+                    }
+                }
+            }
+
+            guard let source = item.source else { continue }
 
             Task { [weak self] in
                 guard let self,
                       let bubbleImage = await MediaCache.shared.loadBubbleImage(
-                        source: item.source,
-                        maxPixelWidth: maxPixelWidth,
-                        maxPixelHeight: maxPixelHeight,
+                        source: source,
+                        maxPixelWidth: recipe.maxPixelWidth,
+                        maxPixelHeight: recipe.maxPixelHeight,
                         knownAspectRatio: knownAspectRatio
                       ) else { return }
                 await MainActor.run { [weak self] in
                     self?.applyImage(
                         bubbleImage.image,
                         at: index,
-                        expectedSourceURL: sourceURL
+                        expectedRenderIdentity: renderIdentity
                     )
                 }
             }
@@ -461,15 +497,29 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
 
         if visibleItemCount < imageNodes.count {
             for index in visibleItemCount..<imageNodes.count {
-                displayedSourceURLs[index] = nil
+                displayedItemIdentities[index] = nil
             }
         }
     }
 
-    private func applyImage(_ image: UIImage, at index: Int, expectedSourceURL: String) {
+    private func bubbleRecipe(for slotFrame: CGRect, scale: CGFloat) -> (maxPixelWidth: Int, maxPixelHeight: Int) {
+        (
+            maxPixelWidth: max(1, Int(round(slotFrame.width * scale))),
+            maxPixelHeight: max(1, Int(round(slotFrame.height * scale)))
+        )
+    }
+
+    private func renderIdentity(
+        for item: MediaGroupItem,
+        recipe: (maxPixelWidth: Int, maxPixelHeight: Int)
+    ) -> String {
+        "\(item.displayIdentity)|\(recipe.maxPixelWidth)x\(recipe.maxPixelHeight)"
+    }
+
+    private func applyImage(_ image: UIImage, at index: Int, expectedRenderIdentity: String) {
         guard imageNodes.indices.contains(index),
-              mediaItems.indices.contains(index),
-              mediaItems[index].source.url() == expectedSourceURL else { return }
+              displayedItemIdentities.indices.contains(index),
+              displayedItemIdentities[index] == expectedRenderIdentity else { return }
         let imageNode = imageNodes[index]
         imageNode.image = image
         imageNode.setNeedsDisplay()

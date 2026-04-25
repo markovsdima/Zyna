@@ -77,13 +77,25 @@ extension StoredMessage {
         case .text(let body):
             contentType = "text"
             contentBody = body
-        case .image(let source, let width, let height, let caption):
+        case .image(let source, let width, let height, let caption, _):
+            guard let source else {
+                assertionFailure("StoredMessage cannot persist image content without a media source")
+                contentType = "unsupported"
+                contentBody = "pendingOutgoingImage"
+                break
+            }
             contentType = "image"
             contentMediaJSON = source.toJson()
             contentImageWidth = width.map(Int64.init)
             contentImageHeight = height.map(Int64.init)
             contentCaption = caption
         case .voice(let source, let duration, let waveform):
+            guard let source else {
+                assertionFailure("StoredMessage cannot persist voice content without a media source")
+                contentType = "unsupported"
+                contentBody = "pendingOutgoingVoice"
+                break
+            }
             contentType = "voice"
             contentMediaJSON = source.toJson()
             contentVoiceDuration = duration
@@ -94,7 +106,16 @@ extension StoredMessage {
         case .emote(let body):
             contentType = "emote"
             contentBody = body
+        case .pendingOutgoingMediaBatch:
+            contentType = "unsupported"
+            contentBody = "pendingOutgoingMediaBatch"
         case .file(let source, let filename, let mimetype, let size, let caption):
+            guard let source else {
+                assertionFailure("StoredMessage cannot persist file content without a media source")
+                contentType = "unsupported"
+                contentBody = "pendingOutgoingFile"
+                break
+            }
             contentType = "file"
             contentMediaJSON = source.toJson()
             contentFilename = filename
@@ -185,7 +206,8 @@ extension StoredMessage {
                 source: source,
                 width: contentImageWidth.map(UInt64.init),
                 height: contentImageHeight.map(UInt64.init),
-                caption: contentCaption
+                caption: contentCaption,
+                previewImageData: nil
             )
         case "voice":
             guard let json = contentMediaJSON,
@@ -233,7 +255,7 @@ extension StoredMessage {
 
 // MARK: - Reactions JSON
 
-private extension StoredMessage {
+extension StoredMessage {
 
     struct ReactionSenderJSON: Codable {
         let userId: String
@@ -301,7 +323,7 @@ private extension StoredMessage {
 
 // MARK: - Zyna attributes JSON
 
-private extension StoredMessage {
+extension StoredMessage {
 
     struct ZynaAttributesJSON: Codable {
         let color: String?

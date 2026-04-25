@@ -37,6 +37,8 @@ final class TextMessageCellNode: MessageCellNode {
             bodyText = "* \(message.senderDisplayName ?? "") \(body)"
         case .image:
             bodyText = "📷 Photo"
+        case .pendingOutgoingMediaBatch:
+            bodyText = "📷 Photo"
         case .voice:
             bodyText = "🎤 Voice message"
         case .file(_, let filename, _, _, _):

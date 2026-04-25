@@ -114,6 +114,84 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v5_outgoingEnvelopes") { db in
+            try db.create(table: "pendingMediaGroup") { t in
+                t.primaryKey("id", .text)
+                t.column("roomId", .text).notNull()
+                t.column("caption", .text)
+                t.column("captionPlacement", .text).notNull()
+                t.column("expectedItemCount", .integer).notNull()
+                t.column("createdAt", .double).notNull()
+                t.column("replyEventId", .text)
+                t.column("replySenderId", .text)
+                t.column("replySenderName", .text)
+                t.column("replyBody", .text)
+                t.column("kind", .text)
+                t.column("state", .text)
+                t.column("payloadJSON", .text)
+                t.column("zynaAttributesJSON", .text)
+            }
+
+            try db.create(
+                index: "idx_pendingMediaGroup_room_createdAt",
+                on: "pendingMediaGroup",
+                columns: ["roomId", "createdAt"]
+            )
+
+            try db.create(table: "pendingMediaGroupItem") { t in
+                t.primaryKey("id", .text)
+                t.column("groupId", .text)
+                    .notNull()
+                    .indexed()
+                    .references("pendingMediaGroup", onDelete: .cascade)
+                t.column("itemIndex", .integer).notNull()
+                t.column("bindingToken", .text)
+                t.column("transactionId", .text)
+                t.column("eventId", .text)
+                t.column("mediaSourceJSON", .text)
+                t.column("previewImageData", .blob)
+                t.column("previewWidth", .integer)
+                t.column("previewHeight", .integer)
+                t.column("transportState", .text)
+            }
+
+            try db.create(
+                index: "idx_pendingMediaGroupItem_group_index",
+                on: "pendingMediaGroupItem",
+                columns: ["groupId", "itemIndex"],
+                unique: true
+            )
+            try db.create(
+                index: "idx_pendingMediaGroupItem_bindingToken",
+                on: "pendingMediaGroupItem",
+                columns: ["bindingToken"],
+                unique: true,
+                condition: Column("bindingToken") != nil
+            )
+            try db.create(
+                index: "idx_pendingMediaGroupItem_transactionId",
+                on: "pendingMediaGroupItem",
+                columns: ["transactionId"],
+                unique: true,
+                condition: Column("transactionId") != nil
+            )
+            try db.create(
+                index: "idx_pendingMediaGroupItem_eventId",
+                on: "pendingMediaGroupItem",
+                columns: ["eventId"],
+                unique: true,
+                condition: Column("eventId") != nil
+            )
+
+            // Legacy physical table names are preserved to avoid
+            // unnecessary churn while the logical model has evolved
+            // from pending media groups into generic outgoing envelopes.
+            // TODO: After the planned homeserver / account reset, when
+            // backward compatibility with existing local databases no
+            // longer matters, rename these tables to match the logical
+            // outgoing envelope model.
+        }
+
         return migrator
     }
 }

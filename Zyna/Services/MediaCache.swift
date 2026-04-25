@@ -109,6 +109,14 @@ final class MediaCache {
         "\(url)|bubble-v2|\(maxPixelWidth)x\(maxPixelHeight)"
     }
 
+    private static func previewBubbleCacheKey(
+        previewIdentity: String,
+        maxPixelWidth: Int,
+        maxPixelHeight: Int
+    ) -> String {
+        "preview|\(previewIdentity)|bubble-v2|\(maxPixelWidth)x\(maxPixelHeight)"
+    }
+
     // MARK: - Synchronous (memory only, safe from any thread)
 
     /// Returns image from memory cache if available. Does not hit
@@ -121,6 +129,22 @@ final class MediaCache {
     func bubbleImage(for source: MediaSource, maxPixelWidth: Int, maxPixelHeight: Int) -> BubbleImage? {
         let key = Self.bubbleCacheKey(
             url: source.url(),
+            maxPixelWidth: maxPixelWidth,
+            maxPixelHeight: maxPixelHeight
+        )
+        guard let entry = memory.object(forKey: key as NSString) else {
+            return nil
+        }
+        return BubbleImage(image: entry.image, sourcePixelSize: entry.sourcePixelSize)
+    }
+
+    func previewBubbleImage(
+        previewIdentity: String,
+        maxPixelWidth: Int,
+        maxPixelHeight: Int
+    ) -> BubbleImage? {
+        let key = Self.previewBubbleCacheKey(
+            previewIdentity: previewIdentity,
             maxPixelWidth: maxPixelWidth,
             maxPixelHeight: maxPixelHeight
         )
@@ -193,6 +217,32 @@ final class MediaCache {
         return BubbleImage(image: entry.image, sourcePixelSize: entry.sourcePixelSize)
     }
 
+    func loadPreviewBubbleImage(
+        previewIdentity: String,
+        imageData: Data,
+        maxPixelWidth: Int,
+        maxPixelHeight: Int
+    ) async -> BubbleImage? {
+        let key = Self.previewBubbleCacheKey(
+            previewIdentity: previewIdentity,
+            maxPixelWidth: maxPixelWidth,
+            maxPixelHeight: maxPixelHeight
+        )
+        let entry = await loadPreparedLocal(
+            key: key,
+            data: imageData,
+            prepare: { data in
+                Self.prepareBubbleEntry(
+                    from: data,
+                    maxPixelWidth: maxPixelWidth,
+                    maxPixelHeight: maxPixelHeight
+                )
+            }
+        )
+        guard let entry else { return nil }
+        return BubbleImage(image: entry.image, sourcePixelSize: entry.sourcePixelSize)
+    }
+
     // MARK: - Core pipeline
 
     private func load(
@@ -227,6 +277,40 @@ final class MediaCache {
                 } catch {
                     return nil
                 }
+            }
+        }
+
+        let result = await task.value
+
+        await inflight.remove(for: key)
+
+        return result
+    }
+
+    private func loadPreparedLocal(
+        key: String,
+        data: Data,
+        prepare: @escaping (Data) -> PreparedImage?
+    ) async -> Entry? {
+        let nsKey = key as NSString
+
+        if let cached = memory.object(forKey: nsKey) {
+            return cached
+        }
+
+        let task = await inflight.task(for: key) { [self, data, key] in
+            Task<Entry?, Never> {
+                let cacheKey = key as NSString
+                if let cached = memory.object(forKey: cacheKey) {
+                    return cached
+                }
+
+                guard let prepared = prepare(data) else {
+                    return nil
+                }
+
+                memory.setObject(prepared.entry, forKey: cacheKey)
+                return prepared.entry
             }
         }
 

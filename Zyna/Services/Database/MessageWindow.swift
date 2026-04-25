@@ -176,6 +176,8 @@ final class MessageWindow {
             guard let newestTs = newestTimestamp else { return }
             let stored = queryRange(from: oldestTs, to: newestTs)
             updateCursors(from: stored)
+            hasOlderInDB = checkHasOlderInDB()
+            hasNewerInDB = checkHasNewerInDB()
             emitChange(stored)
         }
     }

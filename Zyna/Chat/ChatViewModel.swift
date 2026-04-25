@@ -6,7 +6,10 @@
 import UIKit
 import Combine
 import GRDB
+import UniformTypeIdentifiers
 import MatrixRustSDK
+
+private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 
 final class ChatViewModel {
 
@@ -52,6 +55,7 @@ final class ChatViewModel {
     let timelineService: TimelineService
     private let diffBatcher: TimelineDiffBatcher
     private let window: MessageWindow
+    private let outgoingEnvelopes = OutgoingEnvelopeService.shared
     private let room: Room
     private let roomId: String
     private var hiddenIds = Set<String>()
@@ -62,6 +66,7 @@ final class ChatViewModel {
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
+    var hasOlderInDB: Bool { window.hasOlderInDB }
 
     init(room: Room) {
         let roomId = room.id()
@@ -90,6 +95,11 @@ final class ChatViewModel {
         }
         timelineService.onReadCursor = { timestamp in
             batcher.updateReadCursor(timestamp: timestamp)
+        }
+        timelineService.onSendQueueUpdate = { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                self?.window.refresh()
+            }
         }
 
         // Bridge: batcher flush → window refresh
@@ -135,6 +145,7 @@ final class ChatViewModel {
     // MARK: - Timeline Bootstrap
 
     private func startTimelineAndHistory() {
+        sdkPaginationExhausted = false
         window.loadInitial()
 
         Task { [weak self] in
@@ -205,7 +216,7 @@ final class ChatViewModel {
         }
 
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
-        let newMessages = Self.buildDisplayMessages(
+        let newMessages = buildRenderableMessages(
             from: rawMessages,
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
@@ -277,6 +288,669 @@ final class ChatViewModel {
             }
         }
         return msg.transactionId ?? msg.eventId ?? msg.id
+    }
+
+    private func buildRenderableMessages(
+        from rawMessages: [ChatMessage],
+        olderBoundary: ClusterNeighbor?,
+        newerBoundary: ClusterNeighbor?
+    ) -> [ChatMessage] {
+        let envelopes = outgoingEnvelopes.envelopes(roomId: roomId)
+        if !envelopes.isEmpty {
+            logMediaGroup(
+                "render pending groups room=\(roomId) \(envelopes.map(Self.describe).joined(separator: "; "))"
+            )
+        }
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        let mediaBatchPlan = Self.pendingRenderableMediaGroupPlan(
+            from: envelopes.filter { $0.kind == .mediaBatch },
+            rawMessages: rawMessages,
+            currentUserId: currentUserId
+        )
+        let singleEnvelopePlan = Self.pendingRenderableSingleEnvelopePlan(
+            from: envelopes.filter { $0.kind != .mediaBatch },
+            rawMessages: rawMessages,
+            currentUserId: currentUserId
+        )
+        let envelopeIdsToRetire = mediaBatchPlan.retireEnvelopeIds.union(singleEnvelopePlan.retireEnvelopeIds)
+        if !envelopeIdsToRetire.isEmpty {
+            outgoingEnvelopes.deleteEnvelopes(ids: envelopeIdsToRetire)
+        }
+
+        let renderableMessages = Self.mergeRawMessages(
+            rawMessages,
+            with: mediaBatchPlan.activeEnvelopes + singleEnvelopePlan.activeEnvelopes
+        )
+
+        return Self.buildDisplayMessages(
+            from: renderableMessages,
+            olderBoundary: olderBoundary,
+            newerBoundary: newerBoundary
+        )
+    }
+
+    private struct PendingRenderableEnvelope {
+        let envelopeId: String
+        let message: ChatMessage
+        let anchorIndex: Int?
+        let hiddenMessageIndices: Set<Int>
+    }
+
+    private struct PendingRenderableEnvelopePlan {
+        let activeEnvelopes: [PendingRenderableEnvelope]
+        let retireEnvelopeIds: Set<String>
+    }
+
+    private struct PendingMediaGroupObservedState {
+        let primaryMessageIndexByItemIndex: [Int: Int]
+        let hiddenMessageIndices: Set<Int>
+        let syncedEventIndices: [Int: Int]
+        let hasTransactionOnlyMessages: Bool
+    }
+
+    private struct PendingSingleEnvelopeObservedState {
+        let primaryMessageIndex: Int?
+        let hiddenMessageIndices: Set<Int>
+        let hasTransactionOnlyMessages: Bool
+    }
+
+    private static func pendingRenderableMediaGroupPlan(
+        from pendingGroups: [OutgoingEnvelopeSnapshot],
+        rawMessages: [ChatMessage],
+        currentUserId: String
+    ) -> PendingRenderableEnvelopePlan {
+        guard !pendingGroups.isEmpty else {
+            return PendingRenderableEnvelopePlan(activeEnvelopes: [], retireEnvelopeIds: [])
+        }
+
+        var activeEnvelopes: [PendingRenderableEnvelope] = []
+        var retireEnvelopeIds = Set<String>()
+
+        for group in pendingGroups {
+            let observedState = mediaGroupObservedState(for: group, in: rawMessages)
+            let isFullyHydrated = isFullyHydrated(group: group, observedState: observedState)
+
+            if isFullyHydrated {
+                logMediaGroup("pending hydrated group=\(describe(group))")
+                retireEnvelopeIds.insert(group.id)
+                continue
+            }
+
+            let renderGroup = makeRenderablePendingMediaGroupEnvelope(
+                group,
+                observedState: observedState,
+                rawMessages: rawMessages,
+                currentUserId: currentUserId
+            )
+            activeEnvelopes.append(renderGroup)
+        }
+
+        return PendingRenderableEnvelopePlan(
+            activeEnvelopes: activeEnvelopes,
+            retireEnvelopeIds: retireEnvelopeIds
+        )
+    }
+
+    private static func pendingRenderableSingleEnvelopePlan(
+        from envelopes: [OutgoingEnvelopeSnapshot],
+        rawMessages: [ChatMessage],
+        currentUserId: String
+    ) -> PendingRenderableEnvelopePlan {
+        guard !envelopes.isEmpty else {
+            return PendingRenderableEnvelopePlan(activeEnvelopes: [], retireEnvelopeIds: [])
+        }
+
+        var activeEnvelopes: [PendingRenderableEnvelope] = []
+        var retireEnvelopeIds = Set<String>()
+
+        for envelope in envelopes {
+            let observedState = singleEnvelopeObservedState(for: envelope, in: rawMessages)
+            if isFullyHydrated(envelope: envelope, observedState: observedState, rawMessages: rawMessages) {
+                logMediaGroup("pending hydrated envelope=\(describe(envelope))")
+                retireEnvelopeIds.insert(envelope.id)
+                continue
+            }
+
+            let renderableEnvelope = makeRenderablePendingEnvelope(
+                envelope,
+                observedState: observedState,
+                rawMessages: rawMessages,
+                currentUserId: currentUserId
+            )
+            activeEnvelopes.append(renderableEnvelope)
+        }
+
+        return PendingRenderableEnvelopePlan(
+            activeEnvelopes: activeEnvelopes,
+            retireEnvelopeIds: retireEnvelopeIds
+        )
+    }
+
+    private static func mediaGroupObservedState(
+        for group: OutgoingEnvelopeSnapshot,
+        in messages: [ChatMessage]
+    ) -> PendingMediaGroupObservedState {
+        let eventIndexById = Dictionary(
+            uniqueKeysWithValues: group.items.compactMap { item in
+                item.eventId.map { ($0, item.itemIndex) }
+            }
+        )
+        let transactionIndexById = Dictionary(
+            uniqueKeysWithValues: group.items.compactMap { item in
+                item.transactionId.map { ($0, item.itemIndex) }
+            }
+        )
+
+        var primaryMessageIndexByItemIndex: [Int: Int] = [:]
+        var hiddenMessageIndices = Set<Int>()
+        var syncedEventIndices: [Int: Int] = [:]
+        var hasTransactionOnlyMessages = false
+
+        for (messageIndex, message) in messages.enumerated() {
+            guard message.isOutgoing,
+                  case .image = message.content
+            else {
+                continue
+            }
+
+            let relatedItemIndex = message.eventId.flatMap { eventIndexById[$0] }
+                ?? message.transactionId.flatMap { transactionIndexById[$0] }
+                ?? pendingMediaGroupItemIndex(of: message, in: group)
+
+            if let relatedItemIndex {
+                hiddenMessageIndices.insert(messageIndex)
+                let previousIndex = primaryMessageIndexByItemIndex[relatedItemIndex]
+                if previousIndex == nil
+                    || prefersPendingPrimaryCandidate(
+                        messages[messageIndex],
+                        over: messages[previousIndex!]
+                    ) {
+                    primaryMessageIndexByItemIndex[relatedItemIndex] = messageIndex
+                }
+            }
+
+            if message.eventId == nil,
+               relatedItemIndex != nil {
+                hasTransactionOnlyMessages = true
+            }
+
+            if let mediaGroup = message.zynaAttributes.mediaGroup,
+               message.eventId != nil,
+               mediaGroup.id == group.id,
+               mediaGroup.index >= 0,
+               mediaGroup.index < group.expectedItemCount,
+               mediaGroup.total == group.expectedItemCount,
+               mediaGroup.captionMode == .replicated,
+               mediaGroup.captionPlacement == group.captionPlacement {
+                let previousIndex = syncedEventIndices[mediaGroup.index]
+                if previousIndex == nil
+                    || prefersPendingPrimaryCandidate(
+                        messages[messageIndex],
+                        over: messages[previousIndex!]
+                    ) {
+                    syncedEventIndices[mediaGroup.index] = messageIndex
+                }
+            }
+        }
+
+        return PendingMediaGroupObservedState(
+            primaryMessageIndexByItemIndex: primaryMessageIndexByItemIndex,
+            hiddenMessageIndices: hiddenMessageIndices,
+            syncedEventIndices: syncedEventIndices,
+            hasTransactionOnlyMessages: hasTransactionOnlyMessages
+        )
+    }
+
+    private static func pendingMediaGroupItemIndex(
+        of message: ChatMessage,
+        in group: OutgoingEnvelopeSnapshot
+    ) -> Int? {
+        guard let mediaGroup = message.zynaAttributes.mediaGroup,
+              mediaGroup.id == group.id,
+              mediaGroup.total == group.expectedItemCount,
+              mediaGroup.captionMode == .replicated,
+              mediaGroup.captionPlacement == group.captionPlacement
+        else {
+            return nil
+        }
+        return mediaGroup.index
+    }
+
+    private static func prefersPendingPrimaryCandidate(
+        _ candidate: ChatMessage,
+        over current: ChatMessage
+    ) -> Bool {
+        if (candidate.eventId != nil) != (current.eventId != nil) {
+            return candidate.eventId != nil
+        }
+
+        let candidateHasGroup = candidate.zynaAttributes.mediaGroup != nil
+        let currentHasGroup = current.zynaAttributes.mediaGroup != nil
+        if candidateHasGroup != currentHasGroup {
+            return candidateHasGroup
+        }
+
+        let candidateIsRead = candidate.sendStatus == "read"
+        let currentIsRead = current.sendStatus == "read"
+        if candidateIsRead != currentIsRead {
+            return candidateIsRead
+        }
+
+        return candidate.timestamp >= current.timestamp
+    }
+
+    private static func isFullyHydrated(
+        group: OutgoingEnvelopeSnapshot,
+        observedState: PendingMediaGroupObservedState
+    ) -> Bool {
+        guard !observedState.hasTransactionOnlyMessages else { return false }
+        guard observedState.syncedEventIndices.count == group.expectedItemCount else { return false }
+        let expectedIndices = Set(0..<group.expectedItemCount)
+        return Set(observedState.syncedEventIndices.keys) == expectedIndices
+    }
+
+    private static func makeRenderablePendingMediaGroupEnvelope(
+        _ group: OutgoingEnvelopeSnapshot,
+        observedState: PendingMediaGroupObservedState,
+        rawMessages: [ChatMessage],
+        currentUserId: String
+    ) -> PendingRenderableEnvelope {
+        let primaryMessagesByItemIndex: [Int: ChatMessage] = Dictionary(
+            uniqueKeysWithValues: observedState.primaryMessageIndexByItemIndex.compactMap { itemIndex, messageIndex in
+                guard rawMessages.indices.contains(messageIndex) else { return nil }
+                return (itemIndex, rawMessages[messageIndex])
+            }
+        )
+
+        let mediaItems = group.items.map { item -> MediaGroupItem in
+            let primaryMessage = primaryMessagesByItemIndex[item.itemIndex]
+            let primaryImageContent: (source: MediaSource?, width: UInt64?, height: UInt64?, caption: String?)? = {
+                guard let primaryMessage,
+                      case .image(let source, let width, let height, let caption, _) = primaryMessage.content else {
+                    return nil
+                }
+                return (source, width, height, caption)
+            }()
+
+            return MediaGroupItem(
+                messageId: primaryMessage?.id ?? item.id,
+                eventId: item.eventId ?? primaryMessage?.eventId,
+                transactionId: item.transactionId ?? primaryMessage?.transactionId,
+                source: item.mediaSource ?? primaryImageContent?.source,
+                previewImageData: item.previewImageData,
+                previewIdentity: Self.pendingMediaPreviewIdentity(
+                    groupId: group.id,
+                    itemIndex: item.itemIndex
+                ),
+                width: item.previewWidth ?? primaryImageContent?.width,
+                height: item.previewHeight ?? primaryImageContent?.height,
+                caption: group.caption ?? primaryImageContent?.caption,
+                sendStatus: item.transportState.messageSendStatus
+            )
+        }
+
+        let anchorIndex: Int? = {
+            let indices = Array(observedState.primaryMessageIndexByItemIndex.values)
+            guard !indices.isEmpty else { return nil }
+            return group.captionPlacement == .top ? indices.min() : indices.max()
+        }()
+
+        let anchorMessage = anchorIndex.flatMap { rawMessages.indices.contains($0) ? rawMessages[$0] : nil }
+        let sendStatus = aggregatePendingMediaGroupSendStatus(from: mediaItems)
+        let presentation = MediaGroupPresentation(
+            id: group.id,
+            position: group.captionPlacement == .top ? .top : .bottom,
+            totalHint: group.expectedItemCount,
+            caption: group.caption,
+            captionPlacement: group.captionPlacement,
+            suppressIndividualCaption: group.caption != nil,
+            items: mediaItems,
+            rendersCompositeBubble: true,
+            hidesStandaloneBubble: false
+        )
+        var message = ChatMessage(
+            id: "pending-media-group:\(group.id)",
+            eventId: nil,
+            transactionId: nil,
+            itemIdentifier: nil,
+            senderId: anchorMessage?.senderId ?? currentUserId,
+            senderDisplayName: anchorMessage?.senderDisplayName,
+            senderAvatarUrl: anchorMessage?.senderAvatarUrl,
+            isOutgoing: true,
+            timestamp: anchorMessage?.timestamp ?? group.createdAt,
+            content: .pendingOutgoingMediaBatch,
+            reactions: [],
+            replyInfo: group.replyInfo,
+            zynaAttributes: ZynaMessageAttributes(),
+            sendStatus: sendStatus
+        )
+        message.mediaGroupPresentation = presentation
+        message.outgoingEnvelopeId = group.id
+
+        logMediaGroup(
+            "pending synthetic group=\(describe(group)) anchor=\(anchorIndex.map(String.init) ?? "nil") hidden=\(observedState.hiddenMessageIndices.count) status=\(sendStatus)"
+        )
+
+        return PendingRenderableEnvelope(
+            envelopeId: group.id,
+            message: message,
+            anchorIndex: anchorIndex,
+            hiddenMessageIndices: observedState.hiddenMessageIndices
+        )
+    }
+
+    private static func singleEnvelopeObservedState(
+        for envelope: OutgoingEnvelopeSnapshot,
+        in messages: [ChatMessage]
+    ) -> PendingSingleEnvelopeObservedState {
+        let eventIds = Set(envelope.items.compactMap(\.eventId))
+        let transactionIds = Set(envelope.items.compactMap(\.transactionId))
+
+        var primaryMessageIndex: Int?
+        var hiddenMessageIndices = Set<Int>()
+        var hasTransactionOnlyMessages = false
+
+        for (messageIndex, message) in messages.enumerated() {
+            guard message.isOutgoing,
+                  matches(envelopeKind: envelope.kind, message: message)
+            else {
+                continue
+            }
+
+            let isRelated = message.eventId.map { eventIds.contains($0) } == true
+                || message.transactionId.map { transactionIds.contains($0) } == true
+            guard isRelated else { continue }
+
+            hiddenMessageIndices.insert(messageIndex)
+            if let currentPrimaryIndex = primaryMessageIndex {
+                if prefersPendingPrimaryCandidate(message, over: messages[currentPrimaryIndex]) {
+                    primaryMessageIndex = messageIndex
+                }
+            } else {
+                primaryMessageIndex = messageIndex
+            }
+
+            if message.eventId == nil {
+                hasTransactionOnlyMessages = true
+            }
+        }
+
+        return PendingSingleEnvelopeObservedState(
+            primaryMessageIndex: primaryMessageIndex,
+            hiddenMessageIndices: hiddenMessageIndices,
+            hasTransactionOnlyMessages: hasTransactionOnlyMessages
+        )
+    }
+
+    private static func matches(envelopeKind: OutgoingEnvelopeKind, message: ChatMessage) -> Bool {
+        switch (envelopeKind, message.content) {
+        case (.text, .text):
+            return true
+        case (.image, .image):
+            return true
+        case (.voice, .voice):
+            return true
+        case (.file, .file):
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isFullyHydrated(
+        envelope: OutgoingEnvelopeSnapshot,
+        observedState: PendingSingleEnvelopeObservedState,
+        rawMessages: [ChatMessage]
+    ) -> Bool {
+        guard !observedState.hasTransactionOnlyMessages,
+              let primaryMessageIndex = observedState.primaryMessageIndex,
+              rawMessages.indices.contains(primaryMessageIndex)
+        else {
+            return false
+        }
+
+        let primaryMessage = rawMessages[primaryMessageIndex]
+        guard primaryMessage.eventId != nil else { return false }
+        return hydratedMessage(primaryMessage, matches: envelope)
+    }
+
+    private static func hydratedMessage(
+        _ message: ChatMessage,
+        matches envelope: OutgoingEnvelopeSnapshot
+    ) -> Bool {
+        guard replyEventId(of: envelope.replyInfo) == replyEventId(of: message.replyInfo),
+              message.zynaAttributes == envelope.zynaAttributes
+        else {
+            return false
+        }
+
+        switch envelope.payload {
+        case .text(let textPayload):
+            guard case .text(let body) = message.content else { return false }
+            return body == textPayload.body
+        case .image(let imagePayload):
+            guard case .image(let source, let width, let height, let caption, _) = message.content,
+                  source != nil
+            else {
+                return false
+            }
+            return normalized(caption) == normalized(imagePayload.caption)
+                && dimensionsMatch(expected: imagePayload.width, actual: width)
+                && dimensionsMatch(expected: imagePayload.height, actual: height)
+        case .voice(let voicePayload):
+            guard case .voice(let source, let duration, _) = message.content,
+                  source != nil
+            else {
+                return false
+            }
+            return abs(duration - voicePayload.duration) < 0.5
+        case .file(let filePayload):
+            guard case .file(let source, let filename, let mimetype, let size, let caption) = message.content,
+                  source != nil
+            else {
+                return false
+            }
+            return filename == filePayload.filename
+                && normalized(caption) == normalized(filePayload.caption)
+                && (filePayload.mimetype == nil || mimetype == filePayload.mimetype)
+                && (filePayload.size == nil || size == filePayload.size)
+        case .mediaBatch:
+            return false
+        }
+    }
+
+    private static func makeRenderablePendingEnvelope(
+        _ envelope: OutgoingEnvelopeSnapshot,
+        observedState: PendingSingleEnvelopeObservedState,
+        rawMessages: [ChatMessage],
+        currentUserId: String
+    ) -> PendingRenderableEnvelope {
+        let primaryMessage = observedState.primaryMessageIndex.flatMap {
+            rawMessages.indices.contains($0) ? rawMessages[$0] : nil
+        }
+        let primaryContent = primaryMessage?.content
+        let primaryTimestamp = primaryMessage?.timestamp ?? envelope.createdAt
+        let primarySenderId = primaryMessage?.senderId ?? currentUserId
+        let sendStatus = pendingSendStatus(
+            transportState: envelope.primaryItem?.transportState,
+            hydratedMessage: primaryMessage
+        )
+
+        let content: ChatMessageContent = {
+            switch envelope.payload {
+            case .text(let payload):
+                return .text(body: payload.body)
+            case .image(let payload):
+                let primarySource: MediaSource?
+                let primaryWidth: UInt64?
+                let primaryHeight: UInt64?
+                let primaryCaption: String?
+                if case .image(let source, let width, let height, let caption, _) = primaryContent {
+                    primarySource = source
+                    primaryWidth = width
+                    primaryHeight = height
+                    primaryCaption = caption
+                } else {
+                    primarySource = nil
+                    primaryWidth = nil
+                    primaryHeight = nil
+                    primaryCaption = nil
+                }
+                return .image(
+                    source: envelope.primaryItem?.mediaSource ?? primarySource,
+                    width: envelope.primaryItem?.previewWidth ?? payload.width ?? primaryWidth,
+                    height: envelope.primaryItem?.previewHeight ?? payload.height ?? primaryHeight,
+                    caption: payload.caption ?? primaryCaption,
+                    previewImageData: envelope.primaryItem?.previewImageData
+                )
+            case .voice(let payload):
+                let primarySource: MediaSource?
+                if case .voice(let source, _, _) = primaryContent {
+                    primarySource = source
+                } else {
+                    primarySource = nil
+                }
+                return .voice(
+                    source: envelope.primaryItem?.mediaSource ?? primarySource,
+                    duration: payload.duration,
+                    waveform: payload.waveform
+                )
+            case .file(let payload):
+                let primarySource: MediaSource?
+                let primaryCaption: String?
+                if case .file(let source, _, _, _, let caption) = primaryContent {
+                    primarySource = source
+                    primaryCaption = caption
+                } else {
+                    primarySource = nil
+                    primaryCaption = nil
+                }
+                return .file(
+                    source: envelope.primaryItem?.mediaSource ?? primarySource,
+                    filename: payload.filename,
+                    mimetype: payload.mimetype,
+                    size: payload.size,
+                    caption: payload.caption ?? primaryCaption
+                )
+            case .mediaBatch:
+                return .pendingOutgoingMediaBatch
+            }
+        }()
+
+        var message = ChatMessage(
+            id: "outgoing-envelope:\(envelope.id)",
+            eventId: nil,
+            transactionId: nil,
+            itemIdentifier: nil,
+            senderId: primarySenderId,
+            senderDisplayName: primaryMessage?.senderDisplayName,
+            senderAvatarUrl: primaryMessage?.senderAvatarUrl,
+            isOutgoing: true,
+            timestamp: primaryTimestamp,
+            content: content,
+            reactions: [],
+            replyInfo: envelope.replyInfo,
+            zynaAttributes: envelope.zynaAttributes,
+            sendStatus: sendStatus
+        )
+        message.outgoingEnvelopeId = envelope.id
+
+        logMediaGroup(
+            "pending synthetic envelope=\(describe(envelope)) anchor=\(observedState.primaryMessageIndex.map(String.init) ?? "nil") hidden=\(observedState.hiddenMessageIndices.count) status=\(sendStatus)"
+        )
+
+        return PendingRenderableEnvelope(
+            envelopeId: envelope.id,
+            message: message,
+            anchorIndex: observedState.primaryMessageIndex,
+            hiddenMessageIndices: observedState.hiddenMessageIndices
+        )
+    }
+
+    private static func pendingSendStatus(
+        transportState: OutgoingTransportState?,
+        hydratedMessage: ChatMessage?
+    ) -> String {
+        if hydratedMessage?.sendStatus == "read" {
+            return "read"
+        }
+        return transportState?.messageSendStatus ?? "queued"
+    }
+
+    private static func replyEventId(of replyInfo: ReplyInfo?) -> String? {
+        replyInfo?.eventId
+    }
+
+    private static func normalized(_ caption: String?) -> String? {
+        guard let caption else { return nil }
+        let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func dimensionsMatch(expected: UInt64?, actual: UInt64?) -> Bool {
+        expected == nil || actual == nil || expected == actual
+    }
+
+    private static func aggregatePendingMediaGroupSendStatus(from items: [MediaGroupItem]) -> String {
+        let statuses = items.map(\.sendStatus)
+        if statuses.contains("failed") {
+            return "failed"
+        }
+        if statuses.contains(where: { ["queued", "sending", "retrying"].contains($0) }) {
+            return "sending"
+        }
+        if !statuses.isEmpty, statuses.allSatisfy({ $0 == "read" }) {
+            return "read"
+        }
+        if statuses.contains(where: { ["sent", "synced", "read"].contains($0) }) {
+            return "sent"
+        }
+        return "queued"
+    }
+
+    private static func mergeRawMessages(
+        _ rawMessages: [ChatMessage],
+        with pendingGroups: [PendingRenderableEnvelope]
+    ) -> [ChatMessage] {
+        guard !pendingGroups.isEmpty else { return rawMessages }
+
+        let hiddenIndices = Set(pendingGroups.flatMap(\.hiddenMessageIndices))
+        let anchoredGroups = Dictionary(
+            grouping: pendingGroups.compactMap { group in
+                group.anchorIndex.map { ($0, group) }
+            },
+            by: \.0
+        ).mapValues { pairs in
+            pairs.map(\.1).sorted { $0.message.timestamp > $1.message.timestamp }
+        }
+
+        var result: [ChatMessage] = []
+        result.reserveCapacity(rawMessages.count + pendingGroups.count)
+
+        for (index, message) in rawMessages.enumerated() {
+            if let groups = anchoredGroups[index] {
+                result.append(contentsOf: groups.map(\.message))
+            }
+            if hiddenIndices.contains(index) {
+                continue
+            }
+            result.append(message)
+        }
+
+        let unanchoredGroups = pendingGroups
+            .filter { $0.anchorIndex == nil }
+            .sorted { $0.message.timestamp > $1.message.timestamp }
+            .map(\.message)
+
+        for message in unanchoredGroups {
+            if let insertionIndex = result.firstIndex(where: { $0.timestamp <= message.timestamp }) {
+                result.insert(message, at: insertionIndex)
+            } else {
+                result.append(message)
+            }
+        }
+
+        return result
     }
 
     private static func computeTableUpdate(old: [ChatMessage], new: [ChatMessage]) -> (TableUpdate, [(IndexPath, ChatMessage)]) {
@@ -356,6 +1030,7 @@ final class ChatViewModel {
 
     /// Main-thread apply step paired with `queryOlderFromDB`.
     func applyOlderPageFromDB(_ page: MessageWindow.OlderPage) {
+        sdkPaginationExhausted = false
         window.applyOlder(page)
     }
 
@@ -379,11 +1054,13 @@ final class ChatViewModel {
     }
 
     func jumpToLive() {
+        sdkPaginationExhausted = false
         window.jumpToLive()
         sendReadReceiptThrottled()
     }
 
     func jumpToOldest() {
+        sdkPaginationExhausted = false
         window.jumpToOldest()
     }
 
@@ -420,6 +1097,260 @@ final class ChatViewModel {
 
     // MARK: - Actions
 
+    private func refreshWindow() async {
+        await MainActor.run {
+            self.window.refresh()
+        }
+    }
+
+    private func replyInfo(from message: ChatMessage?) -> ReplyInfo? {
+        guard let message,
+              let eventId = message.eventId else {
+            return nil
+        }
+        return ReplyInfo(
+            eventId: eventId,
+            senderId: message.senderId,
+            senderDisplayName: message.senderDisplayName,
+            body: message.content.textPreview
+        )
+    }
+
+    private func completeOutgoingDispatch(
+        envelopeId: String,
+        itemIndex: Int = 0,
+        receipt: OutgoingDispatchReceipt
+    ) async {
+        if !receipt.acceptedByTransport {
+            guard outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: itemIndex
+            ) else {
+                return
+            }
+            await refreshWindow()
+            return
+        }
+
+        let didMarkStarted = outgoingEnvelopes.markDispatchStarted(
+            envelopeId: envelopeId,
+            itemIndex: itemIndex
+        )
+
+        guard let transactionId = receipt.transactionId,
+              outgoingEnvelopes.bindTransaction(
+                envelopeId: envelopeId,
+                itemIndex: itemIndex,
+                transactionId: transactionId
+              ) else {
+            if didMarkStarted {
+                await refreshWindow()
+            }
+            return
+        }
+        await refreshWindow()
+    }
+
+    private func sendOutgoingText(
+        body: String,
+        replyEventId: String? = nil,
+        replyInfo: ReplyInfo? = nil,
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
+    ) async {
+        let envelopeId = UUID().uuidString
+        let bindingToken = outgoingEnvelopes.createOutgoingText(
+            roomId: roomId,
+            envelopeId: envelopeId,
+            body: body,
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes
+        )
+        await refreshWindow()
+
+        let receipt: OutgoingDispatchReceipt
+        if let replyEventId {
+            receipt = await timelineService.sendReply(
+                body,
+                to: replyEventId,
+                bindingToken: bindingToken
+            )
+        } else if zynaAttributes.isEmpty {
+            receipt = await timelineService.sendMessage(
+                body,
+                bindingToken: bindingToken
+            )
+        } else {
+            receipt = await timelineService.sendMessage(
+                body,
+                zynaAttributes: zynaAttributes,
+                bindingToken: bindingToken
+            )
+        }
+
+        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+    }
+
+    private func sendOutgoingVoice(
+        fileURL: URL,
+        duration: TimeInterval,
+        waveform: [Float]
+    ) async {
+        let envelopeId = UUID().uuidString
+        let waveformPayload = waveform.map { sample -> UInt16 in
+            let normalized = max(0, min(1, sample))
+            return UInt16((normalized * 1024).rounded())
+        }
+        let bindingToken = outgoingEnvelopes.createOutgoingVoice(
+            roomId: roomId,
+            envelopeId: envelopeId,
+            duration: duration,
+            waveform: waveformPayload,
+            replyInfo: nil
+        )
+        await refreshWindow()
+
+        let receipt = await timelineService.sendVoiceMessage(
+            url: fileURL,
+            duration: duration,
+            waveform: waveform,
+            bindingToken: bindingToken
+        )
+        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+    }
+
+    private func sendOutgoingFile(
+        url: URL,
+        caption: String?,
+        replyEventId: String?,
+        replyInfo: ReplyInfo?
+    ) async {
+        let filename = url.lastPathComponent
+        let fileSize = (try? FileManager.default.attributesOfItem(
+            atPath: url.path
+        )[.size] as? UInt64) ?? 0
+        let mimetype: String?
+        if let utType = UTType(filenameExtension: url.pathExtension),
+           let preferred = utType.preferredMIMEType {
+            mimetype = preferred
+        } else {
+            mimetype = "application/octet-stream"
+        }
+
+        let envelopeId = UUID().uuidString
+        let bindingToken = outgoingEnvelopes.createOutgoingFile(
+            roomId: roomId,
+            envelopeId: envelopeId,
+            filename: filename,
+            mimetype: mimetype,
+            size: fileSize,
+            caption: caption,
+            replyInfo: replyInfo
+        )
+        await refreshWindow()
+
+        let receipt = await timelineService.sendFile(
+            url: url,
+            caption: caption,
+            replyEventId: replyEventId,
+            bindingToken: bindingToken
+        )
+        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+    }
+
+    private func sendOutgoingForwardedMedia(
+        preview: ChatMessage,
+        fallbackContent: RoomMessageEventContentWithoutRelation,
+        attrs: ZynaMessageAttributes,
+        caption: String?
+    ) async {
+        let envelopeId = UUID().uuidString
+
+        switch preview.content {
+        case .image(let source, let width, let height, _, let previewImageData):
+            guard let source,
+                  let mediaInfo = preview.content.mediaForwardInfo else {
+                await timelineService.sendForwardedContent(fallbackContent)
+                return
+            }
+            let bindingToken = outgoingEnvelopes.createOutgoingImage(
+                roomId: roomId,
+                envelopeId: envelopeId,
+                caption: caption,
+                width: width,
+                height: height,
+                previewImageData: previewImageData,
+                previewSource: source,
+                replyInfo: nil,
+                zynaAttributes: attrs
+            )
+            await refreshWindow()
+            let receipt = await timelineService.forwardMedia(
+                source: source,
+                mimetype: mediaInfo.mimetype,
+                attrs: attrs,
+                caption: caption,
+                bindingToken: bindingToken
+            )
+            await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        case .voice(let source, let duration, let waveform):
+            guard let source,
+                  let mediaInfo = preview.content.mediaForwardInfo else {
+                await timelineService.sendForwardedContent(fallbackContent)
+                return
+            }
+            let bindingToken = outgoingEnvelopes.createOutgoingVoice(
+                roomId: roomId,
+                envelopeId: envelopeId,
+                duration: duration,
+                waveform: waveform,
+                replyInfo: nil,
+                zynaAttributes: attrs
+            )
+            await refreshWindow()
+            let receipt = await timelineService.forwardVoiceMessage(
+                source: source,
+                mimetype: mediaInfo.mimetype,
+                duration: duration,
+                waveform: waveform,
+                attrs: attrs,
+                caption: caption,
+                bindingToken: bindingToken
+            )
+            await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        case .file(let source, let filename, let mimetype, let size, _):
+            guard let source,
+                  let mediaInfo = preview.content.mediaForwardInfo else {
+                await timelineService.sendForwardedContent(fallbackContent)
+                return
+            }
+            let bindingToken = outgoingEnvelopes.createOutgoingFile(
+                roomId: roomId,
+                envelopeId: envelopeId,
+                filename: filename,
+                mimetype: mimetype,
+                size: size,
+                caption: caption,
+                replyInfo: nil,
+                zynaAttributes: attrs
+            )
+            await refreshWindow()
+            let receipt = await timelineService.forwardMedia(
+                source: source,
+                mimetype: mediaInfo.mimetype,
+                attrs: attrs,
+                caption: caption,
+                bindingToken: bindingToken
+            )
+            await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        default:
+            await timelineService.sendForwardedContent(fallbackContent)
+        }
+    }
+
     func sendMessage(_ text: String, color: UIColor? = nil) {
         // Forward takes priority
         if let forward = pendingForwardContent {
@@ -428,15 +1359,19 @@ final class ChatViewModel {
             let attrs = ZynaMessageAttributes(forwardedFrom: senderName)
 
             if let body = forward.preview.content.textBody {
-                Task { await timelineService.sendMessage(body, zynaAttributes: attrs) }
-            } else if let mediaInfo = forward.preview.content.mediaForwardInfo {
-                let caption = text.isEmpty ? nil : text
-                Task { await timelineService.forwardMedia(
-                    source: mediaInfo.source,
-                    mimetype: mediaInfo.mimetype,
-                    attrs: attrs,
-                    caption: caption
-                )}
+                Task { [weak self] in
+                    await self?.sendOutgoingText(body: body, zynaAttributes: attrs)
+                }
+            } else if forward.preview.content.mediaForwardInfo != nil {
+                let caption = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+                Task { [weak self] in
+                    await self?.sendOutgoingForwardedMedia(
+                        preview: forward.preview,
+                        fallbackContent: forward.content,
+                        attrs: attrs,
+                        caption: caption
+                    )
+                }
             } else {
                 // Fallback: send without attributes
                 Task { await timelineService.sendForwardedContent(forward.content) }
@@ -446,36 +1381,48 @@ final class ChatViewModel {
 
         if let replyTarget = replyingTo, let eventId = replyTarget.eventId {
             replyingTo = nil
-            Task { await timelineService.sendReply(text, to: eventId) }
+            let replyInfo = replyInfo(from: replyTarget)
+            Task { [weak self] in
+                await self?.sendOutgoingText(
+                    body: text,
+                    replyEventId: eventId,
+                    replyInfo: replyInfo
+                )
+            }
             return
         }
 
         if let color {
             let attrs = ZynaMessageAttributes(color: color)
-            Task { await timelineService.sendMessage(text, zynaAttributes: attrs) }
+            Task { [weak self] in
+                await self?.sendOutgoingText(body: text, zynaAttributes: attrs)
+            }
             return
         }
 
-        Task { await timelineService.sendMessage(text) }
+        Task { [weak self] in
+            await self?.sendOutgoingText(body: text)
+        }
     }
 
     func sendVoiceMessage(fileURL: URL, duration: TimeInterval, waveform: [Float]) {
-        Task {
-            await timelineService.sendVoiceMessage(url: fileURL, duration: duration, waveform: waveform)
-            // Suspected mitigation: SDK returns the SendHandle before
-            // the upload finishes; immediate delete may race with the
-            // async read. Was observed on short (~0.2s) and occasional
-            // longer recordings. If voice messages still go missing,
-            // the root cause may be deeper in the SDK send queue.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
+        Task { [weak self] in
+            await self?.sendOutgoingVoice(
+                fileURL: fileURL,
+                duration: duration,
+                waveform: waveform
+            )
         }
     }
 
     func sendFile(url: URL) {
-        Task {
-            await timelineService.sendFile(url: url, caption: nil, replyEventId: nil)
+        Task { [weak self] in
+            await self?.sendOutgoingFile(
+                url: url,
+                caption: nil,
+                replyEventId: nil,
+                replyInfo: nil
+            )
         }
     }
 
@@ -484,13 +1431,14 @@ final class ChatViewModel {
         caption: String?,
         captionPlacement: CaptionPlacement = .bottom
     ) {
-        Task { [timelineService] in
-            await Self.sendImageBatch(
+        Task { [weak self] in
+            guard let self else { return }
+            await self.sendImageBatch(
                 images,
                 caption: caption,
                 captionPlacement: captionPlacement,
                 replyEventId: nil,
-                timelineService: timelineService
+                replyInfo: nil
             )
         }
     }
@@ -502,7 +1450,8 @@ final class ChatViewModel {
     ) {
         guard !attachments.isEmpty else { return }
 
-        let replyEventId = replyingTo?.eventId
+        let replyTarget = replyingTo
+        let replyEventId = replyTarget?.eventId
         replyingTo = nil
         pendingForwardContent = nil
 
@@ -511,84 +1460,236 @@ final class ChatViewModel {
             return image
         }
         let hasOnlyImages = imageAttachments.count == attachments.count
+        let replyInfo = replyInfo(from: replyTarget)
 
         if hasOnlyImages {
-            Task { [timelineService] in
-                await Self.sendImageBatch(
+            Task { [weak self] in
+                guard let self else { return }
+                await self.sendImageBatch(
                     imageAttachments,
                     caption: caption,
                     captionPlacement: captionPlacement,
                     replyEventId: replyEventId,
-                    timelineService: timelineService
+                    replyInfo: replyInfo
                 )
             }
             return
         }
 
-        Task { [timelineService] in
+        Task { [weak self] in
+            guard let self else { return }
             for (index, attachment) in attachments.enumerated() {
                 let attachmentCaption = (index == 0) ? caption : nil
                 switch attachment.payload {
                 case .image(let image):
-                    await timelineService.sendImage(
-                        imageData: image.imageData,
-                        width: image.width,
-                        height: image.height,
+                    await self.sendSingleImage(
+                        image,
                         caption: attachmentCaption,
-                        replyEventId: replyEventId
+                        replyEventId: replyEventId,
+                        replyInfo: replyInfo,
+                        zynaAttributes: ZynaMessageAttributes()
                     )
                 case .file(let url):
-                    await timelineService.sendFile(
+                    await self.sendOutgoingFile(
                         url: url,
                         caption: attachmentCaption,
-                        replyEventId: replyEventId
+                        replyEventId: replyEventId,
+                        replyInfo: replyInfo
                     )
                 }
             }
         }
     }
 
-    private static func sendImageBatch(
+    private func sendSingleImage(
+        _ image: ProcessedImage,
+        caption: String?,
+        replyEventId: String?,
+        replyInfo: ReplyInfo?,
+        zynaAttributes: ZynaMessageAttributes
+    ) async {
+        let envelopeId = UUID().uuidString
+        let bindingToken = outgoingEnvelopes.createOutgoingImage(
+            roomId: roomId,
+            envelopeId: envelopeId,
+            caption: caption,
+            width: image.width,
+            height: image.height,
+            previewImageData: image.imageData,
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes
+        )
+        await refreshWindow()
+
+        let receipt = await timelineService.sendImage(
+            imageData: image.imageData,
+            width: image.width,
+            height: image.height,
+            caption: caption,
+            zynaAttributes: zynaAttributes,
+            replyEventId: replyEventId,
+            bindingToken: bindingToken
+        )
+        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+    }
+
+    private func normalizedCaption(_ caption: String?) -> String? {
+        guard let caption else { return nil }
+        let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func singleImageAttributes(
+        imageCount: Int,
+        captionPlacement: CaptionPlacement
+    ) -> ZynaMessageAttributes {
+        let needsCaptionPlacementMetadata = captionPlacement != .bottom
+        guard imageCount > 1 || needsCaptionPlacementMetadata else {
+            return ZynaMessageAttributes()
+        }
+        return ZynaMessageAttributes(
+            mediaGroup: MediaGroupInfo(
+                id: UUID().uuidString,
+                index: 0,
+                total: imageCount,
+                captionMode: .replicated,
+                captionPlacement: captionPlacement
+            )
+        )
+    }
+
+    private static func pendingMediaPreviewIdentity(groupId: String, itemIndex: Int) -> String {
+        "pending:\(groupId):\(itemIndex)"
+    }
+
+    private func prewarmVisibleMediaBatchPreviewTiles(
+        groupId: String,
+        images: [ProcessedImage]
+    ) async {
+        guard !images.isEmpty else { return }
+
+        let visibleCount = min(images.count, PhotoGroupLayout.maxVisibleItems)
+        guard visibleCount > 0 else { return }
+
+        let primaryAspectRatio: CGFloat? = {
+            guard let first = images.first,
+                  first.height > 0 else {
+                return nil
+            }
+            return CGFloat(first.width) / CGFloat(first.height)
+        }()
+
+        let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
+        let mediaHeight = PhotoGroupLayout.preferredMediaHeight(
+            for: maxWidth,
+            itemCount: images.count,
+            primaryAspectRatio: primaryAspectRatio
+        )
+        let slotFrames = PhotoGroupLayout.frames(
+            in: CGRect(x: 0, y: 0, width: maxWidth, height: mediaHeight),
+            itemCount: images.count
+        )
+        let scale = ScreenConstants.scale
+
+        await withTaskGroup(of: Void.self) { group in
+            for (index, image) in images.prefix(visibleCount).enumerated() {
+                guard slotFrames.indices.contains(index) else { continue }
+                let slotFrame = slotFrames[index]
+                let maxPixelWidth = max(1, Int(round(slotFrame.width * scale)))
+                let maxPixelHeight = max(1, Int(round(slotFrame.height * scale)))
+                let previewIdentity = Self.pendingMediaPreviewIdentity(
+                    groupId: groupId,
+                    itemIndex: index
+                )
+
+                group.addTask {
+                    _ = await MediaCache.shared.loadPreviewBubbleImage(
+                        previewIdentity: previewIdentity,
+                        imageData: image.imageData,
+                        maxPixelWidth: maxPixelWidth,
+                        maxPixelHeight: maxPixelHeight
+                    )
+                }
+            }
+        }
+    }
+
+    private func sendImageBatch(
         _ images: [ProcessedImage],
         caption: String?,
         captionPlacement: CaptionPlacement,
         replyEventId: String?,
-        timelineService: TimelineService
+        replyInfo: ReplyInfo?
     ) async {
         guard !images.isEmpty else { return }
 
-        let normalizedCaption: String? = {
-            guard let caption else { return nil }
-            let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }()
+        let normalizedCaption = normalizedCaption(caption)
 
-        let needsCaptionPlacementMetadata = captionPlacement != .bottom
-        let mediaGroupId = (images.count > 1 || needsCaptionPlacementMetadata) ? UUID().uuidString : nil
+        if images.count == 1, let image = images.first {
+            let attrs = singleImageAttributes(
+                imageCount: 1,
+                captionPlacement: captionPlacement
+            )
+            await sendSingleImage(
+                image,
+                caption: normalizedCaption,
+                replyEventId: replyEventId,
+                replyInfo: replyInfo,
+                zynaAttributes: attrs
+            )
+            return
+        }
+
+        let mediaGroupId = UUID().uuidString
+
+        logMediaGroup(
+            "batch create group=\(mediaGroupId) items=\(images.count) captionPlacement=\(captionPlacement.rawValue) caption=\(normalizedCaption ?? "<nil>")"
+        )
+        await prewarmVisibleMediaBatchPreviewTiles(
+            groupId: mediaGroupId,
+            images: images
+        )
+        let bindingTokens = outgoingEnvelopes.createOutgoingMediaBatch(
+            roomId: roomId,
+            envelopeId: mediaGroupId,
+            caption: normalizedCaption,
+            captionPlacement: captionPlacement,
+            items: images.map {
+                OutgoingMediaDraftItem(
+                    previewImageData: $0.imageData,
+                    width: $0.width,
+                    height: $0.height
+                )
+            },
+            replyInfo: replyInfo
+        )
+        await refreshWindow()
 
         for (index, image) in images.enumerated() {
-            let attrs: ZynaMessageAttributes
-            if let mediaGroupId {
-                attrs = ZynaMessageAttributes(
-                    mediaGroup: MediaGroupInfo(
-                        id: mediaGroupId,
-                        index: index,
-                        total: images.count,
-                        captionMode: .replicated,
-                        captionPlacement: captionPlacement
-                    )
+            guard bindingTokens.indices.contains(index) else { continue }
+            let attrs = ZynaMessageAttributes(
+                mediaGroup: MediaGroupInfo(
+                    id: mediaGroupId,
+                    index: index,
+                    total: images.count,
+                    captionMode: .replicated,
+                    captionPlacement: captionPlacement
                 )
-            } else {
-                attrs = ZynaMessageAttributes()
-            }
+            )
 
-            await timelineService.sendImage(
+            let receipt = await timelineService.sendImage(
                 imageData: image.imageData,
                 width: image.width,
                 height: image.height,
                 caption: normalizedCaption,
                 zynaAttributes: attrs,
-                replyEventId: replyEventId
+                replyEventId: replyEventId,
+                bindingToken: bindingTokens[index]
+            )
+            await completeOutgoingDispatch(
+                envelopeId: mediaGroupId,
+                itemIndex: index,
+                receipt: receipt
             )
         }
     }
@@ -695,7 +1796,7 @@ final class ChatViewModel {
             return true
         }
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
-        let newMessages = Self.buildDisplayMessages(
+        let newMessages = buildRenderableMessages(
             from: rawMessages,
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
@@ -763,6 +1864,7 @@ final class ChatViewModel {
         historySyncTask?.cancel()
         PresenceTracker.shared.unregister(for: "chat")
         timelineService.onDiffs = nil
+        timelineService.onSendQueueUpdate = nil
         diffBatcher.onFlush = nil
         timelineService.stopListening()
     }
@@ -770,13 +1872,19 @@ final class ChatViewModel {
     // MARK: - Background History Sync
 
     private func syncFullHistory() async {
+        var stagnantBatchCount = 0
         while !Task.isCancelled {
             let countBefore = storedMessageCount()
             await timelineService.paginateBackwards(numEvents: 50)
             // Wait for batcher debounce (50ms) + margin
             try? await Task.sleep(for: .milliseconds(150))
             let countAfter = storedMessageCount()
-            if countAfter <= countBefore { break }
+            if countAfter <= countBefore {
+                stagnantBatchCount += 1
+                if stagnantBatchCount >= 3 { break }
+            } else {
+                stagnantBatchCount = 0
+            }
         }
     }
 
@@ -885,12 +1993,18 @@ final class ChatViewModel {
                 let captionCollapse = groupCaptionCollapse(from: visibleCaptions)
                 let deduplicatedCaption = captionCollapse.caption
                 let suppressIndividualCaption = captionCollapse.caption != nil
-                let canRenderCompositeBubble =
-                    runLength > 1
-                    && !sharesWithNewerBoundary
-                    && !sharesWithOlderBoundary
-                    && captionCollapse.canCollapse
+                let renderDecision =
+                    mediaGroupRenderDecision(
+                        messages: Array(result[runStart...runEnd]),
+                        sharesWithNewerBoundary: sharesWithNewerBoundary,
+                        sharesWithOlderBoundary: sharesWithOlderBoundary,
+                        canCollapseCaption: captionCollapse.canCollapse
+                    )
+                let canRenderCompositeBubble = renderDecision.canRender
                 let captionCarrierPosition: MediaGroupPosition = mediaGroup.captionPlacement == .top ? .top : .bottom
+                logMediaGroup(
+                    "decorate group=\(mediaGroup.id) run=\(runLength) total=\(mediaGroup.total) boundary[newer=\(sharesWithNewerBoundary),older=\(sharesWithOlderBoundary)] captionCollapse=\(captionCollapse.canCollapse) composite=\(canRenderCompositeBubble) reason=\(renderDecision.reason)"
+                )
 
                 if canRenderCompositeBubble {
                     if captionCarrierPosition == .bottom {
@@ -943,7 +2057,13 @@ final class ChatViewModel {
             var copy = message
             copy.isFirstInCluster = true
             copy.isLastInCluster = true
-            copy.mediaGroupPresentation = nil
+            if case .pendingOutgoingMediaBatch = copy.content {
+                // Sender-owned pending batches already carry their final
+                // composite presentation and should not be rebuilt from
+                // transport rows.
+            } else {
+                copy.mediaGroupPresentation = nil
+            }
             return copy
         }
 
@@ -983,6 +2103,90 @@ final class ChatViewModel {
         return neighbor.mediaGroupId == groupId
     }
 
+    private static func isCompleteRenderableMediaGroup(
+        messages: [ChatMessage],
+        sharesWithNewerBoundary: Bool,
+        sharesWithOlderBoundary: Bool,
+        canCollapseCaption: Bool
+    ) -> Bool {
+        mediaGroupRenderDecision(
+            messages: messages,
+            sharesWithNewerBoundary: sharesWithNewerBoundary,
+            sharesWithOlderBoundary: sharesWithOlderBoundary,
+            canCollapseCaption: canCollapseCaption
+        ).canRender
+    }
+
+    private struct MediaGroupRenderDecision {
+        let canRender: Bool
+        let reason: String
+    }
+
+    private static func mediaGroupRenderDecision(
+        messages: [ChatMessage],
+        sharesWithNewerBoundary: Bool,
+        sharesWithOlderBoundary: Bool,
+        canCollapseCaption: Bool
+    ) -> MediaGroupRenderDecision {
+        guard messages.count > 1,
+              let firstGroup = messages.first?.zynaAttributes.mediaGroup
+        else {
+            if messages.count <= 1 { return MediaGroupRenderDecision(canRender: false, reason: "need>1") }
+            return MediaGroupRenderDecision(canRender: false, reason: "missingFirstGroup")
+        }
+
+        guard !sharesWithNewerBoundary else {
+            return MediaGroupRenderDecision(canRender: false, reason: "sharesNewerBoundary")
+        }
+        guard !sharesWithOlderBoundary else {
+            return MediaGroupRenderDecision(canRender: false, reason: "sharesOlderBoundary")
+        }
+        guard canCollapseCaption else {
+            return MediaGroupRenderDecision(canRender: false, reason: "captionMismatch")
+        }
+        guard firstGroup.total == messages.count else {
+            return MediaGroupRenderDecision(
+                canRender: false,
+                reason: "countMismatch visible=\(messages.count) expected=\(firstGroup.total)"
+            )
+        }
+
+        var seenIndices = Set<Int>()
+        for message in messages {
+            guard case .image = message.content,
+                  let group = message.zynaAttributes.mediaGroup,
+                  group.id == firstGroup.id,
+                  group.total == firstGroup.total,
+                  group.captionMode == firstGroup.captionMode,
+                  group.captionPlacement == firstGroup.captionPlacement,
+                  seenIndices.insert(group.index).inserted
+            else {
+                return MediaGroupRenderDecision(canRender: false, reason: "inconsistentMember")
+            }
+        }
+
+        guard seenIndices.count == firstGroup.total else {
+            return MediaGroupRenderDecision(
+                canRender: false,
+                reason: "uniqueIndexCountMismatch=\(seenIndices.count)"
+            )
+        }
+        guard seenIndices.min() == 0 else {
+            return MediaGroupRenderDecision(
+                canRender: false,
+                reason: "minIndex=\(seenIndices.min().map(String.init) ?? "nil")"
+            )
+        }
+        guard seenIndices.max() == firstGroup.total - 1 else {
+            return MediaGroupRenderDecision(
+                canRender: false,
+                reason: "maxIndex=\(seenIndices.max().map(String.init) ?? "nil") expected=\(firstGroup.total - 1)"
+            )
+        }
+
+        return MediaGroupRenderDecision(canRender: true, reason: "complete")
+    }
+
     private static func mediaGroupItems(from messages: [ChatMessage]) -> [MediaGroupItem] {
         messages
             .sorted {
@@ -994,7 +2198,7 @@ final class ChatViewModel {
                 return $0.timestamp < $1.timestamp
             }
             .compactMap { message in
-                guard case .image(let source, let width, let height, let caption) = message.content else {
+                guard case .image(let source, let width, let height, let caption, _) = message.content else {
                     return nil
                 }
                 return MediaGroupItem(
@@ -1002,6 +2206,8 @@ final class ChatViewModel {
                     eventId: message.eventId,
                     transactionId: message.transactionId,
                     source: source,
+                    previewImageData: nil,
+                    previewIdentity: nil,
                     width: width,
                     height: height,
                     caption: caption,
@@ -1026,18 +2232,33 @@ final class ChatViewModel {
         return (normalizedCaption, true)
     }
 
+    private static func describe(_ group: OutgoingEnvelopeSnapshot) -> String {
+        let items = group.items.map {
+            "\($0.itemIndex):event=\($0.eventId ?? "-"),tx=\($0.transactionId ?? "-")"
+        }.joined(separator: "|")
+        return "\(group.id)[\(group.expectedItemCount)] placement=\(group.captionPlacement.rawValue) items=\(items)"
+    }
+
+    private static func describe(_ message: ChatMessage) -> String {
+        let itemId = message.eventId ?? message.transactionId ?? message.id
+        let group = message.zynaAttributes.mediaGroup.map {
+            "\($0.id)#\($0.index + 1)/\($0.total)"
+        } ?? "none"
+        return "\(itemId) group=\(group) status=\(message.sendStatus)"
+    }
+
     // MARK: - Prefetch
 
     private static func prefetchImages(_ messages: [ChatMessage]) {
         let maxPixelWidth = Int(
-            round(ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio * UIScreen.main.scale)
+            round(ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio * ScreenConstants.scale)
         )
         let maxPixelHeight = Int(
-            round(MessageCellHelpers.maxImageBubbleHeight * UIScreen.main.scale)
+            round(MessageCellHelpers.maxImageBubbleHeight * ScreenConstants.scale)
         )
 
         for message in messages {
-            guard case .image(let source, let width, let height, _) = message.content else { continue }
+            guard case .image(let source?, let width, let height, _, _) = message.content else { continue }
             guard MediaCache.shared.bubbleImage(
                 for: source,
                 maxPixelWidth: maxPixelWidth,
