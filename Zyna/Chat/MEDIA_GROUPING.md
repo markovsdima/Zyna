@@ -91,15 +91,24 @@ because grouping metadata is missing or partially wrong.
 Grouped photos are slightly harder than normal messages because the
 Matrix SDK gives us local echo and synced events as separate stages.
 
-To keep the UI stable, Zyna does a few things:
+To keep the sender UI stable, Zyna now uses a dedicated outgoing layer
+instead of rendering photo groups directly from transient Matrix local
+echo rows.
 
-- caches outgoing Zyna metadata optimistically
-- tries to match local echo to the final synced events
-- keeps grouped bubbles updating in place where possible
+In practice this means:
+
+- the sender bubble is rendered from Zyna's persistent local outgoing
+  state
+- Matrix send queue is still used for transport state such as
+  `transactionId`, upload progress, retries, and final `eventId`
+- the outgoing bubble retires only after the final timeline messages
+  are matched and hydrated
 
 The goal is simple: a freshly sent photo group should already look like
 its final grouped shape, without obvious flicker or collapsing back
 into unrelated bubbles.
+
+More detail lives in [OUTGOING_LAYER.md](./OUTGOING_LAYER.md).
 
 ## Other Matrix Clients
 
