@@ -127,6 +127,10 @@ final class TimelineDiffBatcher {
                     for op in ops {
                         switch op {
                         case .upsert(var record):
+                            Self.inheritExistingZynaAttributesIfNeeded(
+                                for: &record,
+                                in: db
+                            )
                             let previousGroupDescription = try Self.existingMediaGroupDescription(
                                 for: record,
                                 in: db
@@ -302,6 +306,49 @@ final class TimelineDiffBatcher {
         )
     }
 
+    private static func inheritExistingZynaAttributesIfNeeded(
+        for record: inout StoredMessage,
+        in db: Database
+    ) {
+        guard record.contentType == "redacted",
+              (record.zynaAttributesJSON ?? "").isEmpty,
+              let existing = (try? existingStoredMessage(for: record, in: db)) ?? nil,
+              let existingAttrs = existing.zynaAttributesJSON,
+              !existingAttrs.isEmpty
+        else {
+            return
+        }
+
+        record.zynaAttributesJSON = existingAttrs
+        if let group = existing.toChatMessage()?.zynaAttributes.mediaGroup {
+            logMediaGroup(
+                "db preserve redacted attrs item=\(record.eventId ?? record.transactionId ?? record.id) group=\(describe(group: group))"
+            )
+        }
+    }
+
+    private static func existingStoredMessage(
+        for record: StoredMessage,
+        in db: Database
+    ) throws -> StoredMessage? {
+        if let existing = try StoredMessage.fetchOne(db, key: record.id) {
+            return existing
+        }
+        if let eventId = record.eventId,
+           let existing = try StoredMessage
+            .filter(Column("roomId") == record.roomId && Column("eventId") == eventId)
+            .fetchOne(db) {
+            return existing
+        }
+        if let transactionId = record.transactionId,
+           let existing = try StoredMessage
+            .filter(Column("roomId") == record.roomId && Column("transactionId") == transactionId)
+            .fetchOne(db) {
+            return existing
+        }
+        return nil
+    }
+
     private static func findMatchingPendingTransactionId(
         for record: StoredMessage,
         in db: Database
@@ -447,21 +494,7 @@ final class TimelineDiffBatcher {
         for record: StoredMessage,
         in db: Database
     ) throws -> String? {
-        if let existing = try StoredMessage.fetchOne(db, key: record.id),
-           let group = existing.toChatMessage()?.zynaAttributes.mediaGroup {
-            return describe(group: group)
-        }
-        if let eventId = record.eventId,
-           let existing = try StoredMessage
-            .filter(Column("roomId") == record.roomId && Column("eventId") == eventId)
-            .fetchOne(db),
-           let group = existing.toChatMessage()?.zynaAttributes.mediaGroup {
-            return describe(group: group)
-        }
-        if let transactionId = record.transactionId,
-           let existing = try StoredMessage
-            .filter(Column("roomId") == record.roomId && Column("transactionId") == transactionId)
-            .fetchOne(db),
+        if let existing = try existingStoredMessage(for: record, in: db),
            let group = existing.toChatMessage()?.zynaAttributes.mediaGroup {
             return describe(group: group)
         }

@@ -215,9 +215,16 @@ final class ChatViewModel {
             return true
         }
 
+        let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: newStored)
+        if !deletedMediaGroupIds.isEmpty || !newlyRedactedIds.isEmpty {
+            logMediaGroup(
+                "deleteReflow observation newlyRedacted=\(newlyRedactedIds.joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ",")) hidden=\(hiddenIds.count)"
+            )
+        }
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
+            deletedMediaGroupIds: deletedMediaGroupIds,
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
         )
@@ -292,6 +299,7 @@ final class ChatViewModel {
 
     private func buildRenderableMessages(
         from rawMessages: [ChatMessage],
+        deletedMediaGroupIds: Set<String>,
         olderBoundary: ClusterNeighbor?,
         newerBoundary: ClusterNeighbor?
     ) -> [ChatMessage] {
@@ -324,6 +332,7 @@ final class ChatViewModel {
 
         return Self.buildDisplayMessages(
             from: renderableMessages,
+            deletedMediaGroupIds: deletedMediaGroupIds,
             olderBoundary: olderBoundary,
             newerBoundary: newerBoundary
         )
@@ -1797,11 +1806,12 @@ final class ChatViewModel {
     func hideMessage(_ messageId: String) {
         hiddenIds.insert(messageId)
         let oldMessages = messages
-        let visibleRedactedIds = Set(
+        var visibleRedactedIds = Set(
             oldMessages
                 .filter { $0.content.isRedacted }
                 .map(\.id)
         )
+        visibleRedactedIds.remove(messageId)
         let displayStored = window.currentStoredMessages().filter { msg in
             if hiddenIds.contains(msg.id) { return false }
             if msg.contentType == "redacted" {
@@ -1809,9 +1819,14 @@ final class ChatViewModel {
             }
             return true
         }
+        let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: window.currentStoredMessages())
+        logMediaGroup(
+            "deleteReflow hide messageId=\(messageId) visibleRedacted=\(visibleRedactedIds.sorted().joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ","))"
+        )
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
+            deletedMediaGroupIds: deletedMediaGroupIds,
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
         )
@@ -1970,6 +1985,7 @@ final class ChatViewModel {
 
     private static func decorateMediaGroups(
         _ messages: [ChatMessage],
+        deletedMediaGroupIds: Set<String>,
         olderBoundary: ClusterNeighbor?,
         newerBoundary: ClusterNeighbor?
     ) -> [ChatMessage] {
@@ -2002,23 +2018,32 @@ final class ChatViewModel {
             let isVisualGroup = runLength > 1 || sharesWithNewerBoundary || sharesWithOlderBoundary
 
             if isVisualGroup {
-                let groupItems = mediaGroupItems(from: Array(result[runStart...runEnd]))
+                let sourceMessages = Array(result[runStart...runEnd])
+                let allowsDeletedReflow = deletedMediaGroupIds.contains(mediaGroup.id)
+                let groupItems = mediaGroupItems(from: sourceMessages)
                 let visibleCaptions = (runStart...runEnd).map { result[$0].content.visibleImageCaption }
                 let captionCollapse = groupCaptionCollapse(from: visibleCaptions)
                 let deduplicatedCaption = captionCollapse.caption
                 let suppressIndividualCaption = captionCollapse.caption != nil
                 let renderDecision =
                     mediaGroupRenderDecision(
-                        messages: Array(result[runStart...runEnd]),
+                        messages: sourceMessages,
+                        allowsDeletedReflow: allowsDeletedReflow,
                         sharesWithNewerBoundary: sharesWithNewerBoundary,
                         sharesWithOlderBoundary: sharesWithOlderBoundary,
                         canCollapseCaption: captionCollapse.canCollapse
                     )
                 let canRenderCompositeBubble = renderDecision.canRender
+                let isPartialDeletedReflow = canRenderCompositeBubble && allowsDeletedReflow && groupItems.count < mediaGroup.total
                 let captionCarrierPosition: MediaGroupPosition = mediaGroup.captionPlacement == .top ? .top : .bottom
                 logMediaGroup(
                     "decorate group=\(mediaGroup.id) run=\(runLength) total=\(mediaGroup.total) boundary[newer=\(sharesWithNewerBoundary),older=\(sharesWithOlderBoundary)] captionCollapse=\(captionCollapse.canCollapse) composite=\(canRenderCompositeBubble) reason=\(renderDecision.reason)"
                 )
+                if allowsDeletedReflow {
+                    logMediaGroup(
+                        "deleteReflow decorate group=\(mediaGroup.id) source=\(describeMediaGroupMessages(sourceMessages)) items=\(describeMediaGroupItems(groupItems)) partial=\(isPartialDeletedReflow) composite=\(canRenderCompositeBubble)"
+                    )
+                }
 
                 if canRenderCompositeBubble {
                     if captionCarrierPosition == .bottom {
@@ -2045,10 +2070,10 @@ final class ChatViewModel {
                     result[currentIndex].mediaGroupPresentation = MediaGroupPresentation(
                         id: mediaGroup.id,
                         position: position,
-                        totalHint: mediaGroup.total,
+                        totalHint: isPartialDeletedReflow ? groupItems.count : mediaGroup.total,
                         caption: caption,
                         captionPlacement: mediaGroup.captionPlacement,
-                        layoutOverride: mediaGroup.layoutOverride,
+                        layoutOverride: isPartialDeletedReflow ? nil : mediaGroup.layoutOverride,
                         suppressIndividualCaption: suppressIndividualCaption,
                         items: (canRenderCompositeBubble && position == captionCarrierPosition) ? groupItems : [],
                         rendersCompositeBubble: canRenderCompositeBubble && position == captionCarrierPosition,
@@ -2065,6 +2090,7 @@ final class ChatViewModel {
 
     private static func buildDisplayMessages(
         from rawMessages: [ChatMessage],
+        deletedMediaGroupIds: Set<String>,
         olderBoundary: ClusterNeighbor?,
         newerBoundary: ClusterNeighbor?
     ) -> [ChatMessage] {
@@ -2090,6 +2116,7 @@ final class ChatViewModel {
 
         return decorateMediaGroups(
             clusteredMessages,
+            deletedMediaGroupIds: deletedMediaGroupIds,
             olderBoundary: olderBoundary,
             newerBoundary: newerBoundary
         ).filter { $0.mediaGroupPresentation?.hidesStandaloneBubble != true }
@@ -2120,12 +2147,14 @@ final class ChatViewModel {
 
     private static func isCompleteRenderableMediaGroup(
         messages: [ChatMessage],
+        allowsDeletedReflow: Bool,
         sharesWithNewerBoundary: Bool,
         sharesWithOlderBoundary: Bool,
         canCollapseCaption: Bool
     ) -> Bool {
         mediaGroupRenderDecision(
             messages: messages,
+            allowsDeletedReflow: allowsDeletedReflow,
             sharesWithNewerBoundary: sharesWithNewerBoundary,
             sharesWithOlderBoundary: sharesWithOlderBoundary,
             canCollapseCaption: canCollapseCaption
@@ -2139,6 +2168,7 @@ final class ChatViewModel {
 
     private static func mediaGroupRenderDecision(
         messages: [ChatMessage],
+        allowsDeletedReflow: Bool,
         sharesWithNewerBoundary: Bool,
         sharesWithOlderBoundary: Bool,
         canCollapseCaption: Bool
@@ -2159,7 +2189,8 @@ final class ChatViewModel {
         guard canCollapseCaption else {
             return MediaGroupRenderDecision(canRender: false, reason: "captionMismatch")
         }
-        guard firstGroup.total == messages.count else {
+        let isPartialDeletedReflow = allowsDeletedReflow && messages.count < firstGroup.total
+        guard isPartialDeletedReflow || firstGroup.total == messages.count else {
             return MediaGroupRenderDecision(
                 canRender: false,
                 reason: "countMismatch visible=\(messages.count) expected=\(firstGroup.total)"
@@ -2174,6 +2205,8 @@ final class ChatViewModel {
                   group.total == firstGroup.total,
                   group.captionMode == firstGroup.captionMode,
                   group.captionPlacement == firstGroup.captionPlacement,
+                  group.index >= 0,
+                  group.index < group.total,
                   group.layoutOverride == firstGroup.layoutOverride,
                   seenIndices.insert(group.index).inserted
             else {
@@ -2181,22 +2214,39 @@ final class ChatViewModel {
             }
         }
 
-        guard seenIndices.count == firstGroup.total else {
+        guard seenIndices.count == messages.count else {
             return MediaGroupRenderDecision(
                 canRender: false,
-                reason: "uniqueIndexCountMismatch=\(seenIndices.count)"
+                reason: "uniqueIndexCountMismatch=\(seenIndices.count) visible=\(messages.count)"
             )
         }
-        guard seenIndices.min() == 0 else {
-            return MediaGroupRenderDecision(
-                canRender: false,
-                reason: "minIndex=\(seenIndices.min().map(String.init) ?? "nil")"
+
+        if !isPartialDeletedReflow {
+            guard seenIndices.count == firstGroup.total else {
+                return MediaGroupRenderDecision(
+                    canRender: false,
+                    reason: "uniqueIndexCountMismatch=\(seenIndices.count)"
+                )
+            }
+            guard seenIndices.min() == 0 else {
+                return MediaGroupRenderDecision(
+                    canRender: false,
+                    reason: "minIndex=\(seenIndices.min().map(String.init) ?? "nil")"
+                )
+            }
+            guard seenIndices.max() == firstGroup.total - 1 else {
+                return MediaGroupRenderDecision(
+                    canRender: false,
+                    reason: "maxIndex=\(seenIndices.max().map(String.init) ?? "nil") expected=\(firstGroup.total - 1)"
+                )
+            }
+        } else {
+            logMediaGroup(
+                "deleteReflow decision group=\(firstGroup.id) visible=\(messages.count) total=\(firstGroup.total) indices=\(seenIndices.sorted().map(String.init).joined(separator: ","))"
             )
-        }
-        guard seenIndices.max() == firstGroup.total - 1 else {
             return MediaGroupRenderDecision(
-                canRender: false,
-                reason: "maxIndex=\(seenIndices.max().map(String.init) ?? "nil") expected=\(firstGroup.total - 1)"
+                canRender: true,
+                reason: "redactedReflow visible=\(messages.count) expected=\(firstGroup.total)"
             )
         }
 
@@ -2248,6 +2298,15 @@ final class ChatViewModel {
         return (normalizedCaption, true)
     }
 
+    private static func redactedMediaGroupIds(in storedMessages: [StoredMessage]) -> Set<String> {
+        Set(
+            storedMessages.compactMap { message in
+                guard message.contentType == "redacted" else { return nil }
+                return message.toChatMessage()?.zynaAttributes.mediaGroup?.id
+            }
+        )
+    }
+
     private static func describe(_ group: OutgoingEnvelopeSnapshot) -> String {
         let items = group.items.map {
             "\($0.itemIndex):event=\($0.eventId ?? "-"),tx=\($0.transactionId ?? "-")"
@@ -2261,6 +2320,21 @@ final class ChatViewModel {
             "\($0.id)#\($0.index + 1)/\($0.total)"
         } ?? "none"
         return "\(itemId) group=\(group) status=\(message.sendStatus)"
+    }
+
+    private static func describeMediaGroupMessages(_ messages: [ChatMessage]) -> String {
+        messages.map { message in
+            let itemId = message.eventId ?? message.transactionId ?? message.id
+            let index = message.zynaAttributes.mediaGroup?.index ?? -1
+            return "\(index):\(itemId):\(message.content.textPreview)"
+        }.joined(separator: "|")
+    }
+
+    private static func describeMediaGroupItems(_ items: [MediaGroupItem]) -> String {
+        items.enumerated().map { renderIndex, item in
+            let itemId = item.eventId ?? item.transactionId ?? item.messageId
+            return "\(renderIndex):\(itemId)"
+        }.joined(separator: "|")
     }
 
     // MARK: - Prefetch
