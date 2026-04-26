@@ -56,6 +56,8 @@ final class TimelineService {
         self.room = room
     }
 
+    var hasLiveTimeline: Bool { timeline != nil }
+
     // MARK: - Start
 
     func startListening() async {

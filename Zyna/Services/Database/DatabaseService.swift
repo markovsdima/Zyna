@@ -224,6 +224,67 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v8_pendingRedactionRetryMetadata") { db in
+            let existingColumns = try db.columns(in: "pendingRedaction").map(\.name)
+
+            if !existingColumns.contains("identifierKind") {
+                try db.alter(table: "pendingRedaction") { t in
+                    t.add(column: "identifierKind", .text)
+                }
+            }
+
+            if !existingColumns.contains("identifierValue") {
+                try db.alter(table: "pendingRedaction") { t in
+                    t.add(column: "identifierValue", .text)
+                }
+            }
+
+            if !existingColumns.contains("lastAttemptAt") {
+                try db.alter(table: "pendingRedaction") { t in
+                    t.add(column: "lastAttemptAt", .double)
+                }
+            }
+
+            if !existingColumns.contains("attemptCount") {
+                try db.alter(table: "pendingRedaction") { t in
+                    t.add(column: "attemptCount", .integer).notNull().defaults(to: 0)
+                }
+            }
+
+            try db.execute(
+                sql: """
+                    UPDATE pendingRedaction
+                    SET identifierKind = CASE
+                            WHEN (
+                                SELECT eventId
+                                FROM storedMessage
+                                WHERE storedMessage.id = pendingRedaction.messageId
+                            ) IS NOT NULL THEN 'eventId'
+                            WHEN (
+                                SELECT transactionId
+                                FROM storedMessage
+                                WHERE storedMessage.id = pendingRedaction.messageId
+                            ) IS NOT NULL THEN 'transactionId'
+                            ELSE identifierKind
+                        END,
+                        identifierValue = COALESCE(
+                            (
+                                SELECT eventId
+                                FROM storedMessage
+                                WHERE storedMessage.id = pendingRedaction.messageId
+                            ),
+                            (
+                                SELECT transactionId
+                                FROM storedMessage
+                                WHERE storedMessage.id = pendingRedaction.messageId
+                            ),
+                            identifierValue
+                        )
+                    WHERE identifierValue IS NULL
+                    """
+            )
+        }
+
         return migrator
     }
 }

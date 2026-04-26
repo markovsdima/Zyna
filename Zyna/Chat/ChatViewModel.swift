@@ -73,7 +73,7 @@ final class ChatViewModel {
     var onRedactedDetected: ((DetectedRedactionBatch) -> Void)?
 
     /// Called when a redaction request fails.
-    var onRedactionFailed: ((String, Error) -> Void)?
+    var onRedactionFailed: ((String, Error, PendingRedactionFailureDisposition) -> Void)?
 
     let roomName: String
     @Published private(set) var partnerPresence: UserPresence?
@@ -91,11 +91,12 @@ final class ChatViewModel {
     private let diffBatcher: TimelineDiffBatcher
     private let window: MessageWindow
     private let outgoingEnvelopes = OutgoingEnvelopeService.shared
+    private let pendingRedactions = PendingRedactionService.shared
     private let room: Room
     private let roomId: String
     private var hiddenIds = Set<String>()
     private var pendingPartialRedactions: [String: StoredMessage] = [:]
-    private var persistedPendingRedactionIds = Set<String>()
+    private var pendingRedactionIds = Set<String>()
     private var partialReflowPreviewsByMessageId: [String: PartialReflowPreview] = [:]
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
@@ -125,7 +126,7 @@ final class ChatViewModel {
             roomId: roomId,
             dbQueue: DatabaseService.shared.dbQueue
         )
-        self.persistedPendingRedactionIds = Self.loadPersistedPendingRedactionIds(roomId: roomId)
+        self.pendingRedactionIds = pendingRedactions.pendingMessageIds(roomId: roomId)
 
         timelineService.isPaginatingSubject
             .receive(on: DispatchQueue.main)
@@ -197,7 +198,23 @@ final class ChatViewModel {
         window.loadInitial()
 
         Task { [weak self] in
-            await self?.timelineService.startListening()
+            guard let self else { return }
+            await self.timelineService.startListening()
+            let terminalFailures = await self.pendingRedactions.retryPendingRedactions(
+                roomId: self.roomId,
+                timelineService: self.timelineService
+            )
+            guard !terminalFailures.isEmpty else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for failure in terminalFailures {
+                    self.onRedactionFailed?(
+                        failure.messageId,
+                        failure.error,
+                        .terminal
+                    )
+                }
+            }
         }
 
         historySyncTask = Task { [weak self] in
@@ -226,7 +243,10 @@ final class ChatViewModel {
     // MARK: - Window Change Handling
 
     private func handleObservationChange(newStored: [StoredMessage], prevStored: [StoredMessage]?) {
-        reconcilePersistedPendingRedactions()
+        let resolvedPendingIds = pendingRedactions.reconcileResolvedPendingMessageIds(roomId: roomId)
+        if !resolvedPendingIds.isEmpty {
+            pendingRedactionIds.subtract(resolvedPendingIds)
+        }
 
         // 1. Detect newly redacted user messages (paint splash).
         //    Only for content that was a visible message — not call
@@ -284,7 +304,7 @@ final class ChatViewModel {
             if let pending = pendingPartialRedactions[msg.id] {
                 return pending
             }
-            if persistedPendingRedactionIds.contains(msg.id) {
+            if pendingRedactionIds.contains(msg.id) {
                 return nil
             }
             if msg.contentType == "redacted" && !newlyRedactedSet.contains(msg.id) { return nil }
@@ -450,7 +470,6 @@ final class ChatViewModel {
             }
             pendingPartialRedactions[messageId] = stored
         }
-        persistPendingRedactions(messageIds)
     }
 
     func clearPendingAnimatedRedactions(_ messageIds: [String]) {
@@ -458,7 +477,71 @@ final class ChatViewModel {
         for messageId in messageIds {
             pendingPartialRedactions.removeValue(forKey: messageId)
         }
-        clearPersistedPendingRedactions(messageIds)
+    }
+
+    func restoreMessages(_ messageIds: [String]) {
+        let idsToRestore = Set(messageIds)
+        guard !idsToRestore.isEmpty else { return }
+
+        hiddenIds.subtract(idsToRestore)
+        pendingRedactionIds.subtract(idsToRestore)
+        for messageId in idsToRestore {
+            pendingPartialRedactions.removeValue(forKey: messageId)
+        }
+
+        let storedMessages = window.currentStoredMessages()
+        let affectedMediaGroupIds = Set(
+            storedMessages.compactMap { message -> String? in
+                guard idsToRestore.contains(message.id) else { return nil }
+                return message.toChatMessage()?.zynaAttributes.mediaGroup?.id
+            }
+        )
+
+        if affectedMediaGroupIds.isEmpty {
+            for messageId in idsToRestore {
+                partialReflowPreviewsByMessageId.removeValue(forKey: messageId)
+            }
+        } else {
+            partialReflowPreviewsByMessageId = partialReflowPreviewsByMessageId.filter { messageId, _ in
+                guard let stored = storedMessages.first(where: { $0.id == messageId }) else { return false }
+                let mediaGroupId = stored.toChatMessage()?.zynaAttributes.mediaGroup?.id
+                return mediaGroupId.map { !affectedMediaGroupIds.contains($0) } ?? false
+            }
+        }
+
+        let oldMessages = messages
+        let visibleRedactedIds = Set(
+            oldMessages
+                .filter { $0.content.isRedacted }
+                .map(\.id)
+        )
+        let displayStored = storedMessages.compactMap { msg -> StoredMessage? in
+            if hiddenIds.contains(msg.id) { return nil }
+            if let pending = pendingPartialRedactions[msg.id] {
+                return pending
+            }
+            if pendingRedactionIds.contains(msg.id) { return nil }
+            if msg.contentType == "redacted" {
+                return visibleRedactedIds.contains(msg.id) ? msg : nil
+            }
+            return msg
+        }
+
+        let rawMessages = displayStored.compactMap { $0.toChatMessage() }
+        let newMessages = buildRenderableMessages(
+            from: rawMessages,
+            deletedMediaGroupIds: Self.redactedMediaGroupIds(in: storedMessages),
+            partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
+            olderBoundary: window.peekOlderNeighbor(),
+            newerBoundary: window.peekNewerNeighbor()
+        )
+        setMessages(newMessages)
+
+        let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldMessages, new: newMessages)
+        onTableUpdate?(tableUpdate)
+        for (indexPath, message) in inPlaceUpdates {
+            onInPlaceUpdate?(indexPath, message)
+        }
     }
 
     func areMessagesRedacted(_ messageIds: [String]) -> Bool {
@@ -2123,20 +2206,36 @@ final class ChatViewModel {
     }
 
     func redactMediaGroupItems(_ items: [MediaGroupItem]) {
-        let identifiableItems = items.filter { $0.itemIdentifier != nil }
-        guard !identifiableItems.isEmpty else { return }
+        let intents = items.compactMap { item -> PendingRedactionIntent? in
+            guard let itemIdentifier = item.itemIdentifier else { return nil }
+            return PendingRedactionIntent(
+                messageId: item.messageId,
+                roomId: roomId,
+                itemIdentifier: itemIdentifier
+            )
+        }
+        guard !intents.isEmpty else { return }
+        pendingRedactions.register(intents)
+        pendingRedactionIds.formUnion(intents.map(\.messageId))
         Task { [weak self] in
             guard let self else { return }
             await withTaskGroup(of: Void.self) { group in
-                for item in identifiableItems {
-                    guard let itemId = item.itemIdentifier else { continue }
+                for intent in intents {
                     group.addTask { [weak self] in
                         guard let self else { return }
                         do {
-                            try await self.timelineService.redactEvent(itemId)
+                            try await self.pendingRedactions.attempt(
+                                intent,
+                                timelineService: self.timelineService
+                            )
                         } catch {
                             await MainActor.run {
-                                self.onRedactionFailed?(item.messageId, error)
+                                let attemptError = error as? PendingRedactionAttemptError
+                                self.onRedactionFailed?(
+                                    intent.messageId,
+                                    attemptError?.underlyingError ?? error,
+                                    attemptError?.disposition ?? .retryable
+                                )
                             }
                         }
                     }
@@ -2146,12 +2245,27 @@ final class ChatViewModel {
     }
 
     private func redactItemIdentifier(_ itemId: ChatItemIdentifier, messageId: String) {
+        let intent = PendingRedactionIntent(
+            messageId: messageId,
+            roomId: roomId,
+            itemIdentifier: itemId
+        )
+        pendingRedactions.register([intent])
+        pendingRedactionIds.insert(messageId)
         Task {
             do {
-                try await timelineService.redactEvent(itemId)
+                try await pendingRedactions.attempt(
+                    intent,
+                    timelineService: timelineService
+                )
             } catch {
                 await MainActor.run {
-                    onRedactionFailed?(messageId, error)
+                    let attemptError = error as? PendingRedactionAttemptError
+                    onRedactionFailed?(
+                        messageId,
+                        attemptError?.underlyingError ?? error,
+                        attemptError?.disposition ?? .retryable
+                    )
                 }
             }
         }
@@ -2203,87 +2317,6 @@ final class ChatViewModel {
         for (indexPath, message) in inPlaceUpdates {
             onInPlaceUpdate?(indexPath, message)
         }
-    }
-
-    private static func loadPersistedPendingRedactionIds(roomId: String) -> Set<String> {
-        (try? DatabaseService.shared.dbQueue.read { db in
-            try Set(String.fetchAll(
-                db,
-                sql: """
-                    SELECT messageId
-                    FROM pendingRedaction
-                    WHERE roomId = ?
-                    """,
-                arguments: [roomId]
-            ))
-        }) ?? []
-    }
-
-    private func persistPendingRedactions(_ messageIds: [String]) {
-        let ids = Set(messageIds).subtracting(persistedPendingRedactionIds)
-        guard !ids.isEmpty else { return }
-
-        do {
-            let now = Date().timeIntervalSince1970
-            try DatabaseService.shared.dbQueue.write { db in
-                for messageId in ids {
-                    try db.execute(
-                        sql: """
-                            INSERT OR REPLACE INTO pendingRedaction (messageId, roomId, createdAt)
-                            VALUES (?, ?, ?)
-                            """,
-                        arguments: [messageId, roomId, now]
-                    )
-                }
-            }
-            persistedPendingRedactionIds.formUnion(ids)
-        } catch {
-            ScopedLog(.database)("Failed to persist pending redactions: \(error)")
-        }
-    }
-
-    private func clearPersistedPendingRedactions(_ messageIds: [String]) {
-        let ids = Set(messageIds).intersection(persistedPendingRedactionIds)
-        guard !ids.isEmpty else { return }
-
-        do {
-            try DatabaseService.shared.dbQueue.write { db in
-                for messageId in ids {
-                    try db.execute(
-                        sql: """
-                            DELETE FROM pendingRedaction
-                            WHERE messageId = ?
-                            """,
-                        arguments: [messageId]
-                    )
-                }
-            }
-            persistedPendingRedactionIds.subtract(ids)
-        } catch {
-            ScopedLog(.database)("Failed to clear pending redactions: \(error)")
-        }
-    }
-
-    private func reconcilePersistedPendingRedactions() {
-        guard !persistedPendingRedactionIds.isEmpty else { return }
-
-        let ids = Array(persistedPendingRedactionIds)
-        let resolvedIds: [String] = (try? DatabaseService.shared.dbQueue.read { db in
-            try String.fetchAll(
-                db,
-                sql: """
-                    SELECT id
-                    FROM storedMessage
-                    WHERE roomId = ?
-                      AND id IN (\(ids.map { _ in "?" }.joined(separator: ",")))
-                      AND contentType = 'redacted'
-                    """,
-                arguments: StatementArguments([roomId] + ids)
-            )
-        }) ?? []
-
-        guard !resolvedIds.isEmpty else { return }
-        clearPersistedPendingRedactions(resolvedIds)
     }
 
     // MARK: - Search

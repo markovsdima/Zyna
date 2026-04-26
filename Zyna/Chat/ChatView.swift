@@ -722,8 +722,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.handleRedactionBatch(batch)
         }
 
-        viewModel.onRedactionFailed = { [weak self] messageId, _ in
-            self?.handleRedactionFailure(for: messageId)
+        viewModel.onRedactionFailed = { [weak self] messageId, _, disposition in
+            self?.handleRedactionFailure(for: messageId, disposition: disposition)
         }
 
         viewModel.$isInvited
@@ -1841,7 +1841,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.redactMediaGroupItems(items)
     }
 
-    private func handleRedactionFailure(for messageId: String) {
+    private func handleRedactionFailure(
+        for messageId: String,
+        disposition: PendingRedactionFailureDisposition
+    ) {
         pendingAnimatedDeleteTargets.removeValue(forKey: messageId)
         let affectedGroups = pendingCompositeGroupDeletes.compactMap { groupId, pendingDelete -> (String, Set<String>)? in
             pendingDelete.messageIds.contains(messageId) ? (groupId, pendingDelete.messageIds) : nil
@@ -1849,6 +1852,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         guard !affectedGroups.isEmpty else {
             viewModel.clearPendingAnimatedRedactions([messageId])
+            if disposition == .terminal {
+                viewModel.restoreMessages([messageId])
+            }
             return
         }
 
@@ -1858,6 +1864,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             let alreadyRedacted = messageIds.filter { viewModel.areMessagesRedacted([$0]) }
             if !alreadyRedacted.isEmpty {
                 handleRedactedMessages(Array(alreadyRedacted))
+            }
+            if disposition == .terminal {
+                let idsToRestore = Set(messageIds).subtracting(alreadyRedacted)
+                if !idsToRestore.isEmpty {
+                    viewModel.restoreMessages(Array(idsToRestore))
+                }
             }
         }
     }
