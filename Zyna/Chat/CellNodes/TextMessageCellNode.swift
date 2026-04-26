@@ -161,6 +161,6 @@ final class TextMessageCellNode: MessageCellNode {
 
     override func updateSendStatus(_ status: String) {
         super.updateSendStatus(status)
-        flatContentNode.statusIcon = MessageStatusIcon.from(sendStatus: status)
+        flatContentNode.statusIcon = statusIcon(forSendStatus: status)
     }
 }

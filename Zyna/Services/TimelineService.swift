@@ -39,6 +39,9 @@ final class TimelineService {
     /// Timestamp of the newest own message read by someone else.
     var onReadCursor: ((TimeInterval) -> Void)?
 
+    /// Event acknowledged by the current user's own fully-read marker.
+    var onOwnFullyReadMarker: ((String) -> Void)?
+
     /// Room-local send queue updates used to bind outgoing envelopes.
     var onSendQueueUpdate: ((RoomSendQueueUpdate) -> Void)?
 
@@ -46,6 +49,7 @@ final class TimelineService {
     private var timeline: Timeline?
     private var listenerHandle: TaskHandle?
     private var sendQueueListenerHandle: TaskHandle?
+    private var roomAccountDataHandle: TaskHandle?
     private let localEventTransactionBroker = LocalEventTransactionBroker()
 
     init(room: Room) {
@@ -73,6 +77,17 @@ final class TimelineService {
             self.sendQueueListenerHandle = try await room.subscribeToSendQueueUpdates(
                 listener: sendQueueListener
             )
+
+            if let client = MatrixClientService.shared.client {
+                let roomAccountDataListener = ZynaRoomAccountDataListener { [weak self] event, roomId in
+                    self?.handleRoomAccountDataEvent(event, roomId: roomId)
+                }
+                self.roomAccountDataHandle = try client.observeRoomAccountDataEvent(
+                    roomId: room.id(),
+                    eventType: .fullyRead,
+                    listener: roomAccountDataListener
+                )
+            }
 
             logTimeline("Timeline listener started for room \(room.id())")
         } catch {
@@ -112,12 +127,15 @@ final class TimelineService {
         // that has a read receipt from someone else.
         var readCursorTimestamp: TimeInterval?
         for item in allItems {
-            guard let event = item.asEvent(), event.isOwn else { continue }
-            let hasOtherReceipt = event.readReceipts.contains { $0.key != event.sender }
-            if hasOtherReceipt {
-                let ts = TimeInterval(event.timestamp) / 1000
-                if readCursorTimestamp == nil || ts > readCursorTimestamp! {
-                    readCursorTimestamp = ts
+            guard let event = item.asEvent() else { continue }
+            let timestamp = TimeInterval(event.timestamp) / 1000
+
+            if event.isOwn {
+                let hasOtherReceipt = event.readReceipts.contains { $0.key != event.sender }
+                if hasOtherReceipt {
+                    if readCursorTimestamp == nil || timestamp > readCursorTimestamp! {
+                        readCursorTimestamp = timestamp
+                    }
                 }
             }
         }
@@ -129,6 +147,17 @@ final class TimelineService {
         }
 
         logTimeline("Timeline diffs forwarded: \(diffs.count) diffs")
+    }
+
+    private func handleRoomAccountDataEvent(_ event: RoomAccountDataEvent, roomId: String) {
+        guard roomId == room.id() else { return }
+
+        switch event {
+        case .fullyReadEvent(let eventId):
+            onOwnFullyReadMarker?(eventId)
+        default:
+            break
+        }
     }
 
     private func handleSendQueueUpdate(_ update: RoomSendQueueUpdate) {
@@ -1144,7 +1173,30 @@ final class TimelineService {
         do {
             try await timeline?.markAsRead(receiptType: .read)
         } catch {
-            logTimeline("markAsRead failed: \(error)")
+            logTimeline("markAsRead(.read) failed: \(error)")
+        }
+
+        do {
+            try await timeline?.markAsRead(receiptType: .fullyRead)
+        } catch {
+            logTimeline("markAsRead(.fullyRead) failed: \(error)")
+        }
+    }
+
+    @discardableResult
+    func sendReadReceipt(for eventId: String) async -> Bool {
+        do {
+            try await timeline?.sendReadReceipt(receiptType: .read, eventId: eventId)
+        } catch {
+            logTimeline("sendReadReceipt(.read) failed event=\(eventId): \(error)")
+        }
+
+        do {
+            try await timeline?.sendReadReceipt(receiptType: .fullyRead, eventId: eventId)
+            return true
+        } catch {
+            logTimeline("sendReadReceipt(.fullyRead) failed event=\(eventId): \(error)")
+            return false
         }
     }
 
@@ -1155,6 +1207,8 @@ final class TimelineService {
         listenerHandle = nil
         sendQueueListenerHandle?.cancel()
         sendQueueListenerHandle = nil
+        roomAccountDataHandle?.cancel()
+        roomAccountDataHandle = nil
         timeline = nil
     }
 
@@ -1282,5 +1336,17 @@ private final class ZynaSendQueueListener: SendQueueListener {
 
     func onUpdate(update: RoomSendQueueUpdate) {
         handler(update)
+    }
+}
+
+private final class ZynaRoomAccountDataListener: RoomAccountDataListener {
+    private let handler: @Sendable (RoomAccountDataEvent, String) -> Void
+
+    init(handler: @escaping @Sendable (RoomAccountDataEvent, String) -> Void) {
+        self.handler = handler
+    }
+
+    func onChange(event: RoomAccountDataEvent, roomId: String) {
+        handler(event, roomId)
     }
 }

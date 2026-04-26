@@ -132,6 +132,7 @@ final class ImageMessageCellNode: MessageCellNode {
         imageNode.roundedCorners = corners
         setShowsBubbleChrome(!usesDirectImageContent)
         setUsesBareBubbleContent(usesDirectImageContent)
+        statusIconNode?.tintColour = .white
 
         let buildImageWithTime: () -> ASLayoutSpec = { [weak self] in
             guard let self else { return ASLayoutSpec() }
@@ -151,9 +152,23 @@ final class ImageMessageCellNode: MessageCellNode {
                 return ASWrapperLayoutSpec(layoutElement: self.imageNode)
             }
 
+            let timeBadgeContent: ASLayoutElement
+            if let statusIconNode = self.statusIconNode {
+                let timeRow = ASStackLayoutSpec(
+                    direction: .horizontal,
+                    spacing: 4,
+                    justifyContent: .start,
+                    alignItems: .center,
+                    children: [self.timeNode, statusIconNode]
+                )
+                timeBadgeContent = timeRow
+            } else {
+                timeBadgeContent = self.timeNode
+            }
+
             let timePadded = ASInsetLayoutSpec(
                 insets: UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6),
-                child: self.timeNode
+                child: timeBadgeContent
             )
             let timeBadge = ASBackgroundLayoutSpec(child: timePadded, background: self.timeBadgeNode)
 

@@ -163,6 +163,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
                 .foregroundColor: UIColor.white
             ]
         )
+        statusIconNode?.tintColour = .white
 
         bubbleNode.layoutSpecBlock = { [weak self] _, _ in
             guard let self else { return ASLayoutSpec() }
@@ -172,9 +173,23 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
                 height: self.mediaHeight
             )
 
+            let timeBadgeContent: ASLayoutElement
+            if let statusIconNode = self.statusIconNode {
+                let timeRow = ASStackLayoutSpec(
+                    direction: .horizontal,
+                    spacing: 4,
+                    justifyContent: .start,
+                    alignItems: .center,
+                    children: [self.timeNode, statusIconNode]
+                )
+                timeBadgeContent = timeRow
+            } else {
+                timeBadgeContent = self.timeNode
+            }
+
             let timePadded = ASInsetLayoutSpec(
                 insets: UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6),
-                child: self.timeNode
+                child: timeBadgeContent
             )
             let timeBadge = ASBackgroundLayoutSpec(child: timePadded, background: self.timeBadgeNode)
             let timeOverlay = ASRelativeLayoutSpec(

@@ -31,6 +31,22 @@ final class ChatViewModel {
         let imageData: Data
     }
 
+    private struct VisibleReadReceiptTarget: Equatable {
+        let eventId: String
+    }
+
+    private enum PendingReadReceiptSend: Equatable {
+        case bootstrap(VisibleReadReceiptTarget)
+        case advance(VisibleReadReceiptTarget)
+
+        var target: VisibleReadReceiptTarget {
+            switch self {
+            case .bootstrap(let target), .advance(let target):
+                return target
+            }
+        }
+    }
+
     // MARK: - State
 
     private(set) var messages: [ChatMessage] = []
@@ -84,6 +100,10 @@ final class ChatViewModel {
     private var directUserId: String?
     private var historySyncTask: Task<Void, Never>?
     private var readReceiptWork: DispatchWorkItem?
+    private var pendingReadReceiptSend: PendingReadReceiptSend?
+    private var readReceiptBaselineTarget: VisibleReadReceiptTarget?
+    private var lastBootstrapReadReceiptTarget: VisibleReadReceiptTarget?
+    private var messageIndexByEventId: [String: Int] = [:]
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
@@ -116,6 +136,11 @@ final class ChatViewModel {
         }
         timelineService.onReadCursor = { timestamp in
             batcher.updateReadCursor(timestamp: timestamp)
+        }
+        timelineService.onOwnFullyReadMarker = { [weak self] eventId in
+            DispatchQueue.main.async { [weak self] in
+                self?.seedReadReceiptBaseline(eventId: eventId)
+            }
         }
         timelineService.onSendQueueUpdate = { [weak self] _ in
             DispatchQueue.main.async { [weak self] in
@@ -279,7 +304,7 @@ final class ChatViewModel {
 
         // 4. Compute table update
         let oldMessages = self.messages
-        self.messages = newMessages
+        setMessages(newMessages)
 
         let tableUpdate: TableUpdate
         var inPlaceUpdates: [(IndexPath, ChatMessage)] = []
@@ -315,12 +340,7 @@ final class ChatViewModel {
             onInPlaceUpdate?(indexPath, message)
         }
 
-        // 7. Send read receipt when at live edge (user sees latest messages)
-        if window.isAtLiveEdge {
-            sendReadReceiptThrottled()
-        }
-
-        // Any materialized older rows in GRDB mean backward pagination
+        // 7. Any materialized older rows in GRDB mean backward pagination
         // is not exhausted, even if a previous server round finished late.
         if window.hasOlderInDB {
             sdkPaginationExhausted = false
@@ -1268,7 +1288,6 @@ final class ChatViewModel {
     func jumpToLive() {
         sdkPaginationExhausted = false
         window.jumpToLive()
-        sendReadReceiptThrottled()
     }
 
     func jumpToOldest() {
@@ -1277,20 +1296,141 @@ final class ChatViewModel {
     }
 
     func indexOfMessage(eventId: String) -> Int? {
-        messages.firstIndex { $0.eventId == eventId }
+        messageIndexByEventId[eventId]
     }
 
     // MARK: - Read Receipts
 
-    /// Debounced read receipt — avoids spamming the server when
-    /// multiple diffs arrive in quick succession.
-    private func sendReadReceiptThrottled() {
+    /// Called by ChatViewController with the newest sufficiently visible
+    /// event in the unobscured viewport. We only bootstrap the server
+    /// baseline when the viewport is effectively at the live edge; after
+    /// that receipts advance monotonically as the user reveals newer rows.
+    func updateVisibleReadReceiptCandidate(
+        eventId: String?,
+        canEstablishBaseline: Bool
+    ) {
+        guard let eventId else {
+            readReceiptWork?.cancel()
+            pendingReadReceiptSend = nil
+            return
+        }
+
+        let target = VisibleReadReceiptTarget(eventId: eventId)
+
+        if readReceiptBaselineTarget == nil {
+            guard canEstablishBaseline else { return }
+            guard pendingReadReceiptSend != .bootstrap(target) else { return }
+            guard lastBootstrapReadReceiptTarget != target else { return }
+            scheduleReadReceiptSend(to: target, mode: .bootstrap(target))
+            return
+        }
+
+        guard shouldAdvanceReadReceipt(to: target) else { return }
+        guard pendingReadReceiptSend != .advance(target) else { return }
+
+        scheduleReadReceiptSend(to: target, mode: .advance(target))
+    }
+
+    private func scheduleReadReceiptSend(
+        to target: VisibleReadReceiptTarget,
+        mode: PendingReadReceiptSend
+    ) {
         readReceiptWork?.cancel()
+        pendingReadReceiptSend = mode
         let work = DispatchWorkItem { [weak self] in
-            Task { await self?.timelineService.markAsRead() }
+            guard let self else { return }
+            Task {
+                let didSend = await self.timelineService.sendReadReceipt(for: target.eventId)
+                await MainActor.run {
+                    self.finishReadReceiptSend(mode, didSend: didSend)
+                }
+            }
         }
         readReceiptWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    private func finishReadReceiptSend(_ pending: PendingReadReceiptSend, didSend: Bool) {
+        if pendingReadReceiptSend == pending {
+            pendingReadReceiptSend = nil
+        }
+
+        guard didSend else {
+            if case .bootstrap(let target) = pending,
+               lastBootstrapReadReceiptTarget == target {
+                lastBootstrapReadReceiptTarget = nil
+            }
+            return
+        }
+
+        switch pending {
+        case .bootstrap(let target):
+            lastBootstrapReadReceiptTarget = target
+        case .advance(let target):
+            establishReadReceiptBaseline(to: target)
+        }
+    }
+
+    private func shouldAdvanceReadReceipt(to target: VisibleReadReceiptTarget) -> Bool {
+        if let readReceiptBaselineTarget,
+           !isReadReceiptTarget(target, newerThan: readReceiptBaselineTarget) {
+            return false
+        }
+        if let pendingTarget = pendingReadReceiptSend?.target,
+           !isReadReceiptTarget(target, newerThan: pendingTarget) {
+            return false
+        }
+        return true
+    }
+
+    private func isReadReceiptTarget(
+        _ lhs: VisibleReadReceiptTarget,
+        newerThan rhs: VisibleReadReceiptTarget
+    ) -> Bool {
+        if lhs.eventId == rhs.eventId {
+            return false
+        }
+
+        let lhsIndex = indexOfMessage(eventId: lhs.eventId)
+        let rhsIndex = indexOfMessage(eventId: rhs.eventId)
+
+        switch (lhsIndex, rhsIndex) {
+        case let (.some(lhsIndex), .some(rhsIndex)):
+            return lhsIndex < rhsIndex
+        case (.some, .none):
+            return isAtLiveEdge
+        default:
+            return false
+        }
+    }
+
+    private func seedReadReceiptBaseline(eventId: String) {
+        establishReadReceiptBaseline(to: VisibleReadReceiptTarget(eventId: eventId))
+    }
+
+    private func establishReadReceiptBaseline(to target: VisibleReadReceiptTarget) {
+        if let readReceiptBaselineTarget,
+           !isReadReceiptTarget(target, newerThan: readReceiptBaselineTarget) {
+            return
+        }
+
+        readReceiptBaselineTarget = target
+        lastBootstrapReadReceiptTarget = nil
+
+        if let pendingTarget = pendingReadReceiptSend?.target,
+           !isReadReceiptTarget(pendingTarget, newerThan: target) {
+            readReceiptWork?.cancel()
+            pendingReadReceiptSend = nil
+        }
+    }
+
+    private func setMessages(_ newMessages: [ChatMessage]) {
+        messages = newMessages
+        messageIndexByEventId = Dictionary(
+            uniqueKeysWithValues: newMessages.enumerated().compactMap { index, message in
+                message.eventId.map { ($0, index) }
+            }
+        )
     }
 
     // MARK: - Reply
@@ -2047,7 +2187,7 @@ final class ChatViewModel {
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
         )
-        messages = newMessages
+        setMessages(newMessages)
 
         let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldMessages, new: newMessages)
         onTableUpdate?(tableUpdate)
@@ -2108,8 +2248,11 @@ final class ChatViewModel {
 
     func cleanup() {
         historySyncTask?.cancel()
+        readReceiptWork?.cancel()
+        pendingReadReceiptSend = nil
         PresenceTracker.shared.unregister(for: "chat")
         timelineService.onDiffs = nil
+        timelineService.onOwnFullyReadMarker = nil
         timelineService.onSendQueueUpdate = nil
         diffBatcher.onFlush = nil
         timelineService.stopListening()

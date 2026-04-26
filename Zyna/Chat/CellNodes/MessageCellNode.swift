@@ -582,10 +582,17 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         }
     }
 
+    /// Incoming messages never expose a send-status indicator, even if
+    /// their storage row carries a transport state like "synced".
+    func statusIcon(forSendStatus status: String) -> MessageStatusIcon? {
+        guard isOutgoing else { return nil }
+        return MessageStatusIcon.from(sendStatus: status)
+    }
+
     /// Update send-status icon without recreating the cell.
     func updateSendStatus(_ status: String) {
         guard let iconNode = statusIconNode,
-              let newIcon = MessageStatusIcon.from(sendStatus: status)
+              let newIcon = statusIcon(forSendStatus: status)
         else { return }
         iconNode.icon = newIcon
     }

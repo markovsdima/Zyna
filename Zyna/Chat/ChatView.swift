@@ -26,6 +26,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let teleportDistanceScreens: CGFloat = 1.5
     }
 
+    private enum ReadReceipts {
+        static let visibilityThreshold: CGFloat = 0.6
+        static let baselineLiveTolerance: CGFloat = 24
+        static let scrollDebounce: TimeInterval = 0.15
+        static let contentUpdateDelay: TimeInterval = 0.05
+    }
+
     private struct PendingCompositeGroupDelete {
         let messageIds: Set<String>
         let splashTarget: PaintSplashTrigger.SnapshotTarget?
@@ -114,6 +121,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var pendingIncomingGroupRedactions: [String: PendingIncomingCompositeGroupRedaction] = [:]
     private var activeContextMenuBubbleFrameInScreen: CGRect?
     private var activeContextMenuItemFramesInScreen: [String: CGRect] = [:]
+    private var visibleReadReceiptEvalWork: DispatchWorkItem?
 
     // MARK: - Init
 
@@ -270,10 +278,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if shouldPresentAttachmentPreviewAfterDismiss {
             presentComposerPreviewIfNeeded()
         }
+        scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        visibleReadReceiptEvalWork?.cancel()
         if isMovingFromParent {
             navigationController?.setNavigationBarHidden(false, animated: animated)
             audioPlayer.stop()
@@ -357,6 +367,88 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let tableView = node.tableNode.view
         let threshold = tableView.bounds.height * LiveNavigation.teleportDistanceScreens
         return tableDistanceToLiveEdge() > threshold
+    }
+
+    private func scheduleVisibleReadReceiptEvaluation(delay: TimeInterval = ReadReceipts.scrollDebounce) {
+        visibleReadReceiptEvalWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.updateVisibleReadReceiptCandidate()
+        }
+        visibleReadReceiptEvalWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func updateVisibleReadReceiptCandidate() {
+        guard !isTeleporting else { return }
+
+        node.tableNode.view.layoutIfNeeded()
+        let candidate = currentVisibleReadReceiptCandidate()
+        let canEstablishBaseline = viewModel.isAtLiveEdge
+            && tableDistanceToLiveEdge() <= ReadReceipts.baselineLiveTolerance
+
+        viewModel.updateVisibleReadReceiptCandidate(
+            eventId: candidate,
+            canEstablishBaseline: canEstablishBaseline
+        )
+    }
+
+    private func currentVisibleReadReceiptCandidate() -> String? {
+        let visibleRows = node.tableNode.indexPathsForVisibleRows()
+        guard let viewport = unobscuredTableViewportInView(),
+              !visibleRows.isEmpty
+        else {
+            return nil
+        }
+
+        let tableView = node.tableNode.view
+        let messages = viewModel.messages
+
+        for indexPath in visibleRows.sorted(by: { $0.row < $1.row }) {
+            guard messages.indices.contains(indexPath.row) else { continue }
+
+            let message = messages[indexPath.row]
+            guard let eventId = message.eventId else { continue }
+
+            let rowRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
+            guard rowRect.width > 0, rowRect.height > 0 else { continue }
+
+            let visibleRect = rowRect.intersection(viewport)
+            guard !visibleRect.isNull, visibleRect.width > 0, visibleRect.height > 0 else { continue }
+
+            let maxRelevantVisibleHeight = min(rowRect.height, viewport.height)
+            guard maxRelevantVisibleHeight > 0 else { continue }
+
+            if visibleRect.height / maxRelevantVisibleHeight >= ReadReceipts.visibilityThreshold {
+                return eventId
+            }
+        }
+
+        return nil
+    }
+
+    private func unobscuredTableViewportInView() -> CGRect? {
+        let tableView = node.tableNode.view
+        let tableFrame = tableView.convert(tableView.bounds, to: view)
+
+        let topObstruction = max(
+            tableFrame.minY,
+            glassNavBar.frame.maxY,
+            searchBar.isHidden ? tableFrame.minY : searchBar.frame.maxY,
+            inviteBanner.isHidden ? tableFrame.minY : inviteBanner.frame.maxY
+        )
+        let bottomObstruction = min(
+            tableFrame.maxY,
+            glassInputBar.isHidden ? view.bounds.maxY : glassInputBar.frame.minY
+        )
+
+        guard bottomObstruction > topObstruction else { return nil }
+
+        return CGRect(
+            x: tableFrame.minX,
+            y: topObstruction,
+            width: tableFrame.width,
+            height: bottomObstruction - topObstruction
+        )
     }
 
     private func pinTableToLiveEdge() {
@@ -522,6 +614,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         switch update {
         case .reload:
             node.tableNode.reloadData()
+            scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         case .batch(let deletions, let insertions, let moves, let updates, let animated):
             if deletions.isEmpty && insertions.isEmpty && moves.isEmpty && updates.isEmpty { return }
             let rowAnimation: UITableView.RowAnimation = animated ? .automatic : .none
@@ -532,7 +625,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     node.tableNode.moveRow(at: move.from, to: move.to)
                 }
                 if !updates.isEmpty { node.tableNode.reloadRows(at: updates, with: .none) }
-            }, completion: nil)
+            }, completion: { [weak self] _ in
+                self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
+            })
         }
     }
 
@@ -1122,6 +1217,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let scrolledFar = shouldTeleportToLive()
         let shouldShow = scrolledFar && viewModel.messages.count > 20
         glassInputBar.scrollButtonVisible = shouldShow
+
+        if !isRubberBanding {
+            scheduleVisibleReadReceiptEvaluation()
+        }
     }
 
     // MARK: - Smart Navigation (Journey / Teleportation)
@@ -1246,6 +1345,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         tableAnim.delegate = TeleportAnimationDelegate { [weak self, weak snapshotContainer] in
             snapshotContainer?.removeFromSuperview()
             self?.isTeleporting = false
+            self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         }
         tableLayer.add(tableAnim, forKey: "teleportIn")
 
@@ -1271,11 +1371,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if decelerate {
             fpsBooster.start()
+        } else {
+            scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         fpsBooster.stop()
+        scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
     }
 
     private func refreshGlassSourceBinding() {
