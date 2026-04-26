@@ -35,7 +35,8 @@ For outgoing messages:
 
 That means:
 
-- the sender bubble is rendered from Zyna's local outgoing state
+- the sender bubble is rendered from Zyna's persistent local outgoing
+  state
 - Matrix send queue is used for `transactionId`, upload progress,
   retries, `eventId`, and final server-backed content
 - incomplete or missing SDK metadata must not overwrite already known

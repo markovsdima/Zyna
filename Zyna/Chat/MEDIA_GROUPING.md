@@ -86,6 +86,9 @@ regular individual photo messages instead of hiding content.
 That is intentional. User-visible text should never disappear just
 because grouping metadata is missing or partially wrong.
 
+More detail about receiver-side grouped media presentation lives in
+[INCOMING_ASSEMBLY.md](./INCOMING_ASSEMBLY.md).
+
 ## Local Echo And Sync
 
 Grouped photos are slightly harder than normal messages because the
