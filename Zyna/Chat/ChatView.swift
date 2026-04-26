@@ -138,6 +138,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var activeContextMenuItemFramesInScreen: [String: CGRect] = [:]
     private var visibleReadReceiptEvalWork: DispatchWorkItem?
     private var unseenIncomingMessageCount = 0
+    private var pendingPostSendPinToLive = false
 
     // MARK: - Init
 
@@ -612,6 +613,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         tableNode.contentOffset = targetOffset
     }
 
+    private func armPostSendPinToLive() {
+        pendingPostSendPinToLive = true
+        resetUnseenIncomingMessages()
+        glassInputBar.scrollButtonVisible = false
+    }
+
+    private func finishPostSendPinToLive() {
+        guard pendingPostSendPinToLive else { return }
+        pinTableToLiveEdge()
+        pendingPostSendPinToLive = false
+    }
+
     private func setupNavigationBar() {
         navigationController?.setNavigationBarHidden(true, animated: false)
 
@@ -751,12 +764,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         switch update {
         case .reload:
             node.tableNode.reloadData()
+            finishPostSendPinToLive()
+            updateScrollToLiveVisibility()
             scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         case .batch(let deletions, let insertions, let moves, let updates, let animated):
             if deletions.isEmpty && insertions.isEmpty && moves.isEmpty && updates.isEmpty { return }
             let minimumVisibleRowBeforeUpdate = node.tableNode.indexPathsForVisibleRows().map(\.row).min()
             let wasPinnedToLiveEdge = isViewportPinnedToLiveEdge()
-            let shouldPreserveViewport = !wasPinnedToLiveEdge
+            let shouldForcePostSendPin = pendingPostSendPinToLive
+            let shouldPreserveViewport = !wasPinnedToLiveEdge && !shouldForcePostSendPin
             node.tableNode.automaticallyAdjustsContentOffset = shouldPreserveViewport
 
             let effectiveAnimated = animated && !shouldPreserveViewport
@@ -775,7 +791,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                         minimumVisibleRowBeforeUpdate: minimumVisibleRowBeforeUpdate
                     )
                 }
-                if wasPinnedToLiveEdge {
+                if shouldForcePostSendPin {
+                    self?.finishPostSendPinToLive()
+                } else if wasPinnedToLiveEdge {
                     self?.pinTableToLiveEdge()
                 }
                 self?.updateScrollToLiveVisibility()
@@ -787,12 +805,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func bindInput() {
         glassInputBar.inputNode.onSend = { [weak self] text, color in
             guard let self else { return }
+            self.armPostSendPinToLive()
             self.viewModel.sendMessage(text, color: color)
             self.scrollToLiveAfterUserSend()
         }
 
         glassInputBar.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
             guard let self else { return }
+            self.armPostSendPinToLive()
             self.viewModel.sendVoiceMessage(fileURL: fileURL, duration: duration, waveform: waveform)
             self.scrollToLiveAfterUserSend()
         }
@@ -840,9 +860,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func scrollToLiveAfterUserSend() {
-        resetUnseenIncomingMessages()
         navigateToLive()
-        glassInputBar.scrollButtonVisible = false
     }
 
     @objc private func tableTapped() {
