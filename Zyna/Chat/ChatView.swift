@@ -26,6 +26,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let teleportDistanceScreens: CGFloat = 1.5
     }
 
+    private enum ContentUpdates {
+        static let liveEdgeTolerance: CGFloat = 24
+    }
+
+    private enum ScrollToLiveBadge {
+        static let minWidth: CGFloat = 20
+        static let height: CGFloat = 20
+        static let horizontalPadding: CGFloat = 6
+        static let overlapX: CGFloat = 4
+        static let overlapY: CGFloat = 4
+        static let maxCount = 99
+    }
+
     private enum ReadReceipts {
         static let visibilityThreshold: CGFloat = 0.6
         static let baselineLiveTolerance: CGFloat = 24
@@ -85,6 +98,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     /// (shape3, metaball with mic). These are just the chevron + tap area.
     private let scrollButtonIcon = UIImageView()
     private let scrollButtonTap = UIButton(type: .custom)
+    private let scrollButtonBadgeBackground = UIView()
+    private let scrollButtonBadgeLabel = UILabel()
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
@@ -122,6 +137,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var activeContextMenuBubbleFrameInScreen: CGRect?
     private var activeContextMenuItemFramesInScreen: [String: CGRect] = [:]
     private var visibleReadReceiptEvalWork: DispatchWorkItem?
+    private var unseenIncomingMessageCount = 0
 
     // MARK: - Init
 
@@ -146,6 +162,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.view.keyboardDismissMode = .none
         node.tableNode.view.contentInsetAdjustmentBehavior = .never
         node.tableNode.view.showsVerticalScrollIndicator = false
+        node.tableNode.automaticallyAdjustsContentOffset = false
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(tableTapped))
         tap.cancelsTouchesInView = false
@@ -221,6 +238,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         scrollButtonTap.addTarget(self, action: #selector(scrollToLiveTapped), for: .touchUpInside)
         node.view.addSubview(scrollButtonTap)
         node.scrollButtonTap = scrollButtonTap
+
+        scrollButtonBadgeBackground.backgroundColor = .systemRed
+        scrollButtonBadgeBackground.alpha = 0
+        scrollButtonBadgeBackground.isUserInteractionEnabled = false
+        node.view.addSubview(scrollButtonBadgeBackground)
+
+        scrollButtonBadgeLabel.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        scrollButtonBadgeLabel.textColor = .white
+        scrollButtonBadgeLabel.textAlignment = .center
+        scrollButtonBadgeLabel.alpha = 0
+        scrollButtonBadgeLabel.isUserInteractionEnabled = false
+        node.view.addSubview(scrollButtonBadgeLabel)
 
         refreshGlassSourceBinding()
 
@@ -369,6 +398,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         return tableDistanceToLiveEdge() > threshold
     }
 
+    private func isViewportPinnedToLiveEdge(
+        tolerance: CGFloat = ContentUpdates.liveEdgeTolerance
+    ) -> Bool {
+        let tableView = node.tableNode.view
+        guard viewModel.isAtLiveEdge else { return false }
+        guard !isTableRubberBanding(tableView) else { return false }
+        return tableDistanceToLiveEdge() <= tolerance
+    }
+
     private func scheduleVisibleReadReceiptEvaluation(delay: TimeInterval = ReadReceipts.scrollDebounce) {
         visibleReadReceiptEvalWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -457,6 +495,105 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         var targetOffset = node.tableNode.contentOffset
         targetOffset.y = liveOffsetY
         node.tableNode.contentOffset = targetOffset
+    }
+
+    private func scrollButtonBadgeText() -> String? {
+        guard unseenIncomingMessageCount > 0 else { return nil }
+        if unseenIncomingMessageCount > ScrollToLiveBadge.maxCount {
+            return "\(ScrollToLiveBadge.maxCount)+"
+        }
+        return "\(unseenIncomingMessageCount)"
+    }
+
+    private func updateScrollButtonAccessibilityLabel() {
+        if unseenIncomingMessageCount > 0 {
+            scrollButtonTap.accessibilityLabel = "Scroll to latest messages, \(unseenIncomingMessageCount) unread"
+        } else {
+            scrollButtonTap.accessibilityLabel = "Scroll to bottom"
+        }
+    }
+
+    private func updateScrollButtonBadgeLayout(
+        relativeTo iconFrame: CGRect,
+        iconAlpha: CGFloat,
+        tapAlpha: CGFloat
+    ) {
+        guard let badgeText = scrollButtonBadgeText(),
+              !iconFrame.isEmpty
+        else {
+            scrollButtonBadgeBackground.alpha = 0
+            scrollButtonBadgeLabel.alpha = 0
+            return
+        }
+
+        let textSize = badgeText.size(withAttributes: [
+            .font: scrollButtonBadgeLabel.font as Any
+        ])
+        let badgeWidth = max(
+            ScrollToLiveBadge.minWidth,
+            ceil(textSize.width) + ScrollToLiveBadge.horizontalPadding * 2
+        )
+        let badgeFrame = CGRect(
+            x: iconFrame.maxX - ScrollToLiveBadge.overlapX,
+            y: iconFrame.minY - ScrollToLiveBadge.overlapY,
+            width: badgeWidth,
+            height: ScrollToLiveBadge.height
+        )
+
+        scrollButtonBadgeLabel.text = badgeText
+        scrollButtonBadgeBackground.frame = badgeFrame
+        scrollButtonBadgeBackground.layer.cornerRadius = ScrollToLiveBadge.height / 2
+        scrollButtonBadgeLabel.frame = badgeFrame
+
+        let alpha = min(iconAlpha, tapAlpha)
+        scrollButtonBadgeBackground.alpha = alpha
+        scrollButtonBadgeLabel.alpha = alpha
+    }
+
+    private func resetUnseenIncomingMessages() {
+        guard unseenIncomingMessageCount != 0 else { return }
+        unseenIncomingMessageCount = 0
+        updateScrollButtonAccessibilityLabel()
+        updateScrollButtonBadgeLayout(
+            relativeTo: scrollButtonIcon.frame,
+            iconAlpha: scrollButtonIcon.alpha,
+            tapAlpha: scrollButtonTap.alpha
+        )
+    }
+
+    private func noteUnseenIncomingMessagesIfNeeded(
+        insertions: [IndexPath],
+        minimumVisibleRowBeforeUpdate: Int?
+    ) {
+        guard let minimumVisibleRowBeforeUpdate else { return }
+
+        var newUnseenIncoming = 0
+        for indexPath in insertions where indexPath.row < minimumVisibleRowBeforeUpdate {
+            guard viewModel.messages.indices.contains(indexPath.row) else { continue }
+            let message = viewModel.messages[indexPath.row]
+            guard !message.isOutgoing, !message.content.isRedacted else { continue }
+            newUnseenIncoming += 1
+        }
+
+        guard newUnseenIncoming > 0 else { return }
+        unseenIncomingMessageCount += newUnseenIncoming
+        updateScrollButtonAccessibilityLabel()
+    }
+
+    private func updateScrollToLiveVisibility() {
+        if isViewportPinnedToLiveEdge() {
+            resetUnseenIncomingMessages()
+        }
+
+        let scrolledFar = shouldTeleportToLive()
+        let shouldShow = unseenIncomingMessageCount > 0
+            || (scrolledFar && viewModel.messages.count > 20)
+        glassInputBar.scrollButtonVisible = shouldShow
+        updateScrollButtonBadgeLayout(
+            relativeTo: scrollButtonIcon.frame,
+            iconAlpha: scrollButtonIcon.alpha,
+            tapAlpha: scrollButtonTap.alpha
+        )
     }
 
     private func compensateTableOffsetForInputHeightChange(from oldHeight: CGFloat, to newHeight: CGFloat) {
@@ -617,8 +754,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         case .batch(let deletions, let insertions, let moves, let updates, let animated):
             if deletions.isEmpty && insertions.isEmpty && moves.isEmpty && updates.isEmpty { return }
-            let rowAnimation: UITableView.RowAnimation = animated ? .automatic : .none
-            node.tableNode.performBatch(animated: animated, updates: {
+            let minimumVisibleRowBeforeUpdate = node.tableNode.indexPathsForVisibleRows().map(\.row).min()
+            let wasPinnedToLiveEdge = isViewportPinnedToLiveEdge()
+            let shouldPreserveViewport = !wasPinnedToLiveEdge
+            node.tableNode.automaticallyAdjustsContentOffset = shouldPreserveViewport
+
+            let effectiveAnimated = animated && !shouldPreserveViewport
+            let rowAnimation: UITableView.RowAnimation = effectiveAnimated ? .automatic : .none
+            node.tableNode.performBatch(animated: effectiveAnimated, updates: {
                 if !deletions.isEmpty { node.tableNode.deleteRows(at: deletions, with: rowAnimation) }
                 if !insertions.isEmpty { node.tableNode.insertRows(at: insertions, with: rowAnimation) }
                 for move in moves {
@@ -626,6 +769,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 }
                 if !updates.isEmpty { node.tableNode.reloadRows(at: updates, with: .none) }
             }, completion: { [weak self] _ in
+                if shouldPreserveViewport {
+                    self?.noteUnseenIncomingMessagesIfNeeded(
+                        insertions: insertions,
+                        minimumVisibleRowBeforeUpdate: minimumVisibleRowBeforeUpdate
+                    )
+                }
+                if wasPinnedToLiveEdge {
+                    self?.pinTableToLiveEdge()
+                }
+                self?.updateScrollToLiveVisibility()
                 self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
             })
         }
@@ -663,10 +816,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self.scrollButtonIcon.alpha = iconAlpha
             self.scrollButtonTap.frame = tapFrame
             self.scrollButtonTap.alpha = tapAlpha
+            self.updateScrollButtonBadgeLayout(
+                relativeTo: iconFrame,
+                iconAlpha: iconAlpha,
+                tapAlpha: tapAlpha
+            )
         }
     }
 
     @objc private func scrollToLiveTapped() {
+        resetUnseenIncomingMessages()
         navigateToLive()
         glassInputBar.scrollButtonVisible = false
     }
@@ -681,6 +840,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func scrollToLiveAfterUserSend() {
+        resetUnseenIncomingMessages()
         navigateToLive()
         glassInputBar.scrollButtonVisible = false
     }
@@ -1213,10 +1373,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             viewModel.loadNewerMessages()
         }
 
-        // Show scroll-to-live button when scrolled far from bottom (inverted: large contentOffset.y)
-        let scrolledFar = shouldTeleportToLive()
-        let shouldShow = scrolledFar && viewModel.messages.count > 20
-        glassInputBar.scrollButtonVisible = shouldShow
+        updateScrollToLiveVisibility()
 
         if !isRubberBanding {
             scheduleVisibleReadReceiptEvaluation()
