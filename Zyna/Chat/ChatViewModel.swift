@@ -320,6 +320,12 @@ final class ChatViewModel {
             sendReadReceiptThrottled()
         }
 
+        // Any materialized older rows in GRDB mean backward pagination
+        // is not exhausted, even if a previous server round finished late.
+        if window.hasOlderInDB {
+            sdkPaginationExhausted = false
+        }
+
         // 8. Auto-paginate if too few messages and GRDB + SDK both need more
         if newMessages.count < 20 && !isPaginating && !window.hasOlderInDB {
             loadOlderFromServer()
@@ -1173,27 +1179,17 @@ final class ChatViewModel {
     private static func computeTableUpdate(old: [ChatMessage], new: [ChatMessage]) -> (TableUpdate, [(IndexPath, ChatMessage)]) {
         let oldKeys = old.map { stableKey($0) }
         let newKeys = new.map { stableKey($0) }
-        let keyDiff = newKeys.difference(from: oldKeys).inferringMoves()
+        let keyDiff = newKeys.difference(from: oldKeys)
 
         var deletions: [IndexPath] = []
         var insertions: [IndexPath] = []
         var removedOldOffsets = Set<Int>()
-        var movedOldOffsets = Set<Int>()
-        var movedNewOffsets = Set<Int>()
-        var moves: [(from: IndexPath, to: IndexPath)] = []
+        let moves: [(from: IndexPath, to: IndexPath)] = []
 
         for change in keyDiff {
             switch change {
             case .remove(let offset, _, let associatedWith):
-                if let newOffset = associatedWith {
-                    movedOldOffsets.insert(offset)
-                    movedNewOffsets.insert(newOffset)
-                    moves.append((
-                        from: IndexPath(row: offset, section: 0),
-                        to: IndexPath(row: newOffset, section: 0)
-                    ))
-                    continue
-                }
+                if associatedWith != nil { continue }
                 deletions.append(IndexPath(row: offset, section: 0))
                 removedOldOffsets.insert(offset)
             case .insert(let offset, _, let associatedWith):
@@ -1214,8 +1210,7 @@ final class ChatViewModel {
             if MessageCellNode.canUpdateInPlace(old: old[oldIdx], new: new[newIdx]) {
                 inPlaceUpdates.append((IndexPath(row: newIdx, section: 0), new[newIdx]))
             } else {
-                let reloadRow = movedOldOffsets.contains(oldIdx) || movedNewOffsets.contains(newIdx) ? newIdx : oldIdx
-                fullUpdates.append(IndexPath(row: reloadRow, section: 0))
+                fullUpdates.append(IndexPath(row: oldIdx, section: 0))
             }
         }
 
@@ -1255,7 +1250,7 @@ final class ChatViewModel {
     func loadOlderFromServer() {
         guard !isPaginating else { return }
         Task {
-            await timelineService.paginateBackwards()
+            await timelineService.paginateBackwards(numEvents: 50)
         }
     }
 
@@ -2162,8 +2157,9 @@ final class ChatViewModel {
     /// is the visually top bubble — the OLDER one, higher-index.
     ///
     /// `olderBoundary` / `newerBoundary` are phantom rows just outside
-    /// the window, fetched from GRDB. Needed after window trim or
-    /// jumpTo, where both edges are artificial cuts.
+    /// the currently loaded dataset, fetched from GRDB. They matter
+    /// whenever an edge is an artificial cut, such as after `jumpTo`
+    /// or while only part of history has been loaded this session.
     private static func decorateClusters(
         _ messages: [ChatMessage],
         olderBoundary: ClusterNeighbor?,

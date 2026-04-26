@@ -6,9 +6,9 @@
 import Foundation
 import GRDB
 
-/// Manages a cursor-based sliding window of messages for a single room.
-/// Queries GRDB on demand instead of observing all rows.
-/// Most methods mutate state and emit UI updates — call them on
+/// Manages the session-retained set of messages that have been loaded
+/// for a single room. Queries GRDB on demand instead of observing all
+/// rows. Most methods mutate state and emit UI updates — call them on
 /// main. The `queryOlder()` read-only method is thread-safe and
 /// designed for use from Texture's background batch-fetch queue.
 final class MessageWindow {
@@ -26,9 +26,11 @@ final class MessageWindow {
 
     // MARK: - Configuration
 
+    /// Initial bootstrapping / jump window size. Once older pages are
+    /// loaded during the session, they remain retained until an
+    /// explicit reset path such as `jumpTo`.
     static let windowSize = 200
     static let pageSize = 50
-    private static let trimThreshold = 50
 
     // MARK: - State
 
@@ -76,7 +78,6 @@ final class MessageWindow {
     struct OlderPage {
         let merged: [StoredMessage]
         let fetchedCount: Int
-        let trimmed: Bool
     }
 
     /// Pure GRDB read + merge/sort. Safe to call from any queue.
@@ -89,24 +90,17 @@ final class MessageWindow {
 
         var all = (previousStored ?? []) + older
         all.sort { $0.timestamp > $1.timestamp }
-
-        let maxSize = Self.windowSize + Self.trimThreshold
-        var trimmed = false
-        if all.count > maxSize {
-            all = Array(all.suffix(Self.windowSize))
-            trimmed = true
-        }
         return OlderPage(
-            merged: all, fetchedCount: older.count, trimmed: trimmed
+            merged: all, fetchedCount: older.count
         )
     }
 
     /// Apply a pre-computed older page on the main thread. Mutates
     /// cursors, flags, and fires onChange.
     func applyOlder(_ page: OlderPage) {
-        if page.trimmed { hasNewerInDB = true }
         updateCursors(from: page.merged)
         hasOlderInDB = checkHasOlderInDB()
+        hasNewerInDB = checkHasNewerInDB()
         emitChange(page.merged)
         log("loadOlder: +\(page.fetchedCount), window=\(page.merged.count)")
     }
@@ -142,14 +136,8 @@ final class MessageWindow {
         var all = newer + (previousStored ?? [])
         all.sort { $0.timestamp > $1.timestamp }
 
-        // Trim oldest end if too large
-        let maxSize = Self.windowSize + Self.trimThreshold
-        if all.count > maxSize {
-            all = Array(all.prefix(Self.windowSize))
-            hasOlderInDB = true
-        }
-
         updateCursors(from: all)
+        hasOlderInDB = checkHasOlderInDB()
         hasNewerInDB = checkHasNewerInDB()
         emitChange(all)
         log("loadNewer: +\(newer.count), window=\(all.count)")
@@ -165,11 +153,12 @@ final class MessageWindow {
         }
 
         if isAtLiveEdge {
-            // Extend to include new messages
-            let stored = queryNewest(limit: Self.windowSize)
+            // Keep the full session-retained range and append any new
+            // live-edge rows that arrived since the previous refresh.
+            let stored = queryAtOrNewerThan(timestamp: oldestTs)
             updateCursors(from: stored)
             hasNewerInDB = false
-            hasOlderInDB = stored.count >= Self.windowSize || checkHasOlderInDB()
+            hasOlderInDB = checkHasOlderInDB()
             emitChange(stored)
         } else {
             // Re-query existing bounds (picks up updates/redactions)
@@ -213,7 +202,17 @@ final class MessageWindow {
     }
 
     func jumpToLive() {
-        loadInitial()
+        guard let oldestTs = oldestTimestamp else {
+            loadInitial()
+            return
+        }
+
+        let stored = queryAtOrNewerThan(timestamp: oldestTs)
+        updateCursors(from: stored)
+        hasNewerInDB = false
+        hasOlderInDB = checkHasOlderInDB()
+        emitChange(stored)
+        log("jumpToLive: window=\(stored.count)")
     }
 
     func jumpToOldest() {
@@ -241,8 +240,8 @@ final class MessageWindow {
         )
     }
 
-    /// Bottom-edge mirror of peekOlderNeighbor. Non-nil only after a
-    /// trim or jumpTo — at live edge nothing newer exists yet.
+    /// Bottom-edge mirror of peekOlderNeighbor. Non-nil when the
+    /// session-retained set is not currently at the live edge.
     func peekNewerNeighbor() -> ClusterNeighbor? {
         guard let newestTs = newestTimestamp else { return nil }
         guard let msg = queryNewerThan(timestamp: newestTs, limit: 1).first else { return nil }
@@ -300,6 +299,15 @@ final class MessageWindow {
                 .fetchAll(db)
         }) ?? []
         return asc.reversed()
+    }
+
+    private func queryAtOrNewerThan(timestamp: TimeInterval) -> [StoredMessage] {
+        (try? dbQueue.read { db in
+            try StoredMessage
+                .filter(Column("roomId") == self.roomId && Column("timestamp") >= timestamp)
+                .order(Column("timestamp").desc)
+                .fetchAll(db)
+        }) ?? []
     }
 
     private func queryRange(from oldest: TimeInterval, to newest: TimeInterval) -> [StoredMessage] {

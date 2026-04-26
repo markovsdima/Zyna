@@ -17,6 +17,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let automaticZoneTolerance: CGFloat = 8
     }
 
+    private enum ServerBatchFetchWait {
+        static let pollInterval: TimeInterval = 0.1
+        static let maxAttempts = 15
+    }
+
+    private enum LiveNavigation {
+        static let teleportDistanceScreens: CGFloat = 1.5
+    }
+
     private struct PendingCompositeGroupDelete {
         let messageIds: Set<String>
         let splashTarget: PaintSplashTrigger.SnapshotTarget?
@@ -344,6 +353,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         return max(0, node.tableNode.contentOffset.y - liveOffsetY)
     }
 
+    private func shouldTeleportToLive() -> Bool {
+        let tableView = node.tableNode.view
+        let threshold = tableView.bounds.height * LiveNavigation.teleportDistanceScreens
+        return tableDistanceToLiveEdge() > threshold
+    }
+
     private func pinTableToLiveEdge() {
         let tableView = node.tableNode.view
         let liveOffsetY = tableOffsetBounds(for: tableView).minY
@@ -503,6 +518,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             node.tableNode.reloadData()
             return
         }
+
         switch update {
         case .reload:
             node.tableNode.reloadData()
@@ -1039,31 +1055,55 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                // SDK pagination completes before the diff batcher
-                // necessarily flushes into GRDB. Give the DB path a
-                // brief moment, then try to materialize the new older
-                // rows into the window before declaring exhaustion.
-                // Keep the GRDB query off main and only apply UI-facing
-                // mutations back on the main thread.
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    guard let self else { return }
-                    let page = self.viewModel.queryOlderFromDB()
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self else { return }
-                        if let page {
-                            self.viewModel.sdkPaginationExhausted = false
-                            self.viewModel.applyOlderPageFromDB(page)
-                        } else if self.viewModel.messages.count <= countBefore {
-                            // If pagination returned but we still cannot
-                            // extend the window, we've likely reached the
-                            // true start or only fetched filtered events.
-                            self.viewModel.sdkPaginationExhausted = true
-                        }
-                        context.completeBatchFetching(true)
-                        self.batchFetchCancellable = nil
-                    }
-                }
+                self.resolveServerBatchFetch(
+                    context: context,
+                    countBefore: countBefore,
+                    attemptsRemaining: ServerBatchFetchWait.maxAttempts
+                )
             }
+    }
+
+    private func resolveServerBatchFetch(
+        context: ASBatchContext,
+        countBefore: Int,
+        attemptsRemaining: Int
+    ) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: .now() + ServerBatchFetchWait.pollInterval
+        ) { [weak self] in
+            guard let self else { return }
+            let page = self.viewModel.queryOlderFromDB()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+
+                if let page {
+                    self.viewModel.sdkPaginationExhausted = false
+                    self.viewModel.applyOlderPageFromDB(page)
+                    context.completeBatchFetching(true)
+                    self.batchFetchCancellable = nil
+                    return
+                }
+
+                if attemptsRemaining > 1 {
+                    self.resolveServerBatchFetch(
+                        context: context,
+                        countBefore: countBefore,
+                        attemptsRemaining: attemptsRemaining - 1
+                    )
+                    return
+                }
+
+                if self.viewModel.messages.count <= countBefore {
+                    // The SDK often flips `isPaginating` to false before the
+                    // debounced diff batcher has flushed into GRDB, so don't
+                    // treat a single miss as the true history start.
+                    self.viewModel.sdkPaginationExhausted = true
+                }
+
+                context.completeBatchFetching(true)
+                self.batchFetchCancellable = nil
+            }
+        }
     }
 
     // MARK: - Scroll
@@ -1079,7 +1119,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         // Show scroll-to-live button when scrolled far from bottom (inverted: large contentOffset.y)
-        let scrolledFar = scrollView.contentOffset.y > scrollView.bounds.height * 1.5
+        let scrolledFar = shouldTeleportToLive()
         let shouldShow = scrolledFar && viewModel.messages.count > 20
         glassInputBar.scrollButtonVisible = shouldShow
     }
@@ -1127,7 +1167,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func navigateToLive() {
-        if viewModel.isAtLiveEdge {
+        if viewModel.isAtLiveEdge && !shouldTeleportToLive() {
             node.tableNode.scrollToRow(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
             return
         }
@@ -1160,6 +1200,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         // 1. Overlay snapshot in a container (clips to table bounds)
         let snapshotContainer = UIView(frame: tableView.frame)
         snapshotContainer.clipsToBounds = true
+        snapshotContainer.transform = tableView.transform
         snapshot.frame = snapshotContainer.bounds
         snapshotContainer.addSubview(snapshot)
         view.insertSubview(snapshotContainer, aboveSubview: tableView)
