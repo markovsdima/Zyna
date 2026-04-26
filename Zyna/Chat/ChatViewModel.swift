@@ -13,6 +13,19 @@ private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 
 final class ChatViewModel {
 
+    struct DetectedRedactedMediaGroup {
+        let groupId: String
+        let redactedMessageIds: Set<String>
+        let allMessageIds: Set<String>
+        let totalCount: Int
+        let remainingCountAfter: Int
+    }
+
+    struct DetectedRedactionBatch {
+        let messageIds: [String]
+        let mediaGroups: [DetectedRedactedMediaGroup]
+    }
+
     private struct PartialReflowPreview {
         let identity: String
         let imageData: Data
@@ -39,8 +52,9 @@ final class ChatViewModel {
     /// that don't require cell recreation. Index path → updated message.
     var onInPlaceUpdate: ((IndexPath, ChatMessage) -> Void)?
 
-    /// Called when messages become redacted (from any source). Passes message IDs.
-    var onRedactedDetected: (([String]) -> Void)?
+    /// Called when messages become redacted (from any source).
+    /// Includes grouped media metadata for receiver-side coalescing.
+    var onRedactedDetected: ((DetectedRedactionBatch) -> Void)?
 
     /// Called when a redaction request fails.
     var onRedactionFailed: ((String, Error) -> Void)?
@@ -191,6 +205,7 @@ final class ChatViewModel {
         //    notices, or unsupported event types.
         let splashContentTypes: Set<String> = ["text", "image", "voice", "file", "emote"]
         let newlyRedactedIds: [String]
+        let redactionBatch: DetectedRedactionBatch
         if let prevStored {
             let prevById = Dictionary(prevStored.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
             newlyRedactedIds = newStored.compactMap { msg in
@@ -210,8 +225,15 @@ final class ChatViewModel {
                 }
                 return msg.id
             }
+            redactionBatch = Self.detectedRedactionBatch(
+                newlyRedactedIds: newlyRedactedIds,
+                newStored: newStored,
+                prevStored: prevStored,
+                prevById: prevById
+            )
         } else {
             newlyRedactedIds = []
+            redactionBatch = DetectedRedactionBatch(messageIds: [], mediaGroups: [])
         }
 
         Self.registerPendingPartialRedactions(
@@ -283,7 +305,7 @@ final class ChatViewModel {
             } else {
                 onTableUpdate?(tableUpdate)
             }
-            onRedactedDetected?(newlyRedactedIds)
+            onRedactedDetected?(redactionBatch)
         } else {
             onTableUpdate?(tableUpdate)
         }
@@ -344,6 +366,12 @@ final class ChatViewModel {
             rawMessages: rawMessages,
             currentUserId: currentUserId
         )
+        let incomingAssemblyPlan = Self.incomingRenderableMediaGroupPlan(
+            from: rawMessages,
+            deletedMediaGroupIds: deletedMediaGroupIds,
+            olderBoundary: olderBoundary,
+            newerBoundary: newerBoundary
+        )
         let envelopeIdsToRetire = mediaBatchPlan.retireEnvelopeIds.union(singleEnvelopePlan.retireEnvelopeIds)
         if !envelopeIdsToRetire.isEmpty {
             outgoingEnvelopes.deleteEnvelopes(ids: envelopeIdsToRetire)
@@ -351,7 +379,9 @@ final class ChatViewModel {
 
         let renderableMessages = Self.mergeRawMessages(
             rawMessages,
-            with: mediaBatchPlan.activeEnvelopes + singleEnvelopePlan.activeEnvelopes
+            with: mediaBatchPlan.activeEnvelopes
+                + singleEnvelopePlan.activeEnvelopes
+                + incomingAssemblyPlan.activeEnvelopes
         )
 
         return Self.buildDisplayMessages(
@@ -499,6 +529,106 @@ final class ChatViewModel {
         return PendingRenderableEnvelopePlan(
             activeEnvelopes: activeEnvelopes,
             retireEnvelopeIds: retireEnvelopeIds
+        )
+    }
+
+    private static func incomingRenderableMediaGroupPlan(
+        from rawMessages: [ChatMessage],
+        deletedMediaGroupIds: Set<String>,
+        olderBoundary: ClusterNeighbor?,
+        newerBoundary: ClusterNeighbor?
+    ) -> PendingRenderableEnvelopePlan {
+        guard !rawMessages.isEmpty else {
+            return PendingRenderableEnvelopePlan(activeEnvelopes: [], retireEnvelopeIds: [])
+        }
+
+        var activeEnvelopes: [PendingRenderableEnvelope] = []
+        var index = 0
+
+        while index < rawMessages.count {
+            guard !rawMessages[index].isOutgoing,
+                  case .image = rawMessages[index].content,
+                  let mediaGroup = rawMessages[index].zynaAttributes.mediaGroup
+            else {
+                index += 1
+                continue
+            }
+
+            let runStart = index
+            var runEnd = index
+
+            while runEnd + 1 < rawMessages.count,
+                  sharesMediaGroup(rawMessages[runEnd], rawMessages[runEnd + 1]) {
+                runEnd += 1
+            }
+
+            defer { index = runEnd + 1 }
+
+            guard mediaGroup.total > 1,
+                  !deletedMediaGroupIds.contains(mediaGroup.id)
+            else {
+                continue
+            }
+
+            let sharesWithNewerBoundary = runStart == 0
+                && sharesMediaGroup(rawMessages[runStart], newerBoundary)
+            let sharesWithOlderBoundary = runEnd == rawMessages.count - 1
+                && sharesMediaGroup(rawMessages[runEnd], olderBoundary)
+
+            guard !sharesWithNewerBoundary,
+                  !sharesWithOlderBoundary
+            else {
+                continue
+            }
+
+            let visibleMessages = Array(rawMessages[runStart...runEnd])
+            guard visibleMessages.count < mediaGroup.total else {
+                continue
+            }
+
+            let anchorIndex = mediaGroup.captionPlacement == .top ? runEnd : runStart
+            let hiddenMessageIndices = Set(runStart...runEnd)
+            let anchorMessage = rawMessages[anchorIndex]
+            let body = incomingAssemblyPlaceholderBody(
+                visibleCount: visibleMessages.count,
+                totalCount: mediaGroup.total
+            )
+
+            var message = ChatMessage(
+                id: "incoming-assembly:\(mediaGroup.id)",
+                eventId: nil,
+                transactionId: nil,
+                itemIdentifier: nil,
+                senderId: anchorMessage.senderId,
+                senderDisplayName: anchorMessage.senderDisplayName,
+                senderAvatarUrl: anchorMessage.senderAvatarUrl,
+                isOutgoing: false,
+                timestamp: anchorMessage.timestamp,
+                content: .notice(body: body),
+                reactions: [],
+                replyInfo: nil,
+                zynaAttributes: ZynaMessageAttributes(),
+                sendStatus: "sent"
+            )
+            message.incomingAssemblyId = mediaGroup.id
+
+            logMediaGroup(
+                "incoming assembly group=\(mediaGroup.id) visible=\(visibleMessages.count) total=\(mediaGroup.total) anchor=\(anchorIndex)"
+            )
+
+            activeEnvelopes.append(
+                PendingRenderableEnvelope(
+                    envelopeId: "incoming-assembly:\(mediaGroup.id)",
+                    message: message,
+                    anchorIndex: anchorIndex,
+                    hiddenMessageIndices: hiddenMessageIndices
+                )
+            )
+        }
+
+        return PendingRenderableEnvelopePlan(
+            activeEnvelopes: activeEnvelopes,
+            retireEnvelopeIds: []
         )
     }
 
@@ -986,6 +1116,13 @@ final class ChatViewModel {
             return "sent"
         }
         return "queued"
+    }
+
+    private static func incomingAssemblyPlaceholderBody(
+        visibleCount: Int,
+        totalCount: Int
+    ) -> String {
+        "Receiving \(visibleCount) of \(totalCount) photos"
     }
 
     private static func mergeRawMessages(
@@ -2416,14 +2553,12 @@ final class ChatViewModel {
         guard let prevStored, !newlyRedactedIds.isEmpty else { return }
 
         let prevById = Dictionary(prevStored.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        let liveImageCounts = liveImageCountByMediaGroup(in: newStored)
 
         for messageId in newlyRedactedIds {
             guard pendingPartialRedactions[messageId] == nil,
                   let previous = prevById[messageId],
                   previous.contentType == "image",
-                  let mediaGroupId = previous.toChatMessage()?.zynaAttributes.mediaGroup?.id,
-                  (liveImageCounts[mediaGroupId] ?? 0) > 0
+                  let mediaGroupId = previous.toChatMessage()?.zynaAttributes.mediaGroup?.id
             else {
                 continue
             }
@@ -2457,6 +2592,74 @@ final class ChatViewModel {
             }
         )
         previews = previews.filter { liveIds.contains($0.key) }
+    }
+
+    private static func detectedRedactionBatch(
+        newlyRedactedIds: [String],
+        newStored: [StoredMessage],
+        prevStored: [StoredMessage],
+        prevById: [String: StoredMessage]
+    ) -> DetectedRedactionBatch {
+        guard !newlyRedactedIds.isEmpty else {
+            return DetectedRedactionBatch(messageIds: [], mediaGroups: [])
+        }
+
+        let remainingLiveCounts = liveImageCountByMediaGroup(in: newStored)
+        var groupedMessageIds: [String: Set<String>] = [:]
+        var groupedAllMessageIds: [String: Set<String>] = [:]
+        var groupedTotals: [String: Int] = [:]
+        var groupOrder: [String] = []
+
+        for messageId in newlyRedactedIds {
+            guard let previous = prevById[messageId],
+                  previous.contentType == "image",
+                  let mediaGroup = previous.toChatMessage()?.zynaAttributes.mediaGroup
+            else {
+                continue
+            }
+
+            if groupedMessageIds[mediaGroup.id] == nil {
+                groupOrder.append(mediaGroup.id)
+            }
+            groupedMessageIds[mediaGroup.id, default: []].insert(messageId)
+            groupedTotals[mediaGroup.id] = mediaGroup.total
+
+            if groupedAllMessageIds[mediaGroup.id] == nil {
+                let allMessageIds = Set(
+                    prevStored.compactMap { stored -> String? in
+                        guard stored.contentType == "image",
+                              let groupId = stored.toChatMessage()?.zynaAttributes.mediaGroup?.id,
+                              groupId == mediaGroup.id
+                        else {
+                            return nil
+                        }
+                        return stored.id
+                    }
+                )
+                groupedAllMessageIds[mediaGroup.id] = allMessageIds
+            }
+        }
+
+        let mediaGroups = groupOrder.compactMap { groupId -> DetectedRedactedMediaGroup? in
+            guard let redactedMessageIds = groupedMessageIds[groupId],
+                  let allMessageIds = groupedAllMessageIds[groupId],
+                  let totalCount = groupedTotals[groupId]
+            else {
+                return nil
+            }
+            return DetectedRedactedMediaGroup(
+                groupId: groupId,
+                redactedMessageIds: redactedMessageIds,
+                allMessageIds: allMessageIds,
+                totalCount: totalCount,
+                remainingCountAfter: remainingLiveCounts[groupId] ?? 0
+            )
+        }
+
+        return DetectedRedactionBatch(
+            messageIds: newlyRedactedIds,
+            mediaGroups: mediaGroups
+        )
     }
 
     private static func describe(_ group: OutgoingEnvelopeSnapshot) -> String {

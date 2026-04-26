@@ -326,9 +326,16 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     /// Non-nil for synthetic sender-owned rows rendered from the
     /// outgoing envelope layer instead of raw Matrix timeline items.
     var outgoingEnvelopeId: String? = nil
+    /// Non-nil for synthetic receiver-side rows rendered by the
+    /// incoming assembly layer while grouped media is still incomplete.
+    var incomingAssemblyId: String? = nil
 
     var isSyntheticOutgoingEnvelope: Bool {
         outgoingEnvelopeId != nil
+    }
+
+    var isSyntheticIncomingAssembly: Bool {
+        incomingAssemblyId != nil
     }
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
@@ -349,6 +356,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.isLastInCluster == rhs.isLastInCluster
             && lhs.mediaGroupPresentation == rhs.mediaGroupPresentation
             && lhs.outgoingEnvelopeId == rhs.outgoingEnvelopeId
+            && lhs.incomingAssemblyId == rhs.incomingAssemblyId
     }
 
     func hash(into hasher: inout Hasher) {

@@ -22,6 +22,32 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let splashTarget: PaintSplashTrigger.SnapshotTarget?
     }
 
+    private final class PendingIncomingCompositeGroupRedaction {
+        let groupId: String
+        let allMessageIds: Set<String>
+        let totalCount: Int
+        let splashTarget: PaintSplashTrigger.SnapshotTarget?
+        var redactedMessageIds: Set<String>
+        var remainingCountAfter: Int
+        var workItem: DispatchWorkItem?
+
+        init(
+            groupId: String,
+            allMessageIds: Set<String>,
+            totalCount: Int,
+            redactedMessageIds: Set<String>,
+            remainingCountAfter: Int,
+            splashTarget: PaintSplashTrigger.SnapshotTarget?
+        ) {
+            self.groupId = groupId
+            self.allMessageIds = allMessageIds
+            self.totalCount = totalCount
+            self.redactedMessageIds = redactedMessageIds
+            self.remainingCountAfter = remainingCountAfter
+            self.splashTarget = splashTarget
+        }
+    }
+
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
     var onTitleTapped: ((String) -> Void)?
@@ -65,7 +91,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var previousInputCoveredHeight: CGFloat?
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
-    private var pendingRedactedIds: [String] = []
+    private var pendingRedactionBatches: [ChatViewModel.DetectedRedactionBatch] = []
     private var isTeleporting = false
     private var isPickerPresented = false
     private var interactionLocks = Set<String>()
@@ -76,6 +102,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var shouldPresentAttachmentPreviewAfterDismiss = false
     private var pendingAnimatedDeleteTargets: [String: PaintSplashTrigger.SnapshotTarget] = [:]
     private var pendingCompositeGroupDeletes: [String: PendingCompositeGroupDelete] = [:]
+    private var pendingIncomingGroupRedactions: [String: PendingIncomingCompositeGroupRedaction] = [:]
     private var activeContextMenuBubbleFrameInScreen: CGRect?
     private var activeContextMenuItemFramesInScreen: [String: CGRect] = [:]
 
@@ -426,8 +453,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             cellNode.refreshAccessibilityForwarding()
         }
 
-        viewModel.onRedactedDetected = { [weak self] messageIds in
-            self?.handleRedactedMessages(messageIds)
+        viewModel.onRedactedDetected = { [weak self] batch in
+            self?.handleRedactionBatch(batch)
         }
 
         viewModel.onRedactionFailed = { [weak self] messageId, _ in
@@ -659,23 +686,28 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func configureMessageDrivenInteractions(for cellNode: MessageCellNode, message: ChatMessage) {
-        cellNode.onContextMenuActivated = { [weak self, weak cellNode] point in
-            guard let self, let cellNode else { return }
-            self.presentContextMenu(for: message, from: cellNode, activationPoint: point)
+        if message.isSyntheticIncomingAssembly {
+            cellNode.onContextMenuActivated = nil
+            cellNode.accessibilityActionsProvider = { [] }
+        } else {
+            cellNode.onContextMenuActivated = { [weak self, weak cellNode] point in
+                guard let self, let cellNode else { return }
+                self.presentContextMenu(for: message, from: cellNode, activationPoint: point)
+            }
+            cellNode.accessibilityActionsProvider = { [weak self] in
+                self?.buildAccessibilityActions(for: message) ?? []
+            }
         }
         cellNode.onReactionTapped = { [weak self] key in
             self?.viewModel.toggleReaction(key, for: message)
-        }
-        cellNode.accessibilityActionsProvider = { [weak self] in
-            self?.buildAccessibilityActions(for: message) ?? []
         }
     }
 
     private func buildAccessibilityActions(for message: ChatMessage) -> [UIAccessibilityCustomAction] {
         var actions: [UIAccessibilityCustomAction] = []
-        let isSyntheticOutgoingEnvelope = message.isSyntheticOutgoingEnvelope
+        let suppressSyntheticActions = message.isSyntheticOutgoingEnvelope || message.isSyntheticIncomingAssembly
 
-        if !isSyntheticOutgoingEnvelope {
+        if !suppressSyntheticActions {
             actions.append(UIAccessibilityCustomAction(name: "Reply") { [weak self] _ in
                 self?.viewModel.setReplyTarget(message)
                 return true
@@ -696,7 +728,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             })
         }
 
-        if !message.content.isRedacted && !isSyntheticOutgoingEnvelope {
+        if !message.content.isRedacted && !suppressSyntheticActions {
             actions.append(UIAccessibilityCustomAction(name: "Forward") { [weak self] _ in
                 self?.onForwardMessage?(message)
                 return true
@@ -1220,10 +1252,41 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.redactMessage(message)
     }
 
+    private func handleRedactionBatch(_ batch: ChatViewModel.DetectedRedactionBatch) {
+        guard !batch.messageIds.isEmpty else { return }
+
+        // Defer if context menu is active (bubble is reparented to overlay)
+        if activeContextMenu != nil {
+            pendingRedactionBatches.append(batch)
+            return
+        }
+
+        let immediateGroupIds = Set(
+            batch.mediaGroups.compactMap { group in
+                shouldCoalesceIncomingGroupRedaction(group) ? group.groupId : nil
+            }
+        )
+
+        for group in batch.mediaGroups where immediateGroupIds.contains(group.groupId) {
+            queueIncomingGroupRedaction(group)
+        }
+
+        let deferredIds = Set(
+            batch.mediaGroups
+                .filter { immediateGroupIds.contains($0.groupId) }
+                .flatMap(\.redactedMessageIds)
+        )
+        let immediateIds = batch.messageIds.filter { !deferredIds.contains($0) }
+        guard !immediateIds.isEmpty else { return }
+        handleRedactedMessages(immediateIds)
+    }
+
     private func handleRedactedMessages(_ messageIds: [String]) {
         // Defer if context menu is active (bubble is reparented to overlay)
         if activeContextMenu != nil {
-            pendingRedactedIds.append(contentsOf: messageIds)
+            pendingRedactionBatches.append(
+                ChatViewModel.DetectedRedactionBatch(messageIds: messageIds, mediaGroups: [])
+            )
             return
         }
 
@@ -1277,6 +1340,97 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self?.viewModel.hideMessage(messageId)
             }
         }
+    }
+
+    private func shouldCoalesceIncomingGroupRedaction(
+        _ group: ChatViewModel.DetectedRedactedMediaGroup
+    ) -> Bool {
+        guard group.totalCount > 1 else { return false }
+        if pendingCompositeGroupDeletes[group.groupId] != nil {
+            return false
+        }
+        if group.redactedMessageIds.contains(where: { pendingAnimatedDeleteTargets[$0] != nil }) {
+            return false
+        }
+        return true
+    }
+
+    private func queueIncomingGroupRedaction(
+        _ group: ChatViewModel.DetectedRedactedMediaGroup
+    ) {
+        let pending: PendingIncomingCompositeGroupRedaction
+        if let existing = pendingIncomingGroupRedactions[group.groupId] {
+            pending = existing
+            pending.redactedMessageIds.formUnion(group.redactedMessageIds)
+            pending.remainingCountAfter = group.remainingCountAfter
+            pending.workItem?.cancel()
+        } else {
+            pending = PendingIncomingCompositeGroupRedaction(
+                groupId: group.groupId,
+                allMessageIds: group.allMessageIds,
+                totalCount: group.totalCount,
+                redactedMessageIds: group.redactedMessageIds,
+                remainingCountAfter: group.remainingCountAfter,
+                splashTarget: captureVisibleCompositeGroupSnapshotTarget(forGroupId: group.groupId)
+            )
+            pendingIncomingGroupRedactions[group.groupId] = pending
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.finalizeIncomingGroupRedaction(groupId: group.groupId)
+        }
+        pending.workItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.58, execute: workItem)
+    }
+
+    private func finalizeIncomingGroupRedaction(groupId: String) {
+        guard let pending = pendingIncomingGroupRedactions.removeValue(forKey: groupId) else {
+            return
+        }
+
+        if pending.remainingCountAfter == 0 {
+            if let splashTarget = pending.splashTarget {
+                PaintSplashTrigger.trigger(in: node.tableNode, target: splashTarget) { [weak self] in
+                    self?.viewModel.hideMessages(Array(pending.allMessageIds))
+                }
+            } else if !triggerCompositeGroupPaintSplashDelete(
+                forGroupId: groupId,
+                pendingDelete: PendingCompositeGroupDelete(
+                    messageIds: pending.allMessageIds,
+                    splashTarget: nil
+                )
+            ) {
+                viewModel.hideMessages(Array(pending.allMessageIds))
+            }
+            return
+        }
+
+        handleRedactedMessages(Array(pending.redactedMessageIds))
+    }
+
+    private func captureVisibleCompositeGroupSnapshotTarget(
+        forGroupId groupId: String
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        guard let row = viewModel.messages.firstIndex(where: { message in
+            message.mediaGroupPresentation?.rendersCompositeBubble == true
+                && message.mediaGroupPresentation?.id == groupId
+        }) else {
+            return nil
+        }
+
+        let indexPath = IndexPath(row: row, section: 0)
+        guard let cellNode = node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode,
+              cellNode.isNodeLoaded
+        else {
+            return nil
+        }
+
+        let bubbleView = cellNode.bubbleNode.view
+        let frameInScreen = bubbleView.convert(
+            bubbleView.bounds,
+            to: bubbleView.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+        )
+        return captureSnapshotTarget(from: bubbleView, frameInScreen: frameInScreen)
     }
 
     @discardableResult
@@ -1436,10 +1590,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func flushPendingRedactions() {
-        guard !pendingRedactedIds.isEmpty else { return }
-        let ids = pendingRedactedIds
-        pendingRedactedIds.removeAll()
-        handleRedactedMessages(ids)
+        guard !pendingRedactionBatches.isEmpty else { return }
+        let batches = pendingRedactionBatches
+        pendingRedactionBatches.removeAll()
+        for batch in batches {
+            handleRedactionBatch(batch)
+        }
     }
 
     private func indexPathForMessage(_ message: ChatMessage) -> IndexPath? {
