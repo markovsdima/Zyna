@@ -1221,9 +1221,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 ))
             }
         } else if message.itemIdentifier != nil && !message.content.isRedacted {
-            let precomputedMessageDeleteTarget = captureSnapshotTarget(
-                from: info.node.view,
-                frameInScreen: activeContextMenuBubbleFrameInScreen
+            let precomputedMessageDeleteTarget = freezeSnapshotTarget(
+                (cellNode as? MessageCellNode)?.paintSplashTarget(
+                    frameInScreen: activeContextMenuBubbleFrameInScreen
+                ) ?? captureSnapshotTarget(
+                    from: info.node.view,
+                    frameInScreen: activeContextMenuBubbleFrameInScreen
+                )
             )
             actions.append(ContextMenuAction(
                 title: "Delete",
@@ -1747,7 +1751,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         else {
             return nil
         }
-
         let bubbleView = cellNode.bubbleNode.view
         let frameInScreen = bubbleView.convert(
             bubbleView.bounds,

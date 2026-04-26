@@ -28,34 +28,10 @@ enum PaintSplashTrigger {
             completion()
             return
         }
-
-        let bubbleView = cellNode.bubbleNode.view
-
-        guard bubbleView.bounds.width > 0, bubbleView.bounds.height > 0 else {
+        guard let target = cellNode.paintSplashTarget() else {
             completion()
             return
         }
-
-        // Snapshot the bubble via layer rendering (immune to compositing race)
-        let image = UIGraphicsImageRenderer(bounds: bubbleView.bounds).image { ctx in
-            bubbleView.layer.render(in: ctx.cgContext)
-        }
-
-        guard image.cgImage != nil else {
-            completion()
-            return
-        }
-
-        let target = SnapshotTarget(
-            sourceView: bubbleView,
-            frameInScreen: bubbleView.convert(
-                bubbleView.bounds,
-                to: bubbleView.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
-            ),
-            image: image,
-            hideSource: { cellNode.alpha = 0 }
-        )
-
         trigger(in: tableNode, target: target, completion: completion)
     }
 

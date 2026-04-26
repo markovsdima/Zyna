@@ -626,6 +626,53 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         accessibilityLabel = Self.makeAccessibilityLabel(for: message)
     }
 
+    // MARK: - Paint Splash
+
+    func paintSplashTarget(
+        frameInScreen overrideFrameInScreen: CGRect? = nil
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        let sourceView = bubbleWrapperNode.view
+        guard sourceView.bounds.width > 0, sourceView.bounds.height > 0 else {
+            return nil
+        }
+
+        let image = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
+            if usesSyntheticPortalPaintSplashFill {
+                ctx.cgContext.saveGState()
+                let bubbleFrame = bubbleNode.frame
+                ctx.cgContext.translateBy(x: bubbleFrame.minX, y: bubbleFrame.minY)
+                let bubblePath = bubbleNode.currentPath()
+                bubbleBaseFillColor.setFill()
+                bubblePath.fill()
+                ctx.cgContext.addPath(bubblePath.cgPath)
+                ctx.cgContext.clip()
+                bubbleNode.view.layer.render(in: ctx.cgContext)
+                ctx.cgContext.restoreGState()
+            } else {
+                sourceView.layer.render(in: ctx.cgContext)
+            }
+        }
+
+        guard image.cgImage != nil else { return nil }
+
+        return PaintSplashTrigger.SnapshotTarget(
+            sourceView: sourceView,
+            frameInScreen: overrideFrameInScreen ?? sourceView.convert(
+                sourceView.bounds,
+                to: sourceView.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+            ),
+            image: image,
+            hideSource: { [weak self] in self?.alpha = 0 }
+        )
+    }
+
+    private var usesSyntheticPortalPaintSplashFill: Bool {
+        usesBubblePortal
+            && showsBubbleChrome
+            && !usesBareBubbleContent
+            && !rendersCompositeMediaBubble
+    }
+
     // MARK: - Highlight
 
     func highlightBubble() {
