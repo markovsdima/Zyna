@@ -105,6 +105,7 @@
       }
     },
     "%@ changed their avatar" : {
+      "extractionState" : "stale",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
@@ -1711,6 +1712,7 @@
       }
     },
     "You changed your avatar" : {
+      "extractionState" : "stale",
       "localizations" : {
         "ru" : {
           "stringUnit" : {

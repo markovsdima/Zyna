@@ -515,8 +515,6 @@ final class TimelineService {
         let member = senderDisplayName(from: event)
         let memberIsYou = event.isOwn
         let displayNameChanged = displayName != prevDisplayName
-        let avatarChanged = avatarUrl != prevAvatarUrl
-
         var parts: [String] = []
 
         if displayNameChanged {
@@ -536,14 +534,6 @@ final class TimelineService {
             case (nil, nil, _):
                 break
             }
-        }
-
-        if avatarChanged {
-            parts.append(
-                memberIsYou
-                    ? String(localized: "You changed your avatar")
-                    : String(localized: "\(member) changed their avatar")
-            )
         }
 
         guard !parts.isEmpty else { return nil }
