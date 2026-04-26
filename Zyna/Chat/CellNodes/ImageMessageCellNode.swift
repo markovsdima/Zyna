@@ -265,6 +265,11 @@ final class ImageMessageCellNode: MessageCellNode {
             self.onImageTapped?()
         }
 
+        if let previewImageData,
+           let previewImage = UIImage(data: previewImageData) {
+            imageNode.image = previewImage
+        }
+
         // Load image
         if let source = mediaSource {
             let recipe = bubbleCacheRecipe()
@@ -278,9 +283,6 @@ final class ImageMessageCellNode: MessageCellNode {
             } else {
                 loadBubbleImageAsync(source: source)
             }
-        } else if let previewImageData,
-                  let previewImage = UIImage(data: previewImageData) {
-            imageNode.image = previewImage
         }
     }
 
@@ -330,6 +332,40 @@ final class ImageMessageCellNode: MessageCellNode {
         CATransaction.commit()
     }
 
+    override func paintSplashTarget(
+        frameInScreen overrideFrameInScreen: CGRect? = nil
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        guard let reliableImage = paintSplashSourceImage(),
+              let imageSnapshot = imageNode.snapshotImage(from: reliableImage)
+        else {
+            return super.paintSplashTarget(frameInScreen: overrideFrameInScreen)
+        }
+
+        let sourceView = contextSourceNode.view
+        guard sourceView.bounds.width > 0, sourceView.bounds.height > 0 else {
+            return super.paintSplashTarget(frameInScreen: overrideFrameInScreen)
+        }
+
+        let imageFrame = imageNode.view.convert(imageNode.view.bounds, to: sourceView)
+        let snapshot = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
+            imageSnapshot.draw(in: imageFrame)
+            sourceView.layer.render(in: ctx.cgContext)
+        }
+        guard snapshot.cgImage != nil else {
+            return super.paintSplashTarget(frameInScreen: overrideFrameInScreen)
+        }
+
+        return PaintSplashTrigger.SnapshotTarget(
+            sourceView: sourceView,
+            frameInScreen: overrideFrameInScreen ?? sourceView.convert(
+                sourceView.bounds,
+                to: sourceView.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+            ),
+            image: snapshot,
+            hideSource: { [weak self] in self?.alpha = 0 }
+        )
+    }
+
     /// Fixed chat-bubble display recipe. The cache stores a bitmap
     /// already normalized to this width plus the shared max-height cap.
     private func bubbleCacheRecipe() -> (maxPixelWidth: Int, maxPixelHeight: Int) {
@@ -358,6 +394,17 @@ final class ImageMessageCellNode: MessageCellNode {
                 self.applyLoadedSourcePixelSize(bubbleImage.sourcePixelSize, relayout: true)
             }
         }
+    }
+
+    private func paintSplashSourceImage() -> UIImage? {
+        if let image = imageNode.image {
+            return image
+        }
+        if let previewImageData,
+           let previewImage = UIImage(data: previewImageData) {
+            return previewImage
+        }
+        return nil
     }
 
     private func applyLoadedSourcePixelSize(_ sourcePixelSize: CGSize, relayout: Bool) {

@@ -446,9 +446,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
             return nil
         }
 
-        let image = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
-            sourceView.layer.render(in: ctx.cgContext)
-        }
+        guard let image = splashSnapshotImage(for: index) else { return nil }
         guard image.cgImage != nil else { return nil }
 
         return PaintSplashTrigger.SnapshotTarget(
@@ -490,6 +488,11 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
                 continue
             }
 
+            if let previewImageData = item.previewImageData {
+                previews[item.messageId] = previewImageData
+                continue
+            }
+
             let sourceView = imageNodes[index].view
             guard sourceView.bounds.width > 0, sourceView.bounds.height > 0 else {
                 continue
@@ -504,6 +507,32 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
         }
 
         return previews
+    }
+
+    private func splashSnapshotImage(for index: Int) -> UIImage? {
+        guard imageNodes.indices.contains(index) else { return nil }
+
+        let imageNode = imageNodes[index]
+        if let renderedImage = imageNode.image,
+           let snapshot = imageNode.snapshotImage(from: renderedImage) {
+            return snapshot
+        }
+
+        if let previewImageData = mediaItems[index].previewImageData,
+           let previewImage = UIImage(data: previewImageData),
+           let snapshot = imageNode.snapshotImage(from: previewImage) {
+            return snapshot
+        }
+
+        let sourceView = imageNode.view
+        guard sourceView.bounds.width > 0, sourceView.bounds.height > 0 else {
+            return nil
+        }
+
+        let image = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
+            sourceView.layer.render(in: ctx.cgContext)
+        }
+        return image.cgImage != nil ? image : nil
     }
 
     private func loadImages() {

@@ -210,6 +210,20 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v7_pendingRedactions") { db in
+            try db.create(table: "pendingRedaction") { t in
+                t.primaryKey("messageId", .text)
+                t.column("roomId", .text).notNull()
+                t.column("createdAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingRedaction_room_createdAt",
+                on: "pendingRedaction",
+                columns: ["roomId", "createdAt"]
+            )
+        }
+
         return migrator
     }
 }

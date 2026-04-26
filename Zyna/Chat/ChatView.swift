@@ -46,6 +46,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let contentUpdateDelay: TimeInterval = 0.05
     }
 
+    private enum RedactionAnimations {
+        static let bootstrapArmDelay: TimeInterval = 0.75
+    }
+
     private struct PendingCompositeGroupDelete {
         let messageIds: Set<String>
         let splashTarget: PaintSplashTrigger.SnapshotTarget?
@@ -139,6 +143,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var visibleReadReceiptEvalWork: DispatchWorkItem?
     private var unseenIncomingMessageCount = 0
     private var pendingPostSendPinToLive = false
+    private var redactionAnimationsArmed = false
+    private var redactionAnimationArmWork: DispatchWorkItem?
 
     // MARK: - Init
 
@@ -308,12 +314,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if shouldPresentAttachmentPreviewAfterDismiss {
             presentComposerPreviewIfNeeded()
         }
+        scheduleRedactionAnimationArming()
         scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         visibleReadReceiptEvalWork?.cancel()
+        redactionAnimationArmWork?.cancel()
         if isMovingFromParent {
             navigationController?.setNavigationBarHidden(false, animated: animated)
             audioPlayer.stop()
@@ -1582,6 +1590,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func handleRedactionBatch(_ batch: ChatViewModel.DetectedRedactionBatch) {
         guard !batch.messageIds.isEmpty else { return }
 
+        guard redactionAnimationsArmed else {
+            viewModel.hideMessages(batch.messageIds)
+            return
+        }
+
         // Defer if context menu is active (bubble is reparented to overlay)
         if activeContextMenu != nil {
             pendingRedactionBatches.append(batch)
@@ -1922,6 +1935,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         for batch in batches {
             handleRedactionBatch(batch)
         }
+    }
+
+    private func scheduleRedactionAnimationArming() {
+        redactionAnimationArmWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.redactionAnimationsArmed = true
+        }
+        redactionAnimationArmWork = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + RedactionAnimations.bootstrapArmDelay,
+            execute: work
+        )
     }
 
     private func indexPathForMessage(_ message: ChatMessage) -> IndexPath? {

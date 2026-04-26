@@ -95,6 +95,7 @@ final class ChatViewModel {
     private let roomId: String
     private var hiddenIds = Set<String>()
     private var pendingPartialRedactions: [String: StoredMessage] = [:]
+    private var persistedPendingRedactionIds = Set<String>()
     private var partialReflowPreviewsByMessageId: [String: PartialReflowPreview] = [:]
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
@@ -124,6 +125,7 @@ final class ChatViewModel {
             roomId: roomId,
             dbQueue: DatabaseService.shared.dbQueue
         )
+        self.persistedPendingRedactionIds = Self.loadPersistedPendingRedactionIds(roomId: roomId)
 
         timelineService.isPaginatingSubject
             .receive(on: DispatchQueue.main)
@@ -224,6 +226,8 @@ final class ChatViewModel {
     // MARK: - Window Change Handling
 
     private func handleObservationChange(newStored: [StoredMessage], prevStored: [StoredMessage]?) {
+        reconcilePersistedPendingRedactions()
+
         // 1. Detect newly redacted user messages (paint splash).
         //    Only for content that was a visible message — not call
         //    signaling carriers (zero-width-space body), system
@@ -279,6 +283,9 @@ final class ChatViewModel {
             if hiddenIds.contains(msg.id) { return nil }
             if let pending = pendingPartialRedactions[msg.id] {
                 return pending
+            }
+            if persistedPendingRedactionIds.contains(msg.id) {
+                return nil
             }
             if msg.contentType == "redacted" && !newlyRedactedSet.contains(msg.id) { return nil }
             return msg
@@ -443,6 +450,7 @@ final class ChatViewModel {
             }
             pendingPartialRedactions[messageId] = stored
         }
+        persistPendingRedactions(messageIds)
     }
 
     func clearPendingAnimatedRedactions(_ messageIds: [String]) {
@@ -450,6 +458,7 @@ final class ChatViewModel {
         for messageId in messageIds {
             pendingPartialRedactions.removeValue(forKey: messageId)
         }
+        clearPersistedPendingRedactions(messageIds)
     }
 
     func areMessagesRedacted(_ messageIds: [String]) -> Bool {
@@ -2196,6 +2205,87 @@ final class ChatViewModel {
         }
     }
 
+    private static func loadPersistedPendingRedactionIds(roomId: String) -> Set<String> {
+        (try? DatabaseService.shared.dbQueue.read { db in
+            try Set(String.fetchAll(
+                db,
+                sql: """
+                    SELECT messageId
+                    FROM pendingRedaction
+                    WHERE roomId = ?
+                    """,
+                arguments: [roomId]
+            ))
+        }) ?? []
+    }
+
+    private func persistPendingRedactions(_ messageIds: [String]) {
+        let ids = Set(messageIds).subtracting(persistedPendingRedactionIds)
+        guard !ids.isEmpty else { return }
+
+        do {
+            let now = Date().timeIntervalSince1970
+            try DatabaseService.shared.dbQueue.write { db in
+                for messageId in ids {
+                    try db.execute(
+                        sql: """
+                            INSERT OR REPLACE INTO pendingRedaction (messageId, roomId, createdAt)
+                            VALUES (?, ?, ?)
+                            """,
+                        arguments: [messageId, roomId, now]
+                    )
+                }
+            }
+            persistedPendingRedactionIds.formUnion(ids)
+        } catch {
+            ScopedLog(.database)("Failed to persist pending redactions: \(error)")
+        }
+    }
+
+    private func clearPersistedPendingRedactions(_ messageIds: [String]) {
+        let ids = Set(messageIds).intersection(persistedPendingRedactionIds)
+        guard !ids.isEmpty else { return }
+
+        do {
+            try DatabaseService.shared.dbQueue.write { db in
+                for messageId in ids {
+                    try db.execute(
+                        sql: """
+                            DELETE FROM pendingRedaction
+                            WHERE messageId = ?
+                            """,
+                        arguments: [messageId]
+                    )
+                }
+            }
+            persistedPendingRedactionIds.subtract(ids)
+        } catch {
+            ScopedLog(.database)("Failed to clear pending redactions: \(error)")
+        }
+    }
+
+    private func reconcilePersistedPendingRedactions() {
+        guard !persistedPendingRedactionIds.isEmpty else { return }
+
+        let ids = Array(persistedPendingRedactionIds)
+        let resolvedIds: [String] = (try? DatabaseService.shared.dbQueue.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                    SELECT id
+                    FROM storedMessage
+                    WHERE roomId = ?
+                      AND id IN (\(ids.map { _ in "?" }.joined(separator: ",")))
+                      AND contentType = 'redacted'
+                    """,
+                arguments: StatementArguments([roomId] + ids)
+            )
+        }) ?? []
+
+        guard !resolvedIds.isEmpty else { return }
+        clearPersistedPendingRedactions(resolvedIds)
+    }
+
     // MARK: - Search
 
     func activateSearch() {
@@ -2460,7 +2550,13 @@ final class ChatViewModel {
         olderBoundary: ClusterNeighbor?,
         newerBoundary: ClusterNeighbor?
     ) -> [ChatMessage] {
-        let normalized = rawMessages.map { message -> ChatMessage in
+        let previewHydratedMessages = rawMessages.map { message in
+            message.applyingPreviewImageData(
+                partialReflowPreviewsByMessageId[message.id]?.imageData
+            )
+        }
+
+        let normalized = previewHydratedMessages.map { message -> ChatMessage in
             var copy = message
             copy.isFirstInCluster = true
             copy.isLastInCluster = true

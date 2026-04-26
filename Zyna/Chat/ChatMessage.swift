@@ -125,6 +125,24 @@ enum ChatMessageContent: Equatable {
 
 }
 
+extension ChatMessageContent {
+    func applyingPreviewImageData(_ previewImageData: Data?) -> ChatMessageContent {
+        guard let previewImageData else { return self }
+        switch self {
+        case .image(let source, let width, let height, let caption, let existingPreviewImageData):
+            return .image(
+                source: source,
+                width: width,
+                height: height,
+                caption: caption,
+                previewImageData: existingPreviewImageData ?? previewImageData
+            )
+        default:
+            return self
+        }
+    }
+}
+
 // MARK: - Call Event Type
 
 enum CallEventType: String, Codable, Equatable {
@@ -361,5 +379,33 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+    }
+
+    func applyingPreviewImageData(_ previewImageData: Data?) -> ChatMessage {
+        let updatedContent = content.applyingPreviewImageData(previewImageData)
+        guard updatedContent != content else { return self }
+
+        var copy = ChatMessage(
+            id: id,
+            eventId: eventId,
+            transactionId: transactionId,
+            itemIdentifier: itemIdentifier,
+            senderId: senderId,
+            senderDisplayName: senderDisplayName,
+            senderAvatarUrl: senderAvatarUrl,
+            isOutgoing: isOutgoing,
+            timestamp: timestamp,
+            content: updatedContent,
+            reactions: reactions,
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes,
+            sendStatus: sendStatus
+        )
+        copy.isFirstInCluster = isFirstInCluster
+        copy.isLastInCluster = isLastInCluster
+        copy.mediaGroupPresentation = mediaGroupPresentation
+        copy.outgoingEnvelopeId = outgoingEnvelopeId
+        copy.incomingAssemblyId = incomingAssemblyId
+        return copy
     }
 }
