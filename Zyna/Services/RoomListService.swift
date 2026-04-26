@@ -17,6 +17,8 @@ struct RoomSummary: Identifiable {
     let lastMessage: String?
     let lastMessageTimestamp: Date?
     let unreadCount: UInt64
+    let unreadMentionCount: UInt64
+    let isMarkedUnread: Bool
     let isEncrypted: Bool
     /// Matrix user ID of the other person in a DM room, nil for group rooms.
     let directUserId: String?
@@ -37,6 +39,9 @@ final class ZynaRoomListService: NSObject {
     private var loadingStateStreamHandle: TaskHandle?
     private var serviceStateHandle: TaskHandle?
     private var rooms: [Room] = []
+    private var publishedSummariesByRoomId: [String: RoomSummary] = [:]
+    private var rebuildTask: Task<Void, Never>?
+    private var rebuildRevision: UInt64 = 0
     private var isListening = false
 
     func room(for id: String) -> Room? {
@@ -50,6 +55,7 @@ final class ZynaRoomListService: NSObject {
     private var cancellables = Set<AnyCancellable>()
 
     private static let writeQueue = DispatchQueue(label: "com.zyna.db.rooms", qos: .userInitiated)
+    private static let latestEventSettleDelay: Duration = .milliseconds(150)
 
     override init() {
         super.init()
@@ -64,6 +70,7 @@ final class ZynaRoomListService: NSObject {
         }), !stored.isEmpty else { return }
 
         let summaries = stored.map { $0.toRoomSummary() }
+        publishedSummariesByRoomId = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
         roomsSubject.send(summaries)
         logRooms("Loaded \(summaries.count) cached rooms from GRDB")
     }
@@ -136,66 +143,41 @@ final class ZynaRoomListService: NSObject {
     // MARK: - Apply Diffs
 
     private func applyUpdates(_ updates: [RoomListEntriesUpdate]) {
+        var impactedRoomIds = Set<String>()
         for update in updates {
-            applySingleUpdate(update)
+            applySingleUpdate(update, impactedRoomIds: &impactedRoomIds)
         }
 
         let currentRooms = rooms
         logRooms("Room count after diffs: \(currentRooms.count)")
-
-        Task {
-            var summaries: [RoomSummary] = []
-            for room in currentRooms {
-                guard let info = try? await room.roomInfo() else { continue }
-
-                let (lastMessage, lastTimestamp) = Self.extractLastMessage(from: await room.latestEvent())
-
-                let directUserId: String? = info.isDirect ? info.heroes.first?.userId : nil
-
-                var avatarURL = room.avatarUrl()
-                if avatarURL == nil, let partnerId = directUserId,
-                   let client = MatrixClientService.shared.client {
-                    avatarURL = (try? await client.getProfile(userId: partnerId))?.avatarUrl
-                }
-
-                summaries.append(RoomSummary(
-                    id: room.id(),
-                    displayName: room.displayName() ?? "Unknown",
-                    avatarURL: avatarURL,
-                    lastMessage: lastMessage,
-                    lastMessageTimestamp: lastTimestamp,
-                    unreadCount: info.notificationCount,
-                    isEncrypted: room.encryptionState() != .notEncrypted,
-                    directUserId: directUserId
-                ))
-            }
-
-            Self.writeRoomsToGRDB(summaries)
-
-            await MainActor.run { [weak self] in
-                self?.roomsSubject.send(summaries)
-            }
-
-            logRooms("Rooms updated: \(summaries.count) rooms")
-        }
+        scheduleSummaryRebuild(for: currentRooms, impactedRoomIds: impactedRoomIds)
     }
 
     // swiftlint:disable:next cyclomatic_complexity
-    private func applySingleUpdate(_ update: RoomListEntriesUpdate) {
+    private func applySingleUpdate(
+        _ update: RoomListEntriesUpdate,
+        impactedRoomIds: inout Set<String>
+    ) {
         switch update {
         case .reset(let values):
             rooms = values
+            impactedRoomIds.formUnion(values.map { $0.id() })
         case .append(let values):
             rooms.append(contentsOf: values)
+            impactedRoomIds.formUnion(values.map { $0.id() })
         case .pushBack(let value):
             rooms.append(value)
+            impactedRoomIds.insert(value.id())
         case .pushFront(let value):
             rooms.insert(value, at: 0)
+            impactedRoomIds.insert(value.id())
         case .insert(let index, let value):
             rooms.insert(value, at: Int(index))
+            impactedRoomIds.insert(value.id())
         case .set(let index, let value):
             if Int(index) < rooms.count {
                 rooms[Int(index)] = value
+                impactedRoomIds.insert(value.id())
             }
         case .remove(let index):
             if Int(index) < rooms.count {
@@ -210,6 +192,89 @@ final class ZynaRoomListService: NSObject {
         case .clear:
             rooms = []
         }
+    }
+
+    private func scheduleSummaryRebuild(
+        for roomsSnapshot: [Room],
+        impactedRoomIds: Set<String>
+    ) {
+        rebuildRevision &+= 1
+        let revision = rebuildRevision
+        let previousSummaries = publishedSummariesByRoomId
+
+        rebuildTask?.cancel()
+        rebuildTask = Task { [weak self] in
+            guard let self else { return }
+
+            let summaries = await Self.buildSummaries(
+                from: roomsSnapshot,
+                impactedRoomIds: impactedRoomIds,
+                previousSummaries: previousSummaries
+            )
+
+            guard !Task.isCancelled, self.rebuildRevision == revision else { return }
+
+            self.publishedSummariesByRoomId = Dictionary(
+                uniqueKeysWithValues: summaries.map { ($0.id, $0) }
+            )
+            Self.writeRoomsToGRDB(summaries)
+
+            await MainActor.run { [weak self] in
+                guard let self, self.rebuildRevision == revision else { return }
+                self.roomsSubject.send(summaries)
+            }
+
+            logRooms("Rooms updated: \(summaries.count) rooms")
+        }
+    }
+
+    private static func buildSummaries(
+        from rooms: [Room],
+        impactedRoomIds: Set<String>,
+        previousSummaries: [String: RoomSummary]
+    ) async -> [RoomSummary] {
+        var summaries: [RoomSummary] = []
+
+        for room in rooms {
+            if Task.isCancelled { break }
+            guard let info = try? await room.roomInfo() else { continue }
+
+            let roomId = room.id()
+            var lastPreview = Self.extractLastMessage(from: await room.latestEvent())
+
+            if impactedRoomIds.contains(roomId),
+               Self.shouldRetryLatestEvent(
+                currentPreview: lastPreview,
+                previousSummary: previousSummaries[roomId]
+               ) {
+                try? await Task.sleep(for: latestEventSettleDelay)
+                if Task.isCancelled { break }
+                lastPreview = Self.extractLastMessage(from: await room.latestEvent())
+            }
+
+            let directUserId: String? = info.isDirect ? info.heroes.first?.userId : nil
+
+            var avatarURL = room.avatarUrl()
+            if avatarURL == nil, let partnerId = directUserId,
+               let client = MatrixClientService.shared.client {
+                avatarURL = (try? await client.getProfile(userId: partnerId))?.avatarUrl
+            }
+
+            summaries.append(RoomSummary(
+                id: roomId,
+                displayName: room.displayName() ?? "Unknown",
+                avatarURL: avatarURL,
+                lastMessage: lastPreview.0,
+                lastMessageTimestamp: lastPreview.1,
+                unreadCount: info.numUnreadMessages,
+                unreadMentionCount: info.numUnreadMentions,
+                isMarkedUnread: info.isMarkedUnread,
+                isEncrypted: room.encryptionState() != .notEncrypted,
+                directUserId: directUserId
+            ))
+        }
+
+        return summaries
     }
 
     // MARK: - GRDB Persistence
@@ -232,6 +297,15 @@ final class ZynaRoomListService: NSObject {
     }
 
     // MARK: - Last Message Extraction
+
+    private static func shouldRetryLatestEvent(
+        currentPreview: (String?, Date?),
+        previousSummary: RoomSummary?
+    ) -> Bool {
+        guard let previousSummary else { return false }
+        return currentPreview.0 == previousSummary.lastMessage &&
+            currentPreview.1 == previousSummary.lastMessageTimestamp
+    }
 
     private static func extractLastMessage(from value: LatestEventValue) -> (String?, Date?) {
         let timestamp: Date
@@ -264,6 +338,8 @@ final class ZynaRoomListService: NSObject {
             text = "..последнее сообщение удалено.."
         case .unableToDecrypt:
             text = "Encrypted message"
+        case .liveLocation:
+            text = "Live location"
         case .other:
             return (nil, timestamp)
         @unknown default:

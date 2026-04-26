@@ -82,6 +82,8 @@ final class DatabaseService {
                 t.column("lastMessage", .text)
                 t.column("lastMessageTimestamp", .double)
                 t.column("unreadCount", .integer).notNull().defaults(to: 0)
+                t.column("unreadMentionCount", .integer).notNull().defaults(to: 0)
+                t.column("isMarkedUnread", .boolean).notNull().defaults(to: false)
                 t.column("isEncrypted", .boolean).notNull().defaults(to: false)
                 t.column("directUserId", .text)
                 t.column("sortOrder", .integer).notNull()
@@ -190,6 +192,22 @@ final class DatabaseService {
             // backward compatibility with existing local databases no
             // longer matters, rename these tables to match the logical
             // outgoing envelope model.
+        }
+
+        migrator.registerMigration("v6_roomUnreadPresentation") { db in
+            let existingColumns = try db.columns(in: "storedRoom").map(\.name)
+
+            if !existingColumns.contains("unreadMentionCount") {
+                try db.alter(table: "storedRoom") { t in
+                    t.add(column: "unreadMentionCount", .integer).notNull().defaults(to: 0)
+                }
+            }
+
+            if !existingColumns.contains("isMarkedUnread") {
+                try db.alter(table: "storedRoom") { t in
+                    t.add(column: "isMarkedUnread", .boolean).notNull().defaults(to: false)
+                }
+            }
         }
 
         return migrator
