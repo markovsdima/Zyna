@@ -481,7 +481,8 @@ final class ChatViewModel {
                mediaGroup.index < group.expectedItemCount,
                mediaGroup.total == group.expectedItemCount,
                mediaGroup.captionMode == .replicated,
-               mediaGroup.captionPlacement == group.captionPlacement {
+               mediaGroup.captionPlacement == group.captionPlacement,
+               mediaGroup.layoutOverride == group.mediaBatchPayload?.layoutOverride {
                 let previousIndex = syncedEventIndices[mediaGroup.index]
                 if previousIndex == nil
                     || prefersPendingPrimaryCandidate(
@@ -509,7 +510,8 @@ final class ChatViewModel {
               mediaGroup.id == group.id,
               mediaGroup.total == group.expectedItemCount,
               mediaGroup.captionMode == .replicated,
-              mediaGroup.captionPlacement == group.captionPlacement
+              mediaGroup.captionPlacement == group.captionPlacement,
+              mediaGroup.layoutOverride == group.mediaBatchPayload?.layoutOverride
         else {
             return nil
         }
@@ -597,12 +599,14 @@ final class ChatViewModel {
 
         let anchorMessage = anchorIndex.flatMap { rawMessages.indices.contains($0) ? rawMessages[$0] : nil }
         let sendStatus = aggregatePendingMediaGroupSendStatus(from: mediaItems)
+        let layoutOverride = group.mediaBatchPayload?.layoutOverride
         let presentation = MediaGroupPresentation(
             id: group.id,
             position: group.captionPlacement == .top ? .top : .bottom,
             totalHint: group.expectedItemCount,
             caption: group.caption,
             captionPlacement: group.captionPlacement,
+            layoutOverride: layoutOverride,
             suppressIndividualCaption: group.caption != nil,
             items: mediaItems,
             rendersCompositeBubble: true,
@@ -1429,7 +1433,8 @@ final class ChatViewModel {
     func sendImages(
         _ images: [ProcessedImage],
         caption: String?,
-        captionPlacement: CaptionPlacement = .bottom
+        captionPlacement: CaptionPlacement = .bottom,
+        layoutOverride: MediaGroupLayoutOverride? = nil
     ) {
         Task { [weak self] in
             guard let self else { return }
@@ -1437,6 +1442,7 @@ final class ChatViewModel {
                 images,
                 caption: caption,
                 captionPlacement: captionPlacement,
+                layoutOverride: layoutOverride,
                 replyEventId: nil,
                 replyInfo: nil
             )
@@ -1446,7 +1452,8 @@ final class ChatViewModel {
     func sendComposerAttachments(
         _ attachments: [ChatComposerAttachmentDraft],
         caption: String?,
-        captionPlacement: CaptionPlacement = .bottom
+        captionPlacement: CaptionPlacement = .bottom,
+        layoutOverride: MediaGroupLayoutOverride? = nil
     ) {
         guard !attachments.isEmpty else { return }
 
@@ -1469,6 +1476,7 @@ final class ChatViewModel {
                     imageAttachments,
                     caption: caption,
                     captionPlacement: captionPlacement,
+                    layoutOverride: layoutOverride,
                     replyEventId: replyEventId,
                     replyInfo: replyInfo
                 )
@@ -1564,7 +1572,8 @@ final class ChatViewModel {
 
     private func prewarmVisibleMediaBatchPreviewTiles(
         groupId: String,
-        images: [ProcessedImage]
+        images: [ProcessedImage],
+        layoutOverride: MediaGroupLayoutOverride?
     ) async {
         guard !images.isEmpty else { return }
 
@@ -1587,7 +1596,8 @@ final class ChatViewModel {
         )
         let slotFrames = PhotoGroupLayout.frames(
             in: CGRect(x: 0, y: 0, width: maxWidth, height: mediaHeight),
-            itemCount: images.count
+            itemCount: images.count,
+            layoutOverride: layoutOverride
         )
         let scale = ScreenConstants.scale
 
@@ -1618,6 +1628,7 @@ final class ChatViewModel {
         _ images: [ProcessedImage],
         caption: String?,
         captionPlacement: CaptionPlacement,
+        layoutOverride: MediaGroupLayoutOverride?,
         replyEventId: String?,
         replyInfo: ReplyInfo?
     ) async {
@@ -1647,13 +1658,15 @@ final class ChatViewModel {
         )
         await prewarmVisibleMediaBatchPreviewTiles(
             groupId: mediaGroupId,
-            images: images
+            images: images,
+            layoutOverride: layoutOverride
         )
         let bindingTokens = outgoingEnvelopes.createOutgoingMediaBatch(
             roomId: roomId,
             envelopeId: mediaGroupId,
             caption: normalizedCaption,
             captionPlacement: captionPlacement,
+            layoutOverride: layoutOverride,
             items: images.map {
                 OutgoingMediaDraftItem(
                     previewImageData: $0.imageData,
@@ -1673,7 +1686,8 @@ final class ChatViewModel {
                     index: index,
                     total: images.count,
                     captionMode: .replicated,
-                    captionPlacement: captionPlacement
+                    captionPlacement: captionPlacement,
+                    layoutOverride: layoutOverride
                 )
             )
 
@@ -2034,6 +2048,7 @@ final class ChatViewModel {
                         totalHint: mediaGroup.total,
                         caption: caption,
                         captionPlacement: mediaGroup.captionPlacement,
+                        layoutOverride: mediaGroup.layoutOverride,
                         suppressIndividualCaption: suppressIndividualCaption,
                         items: (canRenderCompositeBubble && position == captionCarrierPosition) ? groupItems : [],
                         rendersCompositeBubble: canRenderCompositeBubble && position == captionCarrierPosition,
@@ -2159,6 +2174,7 @@ final class ChatViewModel {
                   group.total == firstGroup.total,
                   group.captionMode == firstGroup.captionMode,
                   group.captionPlacement == firstGroup.captionPlacement,
+                  group.layoutOverride == firstGroup.layoutOverride,
                   seenIndices.insert(group.index).inserted
             else {
                 return MediaGroupRenderDecision(canRender: false, reason: "inconsistentMember")

@@ -93,6 +93,7 @@ struct MediaGroupInfo: Codable, Equatable {
     var total: Int
     var captionMode: CaptionMode
     var captionPlacement: CaptionPlacement
+    var layoutOverride: MediaGroupLayoutOverride?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -100,6 +101,7 @@ struct MediaGroupInfo: Codable, Equatable {
         case total
         case captionMode
         case captionPlacement
+        case layoutOverride
     }
 
     init(
@@ -107,13 +109,15 @@ struct MediaGroupInfo: Codable, Equatable {
         index: Int,
         total: Int,
         captionMode: CaptionMode,
-        captionPlacement: CaptionPlacement
+        captionPlacement: CaptionPlacement,
+        layoutOverride: MediaGroupLayoutOverride? = nil
     ) {
         self.id = id
         self.index = index
         self.total = total
         self.captionMode = captionMode
         self.captionPlacement = captionPlacement
+        self.layoutOverride = layoutOverride
     }
 
     init(from decoder: Decoder) throws {
@@ -123,7 +127,20 @@ struct MediaGroupInfo: Codable, Equatable {
         total = try container.decode(Int.self, forKey: .total)
         captionMode = try container.decode(CaptionMode.self, forKey: .captionMode)
         captionPlacement = try container.decodeIfPresent(CaptionPlacement.self, forKey: .captionPlacement) ?? .bottom
+        layoutOverride = try container.decodeIfPresent(MediaGroupLayoutOverride.self, forKey: .layoutOverride)
     }
+}
+
+struct MediaGroupLayoutOverride: Codable, Equatable {
+    /// Position of the main divider, normalized into 0...1000.
+    /// 2 items: vertical split between left and right.
+    /// 3 items: vertical split between the large left tile and the
+    /// stacked right column.
+    var primarySplitPermille: Int
+    /// Position of the secondary divider, normalized into 0...1000.
+    /// Only used for 3-item layouts, where it controls the split
+    /// between the top-right and bottom-right tiles.
+    var secondarySplitPermille: Int?
 }
 
 enum CaptionMode: String, Codable, Equatable {

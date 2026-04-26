@@ -176,6 +176,7 @@ final class OutgoingEnvelopeService {
         envelopeId: String,
         caption: String?,
         captionPlacement: CaptionPlacement,
+        layoutOverride: MediaGroupLayoutOverride?,
         items draftItems: [OutgoingMediaDraftItem],
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
@@ -200,7 +201,8 @@ final class OutgoingEnvelopeService {
                 OutgoingMediaBatchPayload(
                     caption: normalizedCaption,
                     captionPlacement: captionPlacement,
-                    expectedItemCount: draftItems.count
+                    expectedItemCount: draftItems.count,
+                    layoutOverride: layoutOverride
                 )
             ),
             caption: normalizedCaption,

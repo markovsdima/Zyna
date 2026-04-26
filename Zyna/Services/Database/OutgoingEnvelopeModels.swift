@@ -66,6 +66,7 @@ struct OutgoingMediaBatchPayload: Codable, Equatable {
     let caption: String?
     let captionPlacement: CaptionPlacement
     let expectedItemCount: Int
+    let layoutOverride: MediaGroupLayoutOverride?
 }
 
 enum OutgoingEnvelopePayload: Equatable {
@@ -83,6 +84,8 @@ enum OutgoingEnvelopePayload: Equatable {
         let expectedItemCount: Int?
         let width: UInt64?
         let height: UInt64?
+        let primarySplitPermille: Int?
+        let secondarySplitPermille: Int?
         let filename: String?
         let mimetype: String?
         let size: UInt64?
@@ -102,6 +105,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 expectedItemCount: 1,
                 width: nil,
                 height: nil,
+                primarySplitPermille: nil,
+                secondarySplitPermille: nil,
                 filename: nil,
                 mimetype: nil,
                 size: nil,
@@ -117,6 +122,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 expectedItemCount: 1,
                 width: image.width,
                 height: image.height,
+                primarySplitPermille: nil,
+                secondarySplitPermille: nil,
                 filename: nil,
                 mimetype: nil,
                 size: nil,
@@ -132,6 +139,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 expectedItemCount: 1,
                 width: nil,
                 height: nil,
+                primarySplitPermille: nil,
+                secondarySplitPermille: nil,
                 filename: nil,
                 mimetype: nil,
                 size: nil,
@@ -147,6 +156,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 expectedItemCount: 1,
                 width: nil,
                 height: nil,
+                primarySplitPermille: nil,
+                secondarySplitPermille: nil,
                 filename: file.filename,
                 mimetype: file.mimetype,
                 size: file.size,
@@ -162,6 +173,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 expectedItemCount: batch.expectedItemCount,
                 width: nil,
                 height: nil,
+                primarySplitPermille: batch.layoutOverride?.primarySplitPermille,
+                secondarySplitPermille: batch.layoutOverride?.secondarySplitPermille,
                 filename: nil,
                 mimetype: nil,
                 size: nil,
@@ -218,7 +231,13 @@ enum OutgoingEnvelopePayload: Equatable {
                 OutgoingMediaBatchPayload(
                     caption: payload.caption,
                     captionPlacement: CaptionPlacement(rawValue: payload.captionPlacement ?? "") ?? .bottom,
-                    expectedItemCount: payload.expectedItemCount ?? 0
+                    expectedItemCount: payload.expectedItemCount ?? 0,
+                    layoutOverride: payload.primarySplitPermille.map {
+                        MediaGroupLayoutOverride(
+                            primarySplitPermille: $0,
+                            secondarySplitPermille: payload.secondarySplitPermille
+                        )
+                    }
                 )
             )
         }
@@ -293,7 +312,8 @@ struct OutgoingEnvelopeRecord: Codable, FetchableRecord, PersistableRecord {
                 OutgoingMediaBatchPayload(
                     caption: caption,
                     captionPlacement: CaptionPlacement(rawValue: captionPlacement) ?? .bottom,
-                    expectedItemCount: expectedItemCount
+                    expectedItemCount: expectedItemCount,
+                    layoutOverride: nil
                 )
             )
         }

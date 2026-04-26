@@ -8,16 +8,18 @@ import UIKit
 final class PhotoGroupPreviewController: UIViewController {
 
     var onDiscard: (() -> Void)?
-    var onSend: (([ChatComposerAttachmentDraft], String, CaptionPlacement) -> Void)?
+    var onSend: (([ChatComposerAttachmentDraft], String, CaptionPlacement, MediaGroupLayoutOverride?) -> Void)?
 
     private var attachments: [ChatComposerAttachmentDraft]
     private var captionText: String
     private var captionPlacement: CaptionPlacement
+    private var layoutOverride: MediaGroupLayoutOverride?
 
     private let dimView = UIView()
     private let cardView = UIView()
     private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
     private let closeButton = UIButton(type: .system)
+    private let resetLayoutButton = UIButton(type: .system)
     private let previewView = PhotoGroupBubblePreviewView()
     private let captionBackgroundView = UIView()
     private let captionLabel = UILabel()
@@ -35,6 +37,7 @@ final class PhotoGroupPreviewController: UIViewController {
     private var keyboardObservers: [NSObjectProtocol] = []
     private let thumbnailDragStartFeedback = UIImpactFeedbackGenerator(style: .medium)
     private let thumbnailReorderFeedback = UIImpactFeedbackGenerator(style: .medium)
+    private let resetLayoutFeedback = UIImpactFeedbackGenerator(style: .rigid)
     private var lastThumbnailHoverIndexPath: IndexPath?
 
     private var usesThumbnailStrip: Bool {
@@ -111,6 +114,24 @@ final class PhotoGroupPreviewController: UIViewController {
         closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
         cardView.addSubview(closeButton)
 
+        var resetButtonConfig = UIButton.Configuration.plain()
+        resetButtonConfig.image = UIImage(
+            systemName: "arrow.counterclockwise",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        )
+        resetButtonConfig.title = String(localized: "Reset")
+        resetButtonConfig.baseForegroundColor = .white
+        resetButtonConfig.imagePadding = 4
+        resetButtonConfig.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
+        resetLayoutButton.translatesAutoresizingMaskIntoConstraints = false
+        resetLayoutButton.configuration = resetButtonConfig
+        resetLayoutButton.backgroundColor = UIColor.white.withAlphaComponent(0.12)
+        resetLayoutButton.layer.cornerRadius = 15
+        resetLayoutButton.layer.cornerCurve = .continuous
+        resetLayoutButton.isHidden = true
+        resetLayoutButton.addTarget(self, action: #selector(resetLayoutTapped), for: .touchUpInside)
+        cardView.addSubview(resetLayoutButton)
+
         previewView.translatesAutoresizingMaskIntoConstraints = false
         previewView.onRemoveAttachment = { [weak self] index in
             self?.removeAttachment(at: index)
@@ -124,6 +145,10 @@ final class PhotoGroupPreviewController: UIViewController {
         }
         previewView.onCaptionPlacementChanged = { [weak self] placement in
             self?.captionPlacement = placement
+        }
+        previewView.onLayoutOverrideChanged = { [weak self] layoutOverride in
+            self?.layoutOverride = layoutOverride
+            self?.updateResetLayoutButtonState()
         }
         cardView.addSubview(previewView)
 
@@ -239,6 +264,10 @@ final class PhotoGroupPreviewController: UIViewController {
             closeButton.widthAnchor.constraint(equalToConstant: 36),
             closeButton.heightAnchor.constraint(equalToConstant: 36),
 
+            resetLayoutButton.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 16),
+            resetLayoutButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+            resetLayoutButton.heightAnchor.constraint(equalToConstant: 30),
+
             previewView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 20),
             previewView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -20),
             previewView.topAnchor.constraint(equalTo: closeButton.bottomAnchor, constant: 12),
@@ -353,12 +382,18 @@ final class PhotoGroupPreviewController: UIViewController {
     }
 
     private func updatePreview() {
+        layoutOverride = PhotoGroupLayout.sanitizedLayoutOverride(
+            layoutOverride,
+            itemCount: attachments.count
+        )
+        updateResetLayoutButtonState()
         previewView.isDirectEditingEnabled = !usesThumbnailStrip
         previewView.isCaptionPlacementEditingEnabled = !attachments.isEmpty
         previewView.update(
             attachments: attachments,
             captionText: captionText,
-            captionPlacement: captionPlacement
+            captionPlacement: captionPlacement,
+            layoutOverride: layoutOverride
         )
         thumbnailsView.isHidden = !usesThumbnailStrip
         thumbnailsHeightConstraint?.constant = usesThumbnailStrip ? 72 : 0
@@ -383,13 +418,32 @@ final class PhotoGroupPreviewController: UIViewController {
         }
     }
 
+    @objc private func resetLayoutTapped() {
+        guard layoutOverride != nil else { return }
+        layoutOverride = nil
+        resetLayoutFeedback.impactOccurred(intensity: 0.9)
+        updatePreview()
+    }
+
+    private func updateResetLayoutButtonState() {
+        let canShowResetButton =
+            !usesThumbnailStrip
+            && PhotoGroupLayout.supportsInteractiveLayout(for: attachments.count)
+        resetLayoutButton.isHidden = !canShowResetButton
+        resetLayoutButton.isEnabled = canShowResetButton && layoutOverride != nil
+        resetLayoutButton.alpha = canShowResetButton
+            ? (layoutOverride == nil ? 0.55 : 1)
+            : 0
+    }
+
     @objc private func sendTapped() {
         guard !attachments.isEmpty else { return }
         let attachments = self.attachments
         let captionText = self.captionText
         let captionPlacement = self.captionPlacement
+        let layoutOverride = self.layoutOverride
         dismiss(animated: true) { [onSend] in
-            onSend?(attachments, captionText, captionPlacement)
+            onSend?(attachments, captionText, captionPlacement, layoutOverride)
         }
     }
 
@@ -423,6 +477,10 @@ final class PhotoGroupPreviewController: UIViewController {
     private func removeAttachment(at index: Int) {
         guard attachments.indices.contains(index) else { return }
         attachments.remove(at: index)
+        layoutOverride = PhotoGroupLayout.sanitizedLayoutOverride(
+            layoutOverride,
+            itemCount: attachments.count
+        )
         if attachments.isEmpty {
             dismiss(animated: true) { [onDiscard] in
                 onDiscard?()
@@ -440,7 +498,8 @@ extension PhotoGroupPreviewController: UITextViewDelegate {
         previewView.update(
             attachments: attachments,
             captionText: captionText,
-            captionPlacement: captionPlacement
+            captionPlacement: captionPlacement,
+            layoutOverride: layoutOverride
         )
     }
 }
@@ -548,6 +607,7 @@ private final class PhotoGroupBubblePreviewView: UIView {
     var onRemoveAttachment: ((Int) -> Void)?
     var onMoveAttachment: ((Int, Int) -> Void)?
     var onCaptionPlacementChanged: ((CaptionPlacement) -> Void)?
+    var onLayoutOverrideChanged: ((MediaGroupLayoutOverride?) -> Void)?
 
     var isDirectEditingEnabled = true {
         didSet {
@@ -574,17 +634,23 @@ private final class PhotoGroupBubblePreviewView: UIView {
     private let captionContainerView = UIView()
     private let captionLabel = UILabel()
     private let overflowLabel = UILabel()
+    private let primaryDividerGuideView = UIView()
+    private let secondaryDividerGuideView = UIView()
+    private let primaryHandleView = DividerHandleView(axis: .horizontal)
+    private let secondaryHandleView = DividerHandleView(axis: .vertical)
     private var imageViews: [UIImageView] = []
     private var removeButtons: [UIButton] = []
     private var attachments: [ChatComposerAttachmentDraft] = []
     private var captionText = ""
     private var captionPlacement: CaptionPlacement = .bottom
+    private var layoutOverride: MediaGroupLayoutOverride?
     private var slotFrames: [CGRect] = []
     private var captionFrame: CGRect = .zero
     private let dragStartFeedback = UIImpactFeedbackGenerator(style: .medium)
     private let reorderFeedback = UIImpactFeedbackGenerator(style: .medium)
     private let captionDragStartFeedback = UIImpactFeedbackGenerator(style: .medium)
     private let captionPlacementFeedback = UIImpactFeedbackGenerator(style: .medium)
+    private let layoutDragStartFeedback = UIImpactFeedbackGenerator(style: .medium)
     private lazy var reorderGesture = UILongPressGestureRecognizer(
         target: self,
         action: #selector(handleReorderGesture(_:))
@@ -592,6 +658,14 @@ private final class PhotoGroupBubblePreviewView: UIView {
     private lazy var captionPanGesture = UIPanGestureRecognizer(
         target: self,
         action: #selector(handleCaptionDrag(_:))
+    )
+    private lazy var primaryHandlePanGesture = UIPanGestureRecognizer(
+        target: self,
+        action: #selector(handlePrimaryLayoutDrag(_:))
+    )
+    private lazy var secondaryHandlePanGesture = UIPanGestureRecognizer(
+        target: self,
+        action: #selector(handleSecondaryLayoutDrag(_:))
     )
     private var draggedIndex: Int?
     private var dragSnapshotView: UIImageView?
@@ -630,6 +704,22 @@ private final class PhotoGroupBubblePreviewView: UIView {
         overflowLabel.layer.cornerCurve = .continuous
         mediaContainerView.addSubview(overflowLabel)
 
+        primaryDividerGuideView.backgroundColor = UIColor.white.withAlphaComponent(0.16)
+        primaryDividerGuideView.layer.cornerRadius = 1
+        primaryDividerGuideView.isUserInteractionEnabled = false
+        mediaContainerView.addSubview(primaryDividerGuideView)
+
+        secondaryDividerGuideView.backgroundColor = UIColor.white.withAlphaComponent(0.16)
+        secondaryDividerGuideView.layer.cornerRadius = 1
+        secondaryDividerGuideView.isUserInteractionEnabled = false
+        mediaContainerView.addSubview(secondaryDividerGuideView)
+
+        primaryHandleView.addGestureRecognizer(primaryHandlePanGesture)
+        mediaContainerView.addSubview(primaryHandleView)
+
+        secondaryHandleView.addGestureRecognizer(secondaryHandlePanGesture)
+        mediaContainerView.addSubview(secondaryHandleView)
+
         for _ in 0..<4 {
             let imageView = UIImageView()
             imageView.contentMode = .scaleAspectFill
@@ -662,11 +752,16 @@ private final class PhotoGroupBubblePreviewView: UIView {
     func update(
         attachments: [ChatComposerAttachmentDraft],
         captionText: String,
-        captionPlacement: CaptionPlacement
+        captionPlacement: CaptionPlacement,
+        layoutOverride: MediaGroupLayoutOverride?
     ) {
         self.attachments = attachments
         self.captionText = captionText
         self.captionPlacement = captionPlacement
+        self.layoutOverride = PhotoGroupLayout.sanitizedLayoutOverride(
+            layoutOverride,
+            itemCount: attachments.count
+        )
         updateCaptionPreview()
         updateEditingControls()
         setNeedsLayout()
@@ -713,7 +808,11 @@ private final class PhotoGroupBubblePreviewView: UIView {
             }
         }
 
-        slotFrames = PhotoGroupLayout.frames(in: mediaContainerView.bounds, itemCount: displayImages.count)
+        slotFrames = PhotoGroupLayout.frames(
+            in: mediaContainerView.bounds,
+            itemCount: displayImages.count,
+            layoutOverride: layoutOverride
+        )
         for (index, imageView) in imageViews.enumerated() {
             imageView.frame = index < slotFrames.count ? slotFrames[index] : .zero
             imageView.alpha = dragSnapshotView != nil && draggedIndex == index ? 0.22 : 1
@@ -752,12 +851,24 @@ private final class PhotoGroupBubblePreviewView: UIView {
         } else {
             overflowLabel.isHidden = true
         }
+
+        layoutInteractiveControls()
     }
 
     private func updateEditingControls() {
         reorderGesture.isEnabled = isDirectEditingEnabled && attachments.count > 1
         captionPanGesture.isEnabled = isCaptionPlacementEditingEnabled && !attachments.isEmpty
+        let canEditLayout = isDirectEditingEnabled
+            && PhotoGroupLayout.supportsInteractiveLayout(for: attachments.count)
+            && attachments.count <= PhotoGroupLayout.maxVisibleItems
+        primaryHandlePanGesture.isEnabled = canEditLayout
+        secondaryHandlePanGesture.isEnabled = canEditLayout && attachments.count == 3
         removeButtons.forEach { $0.isHidden = !isDirectEditingEnabled }
+        primaryHandleView.isHidden = !canEditLayout
+        primaryDividerGuideView.isHidden = !canEditLayout
+        let showsSecondaryControls = canEditLayout && attachments.count == 3
+        secondaryHandleView.isHidden = !showsSecondaryControls
+        secondaryDividerGuideView.isHidden = !showsSecondaryControls
         setNeedsLayout()
     }
 
@@ -779,6 +890,98 @@ private final class PhotoGroupBubblePreviewView: UIView {
 
     private func mediaIndex(at location: CGPoint) -> Int? {
         slotFrames.firstIndex(where: { $0.insetBy(dx: -8, dy: -8).contains(location) })
+    }
+
+    private func layoutInteractiveControls() {
+        let canEditLayout = isDirectEditingEnabled
+            && PhotoGroupLayout.supportsInteractiveLayout(for: attachments.count)
+            && attachments.count <= PhotoGroupLayout.maxVisibleItems
+            && !slotFrames.isEmpty
+
+        guard canEditLayout else {
+            primaryHandleView.frame = .zero
+            secondaryHandleView.frame = .zero
+            primaryDividerGuideView.frame = .zero
+            secondaryDividerGuideView.frame = .zero
+            return
+        }
+
+        let handleSize = CGSize(width: 32, height: 32)
+        let guideThickness = max(2, PhotoGroupLayout.spacing)
+        mediaContainerView.bringSubviewToFront(primaryDividerGuideView)
+        mediaContainerView.bringSubviewToFront(secondaryDividerGuideView)
+        mediaContainerView.bringSubviewToFront(primaryHandleView)
+        mediaContainerView.bringSubviewToFront(secondaryHandleView)
+
+        let primaryDividerCenterX = slotFrames[0].maxX + (PhotoGroupLayout.spacing / 2)
+        primaryDividerGuideView.frame = CGRect(
+            x: round(primaryDividerCenterX - guideThickness / 2),
+            y: 0,
+            width: guideThickness,
+            height: mediaContainerView.bounds.height
+        )
+        primaryHandleView.frame = CGRect(
+            x: round(primaryDividerCenterX - handleSize.width / 2),
+            y: round(mediaContainerView.bounds.midY - handleSize.height / 2),
+            width: handleSize.width,
+            height: handleSize.height
+        )
+
+        guard attachments.count == 3, slotFrames.count >= 3 else {
+            secondaryDividerGuideView.frame = .zero
+            secondaryHandleView.frame = .zero
+            return
+        }
+
+        let secondaryDividerCenterY = slotFrames[1].maxY + (PhotoGroupLayout.spacing / 2)
+        secondaryDividerGuideView.frame = CGRect(
+            x: slotFrames[1].minX,
+            y: round(secondaryDividerCenterY - guideThickness / 2),
+            width: slotFrames[1].width,
+            height: guideThickness
+        )
+        secondaryHandleView.frame = CGRect(
+            x: round(slotFrames[1].midX - handleSize.width / 2),
+            y: round(secondaryDividerCenterY - handleSize.height / 2),
+            width: handleSize.width,
+            height: handleSize.height
+        )
+    }
+
+    private func updateLayoutOverride(
+        primarySplitPermille: Int? = nil,
+        secondarySplitPermille: Int? = nil
+    ) {
+        let itemCount = attachments.count
+        guard PhotoGroupLayout.supportsInteractiveLayout(for: itemCount) else { return }
+
+        let resolvedPrimary = primarySplitPermille
+            ?? PhotoGroupLayout.resolvedPrimarySplitPermille(
+                for: itemCount,
+                layoutOverride: layoutOverride
+            )
+        let resolvedSecondary = secondarySplitPermille
+            ?? PhotoGroupLayout.resolvedSecondarySplitPermille(
+                for: itemCount,
+                layoutOverride: layoutOverride
+            )
+
+        guard let resolvedPrimary else { return }
+
+        let nextOverride = PhotoGroupLayout.sanitizedLayoutOverride(
+            MediaGroupLayoutOverride(
+                primarySplitPermille: resolvedPrimary,
+                secondarySplitPermille: itemCount == 3 ? resolvedSecondary : nil
+            ),
+            itemCount: itemCount
+        )
+
+        guard nextOverride != layoutOverride else { return }
+        layoutOverride = nextOverride
+        onLayoutOverrideChanged?(nextOverride)
+        updateEditingControls()
+        setNeedsLayout()
+        layoutIfNeeded()
     }
 
     private func cancelActiveDrag() {
@@ -958,6 +1161,106 @@ private final class PhotoGroupBubblePreviewView: UIView {
             captionDragTouchOffset = .zero
             captionContainerView.alpha = 1
         }
+    }
+
+    @objc private func handlePrimaryLayoutDrag(_ gesture: UIPanGestureRecognizer) {
+        guard isDirectEditingEnabled,
+              PhotoGroupLayout.supportsInteractiveLayout(for: attachments.count)
+        else { return }
+
+        let location = gesture.location(in: mediaContainerView)
+        switch gesture.state {
+        case .began:
+            layoutDragStartFeedback.impactOccurred(intensity: 0.9)
+        case .changed:
+            let totalWidth = max(1, mediaContainerView.bounds.width - PhotoGroupLayout.spacing)
+            let leftWidth = location.x - (PhotoGroupLayout.spacing / 2)
+            let permille = Int(round((leftWidth / totalWidth) * CGFloat(PhotoGroupLayout.splitScale)))
+            updateLayoutOverride(primarySplitPermille: permille)
+        default:
+            break
+        }
+    }
+
+    @objc private func handleSecondaryLayoutDrag(_ gesture: UIPanGestureRecognizer) {
+        guard isDirectEditingEnabled, attachments.count == 3 else { return }
+
+        let location = gesture.location(in: mediaContainerView)
+        switch gesture.state {
+        case .began:
+            layoutDragStartFeedback.impactOccurred(intensity: 0.9)
+        case .changed:
+            let totalHeight = max(1, mediaContainerView.bounds.height - PhotoGroupLayout.spacing)
+            let topHeight = location.y - (PhotoGroupLayout.spacing / 2)
+            let permille = Int(round((topHeight / totalHeight) * CGFloat(PhotoGroupLayout.splitScale)))
+            updateLayoutOverride(secondarySplitPermille: permille)
+        default:
+            break
+        }
+    }
+
+}
+
+private final class DividerHandleView: UIView {
+    enum Axis {
+        case horizontal
+        case vertical
+    }
+
+    var axis: Axis {
+        didSet { setNeedsDisplay() }
+    }
+
+    init(axis: Axis) {
+        self.axis = axis
+        super.init(frame: .zero)
+        isOpaque = false
+        backgroundColor = .clear
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        context.saveGState()
+        context.setShadow(offset: .zero, blur: 6, color: UIColor.black.withAlphaComponent(0.35).cgColor)
+        UIColor.white.withAlphaComponent(0.96).setFill()
+
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let size: CGFloat = 6
+        let gap: CGFloat = 2
+
+        let firstPath = UIBezierPath()
+        let secondPath = UIBezierPath()
+
+        switch axis {
+        case .horizontal:
+            firstPath.move(to: CGPoint(x: center.x - gap, y: center.y))
+            firstPath.addLine(to: CGPoint(x: center.x - gap - size, y: center.y - size))
+            firstPath.addLine(to: CGPoint(x: center.x - gap - size, y: center.y + size))
+            firstPath.close()
+
+            secondPath.move(to: CGPoint(x: center.x + gap, y: center.y))
+            secondPath.addLine(to: CGPoint(x: center.x + gap + size, y: center.y - size))
+            secondPath.addLine(to: CGPoint(x: center.x + gap + size, y: center.y + size))
+            secondPath.close()
+        case .vertical:
+            firstPath.move(to: CGPoint(x: center.x, y: center.y - gap))
+            firstPath.addLine(to: CGPoint(x: center.x - size, y: center.y - gap - size))
+            firstPath.addLine(to: CGPoint(x: center.x + size, y: center.y - gap - size))
+            firstPath.close()
+
+            secondPath.move(to: CGPoint(x: center.x, y: center.y + gap))
+            secondPath.addLine(to: CGPoint(x: center.x - size, y: center.y + gap + size))
+            secondPath.addLine(to: CGPoint(x: center.x + size, y: center.y + gap + size))
+            secondPath.close()
+        }
+
+        firstPath.fill()
+        secondPath.fill()
+        context.restoreGState()
     }
 }
 

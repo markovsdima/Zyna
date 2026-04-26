@@ -75,6 +75,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
     private let overflowTextNode = ASTextNode()
     private let captionNode: ASTextNode?
     private var captionPlacement: CaptionPlacement?
+    private var layoutOverride: MediaGroupLayoutOverride?
     private let hasHeader: Bool
     private let mediaLayoutBounds: CGRect
     private let mediaHeight: CGFloat
@@ -110,6 +111,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
             self.captionNode = nil
         }
         self.captionPlacement = captionText == nil ? nil : presentation?.captionPlacement
+        self.layoutOverride = presentation?.layoutOverride
 
         let primaryAspectRatio: CGFloat? = {
             guard let first = mediaItems.first,
@@ -250,7 +252,8 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
 
         slotFrames = PhotoGroupLayout.frames(
             in: mediaLayoutBounds,
-            itemCount: mediaItems.count
+            itemCount: mediaItems.count,
+            layoutOverride: layoutOverride
         )
 
         for (index, imageNode) in imageNodes.enumerated() {
@@ -365,6 +368,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
 
         mediaItems = presentation.items
         captionPlacement = presentation.captionPlacement
+        layoutOverride = presentation.layoutOverride
         if let captionNode {
             let captionText = presentation.caption ?? ""
             let foregroundColor = usesAccentBubbleStyle
@@ -412,7 +416,8 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
         let scale = ScreenConstants.scale
         let layoutFrames = PhotoGroupLayout.frames(
             in: mediaLayoutBounds,
-            itemCount: mediaItems.count
+            itemCount: mediaItems.count,
+            layoutOverride: layoutOverride
         )
 
         for (index, item) in mediaItems.prefix(visibleItemCount).enumerated() {

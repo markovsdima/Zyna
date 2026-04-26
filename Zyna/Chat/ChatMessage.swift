@@ -290,6 +290,7 @@ struct MediaGroupPresentation: Equatable {
     let totalHint: Int
     let caption: String?
     let captionPlacement: CaptionPlacement
+    let layoutOverride: MediaGroupLayoutOverride?
     let suppressIndividualCaption: Bool
     let items: [MediaGroupItem]
     let rendersCompositeBubble: Bool

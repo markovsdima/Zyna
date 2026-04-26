@@ -99,13 +99,20 @@ enum ZynaHTMLCodec {
         }
 
         if let mediaGroup = attrs.mediaGroup {
-            obj[JSONKey.mediaGroup] = [
+            var mediaGroupObject: [String: Any] = [
                 "id": mediaGroup.id,
                 "index": mediaGroup.index,
                 "total": mediaGroup.total,
                 "captionMode": mediaGroup.captionMode.rawValue,
                 "captionPlacement": mediaGroup.captionPlacement.rawValue
-            ] as [String: Any]
+            ]
+            if let layoutOverride = mediaGroup.layoutOverride {
+                mediaGroupObject["layout"] = [
+                    "primarySplit": layoutOverride.primarySplitPermille,
+                    "secondarySplit": layoutOverride.secondarySplitPermille as Any
+                ] as [String: Any]
+            }
+            obj[JSONKey.mediaGroup] = mediaGroupObject
         }
 
         guard let data = try? JSONSerialization.data(
@@ -148,12 +155,23 @@ enum ZynaHTMLCodec {
             let captionPlacementRaw = mediaGroup["captionPlacement"] as? String
             let captionPlacement = captionPlacementRaw.flatMap(CaptionPlacement.init(rawValue:))
                 ?? .bottom
+            let layoutOverride: MediaGroupLayoutOverride?
+            if let layout = mediaGroup["layout"] as? [String: Any],
+               let primarySplit = layout["primarySplit"] as? Int {
+                layoutOverride = MediaGroupLayoutOverride(
+                    primarySplitPermille: primarySplit,
+                    secondarySplitPermille: layout["secondarySplit"] as? Int
+                )
+            } else {
+                layoutOverride = nil
+            }
             result.mediaGroup = MediaGroupInfo(
                 id: id,
                 index: index,
                 total: total,
                 captionMode: captionMode,
-                captionPlacement: captionPlacement
+                captionPlacement: captionPlacement,
+                layoutOverride: layoutOverride
             )
         }
 

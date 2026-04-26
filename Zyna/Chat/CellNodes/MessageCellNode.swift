@@ -550,6 +550,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
                     && lhs.totalHint == rhs.totalHint
                     && lhs.caption == rhs.caption
                     && lhs.captionPlacement == rhs.captionPlacement
+                    && lhs.layoutOverride == rhs.layoutOverride
                     && lhs.suppressIndividualCaption == rhs.suppressIndividualCaption
                     && lhs.rendersCompositeBubble == rhs.rendersCompositeBubble
                     && lhs.hidesStandaloneBubble == rhs.hidesStandaloneBubble

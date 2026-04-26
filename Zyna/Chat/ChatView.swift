@@ -1293,7 +1293,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
             self.composerController.clearAttachments()
         }
-        controller.onSend = { [weak self, weak controller] attachments, caption, captionPlacement in
+        controller.onSend = { [weak self, weak controller] attachments, caption, captionPlacement, layoutOverride in
             guard let self else { return }
             if self.photoPreviewController === controller {
                 self.photoPreviewController = nil
@@ -1304,7 +1304,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self.viewModel.sendComposerAttachments(
                 attachments,
                 caption: trimmedCaption.isEmpty ? nil : trimmedCaption,
-                captionPlacement: captionPlacement
+                captionPlacement: captionPlacement,
+                layoutOverride: layoutOverride
             )
             self.scrollToLiveAfterUserSend()
         }
