@@ -259,10 +259,12 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
         for (index, imageNode) in imageNodes.enumerated() {
             guard index < slotFrames.count else {
                 imageNode.frame = .zero
+                imageNode.alpha = 1
                 continue
             }
             let previousFrame = imageNode.frame
             imageNode.frame = slotFrames[index]
+            imageNode.alpha = 1
             imageNode.roundedCorners = PhotoGroupLayout.roundedCorners(
                 for: index,
                 itemCount: mediaItems.count,
@@ -412,6 +414,83 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
         return slotFrames.firstIndex(where: { $0.contains(converted) })
     }
 
+    func paintSplashTarget(
+        for itemMessageId: String,
+        frameInScreen overrideFrameInScreen: CGRect? = nil
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        guard mediaContainerNode.isNodeLoaded,
+              let index = mediaItems.firstIndex(where: { $0.messageId == itemMessageId }),
+              index < imageNodes.count,
+              index < slotFrames.count
+        else {
+            return nil
+        }
+
+        let sourceView = imageNodes[index].view
+        guard sourceView.bounds.width > 0, sourceView.bounds.height > 0 else {
+            return nil
+        }
+
+        let image = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
+            sourceView.layer.render(in: ctx.cgContext)
+        }
+        guard image.cgImage != nil else { return nil }
+
+        return PaintSplashTrigger.SnapshotTarget(
+            sourceView: sourceView,
+            frameInScreen: overrideFrameInScreen ?? mediaContainerNode.view.convert(
+                slotFrames[index],
+                to: mediaContainerNode.view.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+            ),
+            image: image,
+            hideSource: { sourceView.alpha = 0 }
+        )
+    }
+
+    func imageFrameInScreen(at index: Int) -> CGRect? {
+        guard mediaContainerNode.isNodeLoaded,
+              index < slotFrames.count
+        else {
+            return nil
+        }
+        return mediaContainerNode.view.convert(
+            slotFrames[index],
+            to: mediaContainerNode.view.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+        )
+    }
+
+    func partialReflowPreviewImageData(excluding itemMessageId: String) -> [String: Data] {
+        var previews: [String: Data] = [:]
+
+        for (index, item) in mediaItems.enumerated() {
+            guard item.messageId != itemMessageId,
+                  index < imageNodes.count
+            else {
+                continue
+            }
+
+            if let image = imageNodes[index].image,
+               let imageData = image.pngData() {
+                previews[item.messageId] = imageData
+                continue
+            }
+
+            let sourceView = imageNodes[index].view
+            guard sourceView.bounds.width > 0, sourceView.bounds.height > 0 else {
+                continue
+            }
+
+            let image = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
+                sourceView.layer.render(in: ctx.cgContext)
+            }
+            if let imageData = image.pngData() {
+                previews[item.messageId] = imageData
+            }
+        }
+
+        return previews
+    }
+
     private func loadImages() {
         let scale = ScreenConstants.scale
         let layoutFrames = PhotoGroupLayout.frames(
@@ -461,6 +540,10 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
                 ) {
                     applyImage(cached.image, at: index, expectedRenderIdentity: renderIdentity)
                 } else {
+                    if imageNodes[index].image == nil,
+                       let previewPlaceholder = UIImage(data: previewImageData) {
+                        imageNodes[index].image = previewPlaceholder
+                    }
                     Task { [weak self] in
                         guard let self,
                               let bubbleImage = await MediaCache.shared.loadPreviewBubbleImage(

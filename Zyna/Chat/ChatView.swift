@@ -17,6 +17,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let automaticZoneTolerance: CGFloat = 8
     }
 
+    private struct PendingCompositeGroupDelete {
+        let messageIds: Set<String>
+        let splashTarget: PaintSplashTrigger.SnapshotTarget?
+    }
+
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
     var onTitleTapped: ((String) -> Void)?
@@ -69,6 +74,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private weak var photoPreviewController: PhotoGroupPreviewController?
     private weak var filePreviewController: FileAttachmentPreviewController?
     private var shouldPresentAttachmentPreviewAfterDismiss = false
+    private var pendingAnimatedDeleteTargets: [String: PaintSplashTrigger.SnapshotTarget] = [:]
+    private var pendingCompositeGroupDeletes: [String: PendingCompositeGroupDelete] = [:]
+    private var activeContextMenuBubbleFrameInScreen: CGRect?
+    private var activeContextMenuItemFramesInScreen: [String: CGRect] = [:]
 
     // MARK: - Init
 
@@ -419,6 +428,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         viewModel.onRedactedDetected = { [weak self] messageIds in
             self?.handleRedactedMessages(messageIds)
+        }
+
+        viewModel.onRedactionFailed = { [weak self] messageId, _ in
+            self?.handleRedactionFailure(for: messageId)
         }
 
         viewModel.$isInvited
@@ -775,6 +788,22 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         guard let window = view.window,
               let info = cellNode.extractBubbleForMenu(in: window.coordinateSpace) else { return }
 
+        activeContextMenuBubbleFrameInScreen = window.convert(
+            info.frame,
+            to: window.screen.coordinateSpace
+        )
+        activeContextMenuItemFramesInScreen = [:]
+        if let groupCell = cellNode as? PhotoGroupMessageCellNode,
+           let presentation = message.mediaGroupPresentation,
+           presentation.rendersCompositeBubble {
+            activeContextMenuItemFramesInScreen = Dictionary(
+                presentation.items.enumerated().compactMap { index, item in
+                    guard let frame = groupCell.imageFrameInScreen(at: index) else { return nil }
+                    return (item.messageId, frame)
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
         let isPendingOutgoingMessage = message.isSyntheticOutgoingEnvelope
 
         var actions: [ContextMenuAction] = []
@@ -825,34 +854,65 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
            !isPendingOutgoingMessage,
            !message.content.isRedacted {
             if let tappedItem = groupCell.prepareContextMenuSelection(at: activationPoint) {
+                let precomputedItemDeleteTarget = freezeSnapshotTarget(
+                    groupCell.paintSplashTarget(
+                        for: tappedItem.messageId,
+                        frameInScreen: activeContextMenuItemFramesInScreen[tappedItem.messageId]
+                    )
+                )
+                let precomputedReflowPreviews = groupCell.partialReflowPreviewImageData(
+                    excluding: tappedItem.messageId
+                )
                 actions.append(ContextMenuAction(
                     title: "Delete Photo",
                     image: UIImage(systemName: "trash"),
                     isDestructive: true,
                     handler: { [weak self] in
-                        self?.viewModel.redactMediaGroupItem(tappedItem)
+                        self?.beginPartialCompositeItemDelete(
+                            item: tappedItem,
+                            target: precomputedItemDeleteTarget,
+                            reflowPreviews: precomputedReflowPreviews
+                        )
                     }
                 ))
             }
 
             let groupItems = presentation.items.filter { $0.itemIdentifier != nil }
             if !groupItems.isEmpty {
+                let groupId = presentation.id
+                let groupMessageIds = Set(groupItems.map(\.messageId))
+                let precomputedGroupDeleteTarget = captureSnapshotTarget(
+                    from: info.node.view,
+                    frameInScreen: activeContextMenuBubbleFrameInScreen
+                )
                 actions.append(ContextMenuAction(
                     title: "Delete Group",
                     image: UIImage(systemName: "square.stack.3d.down.forward"),
                     isDestructive: true,
                     handler: { [weak self] in
-                        self?.viewModel.redactMediaGroupItems(groupItems)
+                        self?.beginCompositeGroupDelete(
+                            groupId: groupId,
+                            messageIds: groupMessageIds,
+                            items: groupItems,
+                            splashTarget: precomputedGroupDeleteTarget
+                        )
                     }
                 ))
             }
         } else if message.itemIdentifier != nil && !message.content.isRedacted {
+            let precomputedMessageDeleteTarget = captureSnapshotTarget(
+                from: info.node.view,
+                frameInScreen: activeContextMenuBubbleFrameInScreen
+            )
             actions.append(ContextMenuAction(
                 title: "Delete",
                 image: UIImage(systemName: "trash"),
                 isDestructive: true,
                 handler: { [weak self] in
-                    self?.triggerPaintSplashDelete(for: message)
+                    self?.beginMessageDelete(
+                        message,
+                        target: precomputedMessageDeleteTarget
+                    )
                 }
             ))
         }
@@ -867,6 +927,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             cellNode?.restoreBubbleFromMenu()
             self?.unlockInteraction("contextMenu")
             self?.activeContextMenu = nil
+            self?.activeContextMenuBubbleFrameInScreen = nil
+            self?.activeContextMenuItemFramesInScreen = [:]
             self?.flushPendingRedactions()
         }
 
@@ -1165,7 +1227,38 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
 
-        for messageId in messageIds {
+        var remainingIds = Set(messageIds)
+        let pendingGroupDeletes = pendingCompositeGroupDeletes
+
+        for (groupId, pendingDelete) in pendingGroupDeletes {
+            let memberIds = pendingDelete.messageIds
+            guard !memberIds.isDisjoint(with: remainingIds) else { continue }
+
+            if viewModel.areMessagesRedacted(Array(memberIds)) {
+                if !triggerCompositeGroupPaintSplashDelete(
+                    forGroupId: groupId,
+                    pendingDelete: pendingDelete
+                ) {
+                    viewModel.hideMessages(Array(memberIds))
+                }
+                pendingCompositeGroupDeletes.removeValue(forKey: groupId)
+            }
+
+            remainingIds.subtract(memberIds)
+        }
+
+        for messageId in remainingIds {
+            if let pendingTarget = pendingAnimatedDeleteTargets.removeValue(forKey: messageId) {
+                PaintSplashTrigger.trigger(in: node.tableNode, target: pendingTarget) { [weak self] in
+                    self?.viewModel.hideMessage(messageId)
+                }
+                continue
+            }
+
+            if triggerPartialPaintSplashDelete(for: messageId) {
+                continue
+            }
+
             guard let row = viewModel.messages.firstIndex(where: { $0.id == messageId }) else {
                 viewModel.hideMessage(messageId)
                 continue
@@ -1184,6 +1277,162 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self?.viewModel.hideMessage(messageId)
             }
         }
+    }
+
+    @discardableResult
+    private func triggerPartialPaintSplashDelete(for messageId: String) -> Bool {
+        guard let compositeRow = viewModel.messages.firstIndex(where: { message in
+            message.mediaGroupPresentation?.rendersCompositeBubble == true
+                && message.mediaGroupPresentation?.items.contains(where: { $0.messageId == messageId }) == true
+        }) else {
+            return false
+        }
+
+        let indexPath = IndexPath(row: compositeRow, section: 0)
+        guard let groupCell = node.tableNode.nodeForRow(at: indexPath) as? PhotoGroupMessageCellNode,
+              groupCell.isNodeLoaded,
+              let target = groupCell.paintSplashTarget(for: messageId)
+        else {
+            return false
+        }
+
+        let previews = groupCell.partialReflowPreviewImageData(excluding: messageId)
+        if !previews.isEmpty {
+            viewModel.registerPartialReflowPreviews(previews)
+        }
+
+        PaintSplashTrigger.trigger(in: node.tableNode, target: target) { [weak self] in
+            self?.viewModel.hideMessage(messageId)
+        }
+        return true
+    }
+
+    @discardableResult
+    private func triggerCompositeGroupPaintSplashDelete(
+        forGroupId groupId: String,
+        pendingDelete: PendingCompositeGroupDelete
+    ) -> Bool {
+        if let splashTarget = pendingDelete.splashTarget {
+            PaintSplashTrigger.trigger(in: node.tableNode, target: splashTarget) { [weak self] in
+                self?.viewModel.hideMessages(Array(pendingDelete.messageIds))
+            }
+            return true
+        }
+
+        guard let row = viewModel.messages.firstIndex(where: { message in
+            message.mediaGroupPresentation?.rendersCompositeBubble == true
+                && message.mediaGroupPresentation?.id == groupId
+        }) else {
+            return false
+        }
+
+        let indexPath = IndexPath(row: row, section: 0)
+        PaintSplashTrigger.trigger(in: node.tableNode, at: indexPath) { [weak self] in
+            self?.viewModel.hideMessages(Array(pendingDelete.messageIds))
+        }
+        return true
+    }
+
+    private func beginCompositeGroupDelete(
+        groupId: String,
+        messageIds: Set<String>,
+        items: [MediaGroupItem],
+        splashTarget: PaintSplashTrigger.SnapshotTarget?
+    ) {
+        guard !messageIds.isEmpty else { return }
+        viewModel.registerPendingAnimatedRedactions(Array(messageIds))
+        pendingCompositeGroupDeletes[groupId] = PendingCompositeGroupDelete(
+            messageIds: messageIds,
+            splashTarget: splashTarget
+        )
+        viewModel.redactMediaGroupItems(items)
+    }
+
+    private func handleRedactionFailure(for messageId: String) {
+        pendingAnimatedDeleteTargets.removeValue(forKey: messageId)
+        let affectedGroups = pendingCompositeGroupDeletes.compactMap { groupId, pendingDelete -> (String, Set<String>)? in
+            pendingDelete.messageIds.contains(messageId) ? (groupId, pendingDelete.messageIds) : nil
+        }
+
+        guard !affectedGroups.isEmpty else {
+            viewModel.clearPendingAnimatedRedactions([messageId])
+            return
+        }
+
+        for (groupId, messageIds) in affectedGroups {
+            pendingCompositeGroupDeletes.removeValue(forKey: groupId)
+            viewModel.clearPendingAnimatedRedactions(Array(messageIds))
+            let alreadyRedacted = messageIds.filter { viewModel.areMessagesRedacted([$0]) }
+            if !alreadyRedacted.isEmpty {
+                handleRedactedMessages(Array(alreadyRedacted))
+            }
+        }
+    }
+
+    private func beginPartialCompositeItemDelete(
+        item: MediaGroupItem,
+        target: PaintSplashTrigger.SnapshotTarget?,
+        reflowPreviews: [String: Data]
+    ) {
+        if let target {
+            pendingAnimatedDeleteTargets[item.messageId] = target
+        }
+        if !reflowPreviews.isEmpty {
+            viewModel.registerPartialReflowPreviews(reflowPreviews)
+        }
+        viewModel.registerPendingAnimatedRedactions([item.messageId])
+        viewModel.redactMediaGroupItem(item)
+    }
+
+    private func beginMessageDelete(
+        _ message: ChatMessage,
+        target: PaintSplashTrigger.SnapshotTarget?
+    ) {
+        if let target {
+            pendingAnimatedDeleteTargets[message.id] = target
+        }
+        viewModel.registerPendingAnimatedRedactions([message.id])
+        triggerPaintSplashDelete(for: message)
+    }
+
+    private func captureSnapshotTarget(
+        from sourceSnapshotView: UIView,
+        frameInScreen overrideFrameInScreen: CGRect? = nil
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        guard sourceSnapshotView.bounds.width > 0, sourceSnapshotView.bounds.height > 0 else {
+            return nil
+        }
+
+        let image = UIGraphicsImageRenderer(bounds: sourceSnapshotView.bounds).image { ctx in
+            sourceSnapshotView.layer.render(in: ctx.cgContext)
+        }
+        guard image.cgImage != nil else { return nil }
+
+        let frozenSourceView = UIView(frame: sourceSnapshotView.bounds)
+        return PaintSplashTrigger.SnapshotTarget(
+            sourceView: frozenSourceView,
+            frameInScreen: overrideFrameInScreen ?? sourceSnapshotView.convert(
+                sourceSnapshotView.bounds,
+                to: sourceSnapshotView.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+            ),
+            image: image,
+            hideSource: {}
+        )
+    }
+
+    private func freezeSnapshotTarget(
+        _ target: PaintSplashTrigger.SnapshotTarget?
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        guard let target else { return nil }
+        let frozenSourceView = UIView(
+            frame: CGRect(origin: .zero, size: target.image.size)
+        )
+        return PaintSplashTrigger.SnapshotTarget(
+            sourceView: frozenSourceView,
+            frameInScreen: target.frameInScreen,
+            image: target.image,
+            hideSource: {}
+        )
     }
 
     private func flushPendingRedactions() {

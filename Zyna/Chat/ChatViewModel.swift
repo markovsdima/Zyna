@@ -13,6 +13,11 @@ private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 
 final class ChatViewModel {
 
+    private struct PartialReflowPreview {
+        let identity: String
+        let imageData: Data
+    }
+
     // MARK: - State
 
     private(set) var messages: [ChatMessage] = []
@@ -59,6 +64,8 @@ final class ChatViewModel {
     private let room: Room
     private let roomId: String
     private var hiddenIds = Set<String>()
+    private var pendingPartialRedactions: [String: StoredMessage] = [:]
+    private var partialReflowPreviewsByMessageId: [String: PartialReflowPreview] = [:]
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
     private var historySyncTask: Task<Void, Never>?
@@ -207,12 +214,27 @@ final class ChatViewModel {
             newlyRedactedIds = []
         }
 
+        Self.registerPendingPartialRedactions(
+            into: &pendingPartialRedactions,
+            newStored: newStored,
+            prevStored: prevStored,
+            newlyRedactedIds: newlyRedactedIds,
+            hiddenIds: hiddenIds
+        )
+        Self.prunePartialReflowPreviews(
+            in: &partialReflowPreviewsByMessageId,
+            newStored: newStored
+        )
+
         // 2. Build display array: filter hidden and already-redacted (keep newly-redacted for animation)
         let newlyRedactedSet = Set(newlyRedactedIds)
-        let displayStored = newStored.filter { msg in
-            if hiddenIds.contains(msg.id) { return false }
-            if msg.contentType == "redacted" && !newlyRedactedSet.contains(msg.id) { return false }
-            return true
+        let displayStored = newStored.compactMap { msg -> StoredMessage? in
+            if hiddenIds.contains(msg.id) { return nil }
+            if let pending = pendingPartialRedactions[msg.id] {
+                return pending
+            }
+            if msg.contentType == "redacted" && !newlyRedactedSet.contains(msg.id) { return nil }
+            return msg
         }
 
         let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: newStored)
@@ -225,6 +247,7 @@ final class ChatViewModel {
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
+            partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
         )
@@ -300,6 +323,7 @@ final class ChatViewModel {
     private func buildRenderableMessages(
         from rawMessages: [ChatMessage],
         deletedMediaGroupIds: Set<String>,
+        partialReflowPreviewsByMessageId: [String: PartialReflowPreview],
         olderBoundary: ClusterNeighbor?,
         newerBoundary: ClusterNeighbor?
     ) -> [ChatMessage] {
@@ -333,9 +357,52 @@ final class ChatViewModel {
         return Self.buildDisplayMessages(
             from: renderableMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
+            partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
             olderBoundary: olderBoundary,
             newerBoundary: newerBoundary
         )
+    }
+
+    func registerPartialReflowPreviews(_ previews: [String: Data]) {
+        guard !previews.isEmpty else { return }
+        for (messageId, imageData) in previews {
+            partialReflowPreviewsByMessageId[messageId] = PartialReflowPreview(
+                identity: "partial-reflow:\(messageId):\(UUID().uuidString)",
+                imageData: imageData
+            )
+        }
+    }
+
+    func registerPendingAnimatedRedactions(_ messageIds: [String]) {
+        guard !messageIds.isEmpty else { return }
+        let storedById = Dictionary(
+            window.currentStoredMessages().map { ($0.id, $0) },
+            uniquingKeysWith: { _, last in last }
+        )
+        for messageId in messageIds {
+            guard pendingPartialRedactions[messageId] == nil,
+                  let stored = storedById[messageId]
+            else {
+                continue
+            }
+            pendingPartialRedactions[messageId] = stored
+        }
+    }
+
+    func clearPendingAnimatedRedactions(_ messageIds: [String]) {
+        guard !messageIds.isEmpty else { return }
+        for messageId in messageIds {
+            pendingPartialRedactions.removeValue(forKey: messageId)
+        }
+    }
+
+    func areMessagesRedacted(_ messageIds: [String]) -> Bool {
+        guard !messageIds.isEmpty else { return false }
+        let storedById = Dictionary(
+            window.currentStoredMessages().map { ($0.id, $0) },
+            uniquingKeysWith: { _, last in last }
+        )
+        return messageIds.allSatisfy { storedById[$0]?.contentType == "redacted" }
     }
 
     private struct PendingRenderableEnvelope {
@@ -1777,14 +1844,20 @@ final class ChatViewModel {
     func redactMediaGroupItems(_ items: [MediaGroupItem]) {
         let identifiableItems = items.filter { $0.itemIdentifier != nil }
         guard !identifiableItems.isEmpty else { return }
-        Task {
-            for item in identifiableItems {
-                guard let itemId = item.itemIdentifier else { continue }
-                do {
-                    try await timelineService.redactEvent(itemId)
-                } catch {
-                    await MainActor.run {
-                        onRedactionFailed?(item.messageId, error)
+        Task { [weak self] in
+            guard let self else { return }
+            await withTaskGroup(of: Void.self) { group in
+                for item in identifiableItems {
+                    guard let itemId = item.itemIdentifier else { continue }
+                    group.addTask { [weak self] in
+                        guard let self else { return }
+                        do {
+                            try await self.timelineService.redactEvent(itemId)
+                        } catch {
+                            await MainActor.run {
+                                self.onRedactionFailed?(item.messageId, error)
+                            }
+                        }
                     }
                 }
             }
@@ -1804,14 +1877,25 @@ final class ChatViewModel {
     }
 
     func hideMessage(_ messageId: String) {
-        hiddenIds.insert(messageId)
+        hideMessages([messageId])
+    }
+
+    func hideMessages(_ messageIds: [String]) {
+        let idsToHide = Set(messageIds)
+        guard !idsToHide.isEmpty else { return }
+
+        hiddenIds.formUnion(idsToHide)
+        for messageId in idsToHide {
+            pendingPartialRedactions.removeValue(forKey: messageId)
+            partialReflowPreviewsByMessageId.removeValue(forKey: messageId)
+        }
         let oldMessages = messages
         var visibleRedactedIds = Set(
             oldMessages
                 .filter { $0.content.isRedacted }
                 .map(\.id)
         )
-        visibleRedactedIds.remove(messageId)
+        visibleRedactedIds.subtract(idsToHide)
         let displayStored = window.currentStoredMessages().filter { msg in
             if hiddenIds.contains(msg.id) { return false }
             if msg.contentType == "redacted" {
@@ -1821,12 +1905,13 @@ final class ChatViewModel {
         }
         let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: window.currentStoredMessages())
         logMediaGroup(
-            "deleteReflow hide messageId=\(messageId) visibleRedacted=\(visibleRedactedIds.sorted().joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ","))"
+            "deleteReflow hide messageIds=\(idsToHide.sorted().joined(separator: ",")) visibleRedacted=\(visibleRedactedIds.sorted().joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ","))"
         )
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
+            partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
             olderBoundary: window.peekOlderNeighbor(),
             newerBoundary: window.peekNewerNeighbor()
         )
@@ -1986,6 +2071,7 @@ final class ChatViewModel {
     private static func decorateMediaGroups(
         _ messages: [ChatMessage],
         deletedMediaGroupIds: Set<String>,
+        partialReflowPreviewsByMessageId: [String: PartialReflowPreview],
         olderBoundary: ClusterNeighbor?,
         newerBoundary: ClusterNeighbor?
     ) -> [ChatMessage] {
@@ -2020,7 +2106,10 @@ final class ChatViewModel {
             if isVisualGroup {
                 let sourceMessages = Array(result[runStart...runEnd])
                 let allowsDeletedReflow = deletedMediaGroupIds.contains(mediaGroup.id)
-                let groupItems = mediaGroupItems(from: sourceMessages)
+                let groupItems = mediaGroupItems(
+                    from: sourceMessages,
+                    partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId
+                )
                 let visibleCaptions = (runStart...runEnd).map { result[$0].content.visibleImageCaption }
                 let captionCollapse = groupCaptionCollapse(from: visibleCaptions)
                 let deduplicatedCaption = captionCollapse.caption
@@ -2091,6 +2180,7 @@ final class ChatViewModel {
     private static func buildDisplayMessages(
         from rawMessages: [ChatMessage],
         deletedMediaGroupIds: Set<String>,
+        partialReflowPreviewsByMessageId: [String: PartialReflowPreview],
         olderBoundary: ClusterNeighbor?,
         newerBoundary: ClusterNeighbor?
     ) -> [ChatMessage] {
@@ -2117,6 +2207,7 @@ final class ChatViewModel {
         return decorateMediaGroups(
             clusteredMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
+            partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
             olderBoundary: olderBoundary,
             newerBoundary: newerBoundary
         ).filter { $0.mediaGroupPresentation?.hidesStandaloneBubble != true }
@@ -2253,7 +2344,10 @@ final class ChatViewModel {
         return MediaGroupRenderDecision(canRender: true, reason: "complete")
     }
 
-    private static func mediaGroupItems(from messages: [ChatMessage]) -> [MediaGroupItem] {
+    private static func mediaGroupItems(
+        from messages: [ChatMessage],
+        partialReflowPreviewsByMessageId: [String: PartialReflowPreview]
+    ) -> [MediaGroupItem] {
         messages
             .sorted {
                 let lhsIndex = $0.zynaAttributes.mediaGroup?.index ?? .max
@@ -2272,8 +2366,8 @@ final class ChatViewModel {
                     eventId: message.eventId,
                     transactionId: message.transactionId,
                     source: source,
-                    previewImageData: nil,
-                    previewIdentity: nil,
+                    previewImageData: partialReflowPreviewsByMessageId[message.id]?.imageData,
+                    previewIdentity: partialReflowPreviewsByMessageId[message.id]?.identity,
                     width: width,
                     height: height,
                     caption: caption,
@@ -2305,6 +2399,64 @@ final class ChatViewModel {
                 return message.toChatMessage()?.zynaAttributes.mediaGroup?.id
             }
         )
+    }
+
+    private static func registerPendingPartialRedactions(
+        into pendingPartialRedactions: inout [String: StoredMessage],
+        newStored: [StoredMessage],
+        prevStored: [StoredMessage]?,
+        newlyRedactedIds: [String],
+        hiddenIds: Set<String>
+    ) {
+        let existingIds = Set(newStored.map(\.id))
+        pendingPartialRedactions = pendingPartialRedactions.filter {
+            !hiddenIds.contains($0.key) && existingIds.contains($0.key)
+        }
+
+        guard let prevStored, !newlyRedactedIds.isEmpty else { return }
+
+        let prevById = Dictionary(prevStored.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let liveImageCounts = liveImageCountByMediaGroup(in: newStored)
+
+        for messageId in newlyRedactedIds {
+            guard pendingPartialRedactions[messageId] == nil,
+                  let previous = prevById[messageId],
+                  previous.contentType == "image",
+                  let mediaGroupId = previous.toChatMessage()?.zynaAttributes.mediaGroup?.id,
+                  (liveImageCounts[mediaGroupId] ?? 0) > 0
+            else {
+                continue
+            }
+            pendingPartialRedactions[messageId] = previous
+            logMediaGroup(
+                "deleteReflow pending messageId=\(messageId) group=\(mediaGroupId)"
+            )
+        }
+    }
+
+    private static func liveImageCountByMediaGroup(in storedMessages: [StoredMessage]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for message in storedMessages {
+            guard message.contentType == "image",
+                  let mediaGroupId = message.toChatMessage()?.zynaAttributes.mediaGroup?.id
+            else {
+                continue
+            }
+            counts[mediaGroupId, default: 0] += 1
+        }
+        return counts
+    }
+
+    private static func prunePartialReflowPreviews(
+        in previews: inout [String: PartialReflowPreview],
+        newStored: [StoredMessage]
+    ) {
+        let liveIds = Set(
+            newStored.compactMap { message in
+                message.contentType == "image" ? message.id : nil
+            }
+        )
+        previews = previews.filter { liveIds.contains($0.key) }
     }
 
     private static func describe(_ group: OutgoingEnvelopeSnapshot) -> String {
