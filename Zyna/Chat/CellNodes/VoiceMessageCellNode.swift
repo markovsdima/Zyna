@@ -207,6 +207,7 @@ final class VoiceMessageCellNode: MessageCellNode {
     }
 
     override func accessibilityActivate() -> Bool {
+        guard allowsInteractiveActions else { return false }
         playTapped()
         return true
     }

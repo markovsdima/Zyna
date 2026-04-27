@@ -92,6 +92,11 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     let mediaGroupPosition: MediaGroupPosition?
     private let rendersCompositeMediaBubble: Bool
     let usesAccentBubbleStyle: Bool
+    var allowsInteractiveActions = true {
+        didSet {
+            applyInteractiveActionsState()
+        }
+    }
     private var showsBubbleChrome = true
     private var usesBareBubbleContent = false
 
@@ -197,6 +202,10 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
                 ]
             )
             senderNameNode.onDidLoad { [weak self] node in
+                guard let self, self.allowsInteractiveActions else {
+                    node.view.isUserInteractionEnabled = false
+                    return
+                }
                 node.view.isUserInteractionEnabled = true
                 let tap = UITapGestureRecognizer(
                     target: self,
@@ -252,6 +261,10 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             }
 
             avatarBackgroundNode.onDidLoad { [weak self] node in
+                guard let self, self.allowsInteractiveActions else {
+                    node.view.isUserInteractionEnabled = false
+                    return
+                }
                 node.view.isUserInteractionEnabled = true
                 let tap = UITapGestureRecognizer(
                     target: self,
@@ -324,6 +337,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     }
 
     @objc private func handleSenderTap() {
+        guard allowsInteractiveActions else { return }
         onSenderTapped?(senderId)
     }
 
@@ -332,11 +346,19 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         node.onReactionTapped = { [weak self] key in
             self?.onReactionTapped?(key)
         }
+        node.isUserInteractionEnabled = allowsInteractiveActions
         node.style.maxWidth = ASDimension(
             unit: .points,
             value: ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
         )
         return node
+    }
+
+    private func applyInteractiveActionsState() {
+        contextSourceNode.isGestureEnabled = allowsInteractiveActions
+        senderNameNode.isUserInteractionEnabled = allowsInteractiveActions
+        avatarBackgroundNode.isUserInteractionEnabled = allowsInteractiveActions
+        reactionsNode?.isUserInteractionEnabled = allowsInteractiveActions
     }
 
     private var usesFallbackBubbleBackground: Bool {

@@ -11,6 +11,16 @@ import MatrixRustSDK
 
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 
+enum ChatPresentationMode {
+    case normal
+    case preview
+
+    var isPreview: Bool {
+        if case .preview = self { return true }
+        return false
+    }
+}
+
 final class ChatViewModel {
 
     struct DetectedRedactedMediaGroup {
@@ -76,6 +86,7 @@ final class ChatViewModel {
     var onRedactionFailed: ((String, Error, PendingRedactionFailureDisposition) -> Void)?
 
     let roomName: String
+    let mode: ChatPresentationMode
     @Published private(set) var partnerPresence: UserPresence?
     @Published private(set) var partnerUserId: String?
     @Published private(set) var memberCount: Int?
@@ -111,10 +122,11 @@ final class ChatViewModel {
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
     var hasOlderInDB: Bool { window.hasOlderInDB }
 
-    init(room: Room) {
+    init(room: Room, mode: ChatPresentationMode = .normal) {
         let roomId = room.id()
         self.room = room
         self.roomId = roomId
+        self.mode = mode
         self.roomName = room.displayName() ?? "Chat"
         self.isInvited = room.membership() == .invited
         self.timelineService = TimelineService(room: room)
@@ -176,7 +188,9 @@ final class ChatViewModel {
                     self.directUserId = userId
                     self.partnerUserId = userId
                 }
-                PresenceTracker.shared.register(userIds: [userId], for: "chat")
+                if !self.mode.isPreview {
+                    PresenceTracker.shared.register(userIds: [userId], for: "chat")
+                }
                 PresenceTracker.shared.$statuses
                     .map { $0[userId] }
                     .receive(on: DispatchQueue.main)
@@ -199,7 +213,8 @@ final class ChatViewModel {
 
         Task { [weak self] in
             guard let self else { return }
-            await self.timelineService.startListening()
+            await self.timelineService.startListening(subscribeForSync: !self.mode.isPreview)
+            guard !self.mode.isPreview else { return }
             let terminalFailures = await self.pendingRedactions.retryPendingRedactions(
                 roomId: self.roomId,
                 timelineService: self.timelineService
@@ -217,6 +232,7 @@ final class ChatViewModel {
             }
         }
 
+        guard !mode.isPreview else { return }
         historySyncTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             await self?.syncFullHistory()
@@ -1401,6 +1417,7 @@ final class ChatViewModel {
         eventId: String?,
         canEstablishBaseline: Bool
     ) {
+        guard !mode.isPreview else { return }
         guard let eventId else {
             readReceiptWork?.cancel()
             pendingReadReceiptSend = nil
@@ -2373,7 +2390,9 @@ final class ChatViewModel {
         historySyncTask?.cancel()
         readReceiptWork?.cancel()
         pendingReadReceiptSend = nil
-        PresenceTracker.shared.unregister(for: "chat")
+        if !mode.isPreview {
+            PresenceTracker.shared.unregister(for: "chat")
+        }
         timelineService.onDiffs = nil
         timelineService.onOwnFullyReadMarker = nil
         timelineService.onSendQueueUpdate = nil
