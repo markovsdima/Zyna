@@ -22,6 +22,7 @@ final class ImageMessageCellNode: MessageCellNode {
     private let imageNode = RoundedImageNode()
     private let timeBadgeNode = ASDisplayNode()
     private let captionNode: ASTextNode?
+    private let captionPlacement: CaptionPlacement?
 
     /// Current thumbnail for the viewer transition.
     var currentImage: UIImage? { imageNode.image }
@@ -33,6 +34,7 @@ final class ImageMessageCellNode: MessageCellNode {
 
     private var aspectRatio: CGFloat
     private let mediaSource: MediaSource?
+    private let previewImageData: Data?
     private let hasSDKDimensions: Bool
     private let usesDirectImageContent: Bool
 
@@ -42,18 +44,22 @@ final class ImageMessageCellNode: MessageCellNode {
         var source: MediaSource?
         var imageWidth: UInt64?
         var imageHeight: UInt64?
-        var captionText: String?
+        var previewImageData: Data?
+        let mediaGroupPresentation = message.mediaGroupPresentation
+        let ownCaptionText = message.content.visibleImageCaption
+        let captionText: String?
 
-        if case .image(let src, let width, let height, let caption) = message.content {
+        if case .image(let src, let width, let height, _, let previewData) = message.content {
             source = src
             imageWidth = width
             imageHeight = height
-            // Filter zero-width caption (carrier for Zyna span)
-            if let c = caption {
-                let visible = c.replacingOccurrences(of: "\u{200B}", with: "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !visible.isEmpty { captionText = visible }
-            }
+            previewImageData = previewData
+        }
+
+        if let mediaGroupPresentation, mediaGroupPresentation.suppressIndividualCaption {
+            captionText = mediaGroupPresentation.caption
+        } else {
+            captionText = ownCaptionText
         }
 
         // Caption node
@@ -74,8 +80,14 @@ final class ImageMessageCellNode: MessageCellNode {
         } else {
             self.captionNode = nil
         }
+        self.captionPlacement = captionText == nil
+            ? nil
+            : (mediaGroupPresentation?.captionPlacement
+                ?? message.zynaAttributes.mediaGroup?.captionPlacement
+                ?? .bottom)
 
         self.mediaSource = source
+        self.previewImageData = previewImageData
         if let width = imageWidth, let height = imageHeight, height > 0 {
             self.aspectRatio = CGFloat(width) / CGFloat(height)
             self.hasSDKDimensions = true
@@ -90,21 +102,37 @@ final class ImageMessageCellNode: MessageCellNode {
         super.init(message: message, isGroupChat: isGroupChat)
 
         // Image — precomposited per-corner rounding via RoundedImageNode
-        imageNode.radius = 18
+        imageNode.radius = MessageCellHelpers.mediaBubbleCornerRadius
         imageNode.imageContentMode = .scaleAspectFill
 
-        var corners: UIRectCorner = .allCorners
+        var corners: UIRectCorner
+        if let mediaGroupPosition = mediaGroupPresentation?.position {
+            switch mediaGroupPosition {
+            case .top:
+                corners = [.topLeft, .topRight]
+            case .middle:
+                corners = []
+            case .bottom:
+                corners = [.bottomLeft, .bottomRight]
+            }
+        } else {
+            corners = .allCorners
+        }
         if hasHeader {
             corners.remove(.topLeft)
             corners.remove(.topRight)
         }
-        if hasCaption {
+        if captionPlacement == .top {
+            corners.remove(.topLeft)
+            corners.remove(.topRight)
+        } else if hasCaption {
             corners.remove(.bottomLeft)
             corners.remove(.bottomRight)
         }
         imageNode.roundedCorners = corners
         setShowsBubbleChrome(!usesDirectImageContent)
         setUsesBareBubbleContent(usesDirectImageContent)
+        statusIconNode?.tintColour = .white
 
         let buildImageWithTime: () -> ASLayoutSpec = { [weak self] in
             guard let self else { return ASLayoutSpec() }
@@ -117,9 +145,30 @@ final class ImageMessageCellNode: MessageCellNode {
                 height: min(imgHeight, MessageCellHelpers.maxImageBubbleHeight)
             )
 
+            let showsTimeBadge = self.mediaGroupPosition == nil
+                || self.mediaGroupPosition == .bottom
+                || self.captionNode != nil
+            guard showsTimeBadge else {
+                return ASWrapperLayoutSpec(layoutElement: self.imageNode)
+            }
+
+            let timeBadgeContent: ASLayoutElement
+            if let statusIconNode = self.statusIconNode {
+                let timeRow = ASStackLayoutSpec(
+                    direction: .horizontal,
+                    spacing: 4,
+                    justifyContent: .start,
+                    alignItems: .center,
+                    children: [self.timeNode, statusIconNode]
+                )
+                timeBadgeContent = timeRow
+            } else {
+                timeBadgeContent = self.timeNode
+            }
+
             let timePadded = ASInsetLayoutSpec(
                 insets: UIEdgeInsets(top: 2, left: 6, bottom: 2, right: 6),
-                child: self.timeNode
+                child: timeBadgeContent
             )
             let timeBadge = ASBackgroundLayoutSpec(child: timePadded, background: self.timeBadgeNode)
 
@@ -155,15 +204,21 @@ final class ImageMessageCellNode: MessageCellNode {
                 ))
             }
 
-            // Build vertical stack: [headers] + image + [caption]
-            var stackChildren: [ASLayoutElement] = headerChildren
-            stackChildren.append(imageWithTime)
-
-            if let captionNode = self.captionNode {
-                stackChildren.append(ASInsetLayoutSpec(
+            let captionInset = self.captionNode.map {
+                ASInsetLayoutSpec(
                     insets: UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12),
-                    child: captionNode
-                ))
+                    child: $0
+                )
+            }
+
+            // Build vertical stack: [headers] + [caption?] + image or [headers] + image + [caption?]
+            var stackChildren: [ASLayoutElement] = headerChildren
+            if let captionInset, self.captionPlacement == .top {
+                stackChildren.append(captionInset)
+            }
+            stackChildren.append(imageWithTime)
+            if let captionInset, self.captionPlacement != .top {
+                stackChildren.append(captionInset)
             }
 
             if stackChildren.count > 1 {
@@ -208,6 +263,11 @@ final class ImageMessageCellNode: MessageCellNode {
                 }
             }
             self.onImageTapped?()
+        }
+
+        if let previewImageData,
+           let previewImage = UIImage(data: previewImageData) {
+            imageNode.image = previewImage
         }
 
         // Load image
@@ -272,11 +332,45 @@ final class ImageMessageCellNode: MessageCellNode {
         CATransaction.commit()
     }
 
+    override func paintSplashTarget(
+        frameInScreen overrideFrameInScreen: CGRect? = nil
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        guard let reliableImage = paintSplashSourceImage(),
+              let imageSnapshot = imageNode.snapshotImage(from: reliableImage)
+        else {
+            return super.paintSplashTarget(frameInScreen: overrideFrameInScreen)
+        }
+
+        let sourceView = contextSourceNode.view
+        guard sourceView.bounds.width > 0, sourceView.bounds.height > 0 else {
+            return super.paintSplashTarget(frameInScreen: overrideFrameInScreen)
+        }
+
+        let imageFrame = imageNode.view.convert(imageNode.view.bounds, to: sourceView)
+        let snapshot = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
+            imageSnapshot.draw(in: imageFrame)
+            sourceView.layer.render(in: ctx.cgContext)
+        }
+        guard snapshot.cgImage != nil else {
+            return super.paintSplashTarget(frameInScreen: overrideFrameInScreen)
+        }
+
+        return PaintSplashTrigger.SnapshotTarget(
+            sourceView: sourceView,
+            frameInScreen: overrideFrameInScreen ?? sourceView.convert(
+                sourceView.bounds,
+                to: sourceView.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+            ),
+            image: snapshot,
+            hideSource: { [weak self] in self?.alpha = 0 }
+        )
+    }
+
     /// Fixed chat-bubble display recipe. The cache stores a bitmap
     /// already normalized to this width plus the shared max-height cap.
     private func bubbleCacheRecipe() -> (maxPixelWidth: Int, maxPixelHeight: Int) {
         let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
-        let scale = UIScreen.main.scale
+        let scale = ScreenConstants.scale
         return (
             maxPixelWidth: Int(round(maxWidth * scale)),
             maxPixelHeight: Int(round(MessageCellHelpers.maxImageBubbleHeight * scale))
@@ -300,6 +394,17 @@ final class ImageMessageCellNode: MessageCellNode {
                 self.applyLoadedSourcePixelSize(bubbleImage.sourcePixelSize, relayout: true)
             }
         }
+    }
+
+    private func paintSplashSourceImage() -> UIImage? {
+        if let image = imageNode.image {
+            return image
+        }
+        if let previewImageData,
+           let previewImage = UIImage(data: previewImageData) {
+            return previewImage
+        }
+        return nil
     }
 
     private func applyLoadedSourcePixelSize(_ sourcePixelSize: CGSize, relayout: Bool) {

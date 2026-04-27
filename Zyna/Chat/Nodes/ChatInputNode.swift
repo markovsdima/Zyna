@@ -5,6 +5,8 @@
 
 import AsyncDisplayKit
 import Combine
+import ObjectiveC.runtime
+import UniformTypeIdentifiers
 
 final class ChatInputNode: ASDisplayNode {
 
@@ -30,7 +32,6 @@ final class ChatInputNode: ASDisplayNode {
     private var micCenter: CGPoint = .zero
     private var pulseView: UIView?
     private var lockView: LockIndicatorView?
-
     /// Thresholds for gesture recognition
     private let cancelSlideDistance: CGFloat = 120
     private let lockSlideDistance: CGFloat = 80
@@ -49,6 +50,12 @@ final class ChatInputNode: ASDisplayNode {
     var onSizeChanged: (() -> Void)?
     var onWaveformUpdate: (([Float]) -> Void)?
     var onReplyCancelled: (() -> Void)?
+    var onPastedImages: (([UIImage]) -> Void)?
+
+    private var pendingPastedImages: [(sequence: Int, image: UIImage)] = []
+    private var nextPastedImageSequence: Int = 0
+    private var pendingPasteExpectedImageCount: Int?
+    private var pendingPasteFlushWorkItem: DispatchWorkItem?
 
     // MARK: - Reply Preview
 
@@ -190,6 +197,11 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.delegate = self
         textInputNode.view.layer.cornerRadius = 24
         textInputNode.view.clipsToBounds = true
+        textInputNode.textView.pasteDelegate = self
+        textInputNode.textView.pasteConfiguration = UIPasteConfiguration(
+            acceptableTypeIdentifiers: [UTType.plainText.identifier, UTType.image.identifier]
+        )
+        textInputNode.textView.enableChatImagePasteMenuSupport()
         sendButtonNode.addTarget(self, action: #selector(sendTapped), forControlEvents: .touchUpInside)
         attachButtonNode.addTarget(self, action: #selector(attachTapped), forControlEvents: .touchUpInside)
 
@@ -239,8 +251,7 @@ final class ChatInputNode: ASDisplayNode {
             children: [rightButton]
         )
 
-        // Reply preview: inside the text input area with dark background
-        var inputChild: ASLayoutElement = textInputNode
+        var inputColumnChildren: [ASLayoutElement] = []
         if isShowingReply {
             let textColumn = ASStackLayoutSpec(
                 direction: .vertical, spacing: 1, justifyContent: .start, alignItems: .start,
@@ -261,10 +272,17 @@ final class ChatInputNode: ASDisplayNode {
                 insets: UIEdgeInsets(top: 4, left: 4, bottom: 0, right: 4),
                 child: replyWithBg
             )
+            inputColumnChildren.append(replyPadded)
+        }
+        inputColumnChildren.append(textInputNode)
 
+        let inputChild: ASLayoutElement
+        if inputColumnChildren.count == 1 {
+            inputChild = inputColumnChildren[0]
+        } else {
             let inputColumn = ASStackLayoutSpec(
-                direction: .vertical, spacing: 0, justifyContent: .start, alignItems: .stretch,
-                children: [replyPadded, textInputNode]
+                direction: .vertical, spacing: 6, justifyContent: .start, alignItems: .stretch,
+                children: inputColumnChildren
             )
             inputColumn.style.flexGrow = 1
             inputColumn.style.flexShrink = 1
@@ -741,5 +759,206 @@ extension ChatInputNode: ASEditableTextNodeDelegate {
             editableTextNode.scrollEnabled = needsScroll
         }
         onSizeChanged?()
+    }
+}
+
+// MARK: - Composer Text Helpers
+
+extension ChatInputNode {
+    var currentText: String {
+        textInputNode.textView.text ?? ""
+    }
+
+    func setCurrentText(_ text: String) {
+        textInputNode.textView.text = text
+        updateTextEmptyState()
+        invalidateCalculatedLayout()
+        onSizeChanged?()
+    }
+
+    func focusTextInput() {
+        textInputNode.textView.becomeFirstResponder()
+    }
+}
+
+// MARK: - UITextPasteDelegate
+
+extension ChatInputNode: UITextPasteDelegate {
+    func textPasteConfigurationSupporting(
+        _ textPasteConfigurationSupporting: any UITextPasteConfigurationSupporting,
+        transform item: any UITextPasteItem
+    ) {
+        guard item.itemProvider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else {
+            item.setDefaultResult()
+            return
+        }
+
+        let sequence = reservePastedImageSequence()
+
+        if let localImage = item.localObject as? UIImage {
+            Task { @MainActor [weak self] in
+                self?.completeImagePaste(with: localImage, item: item, sequence: sequence)
+            }
+            return
+        }
+
+        if item.itemProvider.canLoadObject(ofClass: UIImage.self) {
+            item.itemProvider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
+                Task { @MainActor [weak self] in
+                    if let image = object as? UIImage {
+                        self?.completeImagePaste(with: image, item: item, sequence: sequence)
+                    } else if self?.canFallbackToSinglePasteboardImage == true,
+                              let fallbackImage = UIPasteboard.general.image {
+                        self?.completeImagePaste(with: fallbackImage, item: item, sequence: sequence)
+                    } else {
+                        item.setNoResult()
+                    }
+                }
+            }
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            if self?.canFallbackToSinglePasteboardImage == true,
+               let fallbackImage = UIPasteboard.general.image {
+                self?.completeImagePaste(with: fallbackImage, item: item, sequence: sequence)
+            } else {
+                item.setNoResult()
+            }
+        }
+    }
+}
+
+// MARK: - Paste Menu Support
+
+private var chatImagePasteMenuEnabledKey: UInt8 = 0
+private var chatPasteMenuSwizzledClasses = Set<ObjectIdentifier>()
+
+private extension UITextView {
+    func enableChatImagePasteMenuSupport() {
+        Self.swizzleChatPasteMenuIfNeeded(for: object_getClass(self))
+        objc_setAssociatedObject(
+            self,
+            &chatImagePasteMenuEnabledKey,
+            NSNumber(value: true),
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        )
+    }
+
+    var chatHasImagePasteMenuSupport: Bool {
+        (objc_getAssociatedObject(self, &chatImagePasteMenuEnabledKey) as? NSNumber)?.boolValue ?? false
+    }
+
+    static func swizzleChatPasteMenuIfNeeded(for textViewClass: AnyClass?) {
+        guard let textViewClass else { return }
+
+        let classID = ObjectIdentifier(textViewClass)
+        guard !chatPasteMenuSwizzledClasses.contains(classID) else { return }
+
+        let originalSelector = #selector(canPerformAction(_:withSender:))
+        let swizzledSelector = #selector(UITextView.chat_canPerformAction(_:withSender:))
+
+        guard
+            let originalMethod = class_getInstanceMethod(textViewClass, originalSelector),
+            let swizzledMethod = class_getInstanceMethod(UITextView.self, swizzledSelector)
+        else {
+            return
+        }
+
+        class_addMethod(
+            textViewClass,
+            originalSelector,
+            method_getImplementation(originalMethod),
+            method_getTypeEncoding(originalMethod)
+        )
+        class_addMethod(
+            textViewClass,
+            swizzledSelector,
+            method_getImplementation(swizzledMethod),
+            method_getTypeEncoding(swizzledMethod)
+        )
+
+        guard
+            let targetOriginalMethod = class_getInstanceMethod(textViewClass, originalSelector),
+            let targetSwizzledMethod = class_getInstanceMethod(textViewClass, swizzledSelector)
+        else {
+            return
+        }
+
+        method_exchangeImplementations(targetOriginalMethod, targetSwizzledMethod)
+        chatPasteMenuSwizzledClasses.insert(classID)
+    }
+
+    @objc func chat_canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        let originalResult = chat_canPerformAction(action, withSender: sender)
+        guard action == #selector(UIResponderStandardEditActions.paste(_:)) else {
+            return originalResult
+        }
+        guard chatHasImagePasteMenuSupport else {
+            return originalResult
+        }
+        if originalResult {
+            return true
+        }
+        return isEditable && isUserInteractionEnabled && UIPasteboard.general.hasImages
+    }
+}
+
+private extension ChatInputNode {
+    var canFallbackToSinglePasteboardImage: Bool {
+        (pendingPasteExpectedImageCount ?? imageItemProviderCountInPasteboard()) <= 1
+    }
+
+    func reservePastedImageSequence() -> Int {
+        if pendingPasteExpectedImageCount == nil {
+            pendingPasteExpectedImageCount = max(1, imageItemProviderCountInPasteboard())
+        }
+        let sequence = nextPastedImageSequence
+        nextPastedImageSequence += 1
+        return sequence
+    }
+
+    func imageItemProviderCountInPasteboard() -> Int {
+        let itemProviders = UIPasteboard.general.itemProviders
+        let imageProviders = itemProviders.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.image.identifier)
+        }
+        return imageProviders.count
+    }
+
+    func completeImagePaste(with image: UIImage, item: any UITextPasteItem, sequence: Int) {
+        pendingPastedImages.append((sequence: sequence, image: image))
+        item.setNoResult()
+        if let expected = pendingPasteExpectedImageCount,
+           pendingPastedImages.count >= expected {
+            flushPendingPastedImages()
+            return
+        }
+        schedulePendingPasteFlush()
+    }
+
+    func schedulePendingPasteFlush() {
+        pendingPasteFlushWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.flushPendingPastedImages()
+        }
+        pendingPasteFlushWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: workItem)
+    }
+
+    func flushPendingPastedImages() {
+        pendingPasteFlushWorkItem?.cancel()
+        pendingPasteFlushWorkItem = nil
+
+        let images = pendingPastedImages
+            .sorted { $0.sequence < $1.sequence }
+            .map(\.image)
+
+        pendingPastedImages.removeAll()
+        pendingPasteExpectedImageCount = nil
+        nextPastedImageSequence = 0
+
+        guard !images.isEmpty else { return }
+        onPastedImages?(images)
     }
 }

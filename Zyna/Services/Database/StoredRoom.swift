@@ -15,6 +15,8 @@ struct StoredRoom: Codable, FetchableRecord, PersistableRecord {
     var lastMessage: String?
     var lastMessageTimestamp: TimeInterval?
     var unreadCount: Int
+    var unreadMentionCount: Int
+    var isMarkedUnread: Bool
     var isEncrypted: Bool
     var directUserId: String?
     var sortOrder: Int
@@ -31,6 +33,8 @@ extension StoredRoom {
         self.lastMessage = summary.lastMessage
         self.lastMessageTimestamp = summary.lastMessageTimestamp?.timeIntervalSince1970
         self.unreadCount = Int(summary.unreadCount)
+        self.unreadMentionCount = Int(summary.unreadMentionCount)
+        self.isMarkedUnread = summary.isMarkedUnread
         self.isEncrypted = summary.isEncrypted
         self.directUserId = summary.directUserId
         self.sortOrder = sortOrder
@@ -49,6 +53,8 @@ extension StoredRoom {
             lastMessage: lastMessage,
             lastMessageTimestamp: lastMessageTimestamp.map { Date(timeIntervalSince1970: $0) },
             unreadCount: UInt64(unreadCount),
+            unreadMentionCount: UInt64(unreadMentionCount),
+            isMarkedUnread: isMarkedUnread,
             isEncrypted: isEncrypted,
             directUserId: directUserId
         )

@@ -25,6 +25,7 @@ final class FileCellNode: MessageCellNode {
     private let fileSize: UInt64?
     private let flatContentNode: FileBubbleContentNode
     private let replyEventId: String?
+    private let captionNode: ASTextNode?
 
     enum DownloadState {
         case idle
@@ -41,8 +42,9 @@ final class FileCellNode: MessageCellNode {
         var fname = "file"
         var mime: String?
         var size: UInt64?
+        let captionText = message.content.visibleFileCaption
 
-        if case .file(let src, let f, let m, let s) = message.content {
+        if case .file(let src, let f, let m, let s, _) = message.content {
             source = src
             fname = f
             mime = m
@@ -120,6 +122,21 @@ final class FileCellNode: MessageCellNode {
 
         let maxContentWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio - 24
 
+        if let captionText {
+            let node = ASTextNode()
+            node.attributedText = NSAttributedString(
+                string: captionText,
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 14),
+                    .foregroundColor: bubbleForegroundColor
+                ]
+            )
+            node.maximumNumberOfLines = 0
+            self.captionNode = node
+        } else {
+            self.captionNode = nil
+        }
+
         self.flatContentNode = FileBubbleContentNode(
             extText: NSAttributedString(
                 string: ext.isEmpty ? "FILE" : String(ext.prefix(4)),
@@ -165,10 +182,28 @@ final class FileCellNode: MessageCellNode {
 
         bubbleNode.layoutSpecBlock = { [weak self] _, _ in
             guard let self else { return ASLayoutSpec() }
-            return ASInsetLayoutSpec(
+            let contentInset = ASInsetLayoutSpec(
                 insets: UIEdgeInsets(top: 10, left: 12, bottom: 10, right: 12),
                 child: self.flatContentNode
             )
+
+            guard let captionNode = self.captionNode else {
+                return contentInset
+            }
+
+            let captionInset = ASInsetLayoutSpec(
+                insets: UIEdgeInsets(top: 0, left: 12, bottom: 10, right: 12),
+                child: captionNode
+            )
+
+            let stack = ASStackLayoutSpec(
+                direction: .vertical,
+                spacing: 0,
+                justifyContent: .start,
+                alignItems: .stretch,
+                children: [contentInset, captionInset]
+            )
+            return stack
         }
 
         contextSourceNode.onQuickTap = { [weak self] point in
@@ -187,11 +222,14 @@ final class FileCellNode: MessageCellNode {
     override func didLoad() {
         super.didLoad()
         assignProbeName("fileMessage.flatContent", to: flatContentNode)
+        if let captionNode {
+            assignProbeName("fileMessage.caption", to: captionNode)
+        }
     }
 
     override func updateSendStatus(_ status: String) {
         super.updateSendStatus(status)
-        flatContentNode.statusIcon = MessageStatusIcon.from(sendStatus: status)
+        flatContentNode.statusIcon = statusIcon(forSendStatus: status)
     }
 
     // MARK: - Progress

@@ -16,6 +16,8 @@ struct RoomModel: Equatable {
     var isOnline: Bool
     var lastSeen: Date?
     let unreadCount: Int
+    let unreadMentionCount: Int
+    let isMarkedUnread: Bool
     let directUserId: String?
 }
 
@@ -37,8 +39,23 @@ extension RoomModel {
             isOnline: false,
             lastSeen: nil,
             unreadCount: Int(room.unreadCount),
+            unreadMentionCount: Int(room.unreadMentionCount),
+            isMarkedUnread: room.isMarkedUnread,
             directUserId: room.directUserId
         )
+    }
+
+    var showsUnreadBadge: Bool {
+        unreadCount > 0 || isMarkedUnread
+    }
+
+    var unreadBadgeText: String? {
+        guard unreadCount > 0 else { return nil }
+        return unreadCount > 99 ? "99+" : "\(unreadCount)"
+    }
+
+    var unreadBadgeUsesAttentionStyle: Bool {
+        unreadMentionCount > 0
     }
 
     private static let timeFormatter: DateFormatter = {

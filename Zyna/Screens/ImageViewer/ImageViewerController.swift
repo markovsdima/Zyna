@@ -16,6 +16,12 @@ import MatrixRustSDK
 /// entrance and dismissal so the crop matches the cell exactly.
 final class ImageViewerController: UIViewController {
 
+    struct Item {
+        let previewImage: UIImage?
+        let mediaSource: MediaSource?
+        let sourceFrame: CGRect
+    }
+
     // MARK: - Public
 
     let imageView = UIImageView()
@@ -32,19 +38,27 @@ final class ImageViewerController: UIViewController {
     private let transitionView = UIImageView()
     private let toolbar = UIView()
     private let closeButton = UIButton(type: .system)
+    private let pageLabel = UILabel()
     private let shareButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
-    private let mediaSource: MediaSource?
+    private let items: [Item]
+    private var currentIndex: Int
+    private var resolvedImages: [UIImage?]
+    private var fullResLoadToken: UUID?
     private var dismissPanStart: CGPoint = .zero
     private var chromeVisible = true
 
     // MARK: - Init
 
-    init(image: UIImage, mediaSource: MediaSource?) {
-        self.mediaSource = mediaSource
+    init(items: [Item], initialIndex: Int) {
+        self.items = items
+        self.currentIndex = max(0, min(initialIndex, items.count - 1))
+        self.resolvedImages = items.map(\.previewImage)
         super.init(nibName: nil, bundle: nil)
-        imageView.image = image
-        transitionView.image = image
+        let initialImage = resolvedImages[currentIndex]
+        imageView.image = initialImage
+        transitionView.image = initialImage
+        sourceFrame = items[currentIndex].sourceFrame
         modalPresentationStyle = .overFullScreen
         modalTransitionStyle = .crossDissolve
     }
@@ -80,12 +94,21 @@ final class ImageViewerController: UIViewController {
         view.addGestureRecognizer(doubleTap)
         tap.require(toFail: doubleTap)
 
+        let swipeLeft = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
+        swipeLeft.direction = .left
+        view.addGestureRecognizer(swipeLeft)
+
+        let swipeRight = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
+        swipeRight.direction = .right
+        view.addGestureRecognizer(swipeRight)
+
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
         pan.delegate = self
         view.addGestureRecognizer(pan)
 
         setupChrome()
-        loadFullResolution()
+        updatePageLabel()
+        loadFullResolution(for: currentIndex)
     }
 
     override func viewDidLayoutSubviews() {
@@ -146,6 +169,11 @@ final class ImageViewerController: UIViewController {
         closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
         view.addSubview(closeButton)
 
+        pageLabel.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        pageLabel.textColor = .white
+        pageLabel.textAlignment = .center
+        view.addSubview(pageLabel)
+
         // Bottom toolbar
         toolbar.backgroundColor = UIColor.black.withAlphaComponent(0.5)
 
@@ -171,6 +199,12 @@ final class ImageViewerController: UIViewController {
     private func layoutChrome() {
         let safeTop = view.safeAreaInsets.top
         closeButton.frame = CGRect(x: 8, y: safeTop + 4, width: 44, height: 44)
+        pageLabel.frame = CGRect(
+            x: 60,
+            y: safeTop + 6,
+            width: max(0, view.bounds.width - 120),
+            height: 40
+        )
     }
 
     private func layoutToolbar() {
@@ -207,6 +241,7 @@ final class ImageViewerController: UIViewController {
             let alpha: CGFloat = self.chromeVisible ? 1 : 0
             self.toolbar.alpha = alpha
             self.closeButton.alpha = alpha
+            self.pageLabel.alpha = alpha
         }
     }
 
@@ -254,7 +289,11 @@ final class ImageViewerController: UIViewController {
     // MARK: - Layout
 
     private func fittedImageFrame() -> CGRect {
-        guard let image = imageView.image,
+        fittedImageFrame(for: imageView.image)
+    }
+
+    private func fittedImageFrame(for image: UIImage?) -> CGRect {
+        guard let image,
               image.size.width > 0, image.size.height > 0
         else { return view.bounds }
 
@@ -283,15 +322,27 @@ final class ImageViewerController: UIViewController {
     // MARK: - Full resolution
 
     private func loadFullResolution() {
-        guard let source = mediaSource else { return }
+        loadFullResolution(for: currentIndex)
+    }
+
+    private func loadFullResolution(for index: Int) {
+        guard items.indices.contains(index),
+              let source = items[index].mediaSource else { return }
+        let token = UUID()
+        fullResLoadToken = token
         Task {
             guard let client = MatrixClientService.shared.client else { return }
             do {
                 let data = try await client.getMediaContent(mediaSource: source)
                 guard let fullImage = UIImage(data: data) else { return }
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    guard let self,
+                          self.fullResLoadToken == token,
+                          self.items.indices.contains(index) else { return }
+                    self.resolvedImages[index] = fullImage
+                    guard self.currentIndex == index else { return }
                     self.imageView.image = fullImage
+                    self.transitionView.image = fullImage
                     self.layoutImageView()
                 }
             } catch {
@@ -316,6 +367,18 @@ final class ImageViewerController: UIViewController {
                 width: 100, height: 100
             )
             scrollView.zoom(to: zoomRect, animated: true)
+        }
+    }
+
+    @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
+        guard items.count > 1, scrollView.zoomScale <= 1 else { return }
+        switch gesture.direction {
+        case .left:
+            showItem(at: currentIndex + 1, direction: 1)
+        case .right:
+            showItem(at: currentIndex - 1, direction: -1)
+        default:
+            break
         }
     }
 
@@ -354,9 +417,69 @@ final class ImageViewerController: UIViewController {
 
     // MARK: - Dismiss
 
+    private func updatePageLabel() {
+        pageLabel.isHidden = items.count <= 1
+        guard items.count > 1 else { return }
+        pageLabel.text = "\(currentIndex + 1) / \(items.count)"
+    }
+
+    private func showItem(at index: Int, direction: Int) {
+        guard items.indices.contains(index), index != currentIndex else { return }
+
+        let previousImage = imageView.image
+        currentIndex = index
+        sourceFrame = items[index].sourceFrame
+        updatePageLabel()
+        scrollView.setZoomScale(1, animated: false)
+
+        let nextImage = resolvedImages[index] ?? items[index].previewImage
+        transitionView.image = nextImage
+
+        if let previousImage, let nextImage {
+            animatePageTransition(from: previousImage, to: nextImage, direction: direction)
+        } else {
+            imageView.image = nextImage
+            layoutImageView()
+        }
+
+        loadFullResolution(for: index)
+    }
+
+    private func animatePageTransition(from oldImage: UIImage, to newImage: UIImage, direction: Int) {
+        let oldView = UIImageView(image: oldImage)
+        oldView.contentMode = .scaleAspectFit
+        oldView.frame = fittedImageFrame(for: oldImage)
+
+        let newView = UIImageView(image: newImage)
+        newView.contentMode = .scaleAspectFit
+        let targetFrame = fittedImageFrame(for: newImage)
+        newView.frame = targetFrame.offsetBy(dx: CGFloat(direction) * view.bounds.width, dy: 0)
+
+        imageView.isHidden = true
+        view.addSubview(oldView)
+        view.addSubview(newView)
+
+        UIView.animate(
+            withDuration: 0.22,
+            delay: 0,
+            options: [.curveEaseInOut]
+        ) {
+            oldView.frame = oldView.frame.offsetBy(dx: -CGFloat(direction) * self.view.bounds.width, dy: 0)
+            oldView.alpha = 0.5
+            newView.frame = targetFrame
+        } completion: { _ in
+            oldView.removeFromSuperview()
+            newView.removeFromSuperview()
+            self.imageView.isHidden = false
+            self.imageView.image = newImage
+            self.layoutImageView()
+        }
+    }
+
     private func animateDismiss() {
         toolbar.alpha = 0
         closeButton.alpha = 0
+        pageLabel.alpha = 0
         scrollView.setZoomScale(1, animated: false)
 
         // Move image out of scroll view for free positioning

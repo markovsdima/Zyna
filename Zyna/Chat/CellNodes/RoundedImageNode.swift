@@ -50,6 +50,35 @@ final class RoundedImageNode: ASDisplayNode {
 
     var imageContentMode: UIView.ContentMode = .scaleAspectFill
 
+    func snapshotImage(from sourceImage: UIImage) -> UIImage? {
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+
+        let rendered = UIGraphicsImageRenderer(bounds: bounds).image { _ in
+            if radius > 0 {
+                let path = UIBezierPath(
+                    roundedRect: bounds,
+                    byRoundingCorners: roundedCorners,
+                    cornerRadii: CGSize(width: radius, height: radius)
+                )
+                path.addClip()
+            }
+
+            let drawRect: CGRect
+            switch imageContentMode {
+            case .scaleAspectFit:
+                drawRect = Self.aspectFitRect(imageSize: sourceImage.size, bounds: bounds)
+            case .scaleAspectFill:
+                drawRect = Self.aspectFillRect(imageSize: sourceImage.size, bounds: bounds)
+            default:
+                drawRect = bounds
+            }
+
+            sourceImage.draw(in: drawRect)
+        }
+
+        return rendered.cgImage != nil ? rendered : nil
+    }
+
     // MARK: - Init
 
     override init() {

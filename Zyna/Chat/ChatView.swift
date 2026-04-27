@@ -17,6 +17,70 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let automaticZoneTolerance: CGFloat = 8
     }
 
+    private enum ServerBatchFetchWait {
+        static let pollInterval: TimeInterval = 0.1
+        static let maxAttempts = 15
+    }
+
+    private enum LiveNavigation {
+        static let teleportDistanceScreens: CGFloat = 1.5
+    }
+
+    private enum ContentUpdates {
+        static let liveEdgeTolerance: CGFloat = 24
+    }
+
+    private enum ScrollToLiveBadge {
+        static let minWidth: CGFloat = 20
+        static let height: CGFloat = 20
+        static let horizontalPadding: CGFloat = 6
+        static let overlapX: CGFloat = 4
+        static let overlapY: CGFloat = 4
+        static let maxCount = 99
+    }
+
+    private enum ReadReceipts {
+        static let visibilityThreshold: CGFloat = 0.6
+        static let baselineLiveTolerance: CGFloat = 24
+        static let scrollDebounce: TimeInterval = 0.15
+        static let contentUpdateDelay: TimeInterval = 0.05
+    }
+
+    private enum RedactionAnimations {
+        static let bootstrapArmDelay: TimeInterval = 0.75
+    }
+
+    private struct PendingCompositeGroupDelete {
+        let messageIds: Set<String>
+        let splashTarget: PaintSplashTrigger.SnapshotTarget?
+    }
+
+    private final class PendingIncomingCompositeGroupRedaction {
+        let groupId: String
+        let allMessageIds: Set<String>
+        let totalCount: Int
+        let splashTarget: PaintSplashTrigger.SnapshotTarget?
+        var redactedMessageIds: Set<String>
+        var remainingCountAfter: Int
+        var workItem: DispatchWorkItem?
+
+        init(
+            groupId: String,
+            allMessageIds: Set<String>,
+            totalCount: Int,
+            redactedMessageIds: Set<String>,
+            remainingCountAfter: Int,
+            splashTarget: PaintSplashTrigger.SnapshotTarget?
+        ) {
+            self.groupId = groupId
+            self.allMessageIds = allMessageIds
+            self.totalCount = totalCount
+            self.redactedMessageIds = redactedMessageIds
+            self.remainingCountAfter = remainingCountAfter
+            self.splashTarget = splashTarget
+        }
+    }
+
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
     var onTitleTapped: ((String) -> Void)?
@@ -24,6 +88,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     var onForwardMessage: ((ChatMessage) -> Void)?
 
     private let viewModel: ChatViewModel
+    private let composerController = ChatComposerController()
     private var cancellables = Set<AnyCancellable>()
     private var batchFetchCancellable: AnyCancellable?
     private let glassNavBar = GlassNavBar()
@@ -37,6 +102,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     /// (shape3, metaball with mic). These are just the chevron + tap area.
     private let scrollButtonIcon = UIImageView()
     private let scrollButtonTap = UIButton(type: .custom)
+    private let scrollButtonBadgeBackground = UIView()
+    private let scrollButtonBadgeLabel = UILabel()
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
@@ -59,12 +126,25 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var previousInputCoveredHeight: CGFloat?
     private let audioPlayer = AudioPlayerService()
     private var activeContextMenu: ContextMenuController?
-    private var pendingRedactedIds: [String] = []
+    private var pendingRedactionBatches: [ChatViewModel.DetectedRedactionBatch] = []
     private var isTeleporting = false
     private var isPickerPresented = false
     private var interactionLocks = Set<String>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
     private var isGroupChat = false
+    private weak var photoPreviewController: PhotoGroupPreviewController?
+    private weak var filePreviewController: FileAttachmentPreviewController?
+    private var shouldPresentAttachmentPreviewAfterDismiss = false
+    private var pendingAnimatedDeleteTargets: [String: PaintSplashTrigger.SnapshotTarget] = [:]
+    private var pendingCompositeGroupDeletes: [String: PendingCompositeGroupDelete] = [:]
+    private var pendingIncomingGroupRedactions: [String: PendingIncomingCompositeGroupRedaction] = [:]
+    private var activeContextMenuBubbleFrameInScreen: CGRect?
+    private var activeContextMenuItemFramesInScreen: [String: CGRect] = [:]
+    private var visibleReadReceiptEvalWork: DispatchWorkItem?
+    private var unseenIncomingMessageCount = 0
+    private var pendingPostSendPinToLive = false
+    private var redactionAnimationsArmed = false
+    private var redactionAnimationArmWork: DispatchWorkItem?
 
     // MARK: - Init
 
@@ -89,6 +169,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.view.keyboardDismissMode = .none
         node.tableNode.view.contentInsetAdjustmentBehavior = .never
         node.tableNode.view.showsVerticalScrollIndicator = false
+        node.tableNode.automaticallyAdjustsContentOffset = false
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(tableTapped))
         tap.cancelsTouchesInView = false
@@ -103,6 +184,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         setupNavigationBar()
         bindViewModel()
         bindInput()
+        bindComposer()
 
         // Glass nav bar (replaces system nav bar)
         glassNavBar.name = viewModel.roomName
@@ -164,6 +246,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.view.addSubview(scrollButtonTap)
         node.scrollButtonTap = scrollButtonTap
 
+        scrollButtonBadgeBackground.backgroundColor = .systemRed
+        scrollButtonBadgeBackground.alpha = 0
+        scrollButtonBadgeBackground.isUserInteractionEnabled = false
+        node.view.addSubview(scrollButtonBadgeBackground)
+
+        scrollButtonBadgeLabel.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        scrollButtonBadgeLabel.textColor = .white
+        scrollButtonBadgeLabel.textAlignment = .center
+        scrollButtonBadgeLabel.alpha = 0
+        scrollButtonBadgeLabel.isUserInteractionEnabled = false
+        node.view.addSubview(scrollButtonBadgeLabel)
+
         refreshGlassSourceBinding()
 
         if Self.showGlassComparison {
@@ -217,10 +311,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         super.viewDidAppear(animated)
         // Force glass recapture after navigation push completes
         GlassService.shared.setNeedsCapture()
+        if shouldPresentAttachmentPreviewAfterDismiss {
+            presentComposerPreviewIfNeeded()
+        }
+        scheduleRedactionAnimationArming()
+        scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        visibleReadReceiptEvalWork?.cancel()
+        redactionAnimationArmWork?.cancel()
         if isMovingFromParent {
             navigationController?.setNavigationBarHidden(false, animated: animated)
             audioPlayer.stop()
@@ -300,12 +401,208 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         return max(0, node.tableNode.contentOffset.y - liveOffsetY)
     }
 
+    private func shouldTeleportToLive() -> Bool {
+        let tableView = node.tableNode.view
+        let threshold = tableView.bounds.height * LiveNavigation.teleportDistanceScreens
+        return tableDistanceToLiveEdge() > threshold
+    }
+
+    private func isViewportPinnedToLiveEdge(
+        tolerance: CGFloat = ContentUpdates.liveEdgeTolerance
+    ) -> Bool {
+        let tableView = node.tableNode.view
+        guard viewModel.isAtLiveEdge else { return false }
+        guard !isTableRubberBanding(tableView) else { return false }
+        return tableDistanceToLiveEdge() <= tolerance
+    }
+
+    private func scheduleVisibleReadReceiptEvaluation(delay: TimeInterval = ReadReceipts.scrollDebounce) {
+        visibleReadReceiptEvalWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.updateVisibleReadReceiptCandidate()
+        }
+        visibleReadReceiptEvalWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func updateVisibleReadReceiptCandidate() {
+        guard !isTeleporting else { return }
+
+        node.tableNode.view.layoutIfNeeded()
+        let candidate = currentVisibleReadReceiptCandidate()
+        let canEstablishBaseline = viewModel.isAtLiveEdge
+            && tableDistanceToLiveEdge() <= ReadReceipts.baselineLiveTolerance
+
+        viewModel.updateVisibleReadReceiptCandidate(
+            eventId: candidate,
+            canEstablishBaseline: canEstablishBaseline
+        )
+    }
+
+    private func currentVisibleReadReceiptCandidate() -> String? {
+        let visibleRows = node.tableNode.indexPathsForVisibleRows()
+        guard let viewport = unobscuredTableViewportInView(),
+              !visibleRows.isEmpty
+        else {
+            return nil
+        }
+
+        let tableView = node.tableNode.view
+        let messages = viewModel.messages
+
+        for indexPath in visibleRows.sorted(by: { $0.row < $1.row }) {
+            guard messages.indices.contains(indexPath.row) else { continue }
+
+            let message = messages[indexPath.row]
+            guard let eventId = message.eventId else { continue }
+
+            let rowRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
+            guard rowRect.width > 0, rowRect.height > 0 else { continue }
+
+            let visibleRect = rowRect.intersection(viewport)
+            guard !visibleRect.isNull, visibleRect.width > 0, visibleRect.height > 0 else { continue }
+
+            let maxRelevantVisibleHeight = min(rowRect.height, viewport.height)
+            guard maxRelevantVisibleHeight > 0 else { continue }
+
+            if visibleRect.height / maxRelevantVisibleHeight >= ReadReceipts.visibilityThreshold {
+                return eventId
+            }
+        }
+
+        return nil
+    }
+
+    private func unobscuredTableViewportInView() -> CGRect? {
+        let tableView = node.tableNode.view
+        let tableFrame = tableView.convert(tableView.bounds, to: view)
+
+        let topObstruction = max(
+            tableFrame.minY,
+            glassNavBar.frame.maxY,
+            searchBar.isHidden ? tableFrame.minY : searchBar.frame.maxY,
+            inviteBanner.isHidden ? tableFrame.minY : inviteBanner.frame.maxY
+        )
+        let bottomObstruction = min(
+            tableFrame.maxY,
+            glassInputBar.isHidden ? view.bounds.maxY : glassInputBar.frame.minY
+        )
+
+        guard bottomObstruction > topObstruction else { return nil }
+
+        return CGRect(
+            x: tableFrame.minX,
+            y: topObstruction,
+            width: tableFrame.width,
+            height: bottomObstruction - topObstruction
+        )
+    }
+
     private func pinTableToLiveEdge() {
         let tableView = node.tableNode.view
         let liveOffsetY = tableOffsetBounds(for: tableView).minY
         var targetOffset = node.tableNode.contentOffset
         targetOffset.y = liveOffsetY
         node.tableNode.contentOffset = targetOffset
+    }
+
+    private func scrollButtonBadgeText() -> String? {
+        guard unseenIncomingMessageCount > 0 else { return nil }
+        if unseenIncomingMessageCount > ScrollToLiveBadge.maxCount {
+            return "\(ScrollToLiveBadge.maxCount)+"
+        }
+        return "\(unseenIncomingMessageCount)"
+    }
+
+    private func updateScrollButtonAccessibilityLabel() {
+        if unseenIncomingMessageCount > 0 {
+            scrollButtonTap.accessibilityLabel = "Scroll to latest messages, \(unseenIncomingMessageCount) unread"
+        } else {
+            scrollButtonTap.accessibilityLabel = "Scroll to bottom"
+        }
+    }
+
+    private func updateScrollButtonBadgeLayout(
+        relativeTo iconFrame: CGRect,
+        iconAlpha: CGFloat,
+        tapAlpha: CGFloat
+    ) {
+        guard let badgeText = scrollButtonBadgeText(),
+              !iconFrame.isEmpty
+        else {
+            scrollButtonBadgeBackground.alpha = 0
+            scrollButtonBadgeLabel.alpha = 0
+            return
+        }
+
+        let textSize = badgeText.size(withAttributes: [
+            .font: scrollButtonBadgeLabel.font as Any
+        ])
+        let badgeWidth = max(
+            ScrollToLiveBadge.minWidth,
+            ceil(textSize.width) + ScrollToLiveBadge.horizontalPadding * 2
+        )
+        let badgeFrame = CGRect(
+            x: iconFrame.maxX - ScrollToLiveBadge.overlapX,
+            y: iconFrame.minY - ScrollToLiveBadge.overlapY,
+            width: badgeWidth,
+            height: ScrollToLiveBadge.height
+        )
+
+        scrollButtonBadgeLabel.text = badgeText
+        scrollButtonBadgeBackground.frame = badgeFrame
+        scrollButtonBadgeBackground.layer.cornerRadius = ScrollToLiveBadge.height / 2
+        scrollButtonBadgeLabel.frame = badgeFrame
+
+        let alpha = min(iconAlpha, tapAlpha)
+        scrollButtonBadgeBackground.alpha = alpha
+        scrollButtonBadgeLabel.alpha = alpha
+    }
+
+    private func resetUnseenIncomingMessages() {
+        guard unseenIncomingMessageCount != 0 else { return }
+        unseenIncomingMessageCount = 0
+        updateScrollButtonAccessibilityLabel()
+        updateScrollButtonBadgeLayout(
+            relativeTo: scrollButtonIcon.frame,
+            iconAlpha: scrollButtonIcon.alpha,
+            tapAlpha: scrollButtonTap.alpha
+        )
+    }
+
+    private func noteUnseenIncomingMessagesIfNeeded(
+        insertions: [IndexPath],
+        minimumVisibleRowBeforeUpdate: Int?
+    ) {
+        guard let minimumVisibleRowBeforeUpdate else { return }
+
+        var newUnseenIncoming = 0
+        for indexPath in insertions where indexPath.row < minimumVisibleRowBeforeUpdate {
+            guard viewModel.messages.indices.contains(indexPath.row) else { continue }
+            let message = viewModel.messages[indexPath.row]
+            guard !message.isOutgoing, !message.content.isRedacted else { continue }
+            newUnseenIncoming += 1
+        }
+
+        guard newUnseenIncoming > 0 else { return }
+        unseenIncomingMessageCount += newUnseenIncoming
+        updateScrollButtonAccessibilityLabel()
+    }
+
+    private func updateScrollToLiveVisibility() {
+        if isViewportPinnedToLiveEdge() {
+            resetUnseenIncomingMessages()
+        }
+
+        let scrolledFar = shouldTeleportToLive()
+        let shouldShow = unseenIncomingMessageCount > 0
+            || (scrolledFar && viewModel.messages.count > 20)
+        glassInputBar.scrollButtonVisible = shouldShow
+        updateScrollButtonBadgeLayout(
+            relativeTo: scrollButtonIcon.frame,
+            iconAlpha: scrollButtonIcon.alpha,
+            tapAlpha: scrollButtonTap.alpha
+        )
     }
 
     private func compensateTableOffsetForInputHeightChange(from oldHeight: CGFloat, to newHeight: CGFloat) {
@@ -322,6 +619,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         targetOffset.y -= delta
         targetOffset.y = min(max(targetOffset.y, minOffsetY), maxOffsetY)
         tableNode.contentOffset = targetOffset
+    }
+
+    private func armPostSendPinToLive() {
+        pendingPostSendPinToLive = true
+        resetUnseenIncomingMessages()
+        glassInputBar.scrollButtonVisible = false
+    }
+
+    private func finishPostSendPinToLive() {
+        guard pendingPostSendPinToLive else { return }
+        pinTableToLiveEdge()
+        pendingPostSendPinToLive = false
     }
 
     private func setupNavigationBar() {
@@ -399,6 +708,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                   let cellNode = self.node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode
             else { return }
             self.configureMessageDrivenInteractions(for: cellNode, message: message)
+            if let groupCell = cellNode as? PhotoGroupMessageCellNode {
+                groupCell.updateMediaGroupPresentation(message.mediaGroupPresentation)
+            }
             cellNode.updateAccessibilityMessage(message)
             cellNode.updateSendStatus(message.sendStatus)
             cellNode.updateClusterMembership(isLastInCluster: message.isLastInCluster)
@@ -406,8 +718,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             cellNode.refreshAccessibilityForwarding()
         }
 
-        viewModel.onRedactedDetected = { [weak self] messageIds in
-            self?.handleRedactedMessages(messageIds)
+        viewModel.onRedactedDetected = { [weak self] batch in
+            self?.handleRedactionBatch(batch)
+        }
+
+        viewModel.onRedactionFailed = { [weak self] messageId, _, disposition in
+            self?.handleRedactionFailure(for: messageId, disposition: disposition)
         }
 
         viewModel.$isInvited
@@ -452,29 +768,59 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             node.tableNode.reloadData()
             return
         }
+
         switch update {
         case .reload:
             node.tableNode.reloadData()
-        case .batch(let deletions, let insertions, let updates, let animated):
-            if deletions.isEmpty && insertions.isEmpty && updates.isEmpty { return }
-            let rowAnimation: UITableView.RowAnimation = animated ? .automatic : .none
-            node.tableNode.performBatch(animated: animated, updates: {
+            finishPostSendPinToLive()
+            updateScrollToLiveVisibility()
+            scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
+        case .batch(let deletions, let insertions, let moves, let updates, let animated):
+            if deletions.isEmpty && insertions.isEmpty && moves.isEmpty && updates.isEmpty { return }
+            let minimumVisibleRowBeforeUpdate = node.tableNode.indexPathsForVisibleRows().map(\.row).min()
+            let wasPinnedToLiveEdge = isViewportPinnedToLiveEdge()
+            let shouldForcePostSendPin = pendingPostSendPinToLive
+            let shouldPreserveViewport = !wasPinnedToLiveEdge && !shouldForcePostSendPin
+            node.tableNode.automaticallyAdjustsContentOffset = shouldPreserveViewport
+
+            let effectiveAnimated = animated && !shouldPreserveViewport
+            let rowAnimation: UITableView.RowAnimation = effectiveAnimated ? .automatic : .none
+            node.tableNode.performBatch(animated: effectiveAnimated, updates: {
                 if !deletions.isEmpty { node.tableNode.deleteRows(at: deletions, with: rowAnimation) }
                 if !insertions.isEmpty { node.tableNode.insertRows(at: insertions, with: rowAnimation) }
+                for move in moves {
+                    node.tableNode.moveRow(at: move.from, to: move.to)
+                }
                 if !updates.isEmpty { node.tableNode.reloadRows(at: updates, with: .none) }
-            }, completion: nil)
+            }, completion: { [weak self] _ in
+                if shouldPreserveViewport {
+                    self?.noteUnseenIncomingMessagesIfNeeded(
+                        insertions: insertions,
+                        minimumVisibleRowBeforeUpdate: minimumVisibleRowBeforeUpdate
+                    )
+                }
+                if shouldForcePostSendPin {
+                    self?.finishPostSendPinToLive()
+                } else if wasPinnedToLiveEdge {
+                    self?.pinTableToLiveEdge()
+                }
+                self?.updateScrollToLiveVisibility()
+                self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
+            })
         }
     }
 
     private func bindInput() {
         glassInputBar.inputNode.onSend = { [weak self] text, color in
             guard let self else { return }
+            self.armPostSendPinToLive()
             self.viewModel.sendMessage(text, color: color)
             self.scrollToLiveAfterUserSend()
         }
 
         glassInputBar.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
             guard let self else { return }
+            self.armPostSendPinToLive()
             self.viewModel.sendVoiceMessage(fileURL: fileURL, duration: duration, waveform: waveform)
             self.scrollToLiveAfterUserSend()
         }
@@ -488,23 +834,41 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.viewModel.clearPendingForward()
         }
 
+        glassInputBar.inputNode.onPastedImages = { [weak self] images in
+            self?.enqueuePastedImages(images)
+        }
+
         glassInputBar.onScrollButtonLayoutChanged = { [weak self] iconFrame, iconAlpha, tapFrame, tapAlpha in
             guard let self else { return }
             self.scrollButtonIcon.frame = iconFrame
             self.scrollButtonIcon.alpha = iconAlpha
             self.scrollButtonTap.frame = tapFrame
             self.scrollButtonTap.alpha = tapAlpha
+            self.updateScrollButtonBadgeLayout(
+                relativeTo: iconFrame,
+                iconAlpha: iconAlpha,
+                tapAlpha: tapAlpha
+            )
         }
     }
 
     @objc private func scrollToLiveTapped() {
+        resetUnseenIncomingMessages()
         navigateToLive()
         glassInputBar.scrollButtonVisible = false
     }
 
+    private func bindComposer() {
+        composerController.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.presentComposerPreviewIfNeeded()
+            }
+            .store(in: &cancellables)
+    }
+
     private func scrollToLiveAfterUserSend() {
         navigateToLive()
-        glassInputBar.scrollButtonVisible = false
     }
 
     @objc private func tableTapped() {
@@ -539,6 +903,35 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
             if case .systemEvent = message.content {
                 return StateEventCellNode(message: message)
+            }
+
+            if message.mediaGroupPresentation?.hidesStandaloneBubble == true {
+                return HiddenMessagePlaceholderCellNode()
+            }
+
+            if message.mediaGroupPresentation?.rendersCompositeBubble == true {
+                let groupCell = PhotoGroupMessageCellNode(message: message, isGroupChat: isGroup)
+                groupCell.onPhotoTapped = { [weak self, weak groupCell] index in
+                    guard let self, let groupCell else { return }
+                    self.presentImageViewer(for: groupCell, itemIndex: index)
+                }
+                let cellNode = groupCell
+                cellNode.bubbleGradientSource = gradientSource
+
+                cellNode.onSenderTapped = { [weak self] userId in
+                    self?.onTitleTapped?(userId)
+                }
+
+                cellNode.onInteractionLockChanged = { [weak self] locked in
+                    if locked {
+                        self?.lockInteraction("contextMenu")
+                    } else {
+                        self?.unlockInteraction("contextMenu")
+                    }
+                }
+
+                self?.configureMessageDrivenInteractions(for: cellNode, message: message)
+                return cellNode
             }
 
             let cellNode: MessageCellNode
@@ -590,25 +983,33 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func configureMessageDrivenInteractions(for cellNode: MessageCellNode, message: ChatMessage) {
-        cellNode.onContextMenuActivated = { [weak self, weak cellNode] in
-            guard let self, let cellNode else { return }
-            self.presentContextMenu(for: message, from: cellNode)
+        if message.isSyntheticIncomingAssembly {
+            cellNode.onContextMenuActivated = nil
+            cellNode.accessibilityActionsProvider = { [] }
+        } else {
+            cellNode.onContextMenuActivated = { [weak self, weak cellNode] point in
+                guard let self, let cellNode else { return }
+                self.presentContextMenu(for: message, from: cellNode, activationPoint: point)
+            }
+            cellNode.accessibilityActionsProvider = { [weak self] in
+                self?.buildAccessibilityActions(for: message) ?? []
+            }
         }
         cellNode.onReactionTapped = { [weak self] key in
             self?.viewModel.toggleReaction(key, for: message)
-        }
-        cellNode.accessibilityActionsProvider = { [weak self] in
-            self?.buildAccessibilityActions(for: message) ?? []
         }
     }
 
     private func buildAccessibilityActions(for message: ChatMessage) -> [UIAccessibilityCustomAction] {
         var actions: [UIAccessibilityCustomAction] = []
+        let suppressSyntheticActions = message.isSyntheticOutgoingEnvelope || message.isSyntheticIncomingAssembly
 
-        actions.append(UIAccessibilityCustomAction(name: "Reply") { [weak self] _ in
-            self?.viewModel.setReplyTarget(message)
-            return true
-        })
+        if !suppressSyntheticActions {
+            actions.append(UIAccessibilityCustomAction(name: "Reply") { [weak self] _ in
+                self?.viewModel.setReplyTarget(message)
+                return true
+            })
+        }
 
         if message.itemIdentifier != nil {
             actions.append(UIAccessibilityCustomAction(name: "Add Reaction") { [weak self] _ in
@@ -624,7 +1025,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             })
         }
 
-        if !message.content.isRedacted {
+        if !message.content.isRedacted && !suppressSyntheticActions {
             actions.append(UIAccessibilityCustomAction(name: "Forward") { [weak self] _ in
                 self?.onForwardMessage?(message)
                 return true
@@ -708,17 +1109,40 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     // MARK: - Context Menu
 
-    private func presentContextMenu(for message: ChatMessage, from cellNode: ContextMenuCellNode) {
+    private func presentContextMenu(
+        for message: ChatMessage,
+        from cellNode: ContextMenuCellNode,
+        activationPoint: CGPoint
+    ) {
         guard let window = view.window,
               let info = cellNode.extractBubbleForMenu(in: window.coordinateSpace) else { return }
 
-        var actions = [
-            ContextMenuAction(
+        activeContextMenuBubbleFrameInScreen = window.convert(
+            info.frame,
+            to: window.screen.coordinateSpace
+        )
+        activeContextMenuItemFramesInScreen = [:]
+        if let groupCell = cellNode as? PhotoGroupMessageCellNode,
+           let presentation = message.mediaGroupPresentation,
+           presentation.rendersCompositeBubble {
+            activeContextMenuItemFramesInScreen = Dictionary(
+                presentation.items.enumerated().compactMap { index, item in
+                    guard let frame = groupCell.imageFrameInScreen(at: index) else { return nil }
+                    return (item.messageId, frame)
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+        let isPendingOutgoingMessage = message.isSyntheticOutgoingEnvelope
+
+        var actions: [ContextMenuAction] = []
+        if !isPendingOutgoingMessage {
+            actions.append(ContextMenuAction(
                 title: "Reply",
                 image: UIImage(systemName: "arrowshape.turn.up.left"),
                 handler: { [weak self] in self?.viewModel.setReplyTarget(message) }
-            )
-        ]
+            ))
+        }
 
         if message.reactions.contains(where: \.hasDetailedSenders) {
             actions.append(ContextMenuAction(
@@ -743,7 +1167,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             ))
         }
 
-        if !message.content.isRedacted {
+        if !message.content.isRedacted && !isPendingOutgoingMessage {
             actions.append(ContextMenuAction(
                 title: "Forward",
                 image: UIImage(systemName: "arrowshape.turn.up.right"),
@@ -753,13 +1177,75 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             ))
         }
 
-        if message.itemIdentifier != nil && !message.content.isRedacted {
+        if let groupCell = cellNode as? PhotoGroupMessageCellNode,
+           let presentation = message.mediaGroupPresentation,
+           presentation.rendersCompositeBubble,
+           !isPendingOutgoingMessage,
+           !message.content.isRedacted {
+            if let tappedItem = groupCell.prepareContextMenuSelection(at: activationPoint) {
+                let precomputedItemDeleteTarget = freezeSnapshotTarget(
+                    groupCell.paintSplashTarget(
+                        for: tappedItem.messageId,
+                        frameInScreen: activeContextMenuItemFramesInScreen[tappedItem.messageId]
+                    )
+                )
+                let precomputedReflowPreviews = groupCell.partialReflowPreviewImageData(
+                    excluding: tappedItem.messageId
+                )
+                actions.append(ContextMenuAction(
+                    title: "Delete Photo",
+                    image: UIImage(systemName: "trash"),
+                    isDestructive: true,
+                    handler: { [weak self] in
+                        self?.beginPartialCompositeItemDelete(
+                            item: tappedItem,
+                            target: precomputedItemDeleteTarget,
+                            reflowPreviews: precomputedReflowPreviews
+                        )
+                    }
+                ))
+            }
+
+            let groupItems = presentation.items.filter { $0.itemIdentifier != nil }
+            if !groupItems.isEmpty {
+                let groupId = presentation.id
+                let groupMessageIds = Set(groupItems.map(\.messageId))
+                let precomputedGroupDeleteTarget = captureSnapshotTarget(
+                    from: info.node.view,
+                    frameInScreen: activeContextMenuBubbleFrameInScreen
+                )
+                actions.append(ContextMenuAction(
+                    title: "Delete Group",
+                    image: UIImage(systemName: "square.stack.3d.down.forward"),
+                    isDestructive: true,
+                    handler: { [weak self] in
+                        self?.beginCompositeGroupDelete(
+                            groupId: groupId,
+                            messageIds: groupMessageIds,
+                            items: groupItems,
+                            splashTarget: precomputedGroupDeleteTarget
+                        )
+                    }
+                ))
+            }
+        } else if message.itemIdentifier != nil && !message.content.isRedacted {
+            let precomputedMessageDeleteTarget = freezeSnapshotTarget(
+                (cellNode as? MessageCellNode)?.paintSplashTarget(
+                    frameInScreen: activeContextMenuBubbleFrameInScreen
+                ) ?? captureSnapshotTarget(
+                    from: info.node.view,
+                    frameInScreen: activeContextMenuBubbleFrameInScreen
+                )
+            )
             actions.append(ContextMenuAction(
                 title: "Delete",
                 image: UIImage(systemName: "trash"),
                 isDestructive: true,
                 handler: { [weak self] in
-                    self?.triggerPaintSplashDelete(for: message)
+                    self?.beginMessageDelete(
+                        message,
+                        target: precomputedMessageDeleteTarget
+                    )
                 }
             ))
         }
@@ -770,9 +1256,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             actions: actions
         )
         menuVC.onDismissComplete = { [weak self, weak cellNode] in
+            (cellNode as? PhotoGroupMessageCellNode)?.clearContextMenuSelection()
             cellNode?.restoreBubbleFromMenu()
             self?.unlockInteraction("contextMenu")
             self?.activeContextMenu = nil
+            self?.activeContextMenuBubbleFrameInScreen = nil
+            self?.activeContextMenuItemFramesInScreen = [:]
             self?.flushPendingRedactions()
         }
 
@@ -817,7 +1306,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if isTableRubberBanding(tableView) {
             return false
         }
-        return !viewModel.isPaginating && !viewModel.sdkPaginationExhausted
+        return !viewModel.isPaginating && (viewModel.hasOlderInDB || !viewModel.sdkPaginationExhausted)
     }
 
     func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
@@ -851,15 +1340,55 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                // If pagination returned but visible count didn't
-                // grow, we've hit the start (or only got filtered
-                // events like call signaling). Stop fetching.
+                self.resolveServerBatchFetch(
+                    context: context,
+                    countBefore: countBefore,
+                    attemptsRemaining: ServerBatchFetchWait.maxAttempts
+                )
+            }
+    }
+
+    private func resolveServerBatchFetch(
+        context: ASBatchContext,
+        countBefore: Int,
+        attemptsRemaining: Int
+    ) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: .now() + ServerBatchFetchWait.pollInterval
+        ) { [weak self] in
+            guard let self else { return }
+            let page = self.viewModel.queryOlderFromDB()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+
+                if let page {
+                    self.viewModel.sdkPaginationExhausted = false
+                    self.viewModel.applyOlderPageFromDB(page)
+                    context.completeBatchFetching(true)
+                    self.batchFetchCancellable = nil
+                    return
+                }
+
+                if attemptsRemaining > 1 {
+                    self.resolveServerBatchFetch(
+                        context: context,
+                        countBefore: countBefore,
+                        attemptsRemaining: attemptsRemaining - 1
+                    )
+                    return
+                }
+
                 if self.viewModel.messages.count <= countBefore {
+                    // The SDK often flips `isPaginating` to false before the
+                    // debounced diff batcher has flushed into GRDB, so don't
+                    // treat a single miss as the true history start.
                     self.viewModel.sdkPaginationExhausted = true
                 }
+
                 context.completeBatchFetching(true)
                 self.batchFetchCancellable = nil
             }
+        }
     }
 
     // MARK: - Scroll
@@ -874,10 +1403,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             viewModel.loadNewerMessages()
         }
 
-        // Show scroll-to-live button when scrolled far from bottom (inverted: large contentOffset.y)
-        let scrolledFar = scrollView.contentOffset.y > scrollView.bounds.height * 1.5
-        let shouldShow = scrolledFar && viewModel.messages.count > 20
-        glassInputBar.scrollButtonVisible = shouldShow
+        updateScrollToLiveVisibility()
+
+        if !isRubberBanding {
+            scheduleVisibleReadReceiptEvaluation()
+        }
     }
 
     // MARK: - Smart Navigation (Journey / Teleportation)
@@ -923,7 +1453,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func navigateToLive() {
-        if viewModel.isAtLiveEdge {
+        if viewModel.isAtLiveEdge && !shouldTeleportToLive() {
             node.tableNode.scrollToRow(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
             return
         }
@@ -956,6 +1486,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         // 1. Overlay snapshot in a container (clips to table bounds)
         let snapshotContainer = UIView(frame: tableView.frame)
         snapshotContainer.clipsToBounds = true
+        snapshotContainer.transform = tableView.transform
         snapshot.frame = snapshotContainer.bounds
         snapshotContainer.addSubview(snapshot)
         view.insertSubview(snapshotContainer, aboveSubview: tableView)
@@ -1001,6 +1532,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         tableAnim.delegate = TeleportAnimationDelegate { [weak self, weak snapshotContainer] in
             snapshotContainer?.removeFromSuperview()
             self?.isTeleporting = false
+            self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         }
         tableLayer.add(tableAnim, forKey: "teleportIn")
 
@@ -1026,11 +1558,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if decelerate {
             fpsBooster.start()
+        } else {
+            scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         fpsBooster.stop()
+        scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
     }
 
     private func refreshGlassSourceBinding() {
@@ -1048,14 +1587,81 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.redactMessage(message)
     }
 
-    private func handleRedactedMessages(_ messageIds: [String]) {
-        // Defer if context menu is active (bubble is reparented to overlay)
-        if activeContextMenu != nil {
-            pendingRedactedIds.append(contentsOf: messageIds)
+    private func handleRedactionBatch(_ batch: ChatViewModel.DetectedRedactionBatch) {
+        guard !batch.messageIds.isEmpty else { return }
+
+        guard redactionAnimationsArmed else {
+            viewModel.hideMessages(batch.messageIds)
             return
         }
 
-        for messageId in messageIds {
+        // Defer if context menu is active (bubble is reparented to overlay)
+        if activeContextMenu != nil {
+            pendingRedactionBatches.append(batch)
+            return
+        }
+
+        let immediateGroupIds = Set(
+            batch.mediaGroups.compactMap { group in
+                shouldCoalesceIncomingGroupRedaction(group) ? group.groupId : nil
+            }
+        )
+
+        for group in batch.mediaGroups where immediateGroupIds.contains(group.groupId) {
+            queueIncomingGroupRedaction(group)
+        }
+
+        let deferredIds = Set(
+            batch.mediaGroups
+                .filter { immediateGroupIds.contains($0.groupId) }
+                .flatMap(\.redactedMessageIds)
+        )
+        let immediateIds = batch.messageIds.filter { !deferredIds.contains($0) }
+        guard !immediateIds.isEmpty else { return }
+        handleRedactedMessages(immediateIds)
+    }
+
+    private func handleRedactedMessages(_ messageIds: [String]) {
+        // Defer if context menu is active (bubble is reparented to overlay)
+        if activeContextMenu != nil {
+            pendingRedactionBatches.append(
+                ChatViewModel.DetectedRedactionBatch(messageIds: messageIds, mediaGroups: [])
+            )
+            return
+        }
+
+        var remainingIds = Set(messageIds)
+        let pendingGroupDeletes = pendingCompositeGroupDeletes
+
+        for (groupId, pendingDelete) in pendingGroupDeletes {
+            let memberIds = pendingDelete.messageIds
+            guard !memberIds.isDisjoint(with: remainingIds) else { continue }
+
+            if viewModel.areMessagesRedacted(Array(memberIds)) {
+                if !triggerCompositeGroupPaintSplashDelete(
+                    forGroupId: groupId,
+                    pendingDelete: pendingDelete
+                ) {
+                    viewModel.hideMessages(Array(memberIds))
+                }
+                pendingCompositeGroupDeletes.removeValue(forKey: groupId)
+            }
+
+            remainingIds.subtract(memberIds)
+        }
+
+        for messageId in remainingIds {
+            if let pendingTarget = pendingAnimatedDeleteTargets.removeValue(forKey: messageId) {
+                PaintSplashTrigger.trigger(in: node.tableNode, target: pendingTarget) { [weak self] in
+                    self?.viewModel.hideMessage(messageId)
+                }
+                continue
+            }
+
+            if triggerPartialPaintSplashDelete(for: messageId) {
+                continue
+            }
+
             guard let row = viewModel.messages.firstIndex(where: { $0.id == messageId }) else {
                 viewModel.hideMessage(messageId)
                 continue
@@ -1076,11 +1682,283 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
     }
 
+    private func shouldCoalesceIncomingGroupRedaction(
+        _ group: ChatViewModel.DetectedRedactedMediaGroup
+    ) -> Bool {
+        guard group.totalCount > 1 else { return false }
+        if pendingCompositeGroupDeletes[group.groupId] != nil {
+            return false
+        }
+        if group.redactedMessageIds.contains(where: { pendingAnimatedDeleteTargets[$0] != nil }) {
+            return false
+        }
+        return true
+    }
+
+    private func queueIncomingGroupRedaction(
+        _ group: ChatViewModel.DetectedRedactedMediaGroup
+    ) {
+        let pending: PendingIncomingCompositeGroupRedaction
+        if let existing = pendingIncomingGroupRedactions[group.groupId] {
+            pending = existing
+            pending.redactedMessageIds.formUnion(group.redactedMessageIds)
+            pending.remainingCountAfter = group.remainingCountAfter
+            pending.workItem?.cancel()
+        } else {
+            pending = PendingIncomingCompositeGroupRedaction(
+                groupId: group.groupId,
+                allMessageIds: group.allMessageIds,
+                totalCount: group.totalCount,
+                redactedMessageIds: group.redactedMessageIds,
+                remainingCountAfter: group.remainingCountAfter,
+                splashTarget: captureVisibleCompositeGroupSnapshotTarget(forGroupId: group.groupId)
+            )
+            pendingIncomingGroupRedactions[group.groupId] = pending
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.finalizeIncomingGroupRedaction(groupId: group.groupId)
+        }
+        pending.workItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.58, execute: workItem)
+    }
+
+    private func finalizeIncomingGroupRedaction(groupId: String) {
+        guard let pending = pendingIncomingGroupRedactions.removeValue(forKey: groupId) else {
+            return
+        }
+
+        if pending.remainingCountAfter == 0 {
+            if let splashTarget = pending.splashTarget {
+                PaintSplashTrigger.trigger(in: node.tableNode, target: splashTarget) { [weak self] in
+                    self?.viewModel.hideMessages(Array(pending.allMessageIds))
+                }
+            } else if !triggerCompositeGroupPaintSplashDelete(
+                forGroupId: groupId,
+                pendingDelete: PendingCompositeGroupDelete(
+                    messageIds: pending.allMessageIds,
+                    splashTarget: nil
+                )
+            ) {
+                viewModel.hideMessages(Array(pending.allMessageIds))
+            }
+            return
+        }
+
+        handleRedactedMessages(Array(pending.redactedMessageIds))
+    }
+
+    private func captureVisibleCompositeGroupSnapshotTarget(
+        forGroupId groupId: String
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        guard let row = viewModel.messages.firstIndex(where: { message in
+            message.mediaGroupPresentation?.rendersCompositeBubble == true
+                && message.mediaGroupPresentation?.id == groupId
+        }) else {
+            return nil
+        }
+
+        let indexPath = IndexPath(row: row, section: 0)
+        guard let cellNode = node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode,
+              cellNode.isNodeLoaded
+        else {
+            return nil
+        }
+        let bubbleView = cellNode.bubbleNode.view
+        let frameInScreen = bubbleView.convert(
+            bubbleView.bounds,
+            to: bubbleView.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+        )
+        return captureSnapshotTarget(from: bubbleView, frameInScreen: frameInScreen)
+    }
+
+    @discardableResult
+    private func triggerPartialPaintSplashDelete(for messageId: String) -> Bool {
+        guard let compositeRow = viewModel.messages.firstIndex(where: { message in
+            message.mediaGroupPresentation?.rendersCompositeBubble == true
+                && message.mediaGroupPresentation?.items.contains(where: { $0.messageId == messageId }) == true
+        }) else {
+            return false
+        }
+
+        let indexPath = IndexPath(row: compositeRow, section: 0)
+        guard let groupCell = node.tableNode.nodeForRow(at: indexPath) as? PhotoGroupMessageCellNode,
+              groupCell.isNodeLoaded,
+              let target = groupCell.paintSplashTarget(for: messageId)
+        else {
+            return false
+        }
+
+        let previews = groupCell.partialReflowPreviewImageData(excluding: messageId)
+        if !previews.isEmpty {
+            viewModel.registerPartialReflowPreviews(previews)
+        }
+
+        PaintSplashTrigger.trigger(in: node.tableNode, target: target) { [weak self] in
+            self?.viewModel.hideMessage(messageId)
+        }
+        return true
+    }
+
+    @discardableResult
+    private func triggerCompositeGroupPaintSplashDelete(
+        forGroupId groupId: String,
+        pendingDelete: PendingCompositeGroupDelete
+    ) -> Bool {
+        if let splashTarget = pendingDelete.splashTarget {
+            PaintSplashTrigger.trigger(in: node.tableNode, target: splashTarget) { [weak self] in
+                self?.viewModel.hideMessages(Array(pendingDelete.messageIds))
+            }
+            return true
+        }
+
+        guard let row = viewModel.messages.firstIndex(where: { message in
+            message.mediaGroupPresentation?.rendersCompositeBubble == true
+                && message.mediaGroupPresentation?.id == groupId
+        }) else {
+            return false
+        }
+
+        let indexPath = IndexPath(row: row, section: 0)
+        PaintSplashTrigger.trigger(in: node.tableNode, at: indexPath) { [weak self] in
+            self?.viewModel.hideMessages(Array(pendingDelete.messageIds))
+        }
+        return true
+    }
+
+    private func beginCompositeGroupDelete(
+        groupId: String,
+        messageIds: Set<String>,
+        items: [MediaGroupItem],
+        splashTarget: PaintSplashTrigger.SnapshotTarget?
+    ) {
+        guard !messageIds.isEmpty else { return }
+        viewModel.registerPendingAnimatedRedactions(Array(messageIds))
+        pendingCompositeGroupDeletes[groupId] = PendingCompositeGroupDelete(
+            messageIds: messageIds,
+            splashTarget: splashTarget
+        )
+        viewModel.redactMediaGroupItems(items)
+    }
+
+    private func handleRedactionFailure(
+        for messageId: String,
+        disposition: PendingRedactionFailureDisposition
+    ) {
+        pendingAnimatedDeleteTargets.removeValue(forKey: messageId)
+        let affectedGroups = pendingCompositeGroupDeletes.compactMap { groupId, pendingDelete -> (String, Set<String>)? in
+            pendingDelete.messageIds.contains(messageId) ? (groupId, pendingDelete.messageIds) : nil
+        }
+
+        guard !affectedGroups.isEmpty else {
+            viewModel.clearPendingAnimatedRedactions([messageId])
+            if disposition == .terminal {
+                viewModel.restoreMessages([messageId])
+            }
+            return
+        }
+
+        for (groupId, messageIds) in affectedGroups {
+            pendingCompositeGroupDeletes.removeValue(forKey: groupId)
+            viewModel.clearPendingAnimatedRedactions(Array(messageIds))
+            let alreadyRedacted = messageIds.filter { viewModel.areMessagesRedacted([$0]) }
+            if !alreadyRedacted.isEmpty {
+                handleRedactedMessages(Array(alreadyRedacted))
+            }
+            if disposition == .terminal {
+                let idsToRestore = Set(messageIds).subtracting(alreadyRedacted)
+                if !idsToRestore.isEmpty {
+                    viewModel.restoreMessages(Array(idsToRestore))
+                }
+            }
+        }
+    }
+
+    private func beginPartialCompositeItemDelete(
+        item: MediaGroupItem,
+        target: PaintSplashTrigger.SnapshotTarget?,
+        reflowPreviews: [String: Data]
+    ) {
+        if let target {
+            pendingAnimatedDeleteTargets[item.messageId] = target
+        }
+        if !reflowPreviews.isEmpty {
+            viewModel.registerPartialReflowPreviews(reflowPreviews)
+        }
+        viewModel.registerPendingAnimatedRedactions([item.messageId])
+        viewModel.redactMediaGroupItem(item)
+    }
+
+    private func beginMessageDelete(
+        _ message: ChatMessage,
+        target: PaintSplashTrigger.SnapshotTarget?
+    ) {
+        if let target {
+            pendingAnimatedDeleteTargets[message.id] = target
+        }
+        viewModel.registerPendingAnimatedRedactions([message.id])
+        triggerPaintSplashDelete(for: message)
+    }
+
+    private func captureSnapshotTarget(
+        from sourceSnapshotView: UIView,
+        frameInScreen overrideFrameInScreen: CGRect? = nil
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        guard sourceSnapshotView.bounds.width > 0, sourceSnapshotView.bounds.height > 0 else {
+            return nil
+        }
+
+        let image = UIGraphicsImageRenderer(bounds: sourceSnapshotView.bounds).image { ctx in
+            sourceSnapshotView.layer.render(in: ctx.cgContext)
+        }
+        guard image.cgImage != nil else { return nil }
+
+        let frozenSourceView = UIView(frame: sourceSnapshotView.bounds)
+        return PaintSplashTrigger.SnapshotTarget(
+            sourceView: frozenSourceView,
+            frameInScreen: overrideFrameInScreen ?? sourceSnapshotView.convert(
+                sourceSnapshotView.bounds,
+                to: sourceSnapshotView.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+            ),
+            image: image,
+            hideSource: {}
+        )
+    }
+
+    private func freezeSnapshotTarget(
+        _ target: PaintSplashTrigger.SnapshotTarget?
+    ) -> PaintSplashTrigger.SnapshotTarget? {
+        guard let target else { return nil }
+        let frozenSourceView = UIView(
+            frame: CGRect(origin: .zero, size: target.image.size)
+        )
+        return PaintSplashTrigger.SnapshotTarget(
+            sourceView: frozenSourceView,
+            frameInScreen: target.frameInScreen,
+            image: target.image,
+            hideSource: {}
+        )
+    }
+
     private func flushPendingRedactions() {
-        guard !pendingRedactedIds.isEmpty else { return }
-        let ids = pendingRedactedIds
-        pendingRedactedIds.removeAll()
-        handleRedactedMessages(ids)
+        guard !pendingRedactionBatches.isEmpty else { return }
+        let batches = pendingRedactionBatches
+        pendingRedactionBatches.removeAll()
+        for batch in batches {
+            handleRedactionBatch(batch)
+        }
+    }
+
+    private func scheduleRedactionAnimationArming() {
+        redactionAnimationArmWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.redactionAnimationsArmed = true
+        }
+        redactionAnimationArmWork = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + RedactionAnimations.bootstrapArmDelay,
+            execute: work
+        )
     }
 
     private func indexPathForMessage(_ message: ChatMessage) -> IndexPath? {
@@ -1104,6 +1982,147 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         sheet.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
 
         present(sheet, animated: true)
+    }
+
+    private func enqueueImageAttachments(_ imageDataItems: [Data]) {
+        guard !imageDataItems.isEmpty else { return }
+        viewModel.clearPendingForward()
+        if composerController.state.hasAttachments,
+           composerController.state.imageAttachments.count != composerController.state.attachments.count {
+            composerController.clearAttachments()
+        }
+        Task { [weak self] in
+            await self?.composerController.addImageData(imageDataItems)
+        }
+    }
+
+    private func enqueuePastedImages(_ images: [UIImage]) {
+        guard !images.isEmpty else { return }
+        viewModel.clearPendingForward()
+        if composerController.state.hasAttachments,
+           composerController.state.imageAttachments.count != composerController.state.attachments.count {
+            composerController.clearAttachments()
+        }
+        Task { [weak self] in
+            await self?.composerController.addImages(images)
+        }
+    }
+
+    private func enqueueFileAttachments(_ urls: [URL]) {
+        let files = Array(urls.prefix(10))
+        guard !files.isEmpty else { return }
+        viewModel.clearPendingForward()
+        if composerController.state.hasAttachments,
+           composerController.state.fileAttachments.count != composerController.state.attachments.count {
+            composerController.clearAttachments()
+        }
+        composerController.addFileURLs(files)
+    }
+
+    private func presentComposerPreviewIfNeeded() {
+        let state = composerController.state
+        guard !state.attachments.isEmpty else {
+            shouldPresentAttachmentPreviewAfterDismiss = false
+            return
+        }
+
+        if state.imageAttachments.count == state.attachments.count {
+            presentPhotoGroupPreviewIfNeeded()
+        } else if state.fileAttachments.count == state.attachments.count {
+            presentFileAttachmentPreviewIfNeeded()
+        } else {
+            assertionFailure("Mixed attachment drafts are unsupported")
+            composerController.clearAttachments()
+        }
+    }
+
+    private func presentPhotoGroupPreviewIfNeeded() {
+        let state = composerController.state
+        guard !state.imageAttachments.isEmpty,
+              state.imageAttachments.count == state.attachments.count
+        else { return }
+
+        guard photoPreviewController == nil, filePreviewController == nil else { return }
+        guard presentedViewController == nil else {
+            shouldPresentAttachmentPreviewAfterDismiss = true
+            return
+        }
+        shouldPresentAttachmentPreviewAfterDismiss = false
+
+        let controller = PhotoGroupPreviewController(
+            attachments: state.imageAttachments,
+            initialCaption: glassInputBar.inputNode.currentText,
+            initialCaptionPlacement: state.photoGroupCaptionPlacement
+        )
+        controller.onDiscard = { [weak self, weak controller] in
+            guard let self else { return }
+            if self.photoPreviewController === controller {
+                self.photoPreviewController = nil
+            }
+            self.composerController.clearAttachments()
+        }
+        controller.onSend = { [weak self, weak controller] attachments, caption, captionPlacement, layoutOverride in
+            guard let self else { return }
+            if self.photoPreviewController === controller {
+                self.photoPreviewController = nil
+            }
+            self.composerController.clearAttachments()
+            self.glassInputBar.inputNode.setCurrentText("")
+            let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.viewModel.sendComposerAttachments(
+                attachments,
+                caption: trimmedCaption.isEmpty ? nil : trimmedCaption,
+                captionPlacement: captionPlacement,
+                layoutOverride: layoutOverride
+            )
+            self.scrollToLiveAfterUserSend()
+        }
+        photoPreviewController = controller
+        glassInputBar.inputNode.textInputNode.resignFirstResponder()
+        present(controller, animated: true)
+    }
+
+    private func presentFileAttachmentPreviewIfNeeded() {
+        let state = composerController.state
+        guard !state.fileAttachments.isEmpty,
+              state.fileAttachments.count == state.attachments.count
+        else { return }
+
+        guard photoPreviewController == nil, filePreviewController == nil else { return }
+        guard presentedViewController == nil else {
+            shouldPresentAttachmentPreviewAfterDismiss = true
+            return
+        }
+        shouldPresentAttachmentPreviewAfterDismiss = false
+
+        let controller = FileAttachmentPreviewController(
+            attachments: state.fileAttachments,
+            initialCaption: glassInputBar.inputNode.currentText
+        )
+        controller.onDiscard = { [weak self, weak controller] in
+            guard let self else { return }
+            if self.filePreviewController === controller {
+                self.filePreviewController = nil
+            }
+            self.composerController.clearAttachments()
+        }
+        controller.onSend = { [weak self, weak controller] attachments, caption in
+            guard let self else { return }
+            if self.filePreviewController === controller {
+                self.filePreviewController = nil
+            }
+            self.composerController.clearAttachments()
+            self.glassInputBar.inputNode.setCurrentText("")
+            let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.viewModel.sendComposerAttachments(
+                attachments,
+                caption: trimmedCaption.isEmpty ? nil : trimmedCaption
+            )
+            self.scrollToLiveAfterUserSend()
+        }
+        filePreviewController = controller
+        glassInputBar.inputNode.textInputNode.resignFirstResponder()
+        present(controller, animated: true)
     }
 
     // MARK: - Photo Picker
@@ -1134,7 +2153,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - File Tap → Download + Quick Look
 
     private func handleFileTap(message: ChatMessage, cellNode: FileCellNode) {
-        guard case .file(let source, let filename, let mimetype, _) = message.content
+        guard case .file(let source?, let filename, let mimetype, _, _) = message.content
         else { return }
 
         // Already cached — show immediately
@@ -1173,18 +2192,68 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         guard let image = cell.currentImage else { return }
 
         var source: MediaSource?
-        if case .image(let src, _, _, _) = message.content {
+        if case .image(let src, _, _, _, _) = message.content {
             source = src
         }
 
         let cellImageView = cell.imageNodeView
         let sourceFrame = cellImageView.convert(cellImageView.bounds, to: nil)
+        let items = [
+            ImageViewerController.Item(
+                previewImage: image,
+                mediaSource: source,
+                sourceFrame: sourceFrame
+            )
+        ]
+        presentImageViewer(items: items, initialIndex: 0)
+    }
 
-        let viewer = ImageViewerController(image: image, mediaSource: source)
-        viewer.sourceFrame = sourceFrame
+    private func presentImageViewer(for cell: PhotoGroupMessageCellNode, itemIndex: Int) {
+        guard let initialImage = cell.currentImage(at: itemIndex),
+              let initialSourceFrame = cell.viewerSourceFrameInWindow(at: itemIndex) else { return }
+        let initialMediaSource = cell.mediaSource(at: itemIndex)
 
+        var items: [ImageViewerController.Item] = []
+        items.reserveCapacity(cell.mediaItemCount)
+
+        for index in 0..<cell.mediaItemCount {
+            let previewImage: UIImage?
+            let sourceFrame: CGRect
+            if index == itemIndex {
+                previewImage = initialImage
+                sourceFrame = initialSourceFrame
+            } else {
+                previewImage = cell.currentImage(at: index)
+                sourceFrame = cell.viewerSourceFrameInWindow(at: index) ?? .zero
+            }
+
+            items.append(ImageViewerController.Item(
+                previewImage: previewImage,
+                mediaSource: cell.mediaSource(at: index),
+                sourceFrame: sourceFrame
+            ))
+        }
+
+        guard !items.isEmpty else {
+            let items = [
+                ImageViewerController.Item(
+                    previewImage: initialImage,
+                    mediaSource: initialMediaSource,
+                    sourceFrame: initialSourceFrame
+                )
+            ]
+            presentImageViewer(items: items, initialIndex: 0)
+            return
+        }
+
+        presentImageViewer(items: items, initialIndex: itemIndex)
+    }
+
+    private func presentImageViewer(items: [ImageViewerController.Item], initialIndex: Int) {
+        guard !items.isEmpty else { return }
+        let viewer = ImageViewerController(items: items, initialIndex: initialIndex)
         present(viewer, animated: false) {
-            viewer.animateIn(from: sourceFrame)
+            viewer.animateIn(from: items[max(0, min(initialIndex, items.count - 1))].sourceFrame)
         }
     }
 
@@ -1209,28 +2278,21 @@ extension ChatViewController: PHPickerViewControllerDelegate {
             guard let self else { return }
             self.isPickerPresented = false
             self.becomeFirstResponder()
+            if self.shouldPresentAttachmentPreviewAfterDismiss {
+                self.presentComposerPreviewIfNeeded()
+            }
         }
         guard !results.isEmpty else { return }
 
-        let captionText = glassInputBar.inputNode.textInputNode.textView.text?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let caption = (captionText?.isEmpty == false) ? captionText : nil
-        if caption != nil {
-            glassInputBar.inputNode.textInputNode.textView.text = ""
-        }
-
         Task {
-            var processed: [ProcessedImage] = []
+            var imageDataItems: [Data] = []
             for result in results {
                 guard let data = await loadImageData(from: result) else { continue }
-                if let image = try? await MediaPreprocessor.processImage(from: data) {
-                    processed.append(image)
-                }
+                imageDataItems.append(data)
             }
-            guard !processed.isEmpty else { return }
+            guard !imageDataItems.isEmpty else { return }
             await MainActor.run {
-                viewModel.sendImages(processed, caption: caption)
-                self.scrollToLiveAfterUserSend()
+                self.enqueueImageAttachments(imageDataItems)
             }
         }
     }
@@ -1251,10 +2313,12 @@ extension ChatViewController: PHPickerViewControllerDelegate {
 extension ChatViewController: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         isPickerPresented = false
-        for url in urls.prefix(10) {
-            viewModel.sendFile(url: url)
+        enqueueFileAttachments(urls)
+        DispatchQueue.main.async { [weak self] in
+            if self?.shouldPresentAttachmentPreviewAfterDismiss == true {
+                self?.presentComposerPreviewIfNeeded()
+            }
         }
-        scrollToLiveAfterUserSend()
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
@@ -1868,5 +2932,21 @@ private final class AccessibilityEmojiPickerCell: UITableViewCell {
     private static func displayName(for emoji: String) -> String {
         guard let rawName = EmojiData.names[emoji], !rawName.isEmpty else { return emoji }
         return rawName.capitalized
+    }
+}
+
+private final class HiddenMessagePlaceholderCellNode: ASCellNode {
+    override init() {
+        super.init()
+        selectionStyle = .none
+        backgroundColor = .clear
+        style.preferredSize = CGSize(width: 1, height: 0.01)
+        isAccessibilityElement = false
+    }
+
+    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
+        let spacer = ASDisplayNode()
+        spacer.style.preferredSize = CGSize(width: constrainedSize.max.width, height: 0.01)
+        return ASWrapperLayoutSpec(layoutElement: spacer)
     }
 }

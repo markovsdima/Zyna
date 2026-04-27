@@ -109,6 +109,9 @@ final class VoiceMessageCellNode: MessageCellNode {
 
         let samples = Self.resampleWaveform(waveformData, to: Self.barCount)
         let maxContentWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio - Self.bubbleInsets.left - Self.bubbleInsets.right
+        let statusIcon = message.isOutgoing
+            ? MessageStatusIcon.from(sendStatus: message.sendStatus)
+            : nil
 
         self.flatContentNode = VoiceBubbleContentNode(
             forwardedHeaderText: forwardedHeaderText,
@@ -121,6 +124,8 @@ final class VoiceMessageCellNode: MessageCellNode {
                     .foregroundColor: bubbleTimestampColor
                 ]
             ),
+            statusIcon: statusIcon,
+            statusTintColor: bubbleTimestampColor,
             waveformSamples: samples,
             waveformFilledColor: usesAccentBubbleStyle ? AppColor.onAccent : AppColor.accent,
             waveformUnfilledColor: usesAccentBubbleStyle
@@ -155,6 +160,11 @@ final class VoiceMessageCellNode: MessageCellNode {
         }
 
         observePlayer()
+    }
+
+    override func updateSendStatus(_ status: String) {
+        super.updateSendStatus(status)
+        flatContentNode.statusIcon = statusIcon(forSendStatus: status)
     }
 
     override func didLoad() {
