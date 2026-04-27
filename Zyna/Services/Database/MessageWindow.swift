@@ -6,18 +6,31 @@
 import Foundation
 import GRDB
 
-/// Manages a cursor-based sliding window of messages for a single room.
-/// Queries GRDB on demand instead of observing all rows.
-/// Most methods mutate state and emit UI updates — call them on
+/// Manages the session-retained set of messages that have been loaded
+/// for a single room. Queries GRDB on demand instead of observing all
+/// rows. Most methods mutate state and emit UI updates — call them on
 /// main. The `queryOlder()` read-only method is thread-safe and
 /// designed for use from Texture's background batch-fetch queue.
 final class MessageWindow {
 
+    private struct PendingDuplicateFingerprint: Hashable {
+        let senderId: String
+        let contentType: String
+        let body: String
+        let caption: String
+        let filename: String
+        let imageWidth: Int64
+        let imageHeight: Int64
+        let zynaAttributesJSON: String
+    }
+
     // MARK: - Configuration
 
+    /// Initial bootstrapping / jump window size. Once older pages are
+    /// loaded during the session, they remain retained until an
+    /// explicit reset path such as `jumpTo`.
     static let windowSize = 200
     static let pageSize = 50
-    private static let trimThreshold = 50
 
     // MARK: - State
 
@@ -65,7 +78,6 @@ final class MessageWindow {
     struct OlderPage {
         let merged: [StoredMessage]
         let fetchedCount: Int
-        let trimmed: Bool
     }
 
     /// Pure GRDB read + merge/sort. Safe to call from any queue.
@@ -78,24 +90,17 @@ final class MessageWindow {
 
         var all = (previousStored ?? []) + older
         all.sort { $0.timestamp > $1.timestamp }
-
-        let maxSize = Self.windowSize + Self.trimThreshold
-        var trimmed = false
-        if all.count > maxSize {
-            all = Array(all.suffix(Self.windowSize))
-            trimmed = true
-        }
         return OlderPage(
-            merged: all, fetchedCount: older.count, trimmed: trimmed
+            merged: all, fetchedCount: older.count
         )
     }
 
     /// Apply a pre-computed older page on the main thread. Mutates
     /// cursors, flags, and fires onChange.
     func applyOlder(_ page: OlderPage) {
-        if page.trimmed { hasNewerInDB = true }
         updateCursors(from: page.merged)
         hasOlderInDB = checkHasOlderInDB()
+        hasNewerInDB = checkHasNewerInDB()
         emitChange(page.merged)
         log("loadOlder: +\(page.fetchedCount), window=\(page.merged.count)")
     }
@@ -131,14 +136,8 @@ final class MessageWindow {
         var all = newer + (previousStored ?? [])
         all.sort { $0.timestamp > $1.timestamp }
 
-        // Trim oldest end if too large
-        let maxSize = Self.windowSize + Self.trimThreshold
-        if all.count > maxSize {
-            all = Array(all.prefix(Self.windowSize))
-            hasOlderInDB = true
-        }
-
         updateCursors(from: all)
+        hasOlderInDB = checkHasOlderInDB()
         hasNewerInDB = checkHasNewerInDB()
         emitChange(all)
         log("loadNewer: +\(newer.count), window=\(all.count)")
@@ -154,17 +153,20 @@ final class MessageWindow {
         }
 
         if isAtLiveEdge {
-            // Extend to include new messages
-            let stored = queryNewest(limit: Self.windowSize)
+            // Keep the full session-retained range and append any new
+            // live-edge rows that arrived since the previous refresh.
+            let stored = queryAtOrNewerThan(timestamp: oldestTs)
             updateCursors(from: stored)
             hasNewerInDB = false
-            hasOlderInDB = stored.count >= Self.windowSize || checkHasOlderInDB()
+            hasOlderInDB = checkHasOlderInDB()
             emitChange(stored)
         } else {
             // Re-query existing bounds (picks up updates/redactions)
             guard let newestTs = newestTimestamp else { return }
             let stored = queryRange(from: oldestTs, to: newestTs)
             updateCursors(from: stored)
+            hasOlderInDB = checkHasOlderInDB()
+            hasNewerInDB = checkHasNewerInDB()
             emitChange(stored)
         }
     }
@@ -200,7 +202,17 @@ final class MessageWindow {
     }
 
     func jumpToLive() {
-        loadInitial()
+        guard let oldestTs = oldestTimestamp else {
+            loadInitial()
+            return
+        }
+
+        let stored = queryAtOrNewerThan(timestamp: oldestTs)
+        updateCursors(from: stored)
+        hasNewerInDB = false
+        hasOlderInDB = checkHasOlderInDB()
+        emitChange(stored)
+        log("jumpToLive: window=\(stored.count)")
     }
 
     func jumpToOldest() {
@@ -223,20 +235,26 @@ final class MessageWindow {
         return ClusterNeighbor(
             senderId: msg.senderId,
             timestamp: Date(timeIntervalSince1970: msg.timestamp),
-            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system"
+            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system",
+            mediaGroupId: msg.toChatMessage()?.zynaAttributes.mediaGroup?.id
         )
     }
 
-    /// Bottom-edge mirror of peekOlderNeighbor. Non-nil only after a
-    /// trim or jumpTo — at live edge nothing newer exists yet.
+    /// Bottom-edge mirror of peekOlderNeighbor. Non-nil when the
+    /// session-retained set is not currently at the live edge.
     func peekNewerNeighbor() -> ClusterNeighbor? {
         guard let newestTs = newestTimestamp else { return nil }
         guard let msg = queryNewerThan(timestamp: newestTs, limit: 1).first else { return nil }
         return ClusterNeighbor(
             senderId: msg.senderId,
             timestamp: Date(timeIntervalSince1970: msg.timestamp),
-            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system"
+            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system",
+            mediaGroupId: msg.toChatMessage()?.zynaAttributes.mediaGroup?.id
         )
+    }
+
+    func currentStoredMessages() -> [StoredMessage] {
+        previousStored ?? []
     }
 
     // MARK: - GRDB Queries
@@ -283,6 +301,15 @@ final class MessageWindow {
         return asc.reversed()
     }
 
+    private func queryAtOrNewerThan(timestamp: TimeInterval) -> [StoredMessage] {
+        (try? dbQueue.read { db in
+            try StoredMessage
+                .filter(Column("roomId") == self.roomId && Column("timestamp") >= timestamp)
+                .order(Column("timestamp").desc)
+                .fetchAll(db)
+        }) ?? []
+    }
+
     private func queryRange(from oldest: TimeInterval, to newest: TimeInterval) -> [StoredMessage] {
         (try? dbQueue.read { db in
             try StoredMessage
@@ -325,13 +352,129 @@ final class MessageWindow {
     // MARK: - Helpers
 
     private func updateCursors(from stored: [StoredMessage]) {
-        newestTimestamp = stored.first?.timestamp
-        oldestTimestamp = stored.last?.timestamp
+        let normalized = normalizedStored(stored)
+        newestTimestamp = normalized.first?.timestamp
+        oldestTimestamp = normalized.last?.timestamp
     }
 
     private func emitChange(_ stored: [StoredMessage]) {
+        let normalized = normalizedStored(stored)
         let prev = previousStored
-        previousStored = stored
-        onChange?(stored, prev)
+        previousStored = normalized
+        onChange?(normalized, prev)
+    }
+
+    private func normalizedStored(_ stored: [StoredMessage]) -> [StoredMessage] {
+        guard stored.count > 1 else { return stored }
+
+        let sorted = stored.sorted { lhs, rhs in
+            if lhs.timestamp == rhs.timestamp {
+                return lhs.id > rhs.id
+            }
+            return lhs.timestamp > rhs.timestamp
+        }
+
+        func winner(_ lhs: StoredMessage, _ rhs: StoredMessage) -> StoredMessage {
+            let lhsScore = messageScore(lhs)
+            let rhsScore = messageScore(rhs)
+            if lhsScore != rhsScore {
+                return lhsScore > rhsScore ? lhs : rhs
+            }
+            if lhs.timestamp != rhs.timestamp {
+                return lhs.timestamp > rhs.timestamp ? lhs : rhs
+            }
+            return lhs.id > rhs.id ? lhs : rhs
+        }
+
+        var bestByEventId: [String: StoredMessage] = [:]
+        var bestByTransactionId: [String: StoredMessage] = [:]
+
+        for message in sorted {
+            if let eventId = message.eventId, !eventId.isEmpty {
+                if let existing = bestByEventId[eventId] {
+                    bestByEventId[eventId] = winner(existing, message)
+                } else {
+                    bestByEventId[eventId] = message
+                }
+            }
+            if let transactionId = message.transactionId, !transactionId.isEmpty {
+                if let existing = bestByTransactionId[transactionId] {
+                    bestByTransactionId[transactionId] = winner(existing, message)
+                } else {
+                    bestByTransactionId[transactionId] = message
+                }
+            }
+        }
+
+        let exactDeduped = sorted.filter { message in
+            if let eventId = message.eventId, !eventId.isEmpty {
+                return bestByEventId[eventId]?.id == message.id
+            }
+            if let transactionId = message.transactionId, !transactionId.isEmpty {
+                return bestByTransactionId[transactionId]?.id == message.id
+            }
+            return true
+        }
+
+        var syncedTimestampsByFingerprint: [PendingDuplicateFingerprint: [TimeInterval]] = [:]
+        for message in exactDeduped
+        where message.isOutgoing && message.eventId != nil {
+            let fingerprint = PendingDuplicateFingerprint(
+                senderId: message.senderId,
+                contentType: message.contentType,
+                body: message.contentBody ?? "",
+                caption: message.contentCaption ?? "",
+                filename: message.contentFilename ?? "",
+                imageWidth: message.contentImageWidth ?? -1,
+                imageHeight: message.contentImageHeight ?? -1,
+                zynaAttributesJSON: message.zynaAttributesJSON ?? ""
+            )
+            syncedTimestampsByFingerprint[fingerprint, default: []].append(message.timestamp)
+        }
+
+        return exactDeduped.filter { message in
+            guard message.isOutgoing,
+                  message.eventId == nil,
+                  message.transactionId != nil else {
+                return true
+            }
+
+            let fingerprint = PendingDuplicateFingerprint(
+                senderId: message.senderId,
+                contentType: message.contentType,
+                body: message.contentBody ?? "",
+                caption: message.contentCaption ?? "",
+                filename: message.contentFilename ?? "",
+                imageWidth: message.contentImageWidth ?? -1,
+                imageHeight: message.contentImageHeight ?? -1,
+                zynaAttributesJSON: message.zynaAttributesJSON ?? ""
+            )
+            guard let timestamps = syncedTimestampsByFingerprint[fingerprint] else {
+                return true
+            }
+            return !timestamps.contains(where: { abs($0 - message.timestamp) < 3 })
+        }
+    }
+
+    private func messageScore(_ message: StoredMessage) -> Int {
+        var score = 0
+        if message.eventId != nil { score += 100 }
+        if message.transactionId != nil { score += 20 }
+        switch message.sendStatus {
+        case "read":
+            score += 12
+        case "synced":
+            score += 10
+        case "sent":
+            score += 8
+        case "sending":
+            score += 2
+        default:
+            score += 4
+        }
+        if !(message.zynaAttributesJSON ?? "").isEmpty {
+            score += 1
+        }
+        return score
     }
 }

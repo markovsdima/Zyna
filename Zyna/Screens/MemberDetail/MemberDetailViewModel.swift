@@ -29,6 +29,9 @@ final class MemberDetailViewModel {
     private var myPowerLevel: Int = 0
     private var targetPowerLevel: Int = 0
     private var isSelf: Bool = false
+    private var canSendPowerLevelsState = false
+    private var canKickUsers = false
+    private var canBanUsers = false
 
     init(room: Room, userId: String) {
         self.room = room
@@ -47,12 +50,14 @@ final class MemberDetailViewModel {
 
             async let targetMember = room.member(userId: targetUserId)
             async let myMember = room.member(userId: myId)
+            async let roomPowerLevels = room.getPowerLevels()
 
             do {
                 let target = try await targetMember
                 let me = try await myMember
+                let powerLevels = try await roomPowerLevels
                 await MainActor.run { [weak self] in
-                    self?.apply(target: target, me: me)
+                    self?.apply(target: target, me: me, powerLevels: powerLevels)
                 }
             } catch {
                 await MainActor.run { [weak self] in
@@ -62,11 +67,14 @@ final class MemberDetailViewModel {
         }
     }
 
-    private func apply(target: RoomMember, me: RoomMember) {
-        targetPowerLevel = Self.powerLevel(from: target.powerLevel)
-        myPowerLevel = Self.powerLevel(from: me.powerLevel)
+    private func apply(target: RoomMember, me: RoomMember, powerLevels: RoomPowerLevels) {
+        targetPowerLevel = Self.comparablePowerLevel(from: target.powerLevel)
+        myPowerLevel = Self.comparablePowerLevel(from: me.powerLevel)
+        canSendPowerLevelsState = powerLevels.canOwnUserSendState(stateEvent: .roomPowerLevels)
+        canKickUsers = powerLevels.canOwnUserKick()
+        canBanUsers = powerLevels.canOwnUserBan()
 
-        let role = MemberCellNode.Role.from(powerLevel: targetPowerLevel)
+        let role = MemberCellNode.Role.from(powerLevel: target.powerLevel)
         let targetModel = MemberCellNode.Model(
             userId: target.userId,
             displayName: target.displayName,
@@ -75,20 +83,9 @@ final class MemberDetailViewModel {
             presence: PresenceTracker.shared.statuses[target.userId]
         )
 
-        let canManage = !isSelf
-            && myPowerLevel >= 50
-            && myPowerLevel > targetPowerLevel
-        let available = Self.availableRoles(myPowerLevel: myPowerLevel)
-
-        state = State(
-            member: targetModel,
-            membership: target.membership,
-            canChangeRole: canManage && available.count > 1,
-            canKick: canManage,
-            canBan: canManage,
-            canSendMessage: !isSelf,
-            availableRoles: available
-        )
+        state.member = targetModel
+        state.membership = target.membership
+        rebuildCapabilities()
     }
 
     // MARK: - Actions
@@ -102,6 +99,7 @@ final class MemberDetailViewModel {
         newState.member?.role = role
         state = newState
         targetPowerLevel = Self.powerLevel(for: role)
+        rebuildCapabilities()
 
         let newPL = Int64(Self.powerLevel(for: role))
         let update = UserPowerLevelUpdate(userId: targetUserId, powerLevel: newPL)
@@ -144,9 +142,9 @@ final class MemberDetailViewModel {
 
     // MARK: - Helpers
 
-    private static func powerLevel(from pl: PowerLevel) -> Int {
+    private static func comparablePowerLevel(from pl: PowerLevel) -> Int {
         switch pl {
-        case .infinite:         return 100
+        case .infinite:         return Int.max
         case .value(let value): return Int(value)
         }
     }
@@ -154,18 +152,36 @@ final class MemberDetailViewModel {
     private static func powerLevel(for role: MemberCellNode.Role) -> Int {
         switch role {
         case .owner:     return 100
-        case .admin:     return 50
-        case .moderator: return 25
+        case .admin:     return 100
+        case .moderator: return 50
         case .member:    return 0
         }
     }
 
-    /// Roles whose target power level is strictly below mine — the
-    /// only roles a user can grant under Matrix rules.
+    private func rebuildCapabilities() {
+        let canActOnTarget = !isSelf && myPowerLevel > targetPowerLevel
+        let availableRoles = (canActOnTarget && canSendPowerLevelsState)
+            ? Self.availableRoles(myPowerLevel: myPowerLevel)
+            : []
+
+        state.canChangeRole = availableRoles.count > 1
+        state.canKick = canActOnTarget && canKickUsers
+        state.canBan = canActOnTarget && canBanUsers
+        state.canSendMessage = !isSelf
+        state.availableRoles = availableRoles
+    }
+
+    /// Roles this user can assign in the room. `owner` is creator-only
+    /// and cannot be granted through `m.room.power_levels`.
     private static func availableRoles(myPowerLevel: Int) -> [MemberCellNode.Role] {
-        MemberCellNode.Role.allCases.filter { role in
-            powerLevel(for: role) < myPowerLevel
+        var roles: [MemberCellNode.Role] = [.member]
+        if myPowerLevel >= powerLevel(for: .moderator) {
+            roles.insert(.moderator, at: 0)
         }
+        if myPowerLevel >= powerLevel(for: .admin) {
+            roles.insert(.admin, at: 0)
+        }
+        return roles
     }
 }
 

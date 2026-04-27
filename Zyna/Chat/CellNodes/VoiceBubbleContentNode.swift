@@ -28,12 +28,19 @@ final class VoiceBubbleContentNode: ASDisplayNode {
     private static let waveformHeight: CGFloat = 20
     private static let contentSpacing: CGFloat = 8
     private static let stackSpacing: CGFloat = 2
+    private static let statusSpacing: CGFloat = 4
+    private static let statusSlotWidth: CGFloat = ceil(
+        MessageStatusIconConfig.defaultSize
+        + MessageStatusIconConfig.defaultSize * MessageStatusIconConfig.doubleCheckOffsetRatio
+    )
 
     final class DrawParams: NSObject {
         let forwardedHeaderText: NSAttributedString?
         let replyHeader: ReplyHeaderData?
         let durationText: NSAttributedString
         let timeText: NSAttributedString
+        let statusIcon: MessageStatusIcon?
+        let statusTintColor: UIColor
         let waveformSamples: [UInt16]
         let waveformProgress: Float
         let waveformFilledColor: UIColor
@@ -46,6 +53,8 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             replyHeader: ReplyHeaderData?,
             durationText: NSAttributedString,
             timeText: NSAttributedString,
+            statusIcon: MessageStatusIcon?,
+            statusTintColor: UIColor,
             waveformSamples: [UInt16],
             waveformProgress: Float,
             waveformFilledColor: UIColor,
@@ -57,6 +66,8 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             self.replyHeader = replyHeader
             self.durationText = durationText
             self.timeText = timeText
+            self.statusIcon = statusIcon
+            self.statusTintColor = statusTintColor
             self.waveformSamples = waveformSamples
             self.waveformProgress = waveformProgress
             self.waveformFilledColor = waveformFilledColor
@@ -78,11 +89,13 @@ final class VoiceBubbleContentNode: ASDisplayNode {
         let waveformRect: CGRect
         let durationRect: CGRect
         let timeRect: CGRect
+        let statusRect: CGRect?
     }
 
     private let forwardedHeaderText: NSAttributedString?
     private let replyHeader: ReplyHeaderData?
     private let timeText: NSAttributedString
+    private let statusTintColor: UIColor
     private let waveformSamples: [UInt16]
     private let waveformFilledColor: UIColor
     private let waveformUnfilledColor: UIColor
@@ -111,11 +124,21 @@ final class VoiceBubbleContentNode: ASDisplayNode {
         }
     }
 
+    var statusIcon: MessageStatusIcon? {
+        didSet {
+            guard statusIcon != oldValue else { return }
+            setNeedsDisplay()
+            setNeedsLayout()
+        }
+    }
+
     init(
         forwardedHeaderText: NSAttributedString?,
         replyHeader: ReplyHeaderData?,
         durationText: NSAttributedString,
         timeText: NSAttributedString,
+        statusIcon: MessageStatusIcon?,
+        statusTintColor: UIColor,
         waveformSamples: [UInt16],
         waveformFilledColor: UIColor,
         waveformUnfilledColor: UIColor,
@@ -127,6 +150,8 @@ final class VoiceBubbleContentNode: ASDisplayNode {
         self.replyHeader = replyHeader
         self.durationText = durationText
         self.timeText = timeText
+        self.statusIcon = statusIcon
+        self.statusTintColor = statusTintColor
         self.waveformSamples = waveformSamples
         self.waveformFilledColor = waveformFilledColor
         self.waveformUnfilledColor = waveformUnfilledColor
@@ -149,6 +174,7 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             replyHeader: replyHeader,
             durationText: durationText,
             timeText: timeText,
+            statusIcon: statusIcon,
             waveformSamples: waveformSamples
         ).size
     }
@@ -162,6 +188,7 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             replyHeader: replyHeader,
             durationText: durationText,
             timeText: timeText,
+            statusIcon: statusIcon,
             waveformSamples: waveformSamples
         )
         replyHeaderFrame = layout.replyRect
@@ -174,6 +201,8 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             replyHeader: replyHeader,
             durationText: durationText,
             timeText: timeText,
+            statusIcon: statusIcon,
+            statusTintColor: statusTintColor,
             waveformSamples: waveformSamples,
             waveformProgress: waveformProgress,
             waveformFilledColor: waveformFilledColor,
@@ -194,6 +223,7 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             replyHeader: params.replyHeader,
             durationText: params.durationText,
             timeText: params.timeText,
+            statusIcon: params.statusIcon,
             waveformSamples: params.waveformSamples
         )
 
@@ -230,7 +260,10 @@ final class VoiceBubbleContentNode: ASDisplayNode {
 
         params.playImage.draw(in: layout.playImageRect)
         drawWaveform(
-            samples: params.waveformSamples,
+            samples: fittedWaveformSamples(
+                from: params.waveformSamples,
+                maxWidth: layout.waveformRect.width
+            ),
             progress: params.waveformProgress,
             filledColor: params.waveformFilledColor,
             unfilledColor: params.waveformUnfilledColor,
@@ -250,6 +283,14 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             context: nil
         )
+        if let statusRect = layout.statusRect {
+            drawStatusIcon(
+                params.statusIcon,
+                tintColor: params.statusTintColor,
+                in: statusRect,
+                cancelled: isCancelledBlock
+            )
+        }
     }
 
     private static func makeLayout(
@@ -259,6 +300,7 @@ final class VoiceBubbleContentNode: ASDisplayNode {
         replyHeader: ReplyHeaderData?,
         durationText: NSAttributedString,
         timeText: NSAttributedString,
+        statusIcon: MessageStatusIcon?,
         waveformSamples: [UInt16]
     ) -> LayoutMetrics {
         let availableWidth = max(0, min(width, maxContentWidth))
@@ -302,12 +344,24 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             usedWidth = max(usedWidth, replyRect!.width)
         }
 
-        let waveformWidth = CGFloat(waveformSamples.count) * (waveformBarWidth + waveformBarSpacing) - waveformBarSpacing
         let durationSize = singleLineSize(for: durationText, maxWidth: availableWidth)
-        let rowWidth = playButtonSize.width + contentSpacing + waveformWidth + contentSpacing + durationSize.width
-        let rowHeight = max(playButtonSize.height, durationSize.height, waveformHeight)
         let timeSize = singleLineSize(for: timeText, maxWidth: availableWidth)
-        let contentWidth = max(rowWidth, timeSize.width)
+        let statusWidth = statusIcon == nil ? 0 : statusSlotWidth + statusSpacing
+        let timeRowHeight = max(timeSize.height, statusDrawHeight(for: statusIcon))
+        let timeRowWidth = timeSize.width + statusWidth
+        let maxWaveformWidth = max(
+            0,
+            availableWidth - playButtonSize.width - contentSpacing - durationSize.width - contentSpacing
+        )
+        let displayedWaveformSamples = fittedWaveformSamples(
+            from: waveformSamples,
+            maxWidth: maxWaveformWidth
+        )
+        let waveformWidth = widthForWaveform(sampleCount: displayedWaveformSamples.count)
+        let waveformToDurationSpacing = waveformWidth > 0 ? contentSpacing : 0
+        let rowWidth = playButtonSize.width + contentSpacing + waveformWidth + waveformToDurationSpacing + durationSize.width
+        let rowHeight = max(playButtonSize.height, durationSize.height, waveformHeight)
+        let contentWidth = max(rowWidth, timeRowWidth)
 
         let playButtonRect = CGRect(x: 0, y: y, width: playButtonSize.width, height: playButtonSize.height).integral
         let playImageRect = CGRect(
@@ -323,22 +377,30 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             height: waveformHeight
         ).integral
         let durationRect = CGRect(
-            x: waveformRect.maxX + contentSpacing,
+            x: waveformWidth > 0
+                ? waveformRect.maxX + waveformToDurationSpacing
+                : playButtonRect.maxX + contentSpacing,
             y: y + floor((rowHeight - durationSize.height) / 2),
             width: durationSize.width,
             height: durationSize.height
         ).integral
         let timeRect = CGRect(
-            x: contentWidth - timeSize.width,
-            y: y + rowHeight + stackSpacing,
+            x: contentWidth - timeRowWidth,
+            y: y + rowHeight + stackSpacing + floor((timeRowHeight - timeSize.height) / 2),
             width: timeSize.width,
             height: timeSize.height
+        ).integral
+        let statusRect = statusIcon == nil ? nil : CGRect(
+            x: timeRect.maxX + statusSpacing,
+            y: y + rowHeight + stackSpacing,
+            width: statusSlotWidth,
+            height: timeRowHeight
         ).integral
 
         usedWidth = max(usedWidth, contentWidth)
 
         return LayoutMetrics(
-            size: CGSize(width: ceil(usedWidth), height: ceil(timeRect.maxY)),
+            size: CGSize(width: ceil(usedWidth), height: ceil(max(timeRect.maxY, statusRect?.maxY ?? 0))),
             forwardedRect: forwardedRect,
             replyRect: replyRect,
             replyBarRect: replyBarRect,
@@ -348,8 +410,95 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             playImageRect: playImageRect,
             waveformRect: waveformRect,
             durationRect: durationRect,
-            timeRect: timeRect
+            timeRect: timeRect,
+            statusRect: statusRect
         )
+    }
+
+    private static func fittedWaveformSamples(from samples: [UInt16], maxWidth: CGFloat) -> [UInt16] {
+        let maxSampleCount = Int(
+            floor((maxWidth + waveformBarSpacing) / (waveformBarWidth + waveformBarSpacing))
+        )
+        let clampedCount = max(0, min(samples.count, maxSampleCount))
+
+        guard clampedCount > 0 else { return [] }
+        guard clampedCount < samples.count else { return samples }
+
+        return resampleWaveform(samples, to: clampedCount)
+    }
+
+    private static func widthForWaveform(sampleCount: Int) -> CGFloat {
+        guard sampleCount > 0 else { return 0 }
+        return CGFloat(sampleCount) * (waveformBarWidth + waveformBarSpacing) - waveformBarSpacing
+    }
+
+    private static func drawStatusIcon(
+        _ icon: MessageStatusIcon?,
+        tintColor: UIColor,
+        in rect: CGRect,
+        cancelled: () -> Bool
+    ) {
+        guard let icon else { return }
+        if cancelled() { return }
+
+        let slotX = rect.minX
+        let slotY = rect.minY + floor((rect.height - MessageStatusIconConfig.defaultSize) / 2)
+
+        switch icon {
+        case .pending:
+            let frame = MessageStatusIconImages.clockFrame.withTintColor(tintColor, renderingMode: .alwaysOriginal)
+            let hand = MessageStatusIconImages.clockHand.withTintColor(tintColor, renderingMode: .alwaysOriginal)
+            let iconRect = CGRect(
+                x: slotX + statusSlotWidth - MessageStatusIconConfig.defaultSize,
+                y: slotY,
+                width: MessageStatusIconConfig.defaultSize,
+                height: MessageStatusIconConfig.defaultSize
+            )
+            frame.draw(in: iconRect)
+            if cancelled() { return }
+            hand.draw(in: iconRect)
+        case .sent:
+            let image = MessageStatusIconImages.check.withTintColor(tintColor, renderingMode: .alwaysOriginal)
+            let iconRect = CGRect(
+                x: slotX + statusSlotWidth - image.size.width,
+                y: rect.minY + floor((rect.height - image.size.height) / 2),
+                width: image.size.width,
+                height: image.size.height
+            )
+            image.draw(in: iconRect)
+        case .read:
+            let image = MessageStatusIconImages.check.withTintColor(tintColor, renderingMode: .alwaysOriginal)
+            let offset = MessageStatusIconConfig.defaultSize * MessageStatusIconConfig.doubleCheckOffsetRatio
+            let firstRect = CGRect(
+                x: slotX,
+                y: rect.minY + floor((rect.height - image.size.height) / 2),
+                width: image.size.width,
+                height: image.size.height
+            )
+            image.draw(in: firstRect)
+            if cancelled() { return }
+            image.draw(in: firstRect.offsetBy(dx: offset, dy: 0))
+        case .failed:
+            let image = MessageStatusIconImages.failedBadge
+            let iconRect = CGRect(
+                x: slotX + statusSlotWidth - image.size.width,
+                y: rect.minY + floor((rect.height - image.size.height) / 2),
+                width: image.size.width,
+                height: image.size.height
+            )
+            image.draw(in: iconRect)
+        }
+    }
+
+    private static func statusDrawHeight(for icon: MessageStatusIcon?) -> CGFloat {
+        switch icon {
+        case .failed:
+            return MessageStatusIconImages.failedBadge.size.height
+        case .none:
+            return 0
+        default:
+            return MessageStatusIconConfig.defaultSize
+        }
     }
 
     private static func singleLineSize(for text: NSAttributedString, maxWidth: CGFloat) -> CGSize {
@@ -359,6 +508,29 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             context: nil
         ).size
         return CGSize(width: ceil(min(maxWidth, size.width)), height: ceil(size.height))
+    }
+
+    private static func resampleWaveform(_ waveform: [UInt16], to count: Int) -> [UInt16] {
+        guard !waveform.isEmpty else {
+            return [UInt16](repeating: 100, count: count)
+        }
+        guard waveform.count != count else { return waveform }
+
+        var result = [UInt16]()
+        result.reserveCapacity(count)
+        for i in 0..<count {
+            let position = Float(i) / Float(count) * Float(waveform.count)
+            let index = Int(position)
+            let fraction = position - Float(index)
+            let value: Float
+            if index + 1 < waveform.count {
+                value = Float(waveform[index]) * (1 - fraction) + Float(waveform[index + 1]) * fraction
+            } else {
+                value = Float(waveform[min(index, waveform.count - 1)])
+            }
+            result.append(UInt16(min(value, 1024)))
+        }
+        return result
     }
 
     private static func drawWaveform(

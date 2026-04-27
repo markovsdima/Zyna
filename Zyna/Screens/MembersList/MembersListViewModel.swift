@@ -130,16 +130,11 @@ final class MembersListViewModel {
     }
 
     private static func buildModel(from member: RoomMember) -> MemberCellNode.Model {
-        let level: Int
-        switch member.powerLevel {
-        case .infinite:         level = 100
-        case .value(let value): level = Int(value)
-        }
         return MemberCellNode.Model(
             userId: member.userId,
             displayName: member.displayName,
             avatarUrl: member.avatarUrl,
-            role: .from(powerLevel: level),
+            role: .from(powerLevel: member.powerLevel),
             presence: nil
         )
     }

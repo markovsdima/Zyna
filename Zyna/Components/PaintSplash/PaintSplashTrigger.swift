@@ -8,6 +8,13 @@ import AsyncDisplayKit
 
 enum PaintSplashTrigger {
 
+    struct SnapshotTarget {
+        let sourceView: UIView
+        let frameInScreen: CGRect
+        let image: UIImage
+        let hideSource: () -> Void
+    }
+
     private static weak var activeSplashLayer: PaintSplashLayer?
 
     static func trigger(
@@ -21,28 +28,25 @@ enum PaintSplashTrigger {
             completion()
             return
         }
+        guard let target = cellNode.paintSplashTarget() else {
+            completion()
+            return
+        }
+        trigger(in: tableNode, target: target, completion: completion)
+    }
 
-        let bubbleView = cellNode.bubbleNode.view
-
-        guard bubbleView.bounds.width > 0, bubbleView.bounds.height > 0 else {
+    static func trigger(
+        in tableNode: ASTableNode,
+        target: SnapshotTarget,
+        completion: @escaping () -> Void
+    ) {
+        guard target.image.cgImage != nil else {
             completion()
             return
         }
 
-        // Snapshot the bubble via layer rendering (immune to compositing race)
-        let image = UIGraphicsImageRenderer(bounds: bubbleView.bounds).image { ctx in
-            bubbleView.layer.render(in: ctx.cgContext)
-        }
-
-        guard image.cgImage != nil else {
-            completion()
-            return
-        }
-
-        // Bubble frame in visible table coordinates (subtract contentOffset)
-        let contentFrame = bubbleView.convert(bubbleView.bounds, to: tableNode.view)
-        let contentOffset = tableNode.view.contentOffset
-        let bubbleFrame = contentFrame.offsetBy(dx: -contentOffset.x, dy: -contentOffset.y)
+        let screenSpace = tableNode.view.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+        let splashFrame = tableNode.view.convert(target.frameInScreen, from: screenSpace)
 
         // Phase 1: Anticipation — squash the bubble
         UIView.animate(
@@ -50,32 +54,33 @@ enum PaintSplashTrigger {
             delay: 0,
             options: .curveEaseIn,
             animations: {
-                bubbleView.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
+                target.sourceView.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
             },
             completion: { _ in
+                target.sourceView.transform = .identity
                 // Phase 2: Burst — hide cell and start Metal animation
-                cellNode.alpha = 0
+                target.hideSource()
 
                 let splashLayer: PaintSplashLayer
                 if let existing = activeSplashLayer {
                     splashLayer = existing
                 } else {
                     splashLayer = PaintSplashLayer()
-                    splashLayer.frame = tableNode.view.bounds
+                    splashLayer.frame = CGRect(origin: .zero, size: tableNode.view.bounds.size)
                     splashLayer.zPosition = 10
                     tableNode.view.layer.addSublayer(splashLayer)
                     activeSplashLayer = splashLayer
                 }
 
-                splashLayer.frame = tableNode.view.bounds
+                splashLayer.frame = CGRect(origin: .zero, size: tableNode.view.bounds.size)
                 splashLayer.drawableSize = CGSize(
                     width: tableNode.view.bounds.width * UIScreen.main.scale,
                     height: tableNode.view.bounds.height * UIScreen.main.scale
                 )
 
                 splashLayer.addItem(
-                    frame: bubbleFrame,
-                    image: image
+                    frame: splashFrame,
+                    image: target.image
                 )
 
                 // Layer self-cleans when all droplets are done

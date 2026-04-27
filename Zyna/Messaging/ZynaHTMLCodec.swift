@@ -71,6 +71,7 @@ enum ZynaHTMLCodec {
         static let checklist = "checklist"
         static let callSignal = "call"
         static let forwardedFrom = "fwd"
+        static let mediaGroup = "mg"
     }
 
     private static func buildJSON(from attrs: ZynaMessageAttributes) -> String? {
@@ -95,6 +96,23 @@ enum ZynaHTMLCodec {
 
         if let fwd = attrs.forwardedFrom {
             obj[JSONKey.forwardedFrom] = fwd
+        }
+
+        if let mediaGroup = attrs.mediaGroup {
+            var mediaGroupObject: [String: Any] = [
+                "id": mediaGroup.id,
+                "index": mediaGroup.index,
+                "total": mediaGroup.total,
+                "captionMode": mediaGroup.captionMode.rawValue,
+                "captionPlacement": mediaGroup.captionPlacement.rawValue
+            ]
+            if let layoutOverride = mediaGroup.layoutOverride {
+                mediaGroupObject["layout"] = [
+                    "primarySplit": layoutOverride.primarySplitPermille,
+                    "secondarySplit": layoutOverride.secondarySplitPermille as Any
+                ] as [String: Any]
+            }
+            obj[JSONKey.mediaGroup] = mediaGroupObject
         }
 
         guard let data = try? JSONSerialization.data(
@@ -126,6 +144,35 @@ enum ZynaHTMLCodec {
 
         if let fwd = obj[JSONKey.forwardedFrom] as? String {
             result.forwardedFrom = fwd
+        }
+
+        if let mediaGroup = obj[JSONKey.mediaGroup] as? [String: Any],
+           let id = mediaGroup["id"] as? String,
+           let index = mediaGroup["index"] as? Int,
+           let total = mediaGroup["total"] as? Int,
+           let captionModeRaw = mediaGroup["captionMode"] as? String,
+           let captionMode = CaptionMode(rawValue: captionModeRaw) {
+            let captionPlacementRaw = mediaGroup["captionPlacement"] as? String
+            let captionPlacement = captionPlacementRaw.flatMap(CaptionPlacement.init(rawValue:))
+                ?? .bottom
+            let layoutOverride: MediaGroupLayoutOverride?
+            if let layout = mediaGroup["layout"] as? [String: Any],
+               let primarySplit = layout["primarySplit"] as? Int {
+                layoutOverride = MediaGroupLayoutOverride(
+                    primarySplitPermille: primarySplit,
+                    secondarySplitPermille: layout["secondarySplit"] as? Int
+                )
+            } else {
+                layoutOverride = nil
+            }
+            result.mediaGroup = MediaGroupInfo(
+                id: id,
+                index: index,
+                total: total,
+                captionMode: captionMode,
+                captionPlacement: captionPlacement,
+                layoutOverride: layoutOverride
+            )
         }
 
         return result

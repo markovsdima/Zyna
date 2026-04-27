@@ -7,6 +7,13 @@ import AsyncDisplayKit
 
 class RoomsCellNode: ZynaCellNode {
 
+    private enum UnreadBadgeLayout {
+        static let pillHeight: CGFloat = 20
+        static let dotDiameter: CGFloat = 10
+        static let minPillWidth: CGFloat = 20
+        static let horizontalPadding: CGFloat = 6
+    }
+
     private let chat: RoomModel
     private let avatarImageNode = ASImageNode()
     private let avatarBackgroundNode = ASImageNode()
@@ -106,16 +113,22 @@ class RoomsCellNode: ZynaCellNode {
         onlineIndicatorNode.contentMode = .center
 
         // Unread badge
-        unreadBadgeNode.backgroundColor = UIColor.systemBlue
-        unreadBadgeNode.cornerRadius = 10
+        unreadBadgeNode.backgroundColor = chat.unreadBadgeUsesAttentionStyle
+            ? UIColor.systemRed
+            : UIColor.systemBlue
 
-        unreadCountNode.attributedText = NSAttributedString(
-            string: "\(chat.unreadCount)",
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 12, weight: .medium),
-                .foregroundColor: UIColor.white
-            ]
-        )
+        if let badgeText = chat.unreadBadgeText {
+            unreadCountNode.attributedText = NSAttributedString(
+                string: badgeText,
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 12, weight: .medium),
+                    .foregroundColor: UIColor.white
+                ]
+            )
+            unreadCountNode.maximumNumberOfLines = 1
+        } else {
+            unreadCountNode.attributedText = nil
+        }
 
         // Separator
         separatorNode.backgroundColor = UIColor.separator
@@ -155,11 +168,35 @@ class RoomsCellNode: ZynaCellNode {
         // Right side: timestamp + optional unread badge
         var rightElements: [ASLayoutElement] = [timestampNode]
 
-        if chat.unreadCount > 0 {
-            unreadBadgeNode.style.preferredSize = CGSize(width: 20, height: 20)
-            let badgeCenter = ASCenterLayoutSpec(centeringOptions: .XY, sizingOptions: .minimumXY, child: unreadCountNode)
-            let badge = ASOverlayLayoutSpec(child: unreadBadgeNode, overlay: badgeCenter)
-            rightElements.append(badge)
+        if chat.showsUnreadBadge {
+            if let badgeText = chat.unreadBadgeText {
+                let badgeTextSize = badgeText.size(withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 12, weight: .medium)
+                ])
+                let badgeWidth = max(
+                    UnreadBadgeLayout.minPillWidth,
+                    ceil(badgeTextSize.width) + UnreadBadgeLayout.horizontalPadding * 2
+                )
+                unreadBadgeNode.style.preferredSize = CGSize(
+                    width: badgeWidth,
+                    height: UnreadBadgeLayout.pillHeight
+                )
+                unreadBadgeNode.cornerRadius = UnreadBadgeLayout.pillHeight / 2
+                let badgeCenter = ASCenterLayoutSpec(
+                    centeringOptions: .XY,
+                    sizingOptions: .minimumXY,
+                    child: unreadCountNode
+                )
+                let badge = ASOverlayLayoutSpec(child: unreadBadgeNode, overlay: badgeCenter)
+                rightElements.append(badge)
+            } else {
+                unreadBadgeNode.style.preferredSize = CGSize(
+                    width: UnreadBadgeLayout.dotDiameter,
+                    height: UnreadBadgeLayout.dotDiameter
+                )
+                unreadBadgeNode.cornerRadius = UnreadBadgeLayout.dotDiameter / 2
+                rightElements.append(unreadBadgeNode)
+            }
         }
 
         let rightStack = ASStackLayoutSpec(
@@ -217,6 +254,11 @@ class RoomsCellNode: ZynaCellNode {
         }
         if chat.unreadCount > 0 {
             label += ", \(chat.unreadCount) unread"
+        } else if chat.isMarkedUnread {
+            label += ", unread"
+        }
+        if chat.unreadMentionCount > 0 {
+            label += ", \(chat.unreadMentionCount) mentions"
         }
         if chat.isOnline {
             label += ", online"

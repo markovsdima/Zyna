@@ -7,6 +7,8 @@ import Foundation
 import GRDB
 import MatrixRustSDK
 
+private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
+
 /// Accumulates SDK timeline diffs and flushes them to GRDB in a single
 /// transaction after a 50 ms debounce window. Maintains a shadow
 /// array for positional diff handling (SDK diffs reference items by index).
@@ -19,8 +21,14 @@ final class TimelineDiffBatcher {
 
     // MARK: - Shadow array
 
-    /// Mirrors SDK timeline positions. Stores ChatMessage.id if mappable, nil otherwise.
-    private var shadowItems: [String?] = []
+    /// Mirrors SDK timeline positions. Keeps just enough identity to
+    /// stitch a local echo to the synced event that later replaces it.
+    private struct ShadowItem {
+        let storedId: String?
+        let transactionId: String?
+    }
+
+    private var shadowItems: [ShadowItem] = []
 
     // MARK: - Pending ops
 
@@ -119,6 +127,23 @@ final class TimelineDiffBatcher {
                     for op in ops {
                         switch op {
                         case .upsert(var record):
+                            Self.inheritExistingZynaAttributesIfNeeded(
+                                for: &record,
+                                in: db
+                            )
+                            let previousGroupDescription = try Self.existingMediaGroupDescription(
+                                for: record,
+                                in: db
+                            )
+                            if record.eventId != nil,
+                               record.transactionId == nil,
+                               record.isOutgoing {
+                                record.transactionId = try Self.findMatchingPendingTransactionId(
+                                    for: record,
+                                    in: db
+                                )
+                            }
+
                             if record.sendStatus != "read",
                                let eventId = record.eventId,
                                readEventIds.contains(eventId) {
@@ -135,6 +160,10 @@ final class TimelineDiffBatcher {
                                     .filter(Column("roomId") == record.roomId && Column("transactionId") == txnId && Column("id") != record.id)
                                     .deleteAll(db)
                             }
+                            Self.logMediaGroupUpsert(
+                                record,
+                                previousGroupDescription: previousGroupDescription
+                            )
                             try record.save(db)
                         case .delete(let id):
                             _ = try StoredMessage.deleteOne(db, key: id)
@@ -190,7 +219,7 @@ final class TimelineDiffBatcher {
 
         case .pushFront(let item):
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(msg.map { storedId($0.id) }, at: 0)
+            shadowItems.insert(shadowItem(for: msg), at: 0)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
@@ -199,7 +228,7 @@ final class TimelineDiffBatcher {
             let idx = Int(index)
             guard idx <= shadowItems.count else { return }
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(msg.map { storedId($0.id) }, at: idx)
+            shadowItems.insert(shadowItem(for: msg), at: idx)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
@@ -207,16 +236,20 @@ final class TimelineDiffBatcher {
         case .set(let index, let item):
             let idx = Int(index)
             guard idx < shadowItems.count else { return }
-            let oldId = shadowItems[idx]
+            let oldShadowItem = shadowItems[idx]
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems[idx] = msg.map { storedId($0.id) }
+            shadowItems[idx] = shadowItem(for: msg, fallbackTransactionId: oldShadowItem.transactionId)
 
             if let msg {
+                var record = StoredMessage(from: msg, roomId: roomId)
+                if record.transactionId == nil {
+                    record.transactionId = oldShadowItem.transactionId
+                }
                 let newStoredId = storedId(msg.id)
-                if let oldId, oldId != newStoredId {
+                if let oldId = oldShadowItem.storedId, oldId != newStoredId {
                     pendingOps.append(.delete(oldId))
                 }
-                pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
+                pendingOps.append(.upsert(record))
             }
 
         case .remove(let index):
@@ -257,9 +290,238 @@ final class TimelineDiffBatcher {
 
     private func appendItem(_ item: TimelineItem) {
         let msg = TimelineService.mapTimelineItem(item)
-        shadowItems.append(msg.map { storedId($0.id) })
+        shadowItems.append(shadowItem(for: msg))
         if let msg {
             pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
         }
+    }
+
+    private func shadowItem(
+        for message: ChatMessage?,
+        fallbackTransactionId: String? = nil
+    ) -> ShadowItem {
+        ShadowItem(
+            storedId: message.map { storedId($0.id) },
+            transactionId: message?.transactionId ?? fallbackTransactionId
+        )
+    }
+
+    private static func inheritExistingZynaAttributesIfNeeded(
+        for record: inout StoredMessage,
+        in db: Database
+    ) {
+        guard record.contentType == "redacted",
+              (record.zynaAttributesJSON ?? "").isEmpty,
+              let existing = (try? existingStoredMessage(for: record, in: db)) ?? nil,
+              let existingAttrs = existing.zynaAttributesJSON,
+              !existingAttrs.isEmpty
+        else {
+            return
+        }
+
+        record.zynaAttributesJSON = existingAttrs
+        if let group = existing.toChatMessage()?.zynaAttributes.mediaGroup {
+            logMediaGroup(
+                "db preserve redacted attrs item=\(record.eventId ?? record.transactionId ?? record.id) group=\(describe(group: group))"
+            )
+        }
+    }
+
+    private static func existingStoredMessage(
+        for record: StoredMessage,
+        in db: Database
+    ) throws -> StoredMessage? {
+        if let existing = try StoredMessage.fetchOne(db, key: record.id) {
+            return existing
+        }
+        if let eventId = record.eventId,
+           let existing = try StoredMessage
+            .filter(Column("roomId") == record.roomId && Column("eventId") == eventId)
+            .fetchOne(db) {
+            return existing
+        }
+        if let transactionId = record.transactionId,
+           let existing = try StoredMessage
+            .filter(Column("roomId") == record.roomId && Column("transactionId") == transactionId)
+            .fetchOne(db) {
+            return existing
+        }
+        return nil
+    }
+
+    private static func findMatchingPendingTransactionId(
+        for record: StoredMessage,
+        in db: Database
+    ) throws -> String? {
+        guard record.eventId != nil,
+              record.transactionId == nil,
+              record.isOutgoing else {
+            return record.transactionId
+        }
+
+        if let transactionId = try findOutgoingEnvelopeTransactionId(
+            for: record,
+            in: db
+        ) {
+            logMediaGroup(
+                "db match tx explicit item=\(record.eventId ?? record.id) tx=\(transactionId)"
+            )
+            return transactionId
+        }
+
+        if record.contentType == "image" {
+            return try String.fetchOne(
+                db,
+                sql: """
+                    SELECT transactionId
+                    FROM storedMessage
+                    WHERE roomId = ?
+                      AND eventId IS NULL
+                      AND transactionId IS NOT NULL
+                      AND isOutgoing = 1
+                      AND senderId = ?
+                      AND contentType = 'image'
+                      AND ABS(timestamp - ?) < 3
+                      AND ifnull(contentCaption, '') = ?
+                      AND ifnull(zynaAttributesJSON, '') = ?
+                      AND (? = -1 OR ifnull(contentImageWidth, -1) = ? OR ifnull(contentImageWidth, -1) = -1)
+                      AND (? = -1 OR ifnull(contentImageHeight, -1) = ? OR ifnull(contentImageHeight, -1) = -1)
+                    ORDER BY ABS(timestamp - ?) ASC
+                    LIMIT 1
+                    """,
+                arguments: [
+                    record.roomId,
+                    record.senderId,
+                    record.timestamp,
+                    record.contentCaption ?? "",
+                    record.zynaAttributesJSON ?? "",
+                    record.contentImageWidth ?? -1,
+                    record.contentImageWidth ?? -1,
+                    record.contentImageHeight ?? -1,
+                    record.contentImageHeight ?? -1,
+                    record.timestamp
+                ]
+            )
+        }
+
+        return try String.fetchOne(
+            db,
+            sql: """
+                SELECT transactionId
+                FROM storedMessage
+                WHERE roomId = ?
+                  AND eventId IS NULL
+                  AND transactionId IS NOT NULL
+                  AND isOutgoing = 1
+                  AND senderId = ?
+                  AND contentType = ?
+                  AND ABS(timestamp - ?) < 1
+                  AND ifnull(contentBody, '') = ?
+                  AND ifnull(contentCaption, '') = ?
+                  AND ifnull(contentFilename, '') = ?
+                  AND ifnull(contentMediaJSON, '') = ?
+                  AND ifnull(zynaAttributesJSON, '') = ?
+                ORDER BY ABS(timestamp - ?) ASC
+                LIMIT 1
+                """,
+            arguments: [
+                record.roomId,
+                record.senderId,
+                record.contentType,
+                record.timestamp,
+                record.contentBody ?? "",
+                record.contentCaption ?? "",
+                record.contentFilename ?? "",
+                record.contentMediaJSON ?? "",
+                record.zynaAttributesJSON ?? "",
+                record.timestamp
+            ]
+        )
+    }
+
+    private static func findOutgoingEnvelopeTransactionId(
+        for record: StoredMessage,
+        in db: Database
+    ) throws -> String? {
+        guard record.isOutgoing,
+              let eventId = record.eventId
+        else {
+            return nil
+        }
+
+        if let transactionId = try String.fetchOne(
+            db,
+            sql: """
+                SELECT item.transactionId
+                FROM pendingMediaGroupItem AS item
+                JOIN pendingMediaGroup AS groupRecord
+                  ON groupRecord.id = item.groupId
+                WHERE groupRecord.roomId = ?
+                  AND item.eventId = ?
+                  AND item.transactionId IS NOT NULL
+                LIMIT 1
+                """,
+            arguments: [record.roomId, eventId]
+        ) {
+            return transactionId
+        }
+
+        guard record.contentType == "image",
+              let mediaGroup = record.toChatMessage()?.zynaAttributes.mediaGroup
+        else {
+            return nil
+        }
+
+        return try String.fetchOne(
+            db,
+            sql: """
+                SELECT item.transactionId
+                FROM pendingMediaGroupItem AS item
+                JOIN pendingMediaGroup AS groupRecord
+                  ON groupRecord.id = item.groupId
+                WHERE groupRecord.roomId = ?
+                  AND ifnull(groupRecord.kind, 'mediaBatch') = 'mediaBatch'
+                  AND item.groupId = ?
+                  AND item.itemIndex = ?
+                  AND item.transactionId IS NOT NULL
+                LIMIT 1
+                """,
+            arguments: [record.roomId, mediaGroup.id, mediaGroup.index]
+        )
+    }
+
+    private static func existingMediaGroupDescription(
+        for record: StoredMessage,
+        in db: Database
+    ) throws -> String? {
+        if let existing = try existingStoredMessage(for: record, in: db),
+           let group = existing.toChatMessage()?.zynaAttributes.mediaGroup {
+            return describe(group: group)
+        }
+        return nil
+    }
+
+    private static func logMediaGroupUpsert(
+        _ record: StoredMessage,
+        previousGroupDescription: String?
+    ) {
+        guard record.isOutgoing, record.contentType == "image" else { return }
+
+        let newGroupDescription = record.toChatMessage()?.zynaAttributes.mediaGroup.map(describe(group:))
+        let itemId = record.eventId ?? record.transactionId ?? record.id
+
+        if previousGroupDescription != newGroupDescription {
+            logMediaGroup(
+                "db upsert image item=\(itemId) group=\(previousGroupDescription ?? "none")->\(newGroupDescription ?? "none") status=\(record.sendStatus)"
+            )
+        } else {
+            logMediaGroup(
+                "db upsert image item=\(itemId) group=\(newGroupDescription ?? "none") status=\(record.sendStatus)"
+            )
+        }
+    }
+
+    private static func describe(group: MediaGroupInfo) -> String {
+        "\(group.id)#\(group.index + 1)/\(group.total) \(group.captionPlacement.rawValue)"
     }
 }

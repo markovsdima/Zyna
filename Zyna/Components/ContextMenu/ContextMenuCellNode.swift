@@ -6,7 +6,7 @@
 import AsyncDisplayKit
 
 protocol ContextMenuCellNode: ASCellNode {
-    var onContextMenuActivated: (() -> Void)? { get set }
+    var onContextMenuActivated: ((CGPoint) -> Void)? { get set }
     var onDragChanged: ((CGPoint) -> Void)? { get set }
     var onDragEnded: ((CGPoint) -> Void)? { get set }
     var onInteractionLockChanged: ((Bool) -> Void)? { get set }

@@ -37,9 +37,11 @@ final class TextMessageCellNode: MessageCellNode {
             bodyText = "* \(message.senderDisplayName ?? "") \(body)"
         case .image:
             bodyText = "📷 Photo"
+        case .pendingOutgoingMediaBatch:
+            bodyText = "📷 Photo"
         case .voice:
             bodyText = "🎤 Voice message"
-        case .file(_, let filename, _, _):
+        case .file(_, let filename, _, _, _):
             bodyText = "📎 \(filename)"
         case .callEvent(let type, _, let reason):
             bodyText = "📞 \(type.displayText(reason: reason))"
@@ -159,6 +161,6 @@ final class TextMessageCellNode: MessageCellNode {
 
     override func updateSendStatus(_ status: String) {
         super.updateSendStatus(status)
-        flatContentNode.statusIcon = MessageStatusIcon.from(sendStatus: status)
+        flatContentNode.statusIcon = statusIcon(forSendStatus: status)
     }
 }
