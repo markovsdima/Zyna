@@ -545,12 +545,32 @@
         }
       }
     },
+    "Appearance" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Оформление"
+          }
+        }
+      }
+    },
     "Are you sure?" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Вы уверены?"
+          }
+        }
+      }
+    },
+    "Aurora Lime" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Аврора Лайм"
           }
         }
       }
@@ -671,6 +691,16 @@
     "Changes member role" : {
 
     },
+    "Chat Theme" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Тема чата"
+          }
+        }
+      }
+    },
     "Chats" : {
       "localizations" : {
         "ru" : {
@@ -687,6 +717,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Проверка аккаунта…"
+          }
+        }
+      }
+    },
+    "Clean. Keep it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чисто. Оставляем."
           }
         }
       }
@@ -810,6 +850,16 @@
     "emoji" : {
 
     },
+    "Ember Rose" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Розовый жар"
+          }
+        }
+      }
+    },
     "Encryption enabled" : {
       "localizations" : {
         "ru" : {
@@ -850,6 +900,16 @@
         }
       }
     },
+    "Forest" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Лес"
+          }
+        }
+      }
+    },
     "Forwarded from %@" : {
       "localizations" : {
         "ru" : {
@@ -880,6 +940,16 @@
         }
       }
     },
+    "Graphite Cyan" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Графитовый циан"
+          }
+        }
+      }
+    },
     "Group Name" : {
       "localizations" : {
         "ru" : {
@@ -896,6 +966,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Сервер"
+          }
+        }
+      }
+    },
+    "How does this look?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Как выглядит?"
           }
         }
       }
@@ -956,6 +1036,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Исключить из группы?"
+          }
+        }
+      }
+    },
+    "Lagoon Teal" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Бирюзовая лагуна"
           }
         }
       }
@@ -1081,6 +1171,16 @@
         }
       }
     },
+    "Mango" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Манго"
+          }
+        }
+      }
+    },
     "Member" : {
       "localizations" : {
         "ru" : {
@@ -1154,6 +1254,16 @@
         }
       }
     },
+    "Next Theme" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Следующая тема"
+          }
+        }
+      }
+    },
     "No emoji found." : {
 
     },
@@ -1192,6 +1302,16 @@
     "Opens this emoji category" : {
 
     },
+    "Outgoing Bubbles" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Свои сообщения"
+          }
+        }
+      }
+    },
     "Owner" : {
       "localizations" : {
         "ru" : {
@@ -1228,6 +1348,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Фото"
+          }
+        }
+      }
+    },
+    "Previous Theme" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Предыдущая тема"
           }
         }
       }
@@ -1314,6 +1444,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Событие комнаты"
+          }
+        }
+      }
+    },
+    "Ruby Plum" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Рубиновая слива"
           }
         }
       }
@@ -1530,6 +1670,16 @@
         }
       }
     },
+    "Solar Coral" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Солнечный коралл"
+          }
+        }
+      }
+    },
     "Syncing encryption keys…" : {
       "localizations" : {
         "ru" : {
@@ -1617,6 +1767,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Верифицировать устройство"
+          }
+        }
+      }
+    },
+    "Violet Blue" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сине-фиолетовый"
           }
         }
       }
@@ -1958,6 +2118,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ваш ключ восстановления"
+          }
+        }
+      }
+    },
+    "Zyna Blue" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zyna Blue"
           }
         }
       }

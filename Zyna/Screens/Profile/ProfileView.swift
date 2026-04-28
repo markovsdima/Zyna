@@ -12,6 +12,7 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
     var onLogout: (() -> Void)?
     var onBack: (() -> Void)?
     var onSearchTapped: (() -> Void)?
+    var onSettingsTapped: (() -> Void)?
     var onMessageTapped: (() -> Void)? {
         didSet { node.content.onMessageTapped = onMessageTapped }
     }
@@ -167,8 +168,8 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
         node.content.onLogoutTapped = { [weak self] in
             self?.confirmLogout()
         }
-        node.content.onSettingsTapped = {
-            print("[profile] Settings tapped")
+        node.content.onSettingsTapped = { [weak self] in
+            self?.onSettingsTapped?()
         }
         node.content.onAvatarTapped = { [weak self] in
             self?.presentAvatarPicker()
