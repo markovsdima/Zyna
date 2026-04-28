@@ -1731,6 +1731,16 @@
         }
       }
     },
+    "Today" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сегодня"
+          }
+        }
+      }
+    },
     "Topic (optional)" : {
       "localizations" : {
         "ru" : {
@@ -1797,6 +1807,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Без этого ключа вы потеряете доступ к зашифрованным сообщениям при входе на другом устройстве."
+          }
+        }
+      }
+    },
+    "Yesterday" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вчера"
           }
         }
       }

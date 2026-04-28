@@ -520,6 +520,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
               old.replyInfo == new.replyInfo,
               old.senderDisplayName == new.senderDisplayName,
               old.senderAvatarUrl == new.senderAvatarUrl,
+              old.isFirstInCluster == new.isFirstInCluster,
               mediaGroupPresentationIsVisuallyEquivalent(old: old.mediaGroupPresentation, new: new.mediaGroupPresentation)
         else {
             return false

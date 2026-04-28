@@ -45,3 +45,33 @@ class SystemEventCellNode: ASCellNode {
         )
     }
 }
+
+final class DateDividerCellNode: ASCellNode {
+    static let height: CGFloat = 34
+
+    private let spacerNode = ASDisplayNode()
+
+    init(model: DateDividerModel) {
+        super.init()
+        automaticallyManagesSubnodes = true
+        selectionStyle = .none
+        backgroundColor = .clear
+        spacerNode.isLayerBacked = true
+        spacerNode.backgroundColor = .clear
+        isAccessibilityElement = true
+        accessibilityLabel = model.title
+        accessibilityTraits = .staticText
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
+        let width = constrainedSize.max.width.isFinite ? max(1, constrainedSize.max.width) : 1
+        spacerNode.style.preferredSize = CGSize(
+            width: width,
+            height: Self.height
+        )
+        return ASWrapperLayoutSpec(layoutElement: spacerNode)
+    }
+}
