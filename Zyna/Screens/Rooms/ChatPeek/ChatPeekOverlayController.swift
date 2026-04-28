@@ -9,7 +9,10 @@ final class ChatPeekOverlayController: UIViewController {
 
     private let chatController: ChatViewController
     private let sourceFrameInScreen: CGRect?
+    private weak var backgroundSourceView: UIView?
+    private let backgroundLensView = ChatPeekMetalBackgroundView()
     private let dimmingView = UIView()
+    private let pressureRimView = ChatPeekPressureRimView()
     private let shadowView = UIView()
     private let clippingView = UIView()
     private var didApplyInitialState = false
@@ -17,9 +20,14 @@ final class ChatPeekOverlayController: UIViewController {
     private var isDismissingOverlay = false
     private var currentTargetFrame: CGRect = .zero
 
-    init(chatController: ChatViewController, sourceFrameInScreen: CGRect?) {
+    init(
+        chatController: ChatViewController,
+        sourceFrameInScreen: CGRect?,
+        backgroundSourceView: UIView?
+    ) {
         self.chatController = chatController
         self.sourceFrameInScreen = sourceFrameInScreen
+        self.backgroundSourceView = backgroundSourceView
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .overFullScreen
         modalTransitionStyle = .crossDissolve
@@ -34,12 +42,21 @@ final class ChatPeekOverlayController: UIViewController {
 
         view.backgroundColor = .clear
 
+        backgroundLensView.alpha = 0
+        backgroundLensView.progress = 0
+        backgroundLensView.sourceView = backgroundSourceView
+        view.addSubview(backgroundLensView)
+
         dimmingView.backgroundColor = UIColor.black.withAlphaComponent(0.28)
         dimmingView.alpha = 0
         view.addSubview(dimmingView)
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(backgroundTapped))
         dimmingView.addGestureRecognizer(tap)
+
+        pressureRimView.alpha = 0
+        pressureRimView.isHidden = true
+        view.addSubview(pressureRimView)
 
         shadowView.backgroundColor = .clear
         shadowView.layer.shadowColor = UIColor.black.cgColor
@@ -63,10 +80,18 @@ final class ChatPeekOverlayController: UIViewController {
         super.viewDidLayoutSubviews()
 
         dimmingView.frame = view.bounds
+        let lensFrame = backgroundLensFrame()
+        backgroundLensView.frame = lensFrame
+        backgroundLensView.sourceCaptureRect = sourceCaptureRect(for: lensFrame)
+        pressureRimView.frame = view.bounds
         guard !isDismissingOverlay else { return }
 
         let frame = targetFrame()
         currentTargetFrame = frame
+        backgroundLensView.cardFrame = view.convert(frame, to: backgroundLensView)
+        backgroundLensView.cardCornerRadius = clippingView.layer.cornerRadius
+        pressureRimView.cardFrame = frame
+        pressureRimView.cornerRadius = clippingView.layer.cornerRadius
         shadowView.frame = frame
         clippingView.frame = shadowView.bounds
         chatController.view.frame = clippingView.bounds
@@ -78,6 +103,36 @@ final class ChatPeekOverlayController: UIViewController {
         if !didApplyInitialState {
             applyInitialState(targetFrame: frame)
         }
+    }
+
+    private func backgroundLensFrame() -> CGRect {
+        var frame = view.bounds
+        guard let tabBarFrame = tabBarFrameInOverlay(),
+              tabBarFrame.minY > frame.minY,
+              tabBarFrame.minY < frame.maxY
+        else { return frame }
+
+        frame.size.height = max(1, tabBarFrame.minY - frame.minY)
+        return frame
+    }
+
+    private func sourceCaptureRect(for lensFrame: CGRect) -> CGRect? {
+        guard let backgroundSourceView else { return nil }
+        return backgroundSourceView
+            .convert(lensFrame, from: view)
+            .standardized
+            .intersection(backgroundSourceView.bounds)
+    }
+
+    private func tabBarFrameInOverlay() -> CGRect? {
+        guard let tabBar = backgroundSourceView?
+            .subviews
+            .first(where: { $0 is ZynaTabBar && !$0.isHidden && $0.alpha > 0.01 })
+        else { return nil }
+
+        let frame = view.convert(tabBar.bounds, from: tabBar)
+        guard frame.width > 1, frame.height > 1 else { return nil }
+        return frame
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -148,6 +203,11 @@ final class ChatPeekOverlayController: UIViewController {
         guard !didAnimateIn else { return }
         didAnimateIn = true
 
+        backgroundLensView.animateProgress(
+            to: 1,
+            duration: 0.24,
+            curve: .easeOut
+        )
         UIView.animate(
             withDuration: 0.24,
             delay: 0,
@@ -155,7 +215,9 @@ final class ChatPeekOverlayController: UIViewController {
             initialSpringVelocity: 0,
             options: [.beginFromCurrentState, .allowUserInteraction]
         ) {
+            self.backgroundLensView.alpha = 1
             self.dimmingView.alpha = 1
+            self.pressureRimView.alpha = 1
             self.shadowView.alpha = 1
             self.shadowView.center = CGPoint(x: self.currentTargetFrame.midX, y: self.currentTargetFrame.midY)
             self.shadowView.transform = .identity
@@ -167,13 +229,26 @@ final class ChatPeekOverlayController: UIViewController {
         isDismissingOverlay = true
 
         let sourceState = sourceState(targetFrame: currentTargetFrame)
+        let closeDuration: TimeInterval = 0.26
 
+        backgroundLensView.alpha = 1
+        backgroundLensView.animateProgress(
+            to: 0,
+            duration: closeDuration,
+            curve: .easeOut,
+            completion: { [weak self] in
+                guard let self else { return }
+                self.backgroundLensView.progress = 0
+                self.dismiss(animated: false)
+            }
+        )
         UIView.animate(
-            withDuration: 0.2,
+            withDuration: closeDuration,
             delay: 0,
-            options: [.beginFromCurrentState, .curveEaseIn]
+            options: [.beginFromCurrentState, .curveEaseInOut]
         ) {
             self.dimmingView.alpha = 0
+            self.pressureRimView.alpha = 0
             self.shadowView.alpha = 0
             if let sourceState {
                 self.shadowView.center = sourceState.center
@@ -181,8 +256,6 @@ final class ChatPeekOverlayController: UIViewController {
             } else {
                 self.shadowView.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
             }
-        } completion: { _ in
-            self.dismiss(animated: false)
         }
     }
 }

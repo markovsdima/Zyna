@@ -18,8 +18,12 @@ final class ChatsCoordinator {
         vc.onChatSelected = { [weak self] room in
             self?.showChat(room)
         }
-        vc.onChatPreviewRequested = { [weak self] room, sourceFrame in
-            self?.showChatPreview(room, sourceFrame: sourceFrame)
+        vc.onChatPreviewRequested = { [weak self] room, sourceFrame, backgroundSourceView in
+            self?.showChatPreview(
+                room,
+                sourceFrame: sourceFrame,
+                backgroundSourceView: backgroundSourceView
+            )
         }
         vc.onComposeTapped = { [weak self] in
             self?.showStartChat()
@@ -95,14 +99,22 @@ final class ChatsCoordinator {
         navigationController.push(vc, animated: animated)
     }
 
-    private func showChatPreview(_ room: Room, sourceFrame: CGRect?) {
+    private func showChatPreview(
+        _ room: Room,
+        sourceFrame: CGRect?,
+        backgroundSourceView: UIView?
+    ) {
         guard navigationController.presentedViewController == nil else { return }
 
         let viewModel = ChatViewModel(room: room, mode: .preview)
         let chatController = ChatViewController(viewModel: viewModel)
+        let resolvedBackgroundSourceView = navigationController.parent?.view
+            ?? backgroundSourceView
+            ?? navigationController.view
         let overlay = ChatPeekOverlayController(
             chatController: chatController,
-            sourceFrameInScreen: sourceFrame
+            sourceFrameInScreen: sourceFrame,
+            backgroundSourceView: resolvedBackgroundSourceView
         )
         navigationController.present(overlay, animated: false)
     }

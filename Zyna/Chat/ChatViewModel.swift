@@ -1561,16 +1561,28 @@ final class ChatViewModel {
     private func setMessages(_ newMessages: [ChatMessage], olderBoundary: ClusterNeighbor?) {
         messages = newMessages
         rows = Self.buildRows(from: newMessages, olderBoundary: olderBoundary)
-        messageIndexByEventId = Dictionary(
-            uniqueKeysWithValues: newMessages.enumerated().compactMap { index, message in
-                message.eventId.map { ($0, index) }
+
+        // TODO: Find why the render window can contain duplicate Matrix events.
+        // Keep the first index for now to avoid crashing on repeated event ids.
+        var messageIndices: [String: Int] = [:]
+        messageIndices.reserveCapacity(newMessages.count)
+        for (index, message) in newMessages.enumerated() {
+            guard let eventId = message.eventId, messageIndices[eventId] == nil else {
+                continue
             }
-        )
-        rowIndexByEventId = Dictionary(
-            uniqueKeysWithValues: rows.enumerated().compactMap { index, row in
-                row.message?.eventId.map { ($0, index) }
+            messageIndices[eventId] = index
+        }
+        messageIndexByEventId = messageIndices
+
+        var rowIndices: [String: Int] = [:]
+        rowIndices.reserveCapacity(rows.count)
+        for (index, row) in rows.enumerated() {
+            guard let eventId = row.message?.eventId, rowIndices[eventId] == nil else {
+                continue
             }
-        )
+            rowIndices[eventId] = index
+        }
+        rowIndexByEventId = rowIndices
     }
 
     private static func buildRows(

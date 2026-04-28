@@ -19,7 +19,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         set { viewModel.onChatSelected = newValue }
     }
 
-    var onChatPreviewRequested: ((Room, CGRect?) -> Void)?
+    var onChatPreviewRequested: ((Room, CGRect?, UIView?) -> Void)?
     var onComposeTapped: (() -> Void)?
 
     private weak var previewPressRecognizer: UILongPressGestureRecognizer?
@@ -182,8 +182,23 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
                   self.pendingPreviewResolutionGeneration == generation
             else { return }
             self.pendingPreviewResolutionGeneration = nil
-            self.onChatPreviewRequested?(room, sourceFrame)
+            self.onChatPreviewRequested?(room, sourceFrame, self.backgroundPreviewSourceView())
         }
+    }
+
+    private func backgroundPreviewSourceView() -> UIView {
+        var current: UIViewController? = self
+        while let controller = current {
+            if controller is ZynaTabBarController {
+                return controller.view
+            }
+            current = controller.parent
+        }
+
+        return navigationController?.parent?.view
+            ?? navigationController?.view
+            ?? view.superview
+            ?? view
     }
 
     private func clearSelectionSuppressionSoon() {
