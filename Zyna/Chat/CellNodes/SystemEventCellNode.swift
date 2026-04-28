@@ -46,7 +46,7 @@ class SystemEventCellNode: ASCellNode {
     }
 }
 
-final class DateDividerCellNode: ASCellNode {
+final class DateDividerCellNode: ZynaCellNode {
     static let height: CGFloat = 34
 
     private let spacerNode = ASDisplayNode()
