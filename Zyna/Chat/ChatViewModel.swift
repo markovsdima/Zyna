@@ -788,16 +788,20 @@ final class ChatViewModel {
         for group: OutgoingEnvelopeSnapshot,
         in messages: [ChatMessage]
     ) -> PendingMediaGroupObservedState {
-        let eventIndexById = Dictionary(
-            uniqueKeysWithValues: group.items.compactMap { item in
-                item.eventId.map { ($0, item.itemIndex) }
+        var eventIndexById: [String: Int] = [:]
+        var transactionIndexById: [String: Int] = [:]
+        for item in group.items {
+            if let eventId = item.eventId,
+               !eventId.isEmpty,
+               eventIndexById[eventId] == nil {
+                eventIndexById[eventId] = item.itemIndex
             }
-        )
-        let transactionIndexById = Dictionary(
-            uniqueKeysWithValues: group.items.compactMap { item in
-                item.transactionId.map { ($0, item.itemIndex) }
+            if let transactionId = item.transactionId,
+               !transactionId.isEmpty,
+               transactionIndexById[transactionId] == nil {
+                transactionIndexById[transactionId] = item.itemIndex
             }
-        )
+        }
 
         var primaryMessageIndexByItemIndex: [Int: Int] = [:]
         var hiddenMessageIndices = Set<Int>()
@@ -915,12 +919,12 @@ final class ChatViewModel {
         rawMessages: [ChatMessage],
         currentUserId: String
     ) -> PendingRenderableEnvelope {
-        let primaryMessagesByItemIndex: [Int: ChatMessage] = Dictionary(
-            uniqueKeysWithValues: observedState.primaryMessageIndexByItemIndex.compactMap { itemIndex, messageIndex in
-                guard rawMessages.indices.contains(messageIndex) else { return nil }
-                return (itemIndex, rawMessages[messageIndex])
-            }
-        )
+        var primaryMessagesByItemIndex: [Int: ChatMessage] = [:]
+        primaryMessagesByItemIndex.reserveCapacity(observedState.primaryMessageIndexByItemIndex.count)
+        for (itemIndex, messageIndex) in observedState.primaryMessageIndexByItemIndex {
+            guard rawMessages.indices.contains(messageIndex) else { continue }
+            primaryMessagesByItemIndex[itemIndex] = rawMessages[messageIndex]
+        }
 
         let mediaItems = group.items.map { item -> MediaGroupItem in
             let primaryMessage = primaryMessagesByItemIndex[item.itemIndex]
@@ -1562,12 +1566,15 @@ final class ChatViewModel {
         messages = newMessages
         rows = Self.buildRows(from: newMessages, olderBoundary: olderBoundary)
 
-        // TODO: Find why the render window can contain duplicate Matrix events.
-        // Keep the first index for now to avoid crashing on repeated event ids.
+        // Matrix event_ids identify one event, but SDK/local-echo
+        // replacement can transiently surface the same event twice.
+        // Navigation/read receipts only need one visible target.
         var messageIndices: [String: Int] = [:]
         messageIndices.reserveCapacity(newMessages.count)
         for (index, message) in newMessages.enumerated() {
-            guard let eventId = message.eventId, messageIndices[eventId] == nil else {
+            guard let eventId = message.eventId,
+                  !eventId.isEmpty,
+                  messageIndices[eventId] == nil else {
                 continue
             }
             messageIndices[eventId] = index
@@ -1577,7 +1584,9 @@ final class ChatViewModel {
         var rowIndices: [String: Int] = [:]
         rowIndices.reserveCapacity(rows.count)
         for (index, row) in rows.enumerated() {
-            guard let eventId = row.message?.eventId, rowIndices[eventId] == nil else {
+            guard let eventId = row.message?.eventId,
+                  !eventId.isEmpty,
+                  rowIndices[eventId] == nil else {
                 continue
             }
             rowIndices[eventId] = index

@@ -458,6 +458,7 @@ final class MessageWindow {
 
     private func messageScore(_ message: StoredMessage) -> Int {
         var score = 0
+        if message.contentType == "redacted" { score += 1_000 }
         if message.eventId != nil { score += 100 }
         if message.transactionId != nil { score += 20 }
         switch message.sendStatus {
