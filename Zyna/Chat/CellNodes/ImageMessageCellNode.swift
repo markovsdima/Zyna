@@ -13,6 +13,7 @@ final class ImageMessageCellNode: MessageCellNode {
     var onImageTapped: (() -> Void)?
 
     override func accessibilityActivate() -> Bool {
+        guard allowsInteractiveActions else { return false }
         onImageTapped?()
         return true
     }

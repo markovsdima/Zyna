@@ -15,6 +15,28 @@ final class ProfileCoordinator {
         vc.onLogout = { [weak self] in
             self?.onLogout?()
         }
+        vc.onSettingsTapped = { [weak self] in
+            self?.showSettings()
+        }
         navigationController.setStack([vc], animated: false)
+    }
+
+    private func showSettings() {
+        let vc = SettingsViewController()
+        vc.onBack = { [weak self] in
+            _ = self?.navigationController.pop()
+        }
+        vc.onThemeTapped = { [weak self] in
+            self?.showChatThemeSettings()
+        }
+        navigationController.push(vc)
+    }
+
+    private func showChatThemeSettings() {
+        let vc = ChatThemeSettingsViewController()
+        vc.onBack = { [weak self] in
+            _ = self?.navigationController.pop()
+        }
+        navigationController.push(vc)
     }
 }

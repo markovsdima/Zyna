@@ -60,10 +60,12 @@ final class TimelineService {
 
     // MARK: - Start
 
-    func startListening() async {
+    func startListening(subscribeForSync: Bool = true) async {
         do {
             // Subscribe room for full sliding sync delivery (live events)
-            try? await MatrixClientService.shared.roomListService?.subscribeToRooms(roomIds: [room.id()])
+            if subscribeForSync {
+                try? await MatrixClientService.shared.roomListService?.subscribeToRooms(roomIds: [room.id()])
+            }
 
             let timeline = try await room.timeline()
             self.timeline = timeline

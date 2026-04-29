@@ -70,7 +70,10 @@ final class ZynaRoomListService: NSObject {
         }), !stored.isEmpty else { return }
 
         let summaries = stored.map { $0.toRoomSummary() }
-        publishedSummariesByRoomId = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
+        publishedSummariesByRoomId = Dictionary(
+            summaries.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
         roomsSubject.send(summaries)
         logRooms("Loaded \(summaries.count) cached rooms from GRDB")
     }
@@ -215,7 +218,8 @@ final class ZynaRoomListService: NSObject {
             guard !Task.isCancelled, self.rebuildRevision == revision else { return }
 
             self.publishedSummariesByRoomId = Dictionary(
-                uniqueKeysWithValues: summaries.map { ($0.id, $0) }
+                summaries.map { ($0.id, $0) },
+                uniquingKeysWith: { _, latest in latest }
             )
             Self.writeRoomsToGRDB(summaries)
 

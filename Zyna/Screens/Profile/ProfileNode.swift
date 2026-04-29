@@ -110,6 +110,8 @@ final class ProfileNode: ScreenNode {
         editAvatarOverlayNode.clipsToBounds = true
         messageButtonNode.cornerRadius = 12
         messageButtonNode.clipsToBounds = true
+        settingsButtonNode.cornerRadius = 12
+        settingsButtonNode.clipsToBounds = true
         logoutButtonNode.cornerRadius = 12
         logoutButtonNode.clipsToBounds = true
 
@@ -280,10 +282,17 @@ final class ProfileNode: ScreenNode {
         searchButtonNode.addTarget(self, action: #selector(searchTapped), forControlEvents: .touchUpInside)
 
         // Settings (own only)
+        let settingsIcon = AppIcon.settings.rendered(size: 17, weight: .medium, color: AppColor.accent)
+        settingsButtonNode.setImage(settingsIcon, for: .normal)
         settingsButtonNode.setAttributedTitle(NSAttributedString(
-            string: String(localized: "Settings"),
-            attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
+            string: "  " + String(localized: "Settings"),
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 17, weight: .medium),
+                .foregroundColor: UIColor.label
+            ]
         ), for: .normal)
+        settingsButtonNode.backgroundColor = .secondarySystemBackground
+        settingsButtonNode.contentEdgeInsets = UIEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
         settingsButtonNode.contentHorizontalAlignment = .left
         settingsButtonNode.addTarget(self, action: #selector(settingsTapped), forControlEvents: .touchUpInside)
 

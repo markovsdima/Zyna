@@ -367,8 +367,10 @@ final class GlassService {
 
             let wantsLiquid = anchor.extendsCaptureToScreenBottom
 
-            // Skip if nothing to do
-            guard shouldCapture || (shouldRender && (wantsLiquid || anchor.hasBars || anchor.hasScrollButton)) else { continue }
+            // Shared renderer clears the whole drawable at the start of a
+            // batch, so render-only frames must redraw every cached glass item
+            // in that container, not only the item whose animation is active.
+            guard shouldCapture || shouldRender else { continue }
 
             if shouldCapture {
                 // ── Capture new frame ──
@@ -492,12 +494,12 @@ final class GlassService {
                     renderItemsByContainer[key] = group
                 }
 
-            } else if (wantsLiquid || (anchor.hasBars && reg.lastBarData != nil)),
+            } else if shouldRender,
                       let texture = reg.lastTexture,
                       let shapes = reg.lastShapes,
                       let captureFrame = reg.lastCaptureFrame {
                 // ── Render-only: reuse cached texture, update wave animation ──
-                var lz = reg.lastLiquidZone
+                var lz = wantsLiquid ? reg.lastLiquidZone : nil
                 lz?.waveEnergy = waveEnergy
                 let destinationFrame = renderDestinationFrame(
                     for: captureFrame,
@@ -522,7 +524,7 @@ final class GlassService {
                             isHDR: reg.lastIsHDR,
                             liquidZone: lz,
                             time: waveTime,
-                            barData: reg.lastBarData
+                            barData: anchor.hasBars ? reg.lastBarData : nil
                         )
                     )
                     renderItemsByContainer[key] = group
@@ -607,6 +609,8 @@ final class GlassService {
         let slots: [CaptureSlot]
         let width: Int
         let height: Int
+        let byteCost: Int
+        var lastUsedTick: Int
         var current: Int = 0
 
         mutating func next() -> CaptureSlot {
@@ -616,6 +620,9 @@ final class GlassService {
         }
     }
     private var captureCaches: [String: CaptureCache] = [:]
+    // Keyboard/liquid animation can produce many one-frame capture sizes.
+    // Keep stable nav/input caches hot while evicting transient buffers.
+    private let maxCaptureCacheBytes = 96 * 1024 * 1024
 
     /// Align bytesPerRow to 256 for MTLBuffer.makeTexture() requirement.
     private static func alignedBytesPerRow(_ width: Int) -> Int {
@@ -708,11 +715,20 @@ final class GlassService {
                                          bytesPerRow: alignedBPR, zeroCopy: zeroCopy))
             }
 
-            captureCaches[key] = CaptureCache(slots: slots, width: w, height: h)
+            let byteCost = slots.reduce(0) { $0 + $1.bytesPerRow * h }
+            captureCaches[key] = CaptureCache(
+                slots: slots,
+                width: w,
+                height: h,
+                byteCost: byteCost,
+                lastUsedTick: tickCount
+            )
+            pruneCaptureCachesIfNeeded()
         }
 
         let slot: CaptureSlot = {
             var cache = captureCaches[key]!
+            cache.lastUsedTick = tickCount
             let s = cache.next()
             captureCaches[key] = cache
             return s
@@ -811,6 +827,25 @@ final class GlassService {
         }
 
         return slot.texture
+    }
+
+    private func pruneCaptureCachesIfNeeded() {
+        var totalBytes = captureCaches.values.reduce(0) { $0 + $1.byteCost }
+        guard totalBytes > maxCaptureCacheBytes else { return }
+
+        let keysByAge = captureCaches.keys.sorted {
+            let lhs = captureCaches[$0]?.lastUsedTick ?? 0
+            let rhs = captureCaches[$1]?.lastUsedTick ?? 0
+            if lhs == rhs { return $0 < $1 }
+            return lhs < rhs
+        }
+
+        for key in keysByAge {
+            guard totalBytes > maxCaptureCacheBytes, captureCaches.count > 1 else { break }
+            guard let cache = captureCaches[key], cache.lastUsedTick < tickCount else { continue }
+            totalBytes -= cache.byteCost
+            captureCaches.removeValue(forKey: key)
+        }
     }
 
     private func renderLayerForCapture(

@@ -281,10 +281,93 @@ final class DatabaseService {
                             identifierValue
                         )
                     WHERE identifierValue IS NULL
+                """
+            )
+        }
+
+        migrator.registerMigration("v9_uniqueStoredMessageEventId") { db in
+            try Self.pruneStoredMessageEventIdDuplicates(in: db)
+            try db.execute(sql: "DROP INDEX IF EXISTS idx_storedMessage_eventId")
+            try db.execute(
+                sql: """
+                    CREATE UNIQUE INDEX idx_storedMessage_eventId
+                    ON storedMessage(roomId, eventId)
+                    WHERE eventId IS NOT NULL
                     """
             )
         }
 
         return migrator
+    }
+
+    private struct StoredMessageEventKey: Hashable {
+        let roomId: String
+        let eventId: String
+    }
+
+    private static func pruneStoredMessageEventIdDuplicates(in db: Database) throws {
+        try db.execute(sql: "UPDATE storedMessage SET eventId = NULL WHERE eventId = ''")
+
+        let messages = try StoredMessage
+            .filter(Column("eventId") != nil)
+            .fetchAll(db)
+
+        guard messages.count > 1 else { return }
+
+        var bestByKey: [StoredMessageEventKey: StoredMessage] = [:]
+        for message in messages {
+            guard let eventId = message.eventId, !eventId.isEmpty else { continue }
+            let key = StoredMessageEventKey(roomId: message.roomId, eventId: eventId)
+            if let existing = bestByKey[key] {
+                bestByKey[key] = preferredStoredMessage(existing, message)
+            } else {
+                bestByKey[key] = message
+            }
+        }
+
+        for message in messages {
+            guard let eventId = message.eventId, !eventId.isEmpty else { continue }
+            let key = StoredMessageEventKey(roomId: message.roomId, eventId: eventId)
+            guard bestByKey[key]?.id != message.id else { continue }
+            try StoredMessage.deleteOne(db, key: message.id)
+        }
+    }
+
+    private static func preferredStoredMessage(
+        _ lhs: StoredMessage,
+        _ rhs: StoredMessage
+    ) -> StoredMessage {
+        let lhsScore = storedMessageDedupScore(lhs)
+        let rhsScore = storedMessageDedupScore(rhs)
+        if lhsScore != rhsScore {
+            return lhsScore > rhsScore ? lhs : rhs
+        }
+        if lhs.timestamp != rhs.timestamp {
+            return lhs.timestamp > rhs.timestamp ? lhs : rhs
+        }
+        return lhs.id > rhs.id ? lhs : rhs
+    }
+
+    private static func storedMessageDedupScore(_ message: StoredMessage) -> Int {
+        var score = 0
+        if message.contentType == "redacted" { score += 1_000 }
+        if message.eventId != nil { score += 100 }
+        if message.transactionId != nil { score += 20 }
+        switch message.sendStatus {
+        case "read":
+            score += 12
+        case "synced":
+            score += 10
+        case "sent":
+            score += 8
+        case "sending":
+            score += 2
+        default:
+            score += 4
+        }
+        if !(message.zynaAttributesJSON ?? "").isEmpty {
+            score += 1
+        }
+        return score
     }
 }
