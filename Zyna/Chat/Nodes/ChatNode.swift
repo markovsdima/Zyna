@@ -8,15 +8,7 @@ import AsyncDisplayKit
 final class ChatNode: ASDisplayNode {
     let tableNode = ASTableNode()
     private let bubbleGradientHostView = UIView()
-    private let bubbleGradientSources: [BubbleGradientRole: BubbleGradientSource] = {
-        var sources: [BubbleGradientRole: BubbleGradientSource] = [:]
-        for role in BubbleGradientRole.allCases {
-            sources[role] = BubbleGradientSource { traits in
-                role.colors(traits: traits)
-            }
-        }
-        return sources
-    }()
+    private let bubbleGradientSources: [BubbleGradientRole: BubbleGradientSource]
 
     /// Set by ChatViewController. Used to put glass bars first in the
     /// accessibility tree so VoiceOver hit-tests the bars before the
@@ -30,6 +22,18 @@ final class ChatNode: ASDisplayNode {
     weak var scrollButtonTap: UIView?
 
     override init() {
+        let theme = ChatBubbleThemeStore.shared.selectedTheme
+        var sources: [BubbleGradientRole: BubbleGradientSource] = [:]
+        for role in BubbleGradientRole.allCases {
+            sources[role] = BubbleGradientSource(
+                colorProvider: { traits in
+                    role.colors(traits: traits, outgoingTheme: theme)
+                },
+                start: role == .outgoing ? theme.startPoint : CGPoint(x: 0.0, y: 0.0),
+                end: role == .outgoing ? theme.endPoint : CGPoint(x: 1.0, y: 1.0)
+            )
+        }
+        self.bubbleGradientSources = sources
         super.init()
         addSubnode(tableNode)
         tableNode.inverted = true

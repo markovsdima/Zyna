@@ -70,7 +70,6 @@ private final class BubbleGradientCanvasView: UIView {
         backgroundColor = .clear
         gradientLayer.startPoint = start
         gradientLayer.endPoint = end
-        gradientLayer.locations = [0.0, 0.48, 1.0]
         layer.addSublayer(gradientLayer)
         updateGradientColors()
     }
@@ -93,9 +92,11 @@ private final class BubbleGradientCanvasView: UIView {
     }
 
     private func updateGradientColors() {
-        gradientLayer.colors = colorProvider(traitCollection).map {
+        let colors = colorProvider(traitCollection)
+        gradientLayer.colors = colors.map {
             $0.resolvedColor(with: traitCollection).cgColor
         }
+        gradientLayer.locations = BubbleGradientStops.layerLocations(for: colors.count)
     }
 }
 
@@ -170,14 +171,10 @@ enum BubbleGradientRole: CaseIterable, Hashable {
     case incoming
     case outgoing
 
-    func colors(traits: UITraitCollection) -> [UIColor] {
+    func colors(traits: UITraitCollection, outgoingTheme: ChatBubbleTheme) -> [UIColor] {
         switch self {
         case .outgoing:
-            return [
-                UIColor(hex: 0x8AB8FF),
-                UIColor(hex: 0x5C8EFA),
-                UIColor(hex: 0x3954D6)
-            ]
+            return outgoingTheme.outgoingGradientColors
         case .incoming:
             let surface = AppColor.bubbleBackgroundIncoming.resolvedColor(with: traits)
             let isDark = traits.userInterfaceStyle == .dark

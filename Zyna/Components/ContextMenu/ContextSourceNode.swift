@@ -27,6 +27,15 @@ final class ContextSourceNode: ASDisplayNode {
     private var touchStartLocation: CGPoint = .zero
     private var latestLocation: CGPoint = .zero
 
+    var isGestureEnabled: Bool = true {
+        didSet {
+            if !isGestureEnabled {
+                cancelShrink()
+                didActivate = false
+            }
+        }
+    }
+
     /// Horizontal pan distance (pt) past which we treat the touch as
     /// a back-swipe and bow out so the navigation pan can take over.
     private static let horizontalSwipeCancelThreshold: CGFloat = 8
@@ -80,6 +89,8 @@ final class ContextSourceNode: ASDisplayNode {
     // MARK: - Gesture
 
     @objc private func handleGesture(_ gesture: UILongPressGestureRecognizer) {
+        guard isGestureEnabled else { return }
+
         let location = gesture.location(in: view)
         latestLocation = location
 
@@ -224,6 +235,7 @@ final class ContextSourceNode: ASDisplayNode {
 
 extension ContextSourceNode: UIGestureRecognizerDelegate {
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard isGestureEnabled else { return true }
         // VoiceOver double-tap triggers long press; disable to prevent
         // accidental context menu activation.
         if UIAccessibility.isVoiceOverRunning { return false }

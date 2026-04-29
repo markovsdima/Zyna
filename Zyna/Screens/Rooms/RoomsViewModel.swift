@@ -148,10 +148,20 @@ final class RoomsViewModel {
     // MARK: - Actions
 
     func selectChat(at index: Int) {
-        guard index < chats.count else { return }
+        resolveChat(at: index) { [weak self] room in
+            self?.onChatSelected?(room)
+        }
+    }
+
+    func resolveChat(at index: Int, completion: @escaping (Room) -> Void) {
+        guard chats.indices.contains(index) else { return }
         let roomId = chats[index].id
+        resolveChat(roomId: roomId, completion: completion)
+    }
+
+    private func resolveChat(roomId: String, completion: @escaping (Room) -> Void) {
         if let room = roomListService.room(for: roomId) {
-            onChatSelected?(room)
+            completion(room)
             return
         }
         // SDK not ready yet (rooms visible from GRDB cache).
@@ -160,7 +170,7 @@ final class RoomsViewModel {
             for _ in 0..<20 {
                 try? await Task.sleep(for: .milliseconds(500))
                 if let room = self.roomListService.room(for: roomId) {
-                    self.onChatSelected?(room)
+                    completion(room)
                     return
                 }
             }

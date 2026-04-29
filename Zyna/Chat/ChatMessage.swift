@@ -253,6 +253,63 @@ struct ClusterNeighbor {
     let mediaGroupId: String?
 }
 
+// MARK: - Timeline Rows
+
+struct DateDividerModel: Equatable, Hashable {
+    let id: String
+    let date: Date
+    let title: String
+
+    static func make(for date: Date, calendar: Calendar = .current, now: Date = Date()) -> DateDividerModel {
+        let dayStart = calendar.startOfDay(for: date)
+        let title: String
+        if calendar.isDate(dayStart, inSameDayAs: now) {
+            title = String(localized: "Today")
+        } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: now)),
+                  calendar.isDate(dayStart, inSameDayAs: yesterday) {
+            title = String(localized: "Yesterday")
+        } else if calendar.component(.year, from: dayStart) == calendar.component(.year, from: now) {
+            title = Self.currentYearDateFormatter.string(from: dayStart)
+        } else {
+            title = Self.dateFormatter.string(from: dayStart)
+        }
+
+        return DateDividerModel(
+            id: "date-divider:\(Int(dayStart.timeIntervalSince1970))",
+            date: dayStart,
+            title: title
+        )
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    private static let currentYearDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("dMMMM")
+        return formatter
+    }()
+}
+
+enum ChatTimelineRow: Equatable {
+    case message(ChatMessage)
+    case dateDivider(DateDividerModel)
+
+    var message: ChatMessage? {
+        if case .message(let message) = self { return message }
+        return nil
+    }
+
+    var dateDivider: DateDividerModel? {
+        if case .dateDivider(let model) = self { return model }
+        return nil
+    }
+}
+
 enum MediaGroupPosition: String, Equatable {
     case top
     case middle
@@ -371,6 +428,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.replyInfo == rhs.replyInfo
             && lhs.zynaAttributes == rhs.zynaAttributes
             && lhs.sendStatus == rhs.sendStatus
+            && lhs.isFirstInCluster == rhs.isFirstInCluster
             && lhs.isLastInCluster == rhs.isLastInCluster
             && lhs.mediaGroupPresentation == rhs.mediaGroupPresentation
             && lhs.outgoingEnvelopeId == rhs.outgoingEnvelopeId

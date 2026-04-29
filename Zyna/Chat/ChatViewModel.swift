@@ -11,6 +11,16 @@ import MatrixRustSDK
 
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 
+enum ChatPresentationMode {
+    case normal
+    case preview
+
+    var isPreview: Bool {
+        if case .preview = self { return true }
+        return false
+    }
+}
+
 final class ChatViewModel {
 
     struct DetectedRedactedMediaGroup {
@@ -50,6 +60,7 @@ final class ChatViewModel {
     // MARK: - State
 
     private(set) var messages: [ChatMessage] = []
+    private(set) var rows: [ChatTimelineRow] = []
     @Published private(set) var isPaginating: Bool = false
 
     /// True when SDK backward pagination returned no new visible
@@ -76,6 +87,7 @@ final class ChatViewModel {
     var onRedactionFailed: ((String, Error, PendingRedactionFailureDisposition) -> Void)?
 
     let roomName: String
+    let mode: ChatPresentationMode
     @Published private(set) var partnerPresence: UserPresence?
     @Published private(set) var partnerUserId: String?
     @Published private(set) var memberCount: Int?
@@ -106,15 +118,17 @@ final class ChatViewModel {
     private var readReceiptBaselineTarget: VisibleReadReceiptTarget?
     private var lastBootstrapReadReceiptTarget: VisibleReadReceiptTarget?
     private var messageIndexByEventId: [String: Int] = [:]
+    private var rowIndexByEventId: [String: Int] = [:]
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
     var hasOlderInDB: Bool { window.hasOlderInDB }
 
-    init(room: Room) {
+    init(room: Room, mode: ChatPresentationMode = .normal) {
         let roomId = room.id()
         self.room = room
         self.roomId = roomId
+        self.mode = mode
         self.roomName = room.displayName() ?? "Chat"
         self.isInvited = room.membership() == .invited
         self.timelineService = TimelineService(room: room)
@@ -176,7 +190,9 @@ final class ChatViewModel {
                     self.directUserId = userId
                     self.partnerUserId = userId
                 }
-                PresenceTracker.shared.register(userIds: [userId], for: "chat")
+                if !self.mode.isPreview {
+                    PresenceTracker.shared.register(userIds: [userId], for: "chat")
+                }
                 PresenceTracker.shared.$statuses
                     .map { $0[userId] }
                     .receive(on: DispatchQueue.main)
@@ -199,7 +215,8 @@ final class ChatViewModel {
 
         Task { [weak self] in
             guard let self else { return }
-            await self.timelineService.startListening()
+            await self.timelineService.startListening(subscribeForSync: !self.mode.isPreview)
+            guard !self.mode.isPreview else { return }
             let terminalFailures = await self.pendingRedactions.retryPendingRedactions(
                 roomId: self.roomId,
                 timelineService: self.timelineService
@@ -217,6 +234,7 @@ final class ChatViewModel {
             }
         }
 
+        guard !mode.isPreview else { return }
         historySyncTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             await self?.syncFullHistory()
@@ -317,35 +335,39 @@ final class ChatViewModel {
                 "deleteReflow observation newlyRedacted=\(newlyRedactedIds.joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ",")) hidden=\(hiddenIds.count)"
             )
         }
+        let olderBoundary = window.peekOlderNeighbor()
+        let newerBoundary = window.peekNewerNeighbor()
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
             partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
-            olderBoundary: window.peekOlderNeighbor(),
-            newerBoundary: window.peekNewerNeighbor()
+            olderBoundary: olderBoundary,
+            newerBoundary: newerBoundary
         )
 
         // 3. Prefetch images
         Self.prefetchImages(newMessages)
 
         // 4. Compute table update
-        let oldMessages = self.messages
-        setMessages(newMessages)
+        let oldRows = self.rows
+        setMessages(newMessages, olderBoundary: olderBoundary)
 
         let tableUpdate: TableUpdate
         var inPlaceUpdates: [(IndexPath, ChatMessage)] = []
         if prevStored == nil {
             tableUpdate = .reload
         } else {
-            (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldMessages, new: newMessages)
+            (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldRows, new: rows)
         }
         // 5. Emit (filter redacted from normal updates, send separately for animation)
         if !newlyRedactedIds.isEmpty {
             if case .batch(let del, let ins, let moves, let upd, let anim) = tableUpdate {
                 let filtered = upd.filter { ip in
-                    guard ip.row < newMessages.count else { return true }
-                    return !newMessages[ip.row].content.isRedacted
+                    guard rows.indices.contains(ip.row),
+                          let message = rows[ip.row].message
+                    else { return true }
+                    return !message.content.isRedacted
                 }
                 onTableUpdate?(.batch(
                     deletions: del,
@@ -393,6 +415,15 @@ final class ChatViewModel {
             }
         }
         return msg.transactionId ?? msg.eventId ?? msg.id
+    }
+
+    private static func stableKey(_ row: ChatTimelineRow) -> String {
+        switch row {
+        case .message(let message):
+            return "message:\(stableKey(message))"
+        case .dateDivider(let model):
+            return model.id
+        }
     }
 
     private func buildRenderableMessages(
@@ -509,6 +540,7 @@ final class ChatViewModel {
             }
         }
 
+        let oldRows = rows
         let oldMessages = messages
         let visibleRedactedIds = Set(
             oldMessages
@@ -527,17 +559,19 @@ final class ChatViewModel {
             return msg
         }
 
+        let olderBoundary = window.peekOlderNeighbor()
+        let newerBoundary = window.peekNewerNeighbor()
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: Self.redactedMediaGroupIds(in: storedMessages),
             partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
-            olderBoundary: window.peekOlderNeighbor(),
-            newerBoundary: window.peekNewerNeighbor()
+            olderBoundary: olderBoundary,
+            newerBoundary: newerBoundary
         )
-        setMessages(newMessages)
+        setMessages(newMessages, olderBoundary: olderBoundary)
 
-        let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldMessages, new: newMessages)
+        let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldRows, new: rows)
         onTableUpdate?(tableUpdate)
         for (indexPath, message) in inPlaceUpdates {
             onInPlaceUpdate?(indexPath, message)
@@ -754,16 +788,20 @@ final class ChatViewModel {
         for group: OutgoingEnvelopeSnapshot,
         in messages: [ChatMessage]
     ) -> PendingMediaGroupObservedState {
-        let eventIndexById = Dictionary(
-            uniqueKeysWithValues: group.items.compactMap { item in
-                item.eventId.map { ($0, item.itemIndex) }
+        var eventIndexById: [String: Int] = [:]
+        var transactionIndexById: [String: Int] = [:]
+        for item in group.items {
+            if let eventId = item.eventId,
+               !eventId.isEmpty,
+               eventIndexById[eventId] == nil {
+                eventIndexById[eventId] = item.itemIndex
             }
-        )
-        let transactionIndexById = Dictionary(
-            uniqueKeysWithValues: group.items.compactMap { item in
-                item.transactionId.map { ($0, item.itemIndex) }
+            if let transactionId = item.transactionId,
+               !transactionId.isEmpty,
+               transactionIndexById[transactionId] == nil {
+                transactionIndexById[transactionId] = item.itemIndex
             }
-        )
+        }
 
         var primaryMessageIndexByItemIndex: [Int: Int] = [:]
         var hiddenMessageIndices = Set<Int>()
@@ -881,12 +919,12 @@ final class ChatViewModel {
         rawMessages: [ChatMessage],
         currentUserId: String
     ) -> PendingRenderableEnvelope {
-        let primaryMessagesByItemIndex: [Int: ChatMessage] = Dictionary(
-            uniqueKeysWithValues: observedState.primaryMessageIndexByItemIndex.compactMap { itemIndex, messageIndex in
-                guard rawMessages.indices.contains(messageIndex) else { return nil }
-                return (itemIndex, rawMessages[messageIndex])
-            }
-        )
+        var primaryMessagesByItemIndex: [Int: ChatMessage] = [:]
+        primaryMessagesByItemIndex.reserveCapacity(observedState.primaryMessageIndexByItemIndex.count)
+        for (itemIndex, messageIndex) in observedState.primaryMessageIndexByItemIndex {
+            guard rawMessages.indices.contains(messageIndex) else { continue }
+            primaryMessagesByItemIndex[itemIndex] = rawMessages[messageIndex]
+        }
 
         let mediaItems = group.items.map { item -> MediaGroupItem in
             let primaryMessage = primaryMessagesByItemIndex[item.itemIndex]
@@ -1288,7 +1326,7 @@ final class ChatViewModel {
         return result
     }
 
-    private static func computeTableUpdate(old: [ChatMessage], new: [ChatMessage]) -> (TableUpdate, [(IndexPath, ChatMessage)]) {
+    private static func computeTableUpdate(old: [ChatTimelineRow], new: [ChatTimelineRow]) -> (TableUpdate, [(IndexPath, ChatMessage)]) {
         let oldKeys = old.map { stableKey($0) }
         let newKeys = new.map { stableKey($0) }
         let keyDiff = newKeys.difference(from: oldKeys)
@@ -1316,11 +1354,14 @@ final class ChatViewModel {
         var fullUpdates: [IndexPath] = []
         var inPlaceUpdates: [(IndexPath, ChatMessage)] = []
 
-        for (oldIdx, oldMsg) in old.enumerated() {
+        for (oldIdx, oldRow) in old.enumerated() {
             guard !removedOldOffsets.contains(oldIdx) else { continue }
-            guard let newIdx = newByKey[stableKey(oldMsg)], old[oldIdx] != new[newIdx] else { continue }
-            if MessageCellNode.canUpdateInPlace(old: old[oldIdx], new: new[newIdx]) {
-                inPlaceUpdates.append((IndexPath(row: newIdx, section: 0), new[newIdx]))
+            guard let newIdx = newByKey[stableKey(oldRow)], oldRow != new[newIdx] else { continue }
+
+            if case .message(let oldMessage) = oldRow,
+               case .message(let newMessage) = new[newIdx],
+               MessageCellNode.canUpdateInPlace(old: oldMessage, new: newMessage) {
+                inPlaceUpdates.append((IndexPath(row: newIdx, section: 0), newMessage))
             } else {
                 fullUpdates.append(IndexPath(row: oldIdx, section: 0))
             }
@@ -1388,6 +1429,10 @@ final class ChatViewModel {
     }
 
     func indexOfMessage(eventId: String) -> Int? {
+        rowIndexByEventId[eventId]
+    }
+
+    private func messageIndex(eventId: String) -> Int? {
         messageIndexByEventId[eventId]
     }
 
@@ -1401,6 +1446,7 @@ final class ChatViewModel {
         eventId: String?,
         canEstablishBaseline: Bool
     ) {
+        guard !mode.isPreview else { return }
         guard let eventId else {
             readReceiptWork?.cancel()
             pendingReadReceiptSend = nil
@@ -1483,8 +1529,8 @@ final class ChatViewModel {
             return false
         }
 
-        let lhsIndex = indexOfMessage(eventId: lhs.eventId)
-        let rhsIndex = indexOfMessage(eventId: rhs.eventId)
+        let lhsIndex = messageIndex(eventId: lhs.eventId)
+        let rhsIndex = messageIndex(eventId: rhs.eventId)
 
         switch (lhsIndex, rhsIndex) {
         case let (.some(lhsIndex), .some(rhsIndex)):
@@ -1516,13 +1562,69 @@ final class ChatViewModel {
         }
     }
 
-    private func setMessages(_ newMessages: [ChatMessage]) {
+    private func setMessages(_ newMessages: [ChatMessage], olderBoundary: ClusterNeighbor?) {
         messages = newMessages
-        messageIndexByEventId = Dictionary(
-            uniqueKeysWithValues: newMessages.enumerated().compactMap { index, message in
-                message.eventId.map { ($0, index) }
+        rows = Self.buildRows(from: newMessages, olderBoundary: olderBoundary)
+
+        // Matrix event_ids identify one event, but SDK/local-echo
+        // replacement can transiently surface the same event twice.
+        // Navigation/read receipts only need one visible target.
+        var messageIndices: [String: Int] = [:]
+        messageIndices.reserveCapacity(newMessages.count)
+        for (index, message) in newMessages.enumerated() {
+            guard let eventId = message.eventId,
+                  !eventId.isEmpty,
+                  messageIndices[eventId] == nil else {
+                continue
             }
-        )
+            messageIndices[eventId] = index
+        }
+        messageIndexByEventId = messageIndices
+
+        var rowIndices: [String: Int] = [:]
+        rowIndices.reserveCapacity(rows.count)
+        for (index, row) in rows.enumerated() {
+            guard let eventId = row.message?.eventId,
+                  !eventId.isEmpty,
+                  rowIndices[eventId] == nil else {
+                continue
+            }
+            rowIndices[eventId] = index
+        }
+        rowIndexByEventId = rowIndices
+    }
+
+    private static func buildRows(
+        from messages: [ChatMessage],
+        olderBoundary: ClusterNeighbor?
+    ) -> [ChatTimelineRow] {
+        guard !messages.isEmpty else { return [] }
+
+        let calendar = Calendar.current
+        var result: [ChatTimelineRow] = []
+        result.reserveCapacity(messages.count + min(messages.count, 16))
+
+        for index in messages.indices {
+            let message = messages[index]
+            result.append(.message(message))
+
+            let olderTimestamp: Date?
+            if index + 1 < messages.count {
+                olderTimestamp = messages[index + 1].timestamp
+            } else {
+                olderTimestamp = olderBoundary?.timestamp
+            }
+
+            let endsVisibleDayGroup = olderTimestamp.map {
+                !calendar.isDate(message.timestamp, inSameDayAs: $0)
+            } ?? true
+
+            if endsVisibleDayGroup {
+                result.append(.dateDivider(DateDividerModel.make(for: message.timestamp, calendar: calendar)))
+            }
+        }
+
+        return result
     }
 
     // MARK: - Reply
@@ -2284,6 +2386,7 @@ final class ChatViewModel {
             pendingPartialRedactions.removeValue(forKey: messageId)
             partialReflowPreviewsByMessageId.removeValue(forKey: messageId)
         }
+        let oldRows = rows
         let oldMessages = messages
         var visibleRedactedIds = Set(
             oldMessages
@@ -2302,17 +2405,19 @@ final class ChatViewModel {
         logMediaGroup(
             "deleteReflow hide messageIds=\(idsToHide.sorted().joined(separator: ",")) visibleRedacted=\(visibleRedactedIds.sorted().joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ","))"
         )
+        let olderBoundary = window.peekOlderNeighbor()
+        let newerBoundary = window.peekNewerNeighbor()
         let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
             partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
-            olderBoundary: window.peekOlderNeighbor(),
-            newerBoundary: window.peekNewerNeighbor()
+            olderBoundary: olderBoundary,
+            newerBoundary: newerBoundary
         )
-        setMessages(newMessages)
+        setMessages(newMessages, olderBoundary: olderBoundary)
 
-        let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldMessages, new: newMessages)
+        let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldRows, new: rows)
         onTableUpdate?(tableUpdate)
         for (indexPath, message) in inPlaceUpdates {
             onInPlaceUpdate?(indexPath, message)
@@ -2373,7 +2478,9 @@ final class ChatViewModel {
         historySyncTask?.cancel()
         readReceiptWork?.cancel()
         pendingReadReceiptSend = nil
-        PresenceTracker.shared.unregister(for: "chat")
+        if !mode.isPreview {
+            PresenceTracker.shared.unregister(for: "chat")
+        }
         timelineService.onDiffs = nil
         timelineService.onOwnFullyReadMarker = nil
         timelineService.onSendQueueUpdate = nil
@@ -2463,6 +2570,7 @@ final class ChatViewModel {
         guard let neighbor else { return true }
         if neighbor.isStandaloneEvent { return true }
         if neighbor.senderId != current.senderId { return true }
+        if !Calendar.current.isDate(current.timestamp, inSameDayAs: neighbor.timestamp) { return true }
         let gap = abs(current.timestamp.timeIntervalSince(neighbor.timestamp))
         return gap > clusterGap
     }

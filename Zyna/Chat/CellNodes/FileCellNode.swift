@@ -13,6 +13,7 @@ final class FileCellNode: MessageCellNode {
     var onFileTapped: (() -> Void)?
 
     override func accessibilityActivate() -> Bool {
+        guard allowsInteractiveActions else { return false }
         onFileTapped?()
         return true
     }

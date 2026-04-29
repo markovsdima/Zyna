@@ -27,7 +27,10 @@ final class ChipsStripNode: ASScrollNode {
     }
 
     func setUsers(_ users: [UserProfile], onRemove: @escaping (UserProfile) -> Void) {
-        let existing = Dictionary(uniqueKeysWithValues: chipNodes.map { ($0.userId, $0) })
+        let existing = Dictionary(
+            chipNodes.map { ($0.userId, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         chipNodes = users.map { user in
             let chip = existing[user.userId] ?? SelectedUserChipNode(user: user)
             chip.onRemove = { onRemove(user) }
