@@ -387,6 +387,11 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     let content: ChatMessageContent
     let reactions: [MessageReaction]
     let replyInfo: ReplyInfo?
+    let isEditable: Bool
+    let isEdited: Bool
+    let isEditPending: Bool
+    let isEditFailed: Bool
+    let latestEditEventId: String?
     /// Zyna-specific attributes decoded from formatted_body. Always
     /// present (empty struct if none) so UI code has no optional
     /// unwrap noise.
@@ -426,6 +431,11 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.content == rhs.content
             && lhs.reactions == rhs.reactions
             && lhs.replyInfo == rhs.replyInfo
+            && lhs.isEditable == rhs.isEditable
+            && lhs.isEdited == rhs.isEdited
+            && lhs.isEditPending == rhs.isEditPending
+            && lhs.isEditFailed == rhs.isEditFailed
+            && lhs.latestEditEventId == rhs.latestEditEventId
             && lhs.zynaAttributes == rhs.zynaAttributes
             && lhs.sendStatus == rhs.sendStatus
             && lhs.isFirstInCluster == rhs.isFirstInCluster
@@ -456,6 +466,11 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             content: updatedContent,
             reactions: reactions,
             replyInfo: replyInfo,
+            isEditable: isEditable,
+            isEdited: isEdited,
+            isEditPending: isEditPending,
+            isEditFailed: isEditFailed,
+            latestEditEventId: latestEditEventId,
             zynaAttributes: zynaAttributes,
             sendStatus: sendStatus
         )
@@ -465,5 +480,29 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
         copy.outgoingEnvelopeId = outgoingEnvelopeId
         copy.incomingAssemblyId = incomingAssemblyId
         return copy
+    }
+
+    var isTextEditable: Bool {
+        guard isEditable,
+              !isEditPending,
+              !content.isRedacted,
+              itemIdentifier != nil,
+              !isSyntheticOutgoingEnvelope,
+              !isSyntheticIncomingAssembly,
+              case .text = content
+        else {
+            return false
+        }
+        return true
+    }
+
+    var effectiveSendStatus: String {
+        if isEditPending {
+            return "sending"
+        }
+        if isEditFailed {
+            return "failed"
+        }
+        return sendStatus
     }
 }

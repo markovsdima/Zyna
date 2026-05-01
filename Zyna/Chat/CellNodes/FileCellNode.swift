@@ -118,7 +118,7 @@ final class FileCellNode: MessageCellNode {
         }
 
         let statusIcon = message.isOutgoing
-            ? MessageStatusIcon.from(sendStatus: message.sendStatus)
+            ? MessageStatusIcon.from(sendStatus: message.effectiveSendStatus)
             : nil
 
         let maxContentWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio - 24

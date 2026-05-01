@@ -124,7 +124,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         // Status icon only on the sender's own bubbles. For incoming
         // messages it carries no information and would just clutter.
         if message.isOutgoing,
-           let iconState = MessageStatusIcon.from(sendStatus: message.sendStatus) {
+           let iconState = MessageStatusIcon.from(sendStatus: message.effectiveSendStatus) {
             let node = MessageStatusIconNode()
             node.icon = iconState
             node.tintColour = usesAccentBubbleStyle
@@ -184,7 +184,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         // Timestamp (default colors — override in subclass if needed)
         timeNode.attributedText = NSAttributedString(
-                string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
+                string: MessageCellHelpers.timelineTimestampText(for: message),
                 attributes: [
                     .font: UIFont.systemFont(ofSize: 11),
                     .foregroundColor: bubbleTimestampColor
@@ -315,7 +315,13 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             parts.append(sender)
         }
         parts.append(message.content.textPreview)
-        parts.append(MessageCellHelpers.timeFormatter.string(from: message.timestamp))
+        parts.append(MessageCellHelpers.timelineTimestampText(for: message))
+        if message.isEditPending {
+            parts.append(String(localized: "edit pending"))
+        }
+        if message.isEditFailed {
+            parts.append(String(localized: "edit failed"))
+        }
         if let reactionsText = reactionCountAccessibilityText(for: message.reactions) {
             parts.append(reactionsText)
         }
@@ -521,6 +527,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
               old.senderDisplayName == new.senderDisplayName,
               old.senderAvatarUrl == new.senderAvatarUrl,
               old.isFirstInCluster == new.isFirstInCluster,
+              old.isEdited == new.isEdited,
               mediaGroupPresentationIsVisuallyEquivalent(old: old.mediaGroupPresentation, new: new.mediaGroupPresentation)
         else {
             return false

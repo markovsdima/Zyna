@@ -131,6 +131,10 @@ final class TimelineDiffBatcher {
                                 for: &record,
                                 in: db
                             )
+                            Self.inheritExistingPendingEditIfNeeded(
+                                for: &record,
+                                in: db
+                            )
                             let previousGroupDescription = try Self.existingMediaGroupDescription(
                                 for: record,
                                 in: db
@@ -324,6 +328,38 @@ final class TimelineDiffBatcher {
             logMediaGroup(
                 "db preserve redacted attrs item=\(record.eventId ?? record.transactionId ?? record.id) group=\(describe(group: group))"
             )
+        }
+    }
+
+    private static func inheritExistingPendingEditIfNeeded(
+        for record: inout StoredMessage,
+        in db: Database
+    ) {
+        guard record.isOutgoing else {
+            return
+        }
+
+        if record.latestEditEventId?.isEmpty == false {
+            record.isEditPending = false
+            record.isEditFailed = false
+            record.editTransactionId = nil
+            return
+        }
+
+        guard let existing = (try? existingStoredMessage(for: record, in: db)) ?? nil,
+              existing.isEditPending || existing.isEditFailed
+        else {
+            return
+        }
+
+        if existing.isEditPending && !record.isEditPending {
+            record.isEditPending = true
+        }
+        if existing.isEditFailed && !record.isEditPending {
+            record.isEditFailed = true
+        }
+        if record.editTransactionId == nil {
+            record.editTransactionId = existing.editTransactionId
         }
     }
 

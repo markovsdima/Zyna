@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 import MatrixRustSDK
 
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
+private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 
 enum ChatPresentationMode {
     case normal
@@ -69,8 +70,15 @@ final class ChatViewModel {
     /// are filtered (call signaling, redacted, etc.).
     var sdkPaginationExhausted = false
     @Published private(set) var replyingTo: ChatMessage?
+    @Published private(set) var editingMessage: ChatMessage?
     @Published private(set) var pendingForwardContent: (preview: ChatMessage, content: RoomMessageEventContentWithoutRelation)?
     @Published private(set) var isInvited: Bool = false
+    private var editingDraftOverride: String?
+    private var activeEditAttemptId: UUID?
+    private var recentlySentTransactionIds: Set<String> = []
+    private var recentlySentTransactionOrder: [String] = []
+    private var recentlyFailedTransactionIds: Set<String> = []
+    private var recentlyFailedTransactionOrder: [String] = []
 
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate) -> Void)?
@@ -85,6 +93,7 @@ final class ChatViewModel {
 
     /// Called when a redaction request fails.
     var onRedactionFailed: ((String, Error, PendingRedactionFailureDisposition) -> Void)?
+    var canRestoreFailedEditDraft: (() -> Bool)?
 
     let roomName: String
     let mode: ChatPresentationMode
@@ -159,9 +168,45 @@ final class ChatViewModel {
                 self?.seedReadReceiptBaseline(eventId: eventId)
             }
         }
-        timelineService.onSendQueueUpdate = { [weak self] _ in
-            DispatchQueue.main.async { [weak self] in
-                self?.window.refresh()
+        timelineService.onSendQueueUpdate = { [weak self] update, didMutateOutgoingEnvelopes in
+            Task { [weak self] in
+                guard let self else { return }
+                switch update {
+                case .sentEvent(let transactionId, _):
+                    await self.rememberSentTransaction(transactionId)
+                    let didClearPendingEdit = await self.clearPendingMessageEdit(
+                        transactionId: transactionId
+                    )
+                    if !didClearPendingEdit, didMutateOutgoingEnvelopes {
+                        await self.refreshWindow()
+                    }
+                case .sendError(let transactionId, _, let isRecoverable):
+                    guard !isRecoverable else {
+                        if didMutateOutgoingEnvelopes {
+                            await self.refreshWindow()
+                        }
+                        return
+                    }
+                    await self.rememberFailedTransaction(transactionId)
+                    let didFailPendingEdit = await self.failPendingMessageEdit(
+                        transactionId: transactionId
+                    )
+                    if !didFailPendingEdit, didMutateOutgoingEnvelopes {
+                        await self.refreshWindow()
+                    }
+                case .cancelledLocalEvent(let transactionId):
+                    await self.rememberFailedTransaction(transactionId)
+                    let didFailPendingEdit = await self.failPendingMessageEdit(
+                        transactionId: transactionId
+                    )
+                    if !didFailPendingEdit, didMutateOutgoingEnvelopes {
+                        await self.refreshWindow()
+                    }
+                default:
+                    if didMutateOutgoingEnvelopes {
+                        await self.refreshWindow()
+                    }
+                }
             }
         }
 
@@ -759,6 +804,11 @@ final class ChatViewModel {
                 content: .notice(body: body),
                 reactions: [],
                 replyInfo: nil,
+                isEditable: false,
+                isEdited: false,
+                isEditPending: false,
+                isEditFailed: false,
+                latestEditEventId: nil,
                 zynaAttributes: ZynaMessageAttributes(),
                 sendStatus: "sent"
             )
@@ -987,6 +1037,11 @@ final class ChatViewModel {
             content: .pendingOutgoingMediaBatch,
             reactions: [],
             replyInfo: group.replyInfo,
+            isEditable: false,
+            isEdited: false,
+            isEditPending: false,
+            isEditFailed: false,
+            latestEditEventId: nil,
             zynaAttributes: ZynaMessageAttributes(),
             sendStatus: sendStatus
         )
@@ -1216,6 +1271,11 @@ final class ChatViewModel {
             content: content,
             reactions: [],
             replyInfo: envelope.replyInfo,
+            isEditable: false,
+            isEdited: false,
+            isEditPending: false,
+            isEditFailed: false,
+            latestEditEventId: nil,
             zynaAttributes: envelope.zynaAttributes,
             sendStatus: sendStatus
         )
@@ -1631,10 +1691,37 @@ final class ChatViewModel {
 
     func setReplyTarget(_ message: ChatMessage?) {
         replyingTo = message
+        if message != nil {
+            activeEditAttemptId = nil
+            editingDraftOverride = nil
+            editingMessage = nil
+            pendingForwardContent = nil
+        }
+    }
+
+    func setEditingTarget(_ message: ChatMessage?) {
+        activeEditAttemptId = nil
+        editingDraftOverride = nil
+        guard let message else {
+            editingMessage = nil
+            return
+        }
+        guard message.isTextEditable else { return }
+        replyingTo = nil
+        pendingForwardContent = nil
+        editingMessage = message
     }
 
     func setPendingForward(preview: ChatMessage, content: RoomMessageEventContentWithoutRelation) {
+        activeEditAttemptId = nil
+        editingDraftOverride = nil
+        replyingTo = nil
+        editingMessage = nil
         pendingForwardContent = (preview, content)
+    }
+
+    func editingInputText(for message: ChatMessage) -> String? {
+        editingDraftOverride ?? message.content.textBody
     }
 
     func clearPendingForward() {
@@ -1646,6 +1733,225 @@ final class ChatViewModel {
     private func refreshWindow() async {
         await MainActor.run {
             self.window.refresh()
+        }
+    }
+
+    @MainActor
+    private func rememberSentTransaction(_ transactionId: String) {
+        rememberTransaction(
+            transactionId,
+            ids: &recentlySentTransactionIds,
+            order: &recentlySentTransactionOrder
+        )
+    }
+
+    @MainActor
+    private func hasRecentlySentTransaction(_ transactionId: String) -> Bool {
+        recentlySentTransactionIds.contains(transactionId)
+    }
+
+    @MainActor
+    private func rememberFailedTransaction(_ transactionId: String) {
+        rememberTransaction(
+            transactionId,
+            ids: &recentlyFailedTransactionIds,
+            order: &recentlyFailedTransactionOrder
+        )
+    }
+
+    @MainActor
+    private func hasRecentlyFailedTransaction(_ transactionId: String) -> Bool {
+        recentlyFailedTransactionIds.contains(transactionId)
+    }
+
+    @MainActor
+    private func rememberTransaction(
+        _ transactionId: String,
+        ids: inout Set<String>,
+        order: inout [String]
+    ) {
+        if ids.insert(transactionId).inserted {
+            order.append(transactionId)
+        }
+
+        while order.count > 128 {
+            let removed = order.removeFirst()
+            ids.remove(removed)
+        }
+    }
+
+    @discardableResult
+    private func markMessageEditPending(
+        eventId: String
+    ) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 1,
+                            isEditFailed = 0,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND eventId = ?
+                          AND (isEditPending = 0
+                               OR isEditFailed = 1
+                               OR editTransactionId IS NOT NULL)
+                    """,
+                    arguments: [roomId, eventId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("pending event=\(eventId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to mark pending event=\(eventId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func bindPendingMessageEditTransaction(
+        eventId: String,
+        transactionId: String
+    ) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET editTransactionId = ?
+                        WHERE roomId = ?
+                          AND eventId = ?
+                          AND isEditPending = 1
+                          AND (editTransactionId IS NULL OR editTransactionId != ?)
+                    """,
+                    arguments: [transactionId, roomId, eventId, transactionId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("bound event=\(eventId) tx=\(transactionId)")
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to bind pending edit event=\(eventId) tx=\(transactionId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func clearPendingMessageEdit(transactionId: String) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 0,
+                            isEditFailed = 0,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND editTransactionId = ?
+                    """,
+                    arguments: [roomId, transactionId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("confirmed tx=\(transactionId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to clear pending tx=\(transactionId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func clearPendingMessageEdit(eventId: String) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 0,
+                            isEditFailed = 0,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND eventId = ?
+                    """,
+                    arguments: [roomId, eventId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("cleared event=\(eventId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to clear pending event=\(eventId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func failPendingMessageEdit(transactionId: String) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 0,
+                            isEditFailed = 1,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND editTransactionId = ?
+                    """,
+                    arguments: [roomId, transactionId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("failed tx=\(transactionId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to mark edit failed tx=\(transactionId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func failPendingMessageEdit(eventId: String) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 0,
+                            isEditFailed = 1,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND eventId = ?
+                    """,
+                    arguments: [roomId, eventId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("failed event=\(eventId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to mark edit failed event=\(eventId): \(error)")
+            return false
         }
     }
 
@@ -1898,6 +2204,75 @@ final class ChatViewModel {
     }
 
     func sendMessage(_ text: String, color: UIColor? = nil) {
+        if let editing = editingMessage {
+            guard let itemId = editing.itemIdentifier,
+                  let originalBody = editing.content.textBody
+            else {
+                setEditingTarget(nil)
+                return
+            }
+
+            let editedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !editedText.isEmpty else { return }
+            guard editedText != originalBody.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                setEditingTarget(nil)
+                return
+            }
+
+            editingMessage = nil
+            activeEditAttemptId = nil
+            editingDraftOverride = nil
+
+            let attemptId = UUID()
+            activeEditAttemptId = attemptId
+            Task { [weak self] in
+                guard let self else { return }
+                if let eventId = editing.eventId {
+                    await self.markMessageEditPending(eventId: eventId)
+                }
+
+                let receipt = await self.timelineService.editMessage(
+                    editedText,
+                    itemId: itemId,
+                    zynaAttributes: editing.zynaAttributes
+                )
+
+                if let eventId = editing.eventId {
+                    if receipt.acceptedByTransport {
+                        if let transactionId = receipt.transactionId,
+                           await self.hasRecentlySentTransaction(transactionId) {
+                            await self.clearPendingMessageEdit(eventId: eventId)
+                        } else if let transactionId = receipt.transactionId,
+                                  await self.hasRecentlyFailedTransaction(transactionId) {
+                            await self.failPendingMessageEdit(eventId: eventId)
+                        } else if let transactionId = receipt.transactionId {
+                            await self.bindPendingMessageEditTransaction(
+                                eventId: eventId,
+                                transactionId: transactionId
+                            )
+                        }
+                    } else {
+                        await self.clearPendingMessageEdit(eventId: eventId)
+                    }
+                }
+
+                await MainActor.run {
+                    guard self.activeEditAttemptId == attemptId else { return }
+                    self.activeEditAttemptId = nil
+                    guard !receipt.acceptedByTransport else { return }
+                    guard self.canRestoreFailedEditDraft?() ?? true else { return }
+                    self.editingDraftOverride = editedText
+                    self.replyingTo = nil
+                    self.pendingForwardContent = nil
+                    self.editingMessage = editing
+                }
+            }
+            return
+        }
+
+        activeEditAttemptId = nil
+        editingDraftOverride = nil
+
         // Forward takes priority
         if let forward = pendingForwardContent {
             pendingForwardContent = nil

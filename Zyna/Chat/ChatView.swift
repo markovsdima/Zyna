@@ -144,6 +144,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var visibleReadReceiptEvalWork: DispatchWorkItem?
     private var unseenIncomingMessageCount = 0
     private var pendingPostSendPinToLive = false
+    private var isEditingInputActive = false
     private var redactionAnimationsArmed = false
     private var redactionAnimationArmWork: DispatchWorkItem?
     private var didCleanupViewModel = false
@@ -815,7 +816,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 groupCell.updateMediaGroupPresentation(message.mediaGroupPresentation)
             }
             cellNode.updateAccessibilityMessage(message)
-            cellNode.updateSendStatus(message.sendStatus)
+            cellNode.updateSendStatus(message.effectiveSendStatus)
             cellNode.updateClusterMembership(isLastInCluster: message.isLastInCluster)
             cellNode.updateReactions(message.reactions)
             cellNode.refreshAccessibilityForwarding()
@@ -827,6 +828,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         viewModel.onRedactionFailed = { [weak self] messageId, _, disposition in
             self?.handleRedactionFailure(for: messageId, disposition: disposition)
+        }
+
+        viewModel.canRestoreFailedEditDraft = { [weak self] in
+            guard let self else { return false }
+            return self.glassInputBar.inputNode.currentText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
         }
 
         viewModel.$isInvited
@@ -846,6 +854,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     senderName: message?.senderDisplayName ?? message?.senderId,
                     body: message?.content.textPreview
                 )
+            }
+            .store(in: &cancellables)
+
+        viewModel.$editingMessage
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] message in
+                guard let self, !self.isPreviewMode else { return }
+                let wasEditing = self.isEditingInputActive
+                self.isEditingInputActive = message != nil
+                self.glassInputBar.inputNode.setEditPreview(
+                    body: message?.content.textPreview
+                )
+                guard let message,
+                      let body = self.viewModel.editingInputText(for: message) else {
+                    if wasEditing {
+                        self.glassInputBar.inputNode.setCurrentText("")
+                    }
+                    return
+                }
+                self.glassInputBar.inputNode.setCurrentText(body)
+                self.glassInputBar.inputNode.focusTextInput()
             }
             .store(in: &cancellables)
 
@@ -921,9 +950,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         glassInputBar.inputNode.onSend = { [weak self] text, color in
             guard let self else { return }
-            self.armPostSendPinToLive()
+            let wasEditing = self.viewModel.editingMessage != nil
+            if !wasEditing {
+                self.armPostSendPinToLive()
+            }
             self.viewModel.sendMessage(text, color: color)
-            self.scrollToLiveAfterUserSend()
+            if !wasEditing {
+                self.scrollToLiveAfterUserSend()
+            }
         }
 
         glassInputBar.inputNode.onVoiceRecordingFinished = { [weak self] fileURL, duration, waveform in
@@ -934,7 +968,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         glassInputBar.inputNode.onAttachTapped = { [weak self] in
-            self?.presentAttachmentSheet()
+            guard let self, self.viewModel.editingMessage == nil else { return }
+            self.presentAttachmentSheet()
         }
 
         glassInputBar.inputNode.onReplyCancelled = { [weak self] in
@@ -942,8 +977,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.viewModel.clearPendingForward()
         }
 
+        glassInputBar.inputNode.onEditCancelled = { [weak self] in
+            guard let self else { return }
+            self.viewModel.setEditingTarget(nil)
+            self.glassInputBar.inputNode.setCurrentText("")
+        }
+
         glassInputBar.inputNode.onPastedImages = { [weak self] images in
-            self?.enqueuePastedImages(images)
+            guard let self, self.viewModel.editingMessage == nil else { return }
+            self.enqueuePastedImages(images)
         }
 
         glassInputBar.onScrollButtonLayoutChanged = { [weak self] iconFrame, iconAlpha, tapFrame, tapAlpha in
@@ -1166,6 +1208,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             })
         }
 
+        if message.isTextEditable {
+            actions.append(UIAccessibilityCustomAction(name: "Edit") { [weak self] _ in
+                self?.viewModel.setEditingTarget(message)
+                return true
+            })
+        }
+
         if message.itemIdentifier != nil {
             actions.append(UIAccessibilityCustomAction(name: "Add Reaction") { [weak self] _ in
                 self?.presentAccessibilityReactionPicker(for: message)
@@ -1328,6 +1377,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 image: UIImage(systemName: "arrowshape.turn.up.right"),
                 handler: { [weak self] in
                     self?.onForwardMessage?(message)
+                }
+            ))
+        }
+
+        if message.isTextEditable {
+            actions.append(ContextMenuAction(
+                title: "Edit",
+                image: UIImage(systemName: "pencil"),
+                handler: { [weak self] in
+                    self?.viewModel.setEditingTarget(message)
                 }
             ))
         }
@@ -2164,7 +2223,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func enqueueImageAttachments(_ imageDataItems: [Data]) {
-        guard !imageDataItems.isEmpty else { return }
+        guard !imageDataItems.isEmpty,
+              viewModel.editingMessage == nil else { return }
         viewModel.clearPendingForward()
         if composerController.state.hasAttachments,
            composerController.state.imageAttachments.count != composerController.state.attachments.count {
@@ -2176,7 +2236,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func enqueuePastedImages(_ images: [UIImage]) {
-        guard !images.isEmpty else { return }
+        guard !images.isEmpty,
+              viewModel.editingMessage == nil else { return }
         viewModel.clearPendingForward()
         if composerController.state.hasAttachments,
            composerController.state.imageAttachments.count != composerController.state.attachments.count {
@@ -2189,7 +2250,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func enqueueFileAttachments(_ urls: [URL]) {
         let files = Array(urls.prefix(10))
-        guard !files.isEmpty else { return }
+        guard !files.isEmpty,
+              viewModel.editingMessage == nil else { return }
         viewModel.clearPendingForward()
         if composerController.state.hasAttachments,
            composerController.state.fileAttachments.count != composerController.state.attachments.count {

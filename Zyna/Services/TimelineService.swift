@@ -43,7 +43,8 @@ final class TimelineService {
     var onOwnFullyReadMarker: ((String) -> Void)?
 
     /// Room-local send queue updates used to bind outgoing envelopes.
-    var onSendQueueUpdate: ((RoomSendQueueUpdate) -> Void)?
+    /// The Bool indicates whether the outgoing envelope store changed.
+    var onSendQueueUpdate: ((RoomSendQueueUpdate, Bool) -> Void)?
 
     private let room: Room
     private var timeline: Timeline?
@@ -197,7 +198,7 @@ final class TimelineService {
                     )
                     if didBind {
                         DispatchQueue.main.async {
-                            callback?(update)
+                            callback?(update, true)
                         }
                     }
                 }
@@ -209,9 +210,20 @@ final class TimelineService {
             update: update
         )
 
-        guard didMutateOutgoingEnvelopes else { return }
+        guard didMutateOutgoingEnvelopes || Self.shouldNotifySendQueueObserver(update) else {
+            return
+        }
         DispatchQueue.main.async { [weak self] in
-            self?.onSendQueueUpdate?(update)
+            self?.onSendQueueUpdate?(update, didMutateOutgoingEnvelopes)
+        }
+    }
+
+    private static func shouldNotifySendQueueObserver(_ update: RoomSendQueueUpdate) -> Bool {
+        switch update {
+        case .sentEvent, .sendError, .cancelledLocalEvent:
+            return true
+        default:
+            return false
         }
     }
 
@@ -245,6 +257,8 @@ final class TimelineService {
         let reactions = buildReactions(from: event)
         let replyInfo = buildReplyInfo(from: event)
         let zynaAttributes = extractZynaAttributes(from: event)
+        let isEdited = messageContentIsEdited(from: event)
+        let editState = messageEditState(from: event, isEdited: isEdited)
 
         let itemIdentifier: ChatItemIdentifier? = {
             switch event.eventOrTransactionId {
@@ -269,9 +283,49 @@ final class TimelineService {
             content: content,
             reactions: reactions,
             replyInfo: replyInfo,
+            isEditable: event.isEditable,
+            isEdited: isEdited,
+            isEditPending: editState.isPending,
+            isEditFailed: false,
+            latestEditEventId: editState.eventId,
             zynaAttributes: zynaAttributes,
             sendStatus: "synced"
         )
+    }
+
+    private static func messageContentIsEdited(from event: EventTimelineItem) -> Bool {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let message) = msgContent.kind
+        else {
+            return false
+        }
+        return message.isEdited
+    }
+
+    private struct MessageEditState {
+        let isPending: Bool
+        let eventId: String?
+    }
+
+    private static func messageEditState(from event: EventTimelineItem, isEdited: Bool) -> MessageEditState {
+        guard isEdited,
+              let latestEditJSON = event.lazyProvider.debugInfo().latestEditJson
+        else {
+            return MessageEditState(isPending: false, eventId: nil)
+        }
+        let eventId = rawEventServerEventId(latestEditJSON)
+        return MessageEditState(isPending: eventId == nil, eventId: eventId)
+    }
+
+    private static func rawEventServerEventId(_ json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let eventId = root["event_id"] as? String,
+              eventId.hasPrefix("$")
+        else {
+            return nil
+        }
+        return eventId
     }
 
     /// Extracts Zyna-specific attributes embedded in the event's
@@ -879,6 +933,7 @@ final class TimelineService {
 
     private func sendWithTransaction(
         bindingToken: String,
+        timeout: Duration = .seconds(10),
         _ operation: @escaping () async throws -> Void
     ) async throws -> String? {
         await localEventTransactionBroker.reserveWaiter(token: bindingToken)
@@ -886,7 +941,7 @@ final class TimelineService {
             try await operation()
             return await localEventTransactionBroker.awaitTransaction(
                 for: bindingToken,
-                timeout: .seconds(10)
+                timeout: timeout
             )
         } catch {
             await localEventTransactionBroker.cancel(token: bindingToken)
@@ -960,6 +1015,43 @@ final class TimelineService {
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("Reply send failed: \(error)")
+            return .failed
+        }
+    }
+
+    @discardableResult
+    func editMessage(
+        _ text: String,
+        itemId: ChatItemIdentifier,
+        zynaAttributes: ZynaMessageAttributes
+    ) async -> OutgoingDispatchReceipt {
+        guard let timeline else { return .failed }
+        let bindingToken = UUID().uuidString
+
+        let content: RoomMessageEventContentWithoutRelation
+        if zynaAttributes.isEmpty {
+            content = messageEventContentFromMarkdown(md: text)
+        } else {
+            let htmlBody = ZynaHTMLCodec.encode(
+                userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(text),
+                attributes: zynaAttributes
+            )
+            content = messageEventContentFromHtml(body: text, htmlBody: htmlBody)
+        }
+
+        do {
+            let transactionId = try await sendWithTransaction(
+                bindingToken: bindingToken
+            ) {
+                try await timeline.edit(
+                    eventOrTransactionId: itemId.toSDK(),
+                    newContent: .roomMessage(content: content)
+                )
+            }
+            logTimeline("Edited message \(itemId) tx=\(transactionId ?? "nil")")
+            return .accepted(transactionId: transactionId)
+        } catch {
+            logTimeline("Edit failed: \(error)")
             return .failed
         }
     }

@@ -50,6 +50,7 @@ final class ChatInputNode: ASDisplayNode {
     var onSizeChanged: (() -> Void)?
     var onWaveformUpdate: (([Float]) -> Void)?
     var onReplyCancelled: (() -> Void)?
+    var onEditCancelled: (() -> Void)?
     var onPastedImages: (([UIImage]) -> Void)?
 
     private var pendingPastedImages: [(sequence: Int, image: UIImage)] = []
@@ -57,43 +58,78 @@ final class ChatInputNode: ASDisplayNode {
     private var pendingPasteExpectedImageCount: Int?
     private var pendingPasteFlushWorkItem: DispatchWorkItem?
 
-    // MARK: - Reply Preview
+    // MARK: - Preview
 
     private let replyBackgroundNode = ASDisplayNode()
     private let replyBarNode = ASDisplayNode()
     private let replyNameNode = ASTextNode()
     private let replyBodyNode = ASTextNode()
     private let replyCancelNode = ASButtonNode()
-    private var isShowingReply = false
-    private var isShowingForward = false
+
+    private enum PreviewMode {
+        case none
+        case reply
+        case forward
+        case edit
+    }
+
+    private var previewMode: PreviewMode = .none
+
+    private var isShowingPreview: Bool {
+        previewMode != .none
+    }
+
+    private var isShowingForward: Bool {
+        previewMode == .forward
+    }
+
+    private var isShowingEdit: Bool {
+        previewMode == .edit
+    }
 
     func setForwardPreview(senderName: String?, body: String?) {
         let showing = senderName != nil
-        guard showing != isShowingForward else { return }
-        isShowingForward = showing
-        // Reuse reply UI — just change the label
         if showing {
+            previewMode = .forward
             updateReplyText(
                 senderName: "↗ \(senderName ?? "")",
                 body: body
             )
+        } else if previewMode == .forward {
+            previewMode = .none
+        } else {
+            return
         }
-        isShowingReply = showing
         setNeedsLayout()
         onSizeChanged?()
     }
 
     func setReplyPreview(senderName: String?, body: String?) {
         let showing = senderName != nil
-        guard showing != isShowingReply else {
-            if showing {
-                updateReplyText(senderName: senderName, body: body)
-            }
+        if showing {
+            previewMode = .reply
+            updateReplyText(senderName: senderName, body: body)
+        } else if previewMode == .reply {
+            previewMode = .none
+        } else {
             return
         }
-        isShowingReply = showing
+        setNeedsLayout()
+        onSizeChanged?()
+    }
+
+    func setEditPreview(body: String?) {
+        let showing = body != nil
         if showing {
-            updateReplyText(senderName: senderName, body: body)
+            previewMode = .edit
+            updateReplyText(
+                senderName: String(localized: "Editing message"),
+                body: body
+            )
+        } else if previewMode == .edit {
+            previewMode = .none
+        } else {
+            return
         }
         setNeedsLayout()
         onSizeChanged?()
@@ -126,7 +162,11 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     @objc private func replyCancelTapped() {
-        onReplyCancelled?()
+        if isShowingEdit {
+            onEditCancelled?()
+        } else {
+            onReplyCancelled?()
+        }
     }
 
     private func setupNodes() {
@@ -244,7 +284,7 @@ final class ChatInputNode: ASDisplayNode {
             children: [attachButtonNode]
         )
 
-        let showSend = !isTextEmpty || isShowingForward
+        let showSend = !isTextEmpty || isShowingForward || isShowingEdit
         let rightButton = showSend ? sendButtonNode : micButtonNode
         let rightSpec = ASStackLayoutSpec(
             direction: .vertical, spacing: 0, justifyContent: .end, alignItems: .center,
@@ -252,7 +292,7 @@ final class ChatInputNode: ASDisplayNode {
         )
 
         var inputColumnChildren: [ASLayoutElement] = []
-        if isShowingReply {
+        if isShowingPreview {
             let textColumn = ASStackLayoutSpec(
                 direction: .vertical, spacing: 1, justifyContent: .start, alignItems: .start,
                 children: [replyNameNode, replyBodyNode]
@@ -613,9 +653,8 @@ final class ChatInputNode: ASDisplayNode {
         guard !text.isEmpty || isShowingForward else { return }
         onSend?(text, color)
         textInputNode.textView.text = ""
-        if isShowingForward {
-            isShowingForward = false
-            isShowingReply = false
+        if isShowingForward || isShowingEdit {
+            previewMode = .none
         }
         updateTextEmptyState()
         setNeedsLayout()
@@ -728,12 +767,12 @@ extension ChatInputNode: UIGestureRecognizerDelegate {
         // Send-colour palette long-press: only when text is non-empty and
         // the touch is over the Send button.
         if gestureRecognizer === colorPaletteLongPress {
-            guard !isTextEmpty, !isRecording, voicePreview == nil else { return false }
+            guard !isTextEmpty, !isRecording, voicePreview == nil, !isShowingEdit else { return false }
             return sendButtonHitRect.contains(point)
         }
 
         // Mic recording long-press: only when text is empty.
-        guard isTextEmpty, !isRecording, voicePreview == nil else { return false }
+        guard isTextEmpty, !isRecording, voicePreview == nil, !isShowingEdit else { return false }
         let micFrame = micButtonNode.view.frame.insetBy(dx: -20, dy: -20)
         let micFrameInSelf = view.convert(micFrame, from: micButtonNode.supernode?.view ?? view)
         return micFrameInSelf.contains(point)
@@ -790,6 +829,10 @@ extension ChatInputNode: UITextPasteDelegate {
     ) {
         guard item.itemProvider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else {
             item.setDefaultResult()
+            return
+        }
+        guard !isShowingEdit else {
+            item.setNoResult()
             return
         }
 
@@ -927,6 +970,10 @@ private extension ChatInputNode {
     }
 
     func completeImagePaste(with image: UIImage, item: any UITextPasteItem, sequence: Int) {
+        guard !isShowingEdit else {
+            item.setNoResult()
+            return
+        }
         pendingPastedImages.append((sequence: sequence, image: image))
         item.setNoResult()
         if let expected = pendingPasteExpectedImageCount,

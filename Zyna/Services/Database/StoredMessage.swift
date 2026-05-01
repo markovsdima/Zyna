@@ -37,6 +37,11 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var replySenderId: String?
     var replySenderName: String?
     var replyBody: String?
+    var isEdited: Bool
+    var isEditPending: Bool
+    var isEditFailed: Bool
+    var latestEditEventId: String?
+    var editTransactionId: String?
 
     var zynaAttributesJSON: String?
 }
@@ -57,6 +62,11 @@ extension StoredMessage {
         self.timestamp = msg.timestamp.timeIntervalSince1970
         self.reactionsJSON = Self.encodeReactions(msg.reactions)
         self.sendStatus = msg.sendStatus
+        self.isEdited = msg.isEdited
+        self.isEditPending = msg.isEditPending
+        self.isEditFailed = msg.isEditFailed
+        self.latestEditEventId = msg.latestEditEventId
+        self.editTransactionId = nil
 
         switch msg.itemIdentifier {
         case .eventId(let id):
@@ -190,9 +200,42 @@ extension StoredMessage {
             content: content,
             reactions: Self.decodeReactions(reactionsJSON),
             replyInfo: replyInfo,
+            isEditable: Self.isStoredMessageEditable(
+                content: content,
+                isOutgoing: isOutgoing,
+                eventId: eventId,
+                sendStatus: sendStatus
+            ),
+            isEdited: isEdited,
+            isEditPending: isEditPending,
+            isEditFailed: isEditFailed,
+            latestEditEventId: latestEditEventId,
             zynaAttributes: Self.decodeZynaAttributes(zynaAttributesJSON),
             sendStatus: sendStatus
         )
+    }
+
+    private static func isStoredMessageEditable(
+        content: ChatMessageContent,
+        isOutgoing: Bool,
+        eventId: String?,
+        sendStatus: String
+    ) -> Bool {
+        guard isOutgoing,
+              eventId?.isEmpty == false
+        else {
+            return false
+        }
+        switch sendStatus {
+        case "sent", "synced", "read":
+            break
+        default:
+            return false
+        }
+        if case .text = content {
+            return true
+        }
+        return false
     }
 
     private func buildContent() -> ChatMessageContent? {
