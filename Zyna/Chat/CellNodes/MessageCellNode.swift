@@ -193,12 +193,15 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         // Sender name
         if showSenderName, let name = message.senderDisplayName {
-            let colorIndex = MessageCellHelpers.stableHash(message.senderId) % MessageCellHelpers.senderColors.count
+            let fallbackColorIndex = MessageCellHelpers.stableHash(message.senderId) % MessageCellHelpers.senderColors.count
+            let senderColor = message.senderNameColorHex
+                .flatMap(UIColor.fromHexString)
+                ?? MessageCellHelpers.senderColors[fallbackColorIndex]
             senderNameNode.attributedText = NSAttributedString(
                 string: name,
                 attributes: [
                     .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
-                    .foregroundColor: MessageCellHelpers.senderColors[colorIndex]
+                    .foregroundColor: senderColor
                 ]
             )
             senderNameNode.onDidLoad { [weak self] node in
@@ -219,7 +222,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             let avatarModel = AvatarViewModel(
                 userId: message.senderId,
                 displayName: message.senderDisplayName,
-                mxcAvatarURL: message.senderAvatarUrl
+                mxcAvatarURL: message.senderAvatarUrl,
+                colorOverrideHex: message.senderNameColorHex
             )
             avatarBackgroundNode.image = avatarModel.circleImage(
                 diameter: Self.avatarDiameter, fontSize: 13

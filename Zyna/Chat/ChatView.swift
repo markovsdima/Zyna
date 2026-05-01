@@ -148,6 +148,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var redactionAnimationsArmed = false
     private var redactionAnimationArmWork: DispatchWorkItem?
     private var didCleanupViewModel = false
+    private var prefetchedAppearanceUserIds = Set<String>()
 
     private var isPreviewMode: Bool {
         viewModel.mode.isPreview
@@ -807,6 +808,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.applyTableUpdate(update)
         }
 
+        ProfileAppearanceService.shared.appearanceDidChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] userId in
+                self?.reloadRowsForAppearanceChange(userId: userId)
+            }
+            .store(in: &cancellables)
+
         viewModel.onInPlaceUpdate = { [weak self] indexPath, message in
             guard let self,
                   let cellNode = self.node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode
@@ -892,6 +900,22 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 }
             }
             .store(in: &cancellables)
+    }
+
+    private func reloadRowsForAppearanceChange(userId: String) {
+        guard isGroupChat else { return }
+        let indexPaths = node.tableNode.indexPathsForVisibleRows().compactMap { indexPath -> IndexPath? in
+            guard viewModel.rows.indices.contains(indexPath.row) else { return nil }
+            let row = viewModel.rows[indexPath.row]
+            guard let message = row.message,
+                  !message.isOutgoing,
+                  message.senderId == userId else {
+                return nil
+            }
+            return indexPath
+        }
+        guard !indexPaths.isEmpty else { return }
+        node.tableNode.reloadRows(at: indexPaths, with: .none)
     }
 
     private func applyTableUpdate(_ update: TableUpdate) {
@@ -1047,28 +1071,37 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let audioPlayer = self.audioPlayer
         let isGroup = self.isGroupChat
         let isPreview = self.isPreviewMode
-        
+        let renderedMessage: ChatMessage
+        if isGroup, !message.isOutgoing {
+            prefetchAppearanceIfNeeded(userId: message.senderId)
+            renderedMessage = message.applyingProfileAppearance(
+                ProfileAppearanceService.shared.cachedAppearance(userId: message.senderId)
+            )
+        } else {
+            renderedMessage = message
+        }
+
         // Ask ChatNode for the source view here on the main thread.
         // Texture may build the cell inside the returned block on a background thread,
         // and that block should use the already-resolved view instead of touching
         // `self.node` / the live node hierarchy again.
-        let gradientSource = self.node.bubbleGradientSource(for: message)
+        let gradientSource = self.node.bubbleGradientSource(for: renderedMessage)
         return { [weak self] in
 
             // Call events use a standalone centered cell, not a MessageCellNode
-            if case .callEvent = message.content {
-                return CallEventCellNode(message: message)
+            if case .callEvent = renderedMessage.content {
+                return CallEventCellNode(message: renderedMessage)
             }
-            if case .systemEvent = message.content {
-                return StateEventCellNode(message: message)
+            if case .systemEvent = renderedMessage.content {
+                return StateEventCellNode(message: renderedMessage)
             }
 
-            if message.mediaGroupPresentation?.hidesStandaloneBubble == true {
+            if renderedMessage.mediaGroupPresentation?.hidesStandaloneBubble == true {
                 return HiddenMessagePlaceholderCellNode()
             }
 
-            if message.mediaGroupPresentation?.rendersCompositeBubble == true {
-                let groupCell = PhotoGroupMessageCellNode(message: message, isGroupChat: isGroup)
+            if renderedMessage.mediaGroupPresentation?.rendersCompositeBubble == true {
+                let groupCell = PhotoGroupMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
                     groupCell.onPhotoTapped = { [weak self, weak groupCell] index in
                         guard let self, let groupCell else { return }
@@ -1097,11 +1130,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
 
             let cellNode: MessageCellNode
-            switch message.content {
+            switch renderedMessage.content {
             case .voice:
-                cellNode = VoiceMessageCellNode(message: message, audioPlayer: audioPlayer, isGroupChat: isGroup)
+                cellNode = VoiceMessageCellNode(message: renderedMessage, audioPlayer: audioPlayer, isGroupChat: isGroup)
             case .image:
-                let imageCell = ImageMessageCellNode(message: message, isGroupChat: isGroup)
+                let imageCell = ImageMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
                     imageCell.onImageTapped = { [weak self, weak imageCell] in
                         guard let self, let imageCell else { return }
@@ -1110,7 +1143,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 }
                 cellNode = imageCell
             case .file:
-                let fileCell = FileCellNode(message: message, isGroupChat: isGroup)
+                let fileCell = FileCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
                     fileCell.onFileTapped = { [weak self] in
                         guard let self else { return }
@@ -1119,9 +1152,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 }
                 cellNode = fileCell
             case .systemEvent:
-                cellNode = TextMessageCellNode(message: message, isGroupChat: isGroup)
+                cellNode = TextMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
             default:
-                cellNode = TextMessageCellNode(message: message, isGroupChat: isGroup)
+                cellNode = TextMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
             }
 
             cellNode.bubbleGradientSource = gradientSource
@@ -1150,6 +1183,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
             return cellNode
         }
+    }
+
+    private func prefetchAppearanceIfNeeded(userId: String) {
+        guard prefetchedAppearanceUserIds.insert(userId).inserted else { return }
+        ProfileAppearanceService.shared.prefetchAppearance(userId: userId)
     }
 
     private func configureMessageDrivenInteractions(for cellNode: MessageCellNode, message: ChatMessage) {

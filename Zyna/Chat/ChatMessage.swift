@@ -381,6 +381,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     let itemIdentifier: ChatItemIdentifier?
     let senderId: String
     let senderDisplayName: String?
+    var senderNameColorHex: String? = nil
     let senderAvatarUrl: String?
     let isOutgoing: Bool
     let timestamp: Date
@@ -425,6 +426,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.transactionId == rhs.transactionId
             && lhs.senderId == rhs.senderId
             && lhs.senderDisplayName == rhs.senderDisplayName
+            && lhs.senderNameColorHex == rhs.senderNameColorHex
             && lhs.senderAvatarUrl == rhs.senderAvatarUrl
             && lhs.isOutgoing == rhs.isOutgoing
             && lhs.timestamp == rhs.timestamp
@@ -460,6 +462,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             itemIdentifier: itemIdentifier,
             senderId: senderId,
             senderDisplayName: senderDisplayName,
+            senderNameColorHex: senderNameColorHex,
             senderAvatarUrl: senderAvatarUrl,
             isOutgoing: isOutgoing,
             timestamp: timestamp,
@@ -479,6 +482,17 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
         copy.mediaGroupPresentation = mediaGroupPresentation
         copy.outgoingEnvelopeId = outgoingEnvelopeId
         copy.incomingAssemblyId = incomingAssemblyId
+        return copy
+    }
+
+    func applyingProfileAppearance(_ appearance: ZynaProfileAppearance?) -> ChatMessage {
+        let nameColorHex = appearance?.nameColorHex
+        guard senderNameColorHex != nameColorHex else {
+            return self
+        }
+
+        var copy = self
+        copy.senderNameColorHex = nameColorHex
         return copy
     }
 

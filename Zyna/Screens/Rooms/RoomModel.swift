@@ -25,10 +25,16 @@ extension RoomModel {
 
     init(from room: RoomSummary) {
         let avatarId = room.directUserId ?? room.id
+        let colorOverrideHex = room.avatarURL == nil
+            ? room.directUserId.flatMap {
+                ProfileAppearanceService.shared.cachedAppearance(userId: $0)?.nameColorHex
+            }
+            : nil
         let avatar = AvatarViewModel(
             userId: avatarId,
             displayName: room.displayName,
-            mxcAvatarURL: room.avatarURL
+            mxcAvatarURL: room.avatarURL,
+            colorOverrideHex: colorOverrideHex
         )
         self.init(
             id: room.id,
@@ -42,6 +48,31 @@ extension RoomModel {
             unreadMentionCount: Int(room.unreadMentionCount),
             isMarkedUnread: room.isMarkedUnread,
             directUserId: room.directUserId
+        )
+    }
+
+    func withSyntheticAvatarColor(_ colorOverrideHex: String?) -> RoomModel {
+        guard avatar.mxcAvatarURL == nil else { return self }
+
+        let updatedAvatar = AvatarViewModel(
+            userId: avatar.userId,
+            displayName: avatar.displayName,
+            mxcAvatarURL: avatar.mxcAvatarURL,
+            colorOverrideHex: colorOverrideHex
+        )
+
+        return RoomModel(
+            id: id,
+            name: name,
+            lastMessage: lastMessage,
+            timestamp: timestamp,
+            avatar: updatedAvatar,
+            isOnline: isOnline,
+            lastSeen: lastSeen,
+            unreadCount: unreadCount,
+            unreadMentionCount: unreadMentionCount,
+            isMarkedUnread: isMarkedUnread,
+            directUserId: directUserId
         )
     }
 

@@ -19,6 +19,7 @@ final class RoomsViewModel {
 
     let roomListService = ZynaRoomListService()
     private var cancellables = Set<AnyCancellable>()
+    private var prefetchedVisibleAppearanceUserIds = Set<String>()
 
     init() {
         roomListService.roomsSubject
@@ -36,6 +37,13 @@ final class RoomsViewModel {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] statuses in
                 self?.applyPresence(statuses)
+            }
+            .store(in: &cancellables)
+
+        ProfileAppearanceService.shared.appearanceDidChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] userId in
+                self?.applyProfileAppearanceChange(for: userId)
             }
             .store(in: &cancellables)
     }
@@ -80,6 +88,41 @@ final class RoomsViewModel {
         }
 
         syncRegistration()
+    }
+
+    func prefetchProfileAppearanceForVisibleChats(at indexPaths: [IndexPath]) {
+        for indexPath in indexPaths {
+            guard chats.indices.contains(indexPath.row) else { continue }
+            let chat = chats[indexPath.row]
+            guard chat.avatar.mxcAvatarURL == nil,
+                  let userId = chat.directUserId,
+                  prefetchedVisibleAppearanceUserIds.insert(userId).inserted else {
+                continue
+            }
+            ProfileAppearanceService.shared.prefetchAppearance(userId: userId)
+        }
+    }
+
+    private func applyProfileAppearanceChange(for userId: String) {
+        guard allChats.contains(where: { $0.directUserId == userId && $0.avatar.mxcAvatarURL == nil }) else {
+            return
+        }
+
+        let colorOverrideHex = ProfileAppearanceService.shared.cachedAppearance(userId: userId)?.nameColorHex
+        let updatedRooms = allChats.map { room in
+            guard room.directUserId == userId else { return room }
+            return room.withSyntheticAvatarColor(colorOverrideHex)
+        }
+
+        if searchQuery.isEmpty {
+            let update = Self.computeDiff(old: chats, new: updatedRooms)
+            allChats = updatedRooms
+            chats = updatedRooms
+            onTableUpdate?(update)
+        } else {
+            allChats = updatedRooms
+            applyFilter()
+        }
     }
 
     // MARK: - Presence (partial reload, no diff)

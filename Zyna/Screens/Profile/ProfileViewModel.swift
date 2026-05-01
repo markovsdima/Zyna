@@ -7,6 +7,8 @@ import Foundation
 import Combine
 import MatrixRustSDK
 
+private let logProfile = ScopedLog(.ui, prefix: "[Profile]")
+
 enum ProfileMode {
     case own
     case other(userId: String)
@@ -46,11 +48,13 @@ final class ProfileViewModel {
             let uid = try? client.userId()
             let name = try? await client.displayName()
             let mxcUrl = try? await client.avatarUrl()
-            print("[profile] loadOwnProfile uid=\(uid ?? "nil") name=\(name ?? "nil") mxc=\(mxcUrl ?? "nil")")
+            logProfile("Loaded own profile uid=\(uid ?? "nil") hasName=\(name != nil) hasAvatar=\(mxcUrl != nil)")
             self.userId = uid ?? ""
             self.displayName = name
+            if let uid {
+                OwnProfileCache.shared.setDisplayName(name, userId: uid)
+            }
             self.avatar = AvatarViewModel(userId: uid ?? "", displayName: name, mxcAvatarURL: mxcUrl)
-            print("[profile] mxcAvatarURL=\(self.avatar?.mxcAvatarURL ?? "nil")")
         }
     }
 
@@ -91,14 +95,21 @@ final class ProfileViewModel {
         isSaving = true
         Task { @MainActor in
             if let name = displayName {
-                try? await client.setDisplayName(name: name)
+                do {
+                    try await client.setDisplayName(name: name)
+                    if let userId = try? client.userId() {
+                        OwnProfileCache.shared.setDisplayName(name, userId: userId)
+                    }
+                } catch {
+                    logProfile("Display name save failed: \(error)")
+                }
             }
             if let data = avatarData {
                 do {
                     try await client.uploadAvatar(mimeType: "image/jpeg", data: data)
-                    print("[profile] avatar uploaded OK")
+                    logProfile("Avatar uploaded")
                 } catch {
-                    print("[profile] avatar upload failed: \(error)")
+                    logProfile("Avatar upload failed: \(error)")
                 }
             }
             self.isSaving = false

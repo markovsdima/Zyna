@@ -33,6 +33,12 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
 
     var onBack: (() -> Void)?
     var onThemeTapped: (() -> Void)?
+    var onNameColorTapped: (() -> Void)?
+
+    private enum Row: Int, CaseIterable {
+        case chatTheme
+        case nameColor
+    }
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let glassTopBar = GlassTopBar()
@@ -55,6 +61,7 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         tableView.reloadData()
+        refreshOwnAppearance()
         GlassService.shared.setNeedsCapture()
     }
 
@@ -108,6 +115,28 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
             tableView.verticalScrollIndicatorInsets.bottom = bottom
         }
     }
+
+    private func refreshOwnAppearance() {
+        guard let userId = try? MatrixClientService.shared.client?.userId(),
+              !userId.isEmpty else {
+            return
+        }
+        Task { [weak self] in
+            _ = await ProfileAppearanceService.shared.loadAppearance(userId: userId)
+            await MainActor.run {
+                self?.tableView.reloadRows(at: [IndexPath(row: Row.nameColor.rawValue, section: 0)], with: .none)
+            }
+        }
+    }
+
+    private var nameColorSummary: String {
+        guard let userId = try? MatrixClientService.shared.client?.userId(),
+              let appearance = ProfileAppearanceService.shared.cachedAppearance(userId: userId),
+              let nameColorHex = appearance.nameColorHex else {
+            return String(localized: "Default")
+        }
+        return ProfileNameColorPalette.title(forHexString: nameColorHex)
+    }
 }
 
 extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
@@ -117,7 +146,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        1
+        Row.allCases.count
     }
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
@@ -128,8 +157,15 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         let identifier = "valueCell"
         let cell = tableView.dequeueReusableCell(withIdentifier: identifier)
             ?? UITableViewCell(style: .value1, reuseIdentifier: identifier)
-        cell.textLabel?.text = String(localized: "Chat Theme")
-        cell.detailTextLabel?.text = ChatBubbleThemeStore.shared.selectedTheme.title
+        let row = Row(rawValue: indexPath.row) ?? .chatTheme
+        switch row {
+        case .chatTheme:
+            cell.textLabel?.text = String(localized: "Chat Theme")
+            cell.detailTextLabel?.text = ChatBubbleThemeStore.shared.selectedTheme.title
+        case .nameColor:
+            cell.textLabel?.text = String(localized: "Name Color")
+            cell.detailTextLabel?.text = nameColorSummary
+        }
         cell.accessoryType = .disclosureIndicator
         cell.selectionStyle = .default
         cell.backgroundColor = .secondarySystemGroupedBackground
@@ -138,7 +174,13 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        onThemeTapped?()
+        let row = Row(rawValue: indexPath.row) ?? .chatTheme
+        switch row {
+        case .chatTheme:
+            onThemeTapped?()
+        case .nameColor:
+            onNameColorTapped?()
+        }
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
