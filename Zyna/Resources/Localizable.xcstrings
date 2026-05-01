@@ -784,6 +784,16 @@
         }
       }
     },
+    "Copy Caption" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скопировать подпись"
+          }
+        }
+      }
+    },
     "Create Account" : {
       "localizations" : {
         "ru" : {

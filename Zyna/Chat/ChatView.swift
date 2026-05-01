@@ -1208,6 +1208,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             })
         }
 
+        if let copyable = copyableText(for: message) {
+            actions.append(UIAccessibilityCustomAction(name: copyable.actionTitle) { [weak self] _ in
+                self?.copyMessageText(message)
+                return true
+            })
+        }
+
         if message.isTextEditable {
             actions.append(UIAccessibilityCustomAction(name: "Edit") { [weak self] _ in
                 self?.viewModel.setEditingTarget(message)
@@ -1345,6 +1352,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 title: "Reply",
                 image: UIImage(systemName: "arrowshape.turn.up.left"),
                 handler: { [weak self] in self?.viewModel.setReplyTarget(message) }
+            ))
+        }
+
+        if let copyable = copyableText(for: message) {
+            actions.append(ContextMenuAction(
+                title: copyable.actionTitle,
+                image: UIImage(systemName: "doc.on.doc"),
+                handler: { [weak self] in self?.copyMessageText(message) }
             ))
         }
 
@@ -1492,6 +1507,54 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         activeContextMenu = menuVC
         menuVC.show(in: window)
+    }
+
+    private struct CopyableMessageText {
+        let text: String
+        let actionTitle: String
+    }
+
+    private func copyableText(for message: ChatMessage) -> CopyableMessageText? {
+        guard !message.content.isRedacted else {
+            return nil
+        }
+
+        if let text = message.content.textBody,
+           !text.isEmpty {
+            return CopyableMessageText(
+                text: text,
+                actionTitle: String(localized: "Copy")
+            )
+        }
+
+        if let caption = normalizedCopyCaption(message.mediaGroupPresentation?.caption) {
+            return CopyableMessageText(
+                text: caption,
+                actionTitle: String(localized: "Copy Caption")
+            )
+        }
+
+        if let caption = message.content.visibleImageCaption {
+            return CopyableMessageText(
+                text: caption,
+                actionTitle: String(localized: "Copy Caption")
+            )
+        }
+
+        return nil
+    }
+
+    private func normalizedCopyCaption(_ caption: String?) -> String? {
+        guard let caption else { return nil }
+        let visible = caption
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return visible.isEmpty ? nil : visible
+    }
+
+    private func copyMessageText(_ message: ChatMessage) {
+        guard let copyable = copyableText(for: message) else { return }
+        UIPasteboard.general.string = copyable.text
     }
 
     // MARK: - Interaction Lock
