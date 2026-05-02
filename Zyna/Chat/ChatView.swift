@@ -257,7 +257,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         // Scroll-to-live button — lives on node.view so its tap target
         // works when positioned above the input bar's bounds.
-        scrollButtonIcon.image = AppIcon.chevronDown.rendered(size: 24, color: .gray)
+        scrollButtonIcon.image = AppIcon.chevronDown.template(size: 24)
+        scrollButtonIcon.tintColor = GlassAdaptiveMaterial.light.glyphForeground
         scrollButtonIcon.contentMode = .center
         scrollButtonIcon.alpha = 0
         scrollButtonIcon.isUserInteractionEnabled = false
@@ -1023,6 +1024,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 iconAlpha: iconAlpha,
                 tapAlpha: tapAlpha
             )
+        }
+
+        glassInputBar.onAdaptiveMaterialChanged = { [weak self] material in
+            self?.scrollButtonIcon.tintColor = material.glyphForeground
         }
     }
 

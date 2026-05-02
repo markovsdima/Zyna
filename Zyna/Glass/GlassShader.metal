@@ -61,13 +61,16 @@ struct GlassUniforms {
     float  ior;             // index of refraction (1.5=glass, 3-4=crystal)
     float  squircleN;       // profile exponent (2=hemisphere, 3=steep)
     float  refractScale;    // displacement multiplier
+    // Adaptive material state (set from sampled backdrop luminance)
+    float  adaptiveAppearance; // 0=dark material, 1=light material
+    float  adaptiveContrast;   // 0=clear, 1=strong range compression
 };
 
 // ─── Glass appearance constants ─────────────────────────────────────
 
 constant float CHROMA_SPREAD  = 0.02;   // chromatic aberration (0=none, 0.08=heavy)
-constant float TINT_GRAY      = 0.45;   // luminance compression target
-constant float TINT_STRENGTH  = 0.06;   // how much to compress toward gray (was 0.15)
+constant float TINT_GRAY      = 0.45;   // baseline luminance compression target
+constant float TINT_STRENGTH  = 0.04;   // baseline compression before adaptive material
 constant float GLASS_TINT     = 1.0;    // overall darkening (1.0=none)
 
 // ─── Border / rim constants ─────────────────────────────────────────
@@ -396,28 +399,46 @@ fragment float4 glassFragment(
         float3 chroma = (col - luma) * 0.92;
         col = clamp(float3(targetLuma) + chroma, 0.0, 1.0);
 
-        // ── 6. Glass luminance boost — Apple glass amplifies background ──
+        // ── 6. Adaptive material — smooth light/dark glass state ──
+        //
+        // GlassService samples the already-captured backdrop and sends a
+        // temporally-smoothed state. Keep the math local to luma/chroma so
+        // the material still picks up background color instead of becoming
+        // a flat overlay.
+
+        float appearance = saturate(u.adaptiveAppearance);
+        float contrast = saturate(u.adaptiveContrast);
+        float adaptiveTarget = mix(0.18, 0.82, appearance);
+        float adaptiveStrength = mix(0.16, 0.38, contrast);
+
+        luma = dot(col, float3(0.299, 0.587, 0.114));
+        chroma = col - luma;
+        float adaptiveLuma = mix(luma, adaptiveTarget, adaptiveStrength);
+        float chromaKeep = mix(0.90, 0.68, contrast);
+        col = clamp(float3(adaptiveLuma) + chroma * chromaKeep, 0.0, 1.0);
+
+        // ── 7. Glass luminance boost — state-aware lift/dim ──
 
         float preLuma = dot(col, float3(0.299, 0.587, 0.114));
-        col += float3(0.0435) * (1.0 - smoothstep(0.0, 0.12, preLuma));  // lift dark areas only  0.0435
-        col *= 1.15;          // uniform brightness lift
+        col += float3(0.034) * appearance * (1.0 - smoothstep(0.0, 0.12, preLuma));
+        col *= mix(0.92, 1.10, appearance);
         float boostLuma = dot(col, float3(0.299, 0.587, 0.114));
         col = mix(float3(boostLuma), col, 1.08);  // slight saturation push
 
-        // ── 7. Fresnel rim — thin bright edge ──
+        // ── 8. Fresnel rim — thin bright edge ──
 
         float fresnelZone = saturate(distFromEdge / (bw * 0.15));
         float fresnel = pow(1.0 - fresnelZone, 4.0);
         float lightDir = saturate((-edgeNormal.x - edgeNormal.y) * 0.5 + 0.5);
         col += float3(1.0, 1.0, 1.02) * fresnel * mix(0.02, 0.08, lightDir);
 
-        // ── 8. Inner shadow ──
+        // ── 9. Inner shadow ──
 
         float shadowZone = smoothstep(0.0, bw * 0.12, distFromEdge);
         float shadowSide = saturate((edgeNormal.x + edgeNormal.y) * 0.5 + 0.5);
         col *= 1.0 - (1.0 - shadowZone) * shadowSide * 0.08;
 
-        // ── 9. Border line ──
+        // ── 10. Border line ──
 
         float bInner = bw * 0.02;
         float bOuter = BORDER_WIDTH * bw;
@@ -429,7 +450,7 @@ fragment float4 glassFragment(
                                BORDER_COLOR_MIX);
         col += borderCol * borderMask * bBright;
 
-        // ── 10. Light bridge: mic ↔ scroll button ──
+        // ── 11. Light bridge: mic ↔ scroll button ──
 
         if (u.scrollButtonVisible > 0.5) {
             float bridgeWidth = BRIDGE_WIDTH_SCALE * s0size.y;
@@ -441,7 +462,7 @@ fragment float4 glassFragment(
             col += BRIDGE_COLOR * bridgeIntensity;
         }
 
-        // ── 11. Final tint ──
+        // ── 12. Final tint ──
 
         col *= GLASS_TINT;
 

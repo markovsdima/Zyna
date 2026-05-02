@@ -110,6 +110,10 @@ final class GlassRenderer: UIView {
         let liquidZone: LiquidZone?
         let time: Float
         let barData: BarData?
+        /// 0 = dark material, 1 = light material. Smoothed by GlassService.
+        let adaptiveAppearance: Float
+        /// 0 = clear/low intervention, 1 = stronger range compression.
+        let adaptiveContrast: Float
     }
 
     struct ItemBreakdown {
@@ -152,6 +156,8 @@ final class GlassRenderer: UIView {
         var ior: Float = 0
         var squircleN: Float = 0
         var refractScale: Float = 0
+        var adaptiveAppearance: Float = 1
+        var adaptiveContrast: Float = 0
     }
 
     // MARK: - Render
@@ -203,7 +209,9 @@ final class GlassRenderer: UIView {
 
             encoder.setRenderPipelineState(GlassPipeline.shared.pipelineState)
             encoder.setVertexBytes(&vertices, length: MemoryLayout<QuadVertex>.stride * vertices.count, index: 1)
-            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 0)
+            // Metal validates constant buffers against the struct's aligned
+            // stride, not Swift's logical size without tail padding.
+            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
             encoder.setFragmentTexture(item.sourceTexture, index: 0)
             encoder.setFragmentTexture(blurTex, index: 1)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -292,6 +300,8 @@ final class GlassRenderer: UIView {
         uniforms.ior = tuning.ior
         uniforms.squircleN = tuning.squircleN
         uniforms.refractScale = tuning.refractScale
+        uniforms.adaptiveAppearance = item.adaptiveAppearance
+        uniforms.adaptiveContrast = item.adaptiveContrast
 
         if let barData = item.barData {
             uniforms.barActive = 1.0

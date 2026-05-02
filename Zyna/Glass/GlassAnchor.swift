@@ -5,6 +5,45 @@
 
 import UIKit
 
+/// Smoothed adaptive glass state used by UIKit/Texture foreground content.
+/// `appearance` matches the Metal material: 0 = dark glass, 1 = light glass.
+struct GlassAdaptiveMaterial {
+    var appearance: CGFloat
+    var contrast: CGFloat
+
+    static let light = GlassAdaptiveMaterial(appearance: 1, contrast: 0)
+
+    var primaryForeground: UIColor {
+        foreground(darkMaterialWhite: 0.96, lightMaterialWhite: 0.08, alpha: 1.0)
+    }
+
+    var secondaryForeground: UIColor {
+        foreground(darkMaterialWhite: 0.74, lightMaterialWhite: 0.34, alpha: 0.95)
+    }
+
+    var glyphForeground: UIColor {
+        foreground(darkMaterialWhite: 0.86, lightMaterialWhite: 0.42, alpha: 1.0)
+    }
+
+    private func foreground(
+        darkMaterialWhite: CGFloat,
+        lightMaterialWhite: CGFloat,
+        alpha: CGFloat
+    ) -> UIColor {
+        let t = smoothstep(clamp(appearance))
+        let white = darkMaterialWhite + (lightMaterialWhite - darkMaterialWhite) * t
+        return UIColor(white: white, alpha: alpha)
+    }
+
+    private func smoothstep(_ x: CGFloat) -> CGFloat {
+        x * x * (3 - 2 * x)
+    }
+
+    private func clamp(_ value: CGFloat) -> CGFloat {
+        min(max(value, 0), 1)
+    }
+}
+
 /// Invisible marker view placed in the regular UI hierarchy.
 /// Defines where a glass effect should appear and its optical parameters.
 ///
@@ -68,6 +107,12 @@ final class GlassAnchor: UIView {
     /// path skips color resolution. Updated on color or trait changes.
     private(set) var clearPatternBGRA: UInt32 = 0xFF000000
 
+    /// Called with the same smoothed adaptive state the Metal shader uses.
+    /// Owners use this to keep text and glyphs in sync with the glass material.
+    var onAdaptiveMaterialChanged: ((GlassAdaptiveMaterial) -> Void)?
+
+    private(set) var adaptiveMaterial = GlassAdaptiveMaterial.light
+
     // MARK: - Registration
 
     private var registration: GlassRegistration?
@@ -114,6 +159,19 @@ final class GlassAnchor: UIView {
         // Byte order in memory is B, G, R, A; on little-endian
         // ARM64 that packs into a UInt32 as 0xAARRGGBB.
         clearPatternBGRA = (UInt32(0xFF) << 24) | (rb << 16) | (gb << 8) | bb
+    }
+
+    func setAdaptiveMaterial(appearance: Float, contrast: Float) {
+        let next = GlassAdaptiveMaterial(
+            appearance: CGFloat(appearance),
+            contrast: CGFloat(contrast)
+        )
+        guard abs(next.appearance - adaptiveMaterial.appearance) > 0.002 ||
+              abs(next.contrast - adaptiveMaterial.contrast) > 0.004 else {
+            return
+        }
+        adaptiveMaterial = next
+        onAdaptiveMaterialChanged?(next)
     }
 
     // MARK: - Frame Queries

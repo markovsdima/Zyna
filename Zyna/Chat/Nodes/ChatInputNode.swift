@@ -43,6 +43,9 @@ final class ChatInputNode: ASDisplayNode {
     private var colorPaletteLongPress: UILongPressGestureRecognizer?
     private var pendingFlashTask: DispatchWorkItem?
     private static let sendButtonDefaultTint: UIColor = AppColor.accent
+    private var glassMaterial = GlassAdaptiveMaterial.light
+    private var lastAppliedGlassAppearance: CGFloat = -1
+    private var lastAppliedGlassContrast: CGFloat = -1
 
     var onSend: ((String, UIColor?) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
@@ -147,7 +150,7 @@ final class ChatInputNode: ASDisplayNode {
             string: body ?? "",
             attributes: [
                 .font: UIFont.systemFont(ofSize: 13),
-                .foregroundColor: UIColor.secondaryLabel
+                .foregroundColor: glassMaterial.secondaryForeground
             ]
         )
     }
@@ -183,16 +186,13 @@ final class ChatInputNode: ASDisplayNode {
         replyNameNode.maximumNumberOfLines = 1
         replyBodyNode.maximumNumberOfLines = 1
         replyBodyNode.truncationMode = .byTruncatingTail
-        replyCancelNode.setImage(
-            UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium))?
-                .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal),
-            for: .normal
-        )
+        replyCancelNode.setImage(AppIcon.xmark.template(size: 14, weight: .medium), for: .normal)
+        replyCancelNode.imageNode.tintColor = glassMaterial.secondaryForeground
         replyCancelNode.style.preferredSize = CGSize(width: 30, height: 30)
 
         textInputNode.typingAttributes = [
             NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
-            NSAttributedString.Key.foregroundColor.rawValue: UIColor.label
+            NSAttributedString.Key.foregroundColor.rawValue: glassMaterial.primaryForeground
         ]
         textInputNode.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
         textInputNode.style.flexGrow = 1
@@ -204,7 +204,8 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.isAccessibilityElement = true
         textInputNode.accessibilityLabel = "Message"
 
-        attachButtonNode.setImage(AppIcon.attach.rendered(size: 24, color: .gray), for: .normal)
+        attachButtonNode.setImage(AppIcon.attach.template(size: 24), for: .normal)
+        attachButtonNode.imageNode.tintColor = glassMaterial.glyphForeground
         attachButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
         attachButtonNode.isAccessibilityElement = true
         attachButtonNode.accessibilityLabel = "Attach"
@@ -216,7 +217,8 @@ final class ChatInputNode: ASDisplayNode {
         sendButtonNode.accessibilityLabel = "Send"
         sendButtonNode.accessibilityTraits = .button
 
-        micButtonNode.setImage(AppIcon.mic.rendered(size: 24, color: .gray), for: .normal)
+        micButtonNode.setImage(AppIcon.mic.template(size: 24), for: .normal)
+        micButtonNode.imageNode.tintColor = glassMaterial.glyphForeground
         micButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
         micButtonNode.isAccessibilityElement = true
         micButtonNode.accessibilityLabel = "Record voice message"
@@ -237,6 +239,7 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.delegate = self
         textInputNode.view.layer.cornerRadius = 24
         textInputNode.view.clipsToBounds = true
+        textInputNode.textView.textColor = glassMaterial.primaryForeground
         textInputNode.textView.pasteDelegate = self
         textInputNode.textView.pasteConfiguration = UIPasteConfiguration(
             acceptableTypeIdentifiers: [UTType.plainText.identifier, UTType.image.identifier]
@@ -810,6 +813,7 @@ extension ChatInputNode {
 
     func setCurrentText(_ text: String) {
         textInputNode.textView.text = text
+        applyInputTextColor(glassMaterial.primaryForeground)
         updateTextEmptyState()
         invalidateCalculatedLayout()
         onSizeChanged?()
@@ -817,6 +821,64 @@ extension ChatInputNode {
 
     func focusTextInput() {
         textInputNode.textView.becomeFirstResponder()
+    }
+}
+
+extension ChatInputNode {
+    func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {
+        guard abs(material.appearance - lastAppliedGlassAppearance) > 0.012 ||
+              abs(material.contrast - lastAppliedGlassContrast) > 0.03 else {
+            return
+        }
+
+        glassMaterial = material
+        lastAppliedGlassAppearance = material.appearance
+        lastAppliedGlassContrast = material.contrast
+
+        let primary = material.primaryForeground
+        let secondary = material.secondaryForeground
+        let glyph = material.glyphForeground
+
+        textInputNode.typingAttributes = [
+            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
+            NSAttributedString.Key.foregroundColor.rawValue: primary
+        ]
+
+        if isNodeLoaded {
+            textInputNode.textView.textColor = primary
+            applyInputTextColor(primary)
+        }
+
+        restyleReplyNodes(secondary: secondary)
+        replyCancelNode.imageNode.tintColor = secondary
+        attachButtonNode.imageNode.tintColor = glyph
+        micButtonNode.imageNode.tintColor = glyph
+    }
+
+    private func applyInputTextColor(_ color: UIColor) {
+        guard isNodeLoaded else { return }
+        let textView = textInputNode.textView
+        let selectedRange = textView.selectedRange
+        let length = textView.textStorage.length
+        guard length > 0 else { return }
+        textView.textStorage.addAttribute(
+            .foregroundColor,
+            value: color,
+            range: NSRange(location: 0, length: length)
+        )
+        textView.selectedRange = selectedRange
+    }
+
+    private func restyleReplyNodes(secondary: UIColor) {
+        if let text = replyBodyNode.attributedText?.string {
+            replyBodyNode.attributedText = NSAttributedString(
+                string: text,
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 13),
+                    .foregroundColor: secondary
+                ]
+            )
+        }
     }
 }
 
