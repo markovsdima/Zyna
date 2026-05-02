@@ -118,7 +118,7 @@ struct AuthView: View {
     @ViewBuilder private func loginInput() -> some View {
         ZStack(alignment: .leading) {
             if username.isEmpty {
-                Text("Login")
+                Text("Username")
                     .foregroundColor(.white.opacity(0.5))
                     .padding(.horizontal)
             }

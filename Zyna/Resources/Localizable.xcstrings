@@ -509,9 +509,6 @@
         }
       }
     },
-    "Adds this reaction" : {
-
-    },
     "Add" : {
       "localizations" : {
         "ru" : {
@@ -521,6 +518,9 @@
           }
         }
       }
+    },
+    "Adds this reaction" : {
+
     },
     "Admin" : {
       "localizations" : {
@@ -894,22 +894,22 @@
         }
       }
     },
-    "Delete backup and reset" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Удалить резервную копию и сбросить"
-          }
-        }
-      }
-    },
     "Delete" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Удалить"
+          }
+        }
+      }
+    },
+    "Delete backup and reset" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить резервную копию и сбросить"
           }
         }
       }
@@ -943,26 +943,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Изменить"
-          }
-        }
-      }
-    },
-    "Enter Hex" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ввести HEX"
-          }
-        }
-      }
-    },
-    "Enter Hex Color" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Введите HEX-цвет"
           }
         }
       }
@@ -1036,6 +1016,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ключи шифрования не удалось передать автоматически. Введите ключ восстановления, сохранённый при настройке аккаунта, чтобы восстановить доступ к истории сообщений."
+          }
+        }
+      }
+    },
+    "Enter Hex" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ввести HEX"
+          }
+        }
+      }
+    },
+    "Enter Hex Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите HEX-цвет"
           }
         }
       }
@@ -1130,16 +1130,6 @@
         }
       }
     },
-    "Homeserver" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сервер"
-          }
-        }
-      }
-    },
     "Hex Color Placeholder" : {
       "localizations" : {
         "en" : {
@@ -1152,6 +1142,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "#RRGGBB или RRGGBB"
+          }
+        }
+      }
+    },
+    "Homeserver" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервер"
           }
         }
       }
@@ -1176,16 +1176,6 @@
         }
       }
     },
-    "Invalid Hex Color" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Неверный HEX-цвет"
-          }
-        }
-      }
-    },
     "I've saved it" : {
       "localizations" : {
         "ru" : {
@@ -1202,6 +1192,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Индиго"
+          }
+        }
+      }
+    },
+    "Invalid Hex Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Неверный HEX-цвет"
           }
         }
       }
@@ -1388,6 +1388,7 @@
       }
     },
     "Login" : {
+      "extractionState" : "stale",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
@@ -1810,6 +1811,26 @@
         }
       }
     },
+    "Save" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранить"
+          }
+        }
+      }
+    },
+    "Save Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранить цвет"
+          }
+        }
+      }
+    },
     "Save this key in a password manager or somewhere safe. You'll need it to restore encrypted messages on other devices." : {
       "localizations" : {
         "ru" : {
@@ -1895,26 +1916,6 @@
     },
     "Send" : {
 
-    },
-    "Save" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сохранить"
-          }
-        }
-      }
-    },
-    "Save Color" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сохранить цвет"
-          }
-        }
-      }
     },
     "Send Message" : {
       "localizations" : {
@@ -2052,22 +2053,22 @@
         }
       }
     },
-    "Syncing encryption keys…" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Синхронизация ключей шифрования…"
-          }
-        }
-      }
-    },
     "Standard Colors" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Стандартные цвета"
+          }
+        }
+      }
+    },
+    "Syncing encryption keys…" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Синхронизация ключей шифрования…"
           }
         }
       }
@@ -2169,6 +2170,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Используйте #RRGGBB или RRGGBB."
+          }
+        }
+      }
+    },
+    "Username" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Логин"
           }
         }
       }
