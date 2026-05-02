@@ -1851,6 +1851,66 @@
         }
       }
     },
+    "Scan" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скан"
+          }
+        }
+      }
+    },
+    "Scan Failed" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сканировать"
+          }
+        }
+      }
+    },
+    "A previous scan was interrupted. Pages: %d." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Предыдущий скан был прерван. Страниц: %d."
+          }
+        }
+      }
+    },
+    "Continue" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Продолжить"
+          }
+        }
+      }
+    },
+    "Continue Previous Scan?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Продолжить предыдущий скан?"
+          }
+        }
+      }
+    },
+    "Start New Scan" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Начать новый скан"
+          }
+        }
+      }
+    },
     "Search" : {
       "localizations" : {
         "ru" : {

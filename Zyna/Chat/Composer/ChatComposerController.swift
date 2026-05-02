@@ -62,6 +62,10 @@ final class ChatComposerController: ObservableObject {
         self.maxAttachmentCount = maxAttachmentCount
     }
 
+    static func byteCountString(for bytes: UInt64) -> String {
+        byteCountFormatter.string(fromByteCount: Int64(bytes))
+    }
+
     func addImageData(_ imageDataItems: [Data]) async {
         guard availableSlots > 0 else { return }
 
@@ -91,9 +95,26 @@ final class ChatComposerController: ObservableObject {
 
         let drafts = urls
             .prefix(availableSlots)
-            .map(buildFileDraft(from:))
+            .map { buildFileDraft(from: $0) }
 
         state.attachments.append(contentsOf: drafts)
+    }
+
+    func addFileURL(
+        _ url: URL,
+        previewImage: UIImage? = nil,
+        title: String? = nil,
+        subtitle: String? = nil,
+        accessibilityLabel: String? = nil
+    ) {
+        guard availableSlots > 0 else { return }
+        state.attachments.append(buildFileDraft(
+            from: url,
+            previewImage: previewImage,
+            title: title,
+            subtitle: subtitle,
+            accessibilityLabel: accessibilityLabel
+        ))
     }
 
     func clearAttachments() {
@@ -138,7 +159,13 @@ final class ChatComposerController: ObservableObject {
         )
     }
 
-    private func buildFileDraft(from url: URL) -> ChatComposerAttachmentDraft {
+    private func buildFileDraft(
+        from url: URL,
+        previewImage: UIImage? = nil,
+        title: String? = nil,
+        subtitle: String? = nil,
+        accessibilityLabel: String? = nil
+    ) -> ChatComposerAttachmentDraft {
         let size = (try? FileManager.default.attributesOfItem(
             atPath: url.path
         )[.size] as? UInt64) ?? 0
@@ -146,10 +173,10 @@ final class ChatComposerController: ObservableObject {
         return ChatComposerAttachmentDraft(
             id: UUID(),
             payload: .file(url),
-            previewImage: nil,
-            title: url.lastPathComponent,
-            subtitle: Self.byteCountFormatter.string(fromByteCount: Int64(size)),
-            accessibilityLabel: "File attachment, \(url.lastPathComponent)"
+            previewImage: previewImage,
+            title: title ?? url.lastPathComponent,
+            subtitle: subtitle ?? Self.byteCountFormatter.string(fromByteCount: Int64(size)),
+            accessibilityLabel: accessibilityLabel ?? "File attachment, \(url.lastPathComponent)"
         )
     }
 }

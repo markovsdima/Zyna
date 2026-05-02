@@ -436,6 +436,8 @@ private final class FileAttachmentPreviewCell: UICollectionViewCell {
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
     private let removeButton = UIButton(type: .system)
+    private var iconWidthConstraint: NSLayoutConstraint!
+    private var iconHeightConstraint: NSLayoutConstraint!
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -485,6 +487,9 @@ private final class FileAttachmentPreviewCell: UICollectionViewCell {
         removeButton.addTarget(self, action: #selector(removeTapped), for: .touchUpInside)
         backgroundCard.addSubview(removeButton)
 
+        iconWidthConstraint = iconView.widthAnchor.constraint(equalToConstant: 20)
+        iconHeightConstraint = iconView.heightAnchor.constraint(equalToConstant: 20)
+
         NSLayoutConstraint.activate([
             backgroundCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             backgroundCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -498,8 +503,8 @@ private final class FileAttachmentPreviewCell: UICollectionViewCell {
 
             iconView.centerXAnchor.constraint(equalTo: iconBackgroundView.centerXAnchor),
             iconView.centerYAnchor.constraint(equalTo: iconBackgroundView.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 20),
-            iconView.heightAnchor.constraint(equalToConstant: 20),
+            iconWidthConstraint,
+            iconHeightConstraint,
 
             removeButton.trailingAnchor.constraint(equalTo: backgroundCard.trailingAnchor, constant: -12),
             removeButton.centerYAnchor.constraint(equalTo: backgroundCard.centerYAnchor),
@@ -524,7 +529,25 @@ private final class FileAttachmentPreviewCell: UICollectionViewCell {
     func configure(with attachment: ChatComposerAttachmentDraft) {
         titleLabel.text = attachment.title
         subtitleLabel.text = attachment.subtitle
-        iconView.image = resolvedIcon(for: attachment)
+        if let previewImage = attachment.previewImage {
+            iconView.image = previewImage
+            iconView.contentMode = .scaleAspectFill
+            iconView.clipsToBounds = true
+            iconView.layer.cornerRadius = 10
+            iconView.tintColor = nil
+            iconWidthConstraint.constant = 40
+            iconHeightConstraint.constant = 40
+            iconBackgroundView.backgroundColor = UIColor.black.withAlphaComponent(0.18)
+        } else {
+            iconView.image = resolvedIcon(for: attachment)
+            iconView.contentMode = .scaleAspectFit
+            iconView.clipsToBounds = false
+            iconView.layer.cornerRadius = 0
+            iconView.tintColor = .white
+            iconWidthConstraint.constant = 20
+            iconHeightConstraint.constant = 20
+            iconBackgroundView.backgroundColor = UIColor.white.withAlphaComponent(0.1)
+        }
     }
 
     @objc private func removeTapped() {

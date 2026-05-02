@@ -38,7 +38,7 @@
 		</dict>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Zyna needs access to your camera for video calls and sharing photos.</string>
+	<string>Zyna needs access to your camera for video calls, sharing photos, and scanning documents.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Zyna needs access to your microphone for voice calls.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

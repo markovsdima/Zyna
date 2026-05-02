@@ -89,6 +89,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private let viewModel: ChatViewModel
     private let composerController = ChatComposerController()
+    private let documentScanFlow = DocumentScanFlow()
     private var cancellables = Set<AnyCancellable>()
     private var batchFetchCancellable: AnyCancellable?
     private let glassNavBar = GlassNavBar()
@@ -2323,6 +2324,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         sheet.addAction(UIAlertAction(title: String(localized: "Files"), style: .default) { [weak self] _ in
             self?.presentDocumentPicker()
         })
+        sheet.addAction(UIAlertAction(title: String(localized: "Scan"), style: .default) { [weak self] _ in
+            self?.presentDocumentScanner()
+        })
         sheet.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
 
         present(sheet, animated: true)
@@ -2364,6 +2368,33 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             composerController.clearAttachments()
         }
         composerController.addFileURLs(files)
+    }
+
+    private func enqueueScannedDocumentAttachment(_ attachment: DocumentScanAttachment) {
+        guard viewModel.editingMessage == nil else { return }
+        viewModel.clearPendingForward()
+        if composerController.state.hasAttachments,
+           composerController.state.fileAttachments.count != composerController.state.attachments.count {
+            composerController.clearAttachments()
+        }
+
+        let subtitle = scannedDocumentSubtitle(
+            pageCount: attachment.pageCount,
+            byteCount: attachment.byteCount
+        )
+        composerController.addFileURL(
+            attachment.fileURL,
+            previewImage: attachment.previewImage,
+            title: attachment.filename,
+            subtitle: subtitle,
+            accessibilityLabel: attachment.accessibilityLabel
+        )
+    }
+
+    private func scannedDocumentSubtitle(pageCount: Int, byteCount: UInt64) -> String {
+        let pages = pageCount == 1 ? "1 page" : "\(pageCount) pages"
+        let size = ChatComposerController.byteCountString(for: byteCount)
+        return "\(pages) · \(size)"
     }
 
     private func presentComposerPreviewIfNeeded() {
@@ -2470,6 +2501,34 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         filePreviewController = controller
         glassInputBar.inputNode.textInputNode.resignFirstResponder()
         present(controller, animated: true)
+    }
+
+    // MARK: - Document Scanner
+
+    private func presentDocumentScanner() {
+        guard viewModel.editingMessage == nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let attachment = try await self.documentScanFlow.scan(from: self)
+                self.enqueueScannedDocumentAttachment(attachment)
+            } catch ScannerError.cancelled {
+                return
+            } catch {
+                self.presentDocumentScannerError(error)
+            }
+        }
+    }
+
+    private func presentDocumentScannerError(_ error: Error) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(
+            title: String(localized: "Scan Failed"),
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+        present(alert, animated: true)
     }
 
     // MARK: - Photo Picker
