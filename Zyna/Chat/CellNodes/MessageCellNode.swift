@@ -671,20 +671,11 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         }
 
         let image = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
-            if usesSyntheticPortalPaintSplashFill {
-                ctx.cgContext.saveGState()
-                let bubbleFrame = bubbleNode.frame
-                ctx.cgContext.translateBy(x: bubbleFrame.minX, y: bubbleFrame.minY)
-                let bubblePath = bubbleNode.currentPath()
-                bubbleBaseFillColor.setFill()
-                bubblePath.fill()
-                ctx.cgContext.addPath(bubblePath.cgPath)
-                ctx.cgContext.clip()
-                bubbleNode.view.layer.render(in: ctx.cgContext)
-                ctx.cgContext.restoreGState()
-            } else {
-                sourceView.layer.render(in: ctx.cgContext)
-            }
+            BubblePortalCaptureRenderer.renderLayerForCapture(
+                sourceView.layer,
+                in: ctx.cgContext,
+                clipRectInLayer: sourceView.bounds
+            )
         }
 
         guard image.cgImage != nil else { return nil }
@@ -698,13 +689,6 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             image: image,
             hideSource: { [weak self] in self?.alpha = 0 }
         )
-    }
-
-    private var usesSyntheticPortalPaintSplashFill: Bool {
-        usesBubblePortal
-            && showsBubbleChrome
-            && !usesBareBubbleContent
-            && !rendersCompositeMediaBubble
     }
 
     // MARK: - Highlight

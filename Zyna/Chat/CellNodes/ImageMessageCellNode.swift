@@ -362,7 +362,11 @@ final class ImageMessageCellNode: MessageCellNode {
         let imageFrame = imageNode.view.convert(imageNode.view.bounds, to: sourceView)
         let snapshot = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
             imageSnapshot.draw(in: imageFrame)
-            sourceView.layer.render(in: ctx.cgContext)
+            BubblePortalCaptureRenderer.renderLayerForCapture(
+                sourceView.layer,
+                in: ctx.cgContext,
+                clipRectInLayer: sourceView.bounds
+            )
         }
         guard snapshot.cgImage != nil else {
             return super.paintSplashTarget(frameInScreen: overrideFrameInScreen)

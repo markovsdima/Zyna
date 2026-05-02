@@ -1117,56 +1117,11 @@ final class GlassService {
         in ctx: CGContext,
         clipRectInLayer: CGRect
     ) {
-        guard !clipRectInLayer.isEmpty else { return }
-        if subtreeContainsBubblePortalBackground(layer) {
-            renderLayerSubtreeWithBubblePortalFallback(
-                layer,
-                in: ctx,
-                clipRectInLayer: clipRectInLayer
-            )
-        } else {
-            ctx.saveGState()
-            ctx.clip(to: clipRectInLayer)
-            layer.render(in: ctx)
-            ctx.restoreGState()
-        }
-    }
-
-    private func renderLayerSubtreeWithBubblePortalFallback(
-        _ layer: CALayer,
-        in ctx: CGContext,
-        clipRectInLayer: CGRect
-    ) {
-        guard !clipRectInLayer.isEmpty, !layer.isHidden, layer.opacity > 0 else { return }
-
-        if renderBubblePortalBackgroundLayer(
+        BubblePortalCaptureRenderer.renderLayerForCapture(
             layer,
             in: ctx,
             clipRectInLayer: clipRectInLayer
-        ) {
-            return
-        }
-
-        guard let sublayers = layer.sublayers, !sublayers.isEmpty else {
-            ctx.saveGState()
-            ctx.clip(to: clipRectInLayer)
-            layer.render(in: ctx)
-            ctx.restoreGState()
-            return
-        }
-
-        ctx.saveGState()
-        ctx.clip(to: clipRectInLayer)
-        for child in sublayers {
-            guard !child.isHidden, child.opacity > 0 else { continue }
-            let childFrame = child.frame
-            guard childFrame.intersects(clipRectInLayer) else { continue }
-
-            withLayerGeometry(child, in: ctx) {
-                renderLayerForCapture(child, in: ctx, clipRectInLayer: child.bounds)
-            }
-        }
-        ctx.restoreGState()
+        )
     }
 
     private func withLayerGeometry(
@@ -1188,65 +1143,6 @@ final class GlassService {
         )
         body()
         ctx.restoreGState()
-    }
-
-    private func subtreeContainsBubblePortalBackground(_ layer: CALayer) -> Bool {
-        if isBubblePortalBackgroundLayer(layer) {
-            return true
-        }
-        return layer.sublayers?.contains(where: subtreeContainsBubblePortalBackground) ?? false
-    }
-
-    private func isBubblePortalBackgroundLayer(_ layer: CALayer) -> Bool {
-        if layer.name == "message.bubblePortalBackground" {
-            return true
-        }
-        guard let hostView = layer.delegate as? UIView else { return false }
-        return BubblePortalBackgroundNode.captureSourceView(for: hostView) != nil
-    }
-
-    private func renderBubblePortalBackgroundLayer(
-        _ layer: CALayer,
-        in ctx: CGContext,
-        clipRectInLayer: CGRect
-    ) -> Bool {
-        guard let hostView = layer.delegate as? UIView,
-              let sourceView = BubblePortalBackgroundNode.captureSourceView(for: hostView),
-              !hostView.isHidden,
-              hostView.alpha > 0 else {
-            return false
-        }
-
-        ctx.saveGState()
-        ctx.clip(to: clipRectInLayer)
-
-        if let maskLayer = hostView.layer.mask as? CAShapeLayer,
-           let maskPath = maskLayer.path {
-            ctx.addPath(maskPath)
-            ctx.clip()
-        } else {
-            ctx.clip(to: hostView.bounds)
-        }
-
-        let sourceSubviews = sourceView.subviews.filter { !$0.isHidden && $0.alpha > 0 }
-        if sourceSubviews.isEmpty {
-            let sourceFrame = sourceView.convert(sourceView.bounds, to: hostView)
-            ctx.saveGState()
-            ctx.translateBy(x: sourceFrame.minX, y: sourceFrame.minY)
-            sourceView.layer.render(in: ctx)
-            ctx.restoreGState()
-        } else {
-            for sourceSubview in sourceSubviews {
-                let sourceFrame = sourceSubview.convert(sourceSubview.bounds, to: hostView)
-                ctx.saveGState()
-                ctx.translateBy(x: sourceFrame.minX, y: sourceFrame.minY)
-                sourceSubview.layer.render(in: ctx)
-                ctx.restoreGState()
-            }
-        }
-
-        ctx.restoreGState()
-        return true
     }
 
 }

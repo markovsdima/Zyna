@@ -2228,7 +2228,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         let image = UIGraphicsImageRenderer(bounds: sourceSnapshotView.bounds).image { ctx in
-            sourceSnapshotView.layer.render(in: ctx.cgContext)
+            BubblePortalCaptureRenderer.renderLayerForCapture(
+                sourceSnapshotView.layer,
+                in: ctx.cgContext,
+                clipRectInLayer: sourceSnapshotView.bounds
+            )
         }
         guard image.cgImage != nil else { return nil }
 
