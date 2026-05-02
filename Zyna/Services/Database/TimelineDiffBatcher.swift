@@ -440,6 +440,52 @@ final class TimelineDiffBatcher {
             )
         }
 
+        if record.contentType == "video" {
+            return try String.fetchOne(
+                db,
+                sql: """
+                    SELECT transactionId
+                    FROM storedMessage
+                    WHERE roomId = ?
+                      AND eventId IS NULL
+                      AND transactionId IS NOT NULL
+                      AND isOutgoing = 1
+                      AND senderId = ?
+                      AND contentType = 'video'
+                      AND ABS(timestamp - ?) < 600
+                      AND ifnull(contentCaption, '') = ?
+                      AND ifnull(contentFilename, '') = ?
+                      AND ifnull(zynaAttributesJSON, '') = ?
+                      AND (? = -1 OR ifnull(contentVideoWidth, -1) = ? OR ifnull(contentVideoWidth, -1) = -1)
+                      AND (? = -1 OR ifnull(contentVideoHeight, -1) = ? OR ifnull(contentVideoHeight, -1) = -1)
+                      AND (? < 0 OR ifnull(contentVideoDuration, -1) < 0 OR ABS(ifnull(contentVideoDuration, -1) - ?) < 0.5)
+                      AND (? = '' OR ifnull(contentMimetype, '') = '' OR ifnull(contentMimetype, '') = ?)
+                      AND (? = -1 OR ifnull(contentFileSize, -1) = ? OR ifnull(contentFileSize, -1) = -1)
+                    ORDER BY ABS(timestamp - ?) ASC
+                    LIMIT 1
+                    """,
+                arguments: [
+                    record.roomId,
+                    record.senderId,
+                    record.timestamp,
+                    record.contentCaption ?? "",
+                    record.contentFilename ?? "",
+                    record.zynaAttributesJSON ?? "",
+                    record.contentVideoWidth ?? -1,
+                    record.contentVideoWidth ?? -1,
+                    record.contentVideoHeight ?? -1,
+                    record.contentVideoHeight ?? -1,
+                    record.contentVideoDuration ?? -1,
+                    record.contentVideoDuration ?? -1,
+                    record.contentMimetype ?? "",
+                    record.contentMimetype ?? "",
+                    record.contentFileSize ?? -1,
+                    record.contentFileSize ?? -1,
+                    record.timestamp
+                ]
+            )
+        }
+
         return try String.fetchOne(
             db,
             sql: """

@@ -11,6 +11,7 @@ import MatrixRustSDK
 
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
+private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
 
 enum ChatPresentationMode {
     case normal
@@ -315,7 +316,7 @@ final class ChatViewModel {
         //    Only for content that was a visible message — not call
         //    signaling carriers (zero-width-space body), system
         //    notices, or unsupported event types.
-        let splashContentTypes: Set<String> = ["text", "image", "voice", "file", "emote"]
+        let splashContentTypes: Set<String> = ["text", "image", "video", "voice", "file", "emote"]
         let newlyRedactedIds: [String]
         let redactionBatch: DetectedRedactionBatch
         if let prevStored {
@@ -1078,8 +1079,12 @@ final class ChatViewModel {
                 continue
             }
 
+            let isRelatedByContent = envelope.kind == .video
+                && message.eventId != nil
+                && hydratedMessage(message, matches: envelope)
             let isRelated = message.eventId.map { eventIds.contains($0) } == true
                 || message.transactionId.map { transactionIds.contains($0) } == true
+                || isRelatedByContent
             guard isRelated else { continue }
 
             hiddenMessageIndices.insert(messageIndex)
@@ -1108,6 +1113,8 @@ final class ChatViewModel {
         case (.text, .text):
             return true
         case (.image, .image):
+            return true
+        case (.video, .video):
             return true
         case (.voice, .voice):
             return true
@@ -1158,6 +1165,26 @@ final class ChatViewModel {
             return normalized(caption) == normalized(imagePayload.caption)
                 && dimensionsMatch(expected: imagePayload.width, actual: width)
                 && dimensionsMatch(expected: imagePayload.height, actual: height)
+        case .video(let videoPayload):
+            guard case .video(let source, _, let width, let height, let duration, let filename, let mimetype, let size, let caption, _) = message.content,
+                  source != nil
+            else {
+                return false
+            }
+            let durationMatches: Bool
+            if let expectedDuration = videoPayload.duration,
+               let actualDuration = duration {
+                durationMatches = abs(actualDuration - expectedDuration) < 0.5
+            } else {
+                durationMatches = true
+            }
+            return filename == videoPayload.filename
+                && normalized(caption) == normalized(videoPayload.caption)
+                && dimensionsMatch(expected: videoPayload.width, actual: width)
+                && dimensionsMatch(expected: videoPayload.height, actual: height)
+                && durationMatches
+                && (videoPayload.mimetype == nil || mimetype == videoPayload.mimetype)
+                && (videoPayload.size == nil || size == videoPayload.size)
         case .voice(let voicePayload):
             guard case .voice(let source, let duration, _) = message.content,
                   source != nil
@@ -1223,6 +1250,40 @@ final class ChatViewModel {
                     height: envelope.primaryItem?.previewHeight ?? payload.height ?? primaryHeight,
                     caption: payload.caption ?? primaryCaption,
                     previewImageData: envelope.primaryItem?.previewImageData
+                )
+            case .video(let payload):
+                let primarySource: MediaSource?
+                let primaryThumbnailSource: MediaSource?
+                let primaryWidth: UInt64?
+                let primaryHeight: UInt64?
+                let primaryDuration: TimeInterval?
+                let primaryCaption: String?
+                if case .video(let source, let thumbnailSource, let width, let height, let duration, _, _, _, let caption, _) = primaryContent {
+                    primarySource = source
+                    primaryThumbnailSource = thumbnailSource
+                    primaryWidth = width
+                    primaryHeight = height
+                    primaryDuration = duration
+                    primaryCaption = caption
+                } else {
+                    primarySource = nil
+                    primaryThumbnailSource = nil
+                    primaryWidth = nil
+                    primaryHeight = nil
+                    primaryDuration = nil
+                    primaryCaption = nil
+                }
+                return .video(
+                    source: envelope.primaryItem?.mediaSource ?? primarySource,
+                    thumbnailSource: primaryThumbnailSource,
+                    width: envelope.primaryItem?.previewWidth ?? payload.width ?? primaryWidth,
+                    height: envelope.primaryItem?.previewHeight ?? payload.height ?? primaryHeight,
+                    duration: payload.duration ?? primaryDuration,
+                    filename: payload.filename,
+                    mimetype: payload.mimetype,
+                    size: payload.size,
+                    caption: payload.caption ?? primaryCaption,
+                    previewThumbnailData: envelope.primaryItem?.previewImageData
                 )
             case .voice(let payload):
                 let primarySource: MediaSource?
@@ -2373,6 +2434,12 @@ final class ChatViewModel {
         layoutOverride: MediaGroupLayoutOverride? = nil
     ) {
         guard !attachments.isEmpty else { return }
+        let videoCount = attachments.filter(\.isVideo).count
+        if videoCount > 0 {
+            logVideoSend(
+                "sendComposerAttachments total=\(attachments.count) videos=\(videoCount) caption=\(caption ?? "<nil>")"
+            )
+        }
 
         let replyTarget = replyingTo
         let replyEventId = replyTarget?.eventId
@@ -2409,6 +2476,17 @@ final class ChatViewModel {
                 case .image(let image):
                     await self.sendSingleImage(
                         image,
+                        caption: attachmentCaption,
+                        replyEventId: replyEventId,
+                        replyInfo: replyInfo,
+                        zynaAttributes: ZynaMessageAttributes()
+                    )
+                case .video(let video):
+                    logVideoSend(
+                        "sendComposerAttachments item index=\(index) video=\(video.filename) bytes=\(video.size) size=\(video.width)x\(video.height) duration=\(String(format: "%.3f", video.duration))"
+                    )
+                    await self.sendSingleVideo(
+                        video,
                         caption: attachmentCaption,
                         replyEventId: replyEventId,
                         replyInfo: replyInfo,
@@ -2454,6 +2532,51 @@ final class ChatViewModel {
             zynaAttributes: zynaAttributes,
             replyEventId: replyEventId,
             bindingToken: bindingToken
+        )
+        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+    }
+
+    private func sendSingleVideo(
+        _ video: ProcessedVideo,
+        caption: String?,
+        replyEventId: String?,
+        replyInfo: ReplyInfo?,
+        zynaAttributes: ZynaMessageAttributes
+    ) async {
+        let envelopeId = UUID().uuidString
+        logVideoSend(
+            "singleVideo start envelope=\(envelopeId) filename=\(video.filename) bytes=\(video.size) size=\(video.width)x\(video.height) duration=\(String(format: "%.3f", video.duration)) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>") attrsEmpty=\(zynaAttributes.isEmpty)"
+        )
+        let bindingToken = outgoingEnvelopes.createOutgoingVideo(
+            roomId: roomId,
+            envelopeId: envelopeId,
+            filename: video.filename,
+            caption: caption,
+            width: video.width,
+            height: video.height,
+            duration: video.duration,
+            mimetype: video.mimetype,
+            size: video.size,
+            previewThumbnailData: video.thumbnailData,
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes
+        )
+        logVideoSend(
+            "singleVideo envelopeCreated envelope=\(envelopeId) bindingToken=\(bindingToken.isEmpty ? "<empty>" : bindingToken) thumbBytes=\(video.thumbnailSize)"
+        )
+        await refreshWindow()
+
+        // TODO(video): Surface upload progress, retry, and terminal errors in
+        // the timeline UI once the basic send/receive path is stable.
+        let receipt = await timelineService.sendVideo(
+            video: video,
+            caption: caption,
+            zynaAttributes: zynaAttributes,
+            replyEventId: replyEventId,
+            bindingToken: bindingToken
+        )
+        logVideoSend(
+            "singleVideo receipt envelope=\(envelopeId) accepted=\(receipt.acceptedByTransport) tx=\(receipt.transactionId ?? "<nil>")"
         )
         await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
     }
@@ -2629,6 +2752,13 @@ final class ChatViewModel {
         guard let itemId = message.itemIdentifier else { return }
         Task {
             await timelineService.toggleReaction(key, to: itemId)
+        }
+    }
+
+    func discardOutgoingEnvelope(id envelopeId: String) {
+        outgoingEnvelopes.deleteEnvelopes(ids: [envelopeId])
+        Task { [weak self] in
+            await self?.refreshWindow()
         }
     }
 

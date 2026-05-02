@@ -345,6 +345,30 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v11_videoMessages") { db in
+            let existingColumns = try db.columns(in: "storedMessage").map(\.name)
+            if !existingColumns.contains("contentThumbnailMediaJSON") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "contentThumbnailMediaJSON", .text)
+                }
+            }
+            if !existingColumns.contains("contentVideoWidth") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "contentVideoWidth", .integer)
+                }
+            }
+            if !existingColumns.contains("contentVideoHeight") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "contentVideoHeight", .integer)
+                }
+            }
+            if !existingColumns.contains("contentVideoDuration") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "contentVideoDuration", .double)
+                }
+            }
+        }
+
         return migrator
     }
 

@@ -77,6 +77,12 @@ public class ZynaTabBarController: UIViewController {
     public override var childForStatusBarHidden: UIViewController? { selectedController }
     public override var childForHomeIndicatorAutoHidden: UIViewController? { selectedController }
     public override var childForScreenEdgesDeferringSystemGestures: UIViewController? { selectedController }
+    public override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        selectedController?.supportedInterfaceOrientations ?? .allButUpsideDown
+    }
+    public override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
+        selectedController?.preferredInterfaceOrientationForPresentation ?? .portrait
+    }
 
     // MARK: - Public API
 

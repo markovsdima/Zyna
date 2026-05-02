@@ -11,6 +11,7 @@ import MatrixRustSDK
 enum ChatMessageContent: Equatable {
     case text(body: String)
     case image(source: MediaSource?, width: UInt64?, height: UInt64?, caption: String?, previewImageData: Data?)
+    case video(source: MediaSource?, thumbnailSource: MediaSource?, width: UInt64?, height: UInt64?, duration: TimeInterval?, filename: String, mimetype: String?, size: UInt64?, caption: String?, previewThumbnailData: Data?)
     case pendingOutgoingMediaBatch
     case notice(body: String)
     case emote(body: String)
@@ -41,6 +42,20 @@ enum ChatMessageContent: Equatable {
             let wMatch = w1 == w2 || w1 == nil || w2 == nil
             let hMatch = h1 == h2 || h1 == nil || h2 == nil
             return s1?.url() == s2?.url() && wMatch && hMatch && c1 == c2 && p1 == p2
+        case (.video(let s1, let ts1, let w1, let h1, let d1, let f1, let m1, let sz1, let c1, let p1),
+              .video(let s2, let ts2, let w2, let h2, let d2, let f2, let m2, let sz2, let c2, let p2)):
+            let wMatch = w1 == w2 || w1 == nil || w2 == nil
+            let hMatch = h1 == h2 || h1 == nil || h2 == nil
+            return s1?.url() == s2?.url()
+                && ts1?.url() == ts2?.url()
+                && wMatch
+                && hMatch
+                && d1 == d2
+                && f1 == f2
+                && m1 == m2
+                && sz1 == sz2
+                && c1 == c2
+                && p1 == p2
         case (.voice(let s1, let d1, let w1), .voice(let s2, let d2, let w2)):
             return s1?.url() == s2?.url() && d1 == d2 && w1 == w2
         case (.file(let s1, let f1, let m1, let sz1, let c1), .file(let s2, let f2, let m2, let sz2, let c2)):
@@ -69,6 +84,8 @@ enum ChatMessageContent: Equatable {
         switch self {
         case .image(let source?, _, _, _, _):
             return (source, "image/jpeg")
+        case .video(let source?, _, _, _, _, _, let mime, _, _, _):
+            return (source, mime ?? "video/mp4")
         case .voice(let source?, _, _):
             return (source, "audio/mp4")
         case .file(let source?, _, let mime, _, _):
@@ -82,6 +99,7 @@ enum ChatMessageContent: Equatable {
         switch self {
         case .text(let body): return body
         case .image: return "Photo"
+        case .video: return "Video"
         case .pendingOutgoingMediaBatch: return "Photo"
         case .voice: return "Voice message"
         case .file(_, let filename, _, _, _): return filename
@@ -113,6 +131,16 @@ enum ChatMessageContent: Equatable {
         return visible.isEmpty ? nil : visible
     }
 
+    var visibleVideoCaption: String? {
+        guard case .video(_, _, _, _, _, _, _, _, let caption, _) = self,
+              let caption
+        else { return nil }
+        let visible = caption
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return visible.isEmpty ? nil : visible
+    }
+
     var visibleFileCaption: String? {
         guard case .file(_, _, _, _, let caption) = self,
               let caption
@@ -136,6 +164,19 @@ extension ChatMessageContent {
                 height: height,
                 caption: caption,
                 previewImageData: existingPreviewImageData ?? previewImageData
+            )
+        case .video(let source, let thumbnailSource, let width, let height, let duration, let filename, let mimetype, let size, let caption, let existingPreviewThumbnailData):
+            return .video(
+                source: source,
+                thumbnailSource: thumbnailSource,
+                width: width,
+                height: height,
+                duration: duration,
+                filename: filename,
+                mimetype: mimetype,
+                size: size,
+                caption: caption,
+                previewThumbnailData: existingPreviewThumbnailData ?? previewImageData
             )
         default:
             return self

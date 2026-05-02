@@ -541,6 +541,10 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             return true
         }
 
+        if isVisuallyEquivalentPendingOutgoingEnvelope(old: old, new: new) {
+            return true
+        }
+
         return old.content == new.content
             && old.zynaAttributes == new.zynaAttributes
     }
@@ -556,6 +560,45 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             }
         }
         return message.transactionId ?? message.eventId ?? message.id
+    }
+
+    private static func isVisuallyEquivalentPendingOutgoingEnvelope(
+        old: ChatMessage,
+        new: ChatMessage
+    ) -> Bool {
+        guard old.outgoingEnvelopeId != nil,
+              old.outgoingEnvelopeId == new.outgoingEnvelopeId,
+              old.zynaAttributes == new.zynaAttributes
+        else {
+            return false
+        }
+
+        switch (old.content, new.content) {
+        case (.image(_, let oldWidth, let oldHeight, let oldCaption, let oldPreview),
+              .image(_, let newWidth, let newHeight, let newCaption, let newPreview)):
+            return oldWidth == newWidth
+                && oldHeight == newHeight
+                && oldCaption == newCaption
+                && oldPreview == newPreview
+        case (.video(_, _, let oldWidth, let oldHeight, let oldDuration, let oldFilename, let oldMime, let oldSize, let oldCaption, let oldPreview),
+              .video(_, _, let newWidth, let newHeight, let newDuration, let newFilename, let newMime, let newSize, let newCaption, let newPreview)):
+            return oldWidth == newWidth
+                && oldHeight == newHeight
+                && oldDuration == newDuration
+                && oldFilename == newFilename
+                && oldMime == newMime
+                && oldSize == newSize
+                && oldCaption == newCaption
+                && oldPreview == newPreview
+        case (.file(_, let oldFilename, let oldMime, let oldSize, let oldCaption),
+              .file(_, let newFilename, let newMime, let newSize, let newCaption)):
+            return oldFilename == newFilename
+                && oldMime == newMime
+                && oldSize == newSize
+                && oldCaption == newCaption
+        default:
+            return old.content == new.content
+        }
     }
 
     private static func isVisuallyEquivalentCompositeMediaGroupRow(old: ChatMessage, new: ChatMessage) -> Bool {

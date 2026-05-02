@@ -10,6 +10,8 @@ import UniformTypeIdentifiers
 import QuickLook
 import MatrixRustSDK
 
+private let logVideoUI = ScopedLog(.video, prefix: "[VideoUI]")
+
 final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
 
     private enum InputBarInsetCompensation {
@@ -29,6 +31,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private enum ContentUpdates {
         static let liveEdgeTolerance: CGFloat = 24
     }
+
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { .portrait }
 
     private enum ScrollToLiveBadge {
         static let minWidth: CGFloat = 20
@@ -822,6 +827,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                   let cellNode = self.node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode
             else { return }
             self.configureMessageDrivenInteractions(for: cellNode, message: message)
+            self.configureAttachmentTapHandler(for: cellNode, message: message)
             if let groupCell = cellNode as? PhotoGroupMessageCellNode {
                 groupCell.updateMediaGroupPresentation(message.mediaGroupPresentation)
             }
@@ -1148,6 +1154,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     }
                 }
                 cellNode = imageCell
+            case .video:
+                let videoCell = VideoMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
+                if !isPreview {
+                    videoCell.onVideoTapped = { [weak self, weak videoCell] in
+                        guard let self, let videoCell else { return }
+                        self.handleVideoTap(message: message, cellNode: videoCell)
+                    }
+                }
+                cellNode = videoCell
             case .file:
                 let fileCell = FileCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
@@ -1219,6 +1234,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
     }
 
+    private func configureAttachmentTapHandler(for cellNode: MessageCellNode, message: ChatMessage) {
+        guard !isPreviewMode else { return }
+
+        if let imageCell = cellNode as? ImageMessageCellNode {
+            imageCell.onImageTapped = { [weak self, weak imageCell] in
+                guard let self, let imageCell else { return }
+                self.presentImageViewer(for: message, from: imageCell)
+            }
+        } else if let videoCell = cellNode as? VideoMessageCellNode {
+            videoCell.onVideoTapped = { [weak self, weak videoCell] in
+                guard let self, let videoCell else { return }
+                self.handleVideoTap(message: message, cellNode: videoCell)
+            }
+        } else if let fileCell = cellNode as? FileCellNode {
+            fileCell.onFileTapped = { [weak self, weak fileCell] in
+                guard let self, let fileCell else { return }
+                self.handleFileTap(message: message, cellNode: fileCell)
+            }
+        }
+    }
+
     private func configurePreviewInteractions(for cellNode: MessageCellNode) {
         cellNode.allowsInteractiveActions = false
         cellNode.contextSourceNode.isGestureEnabled = false
@@ -1234,6 +1270,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         (cellNode as? PhotoGroupMessageCellNode)?.onPhotoTapped = nil
         (cellNode as? ImageMessageCellNode)?.onImageTapped = nil
+        (cellNode as? VideoMessageCellNode)?.onVideoTapped = nil
         (cellNode as? FileCellNode)?.onFileTapped = nil
 
         if Thread.isMainThread {
@@ -1290,6 +1327,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if message.itemIdentifier != nil && !message.content.isRedacted {
             actions.append(UIAccessibilityCustomAction(name: "Delete") { [weak self] _ in
                 self?.triggerPaintSplashDelete(for: message)
+                return true
+            })
+        } else if canDiscardLocalOutgoingEnvelope(message) {
+            actions.append(UIAccessibilityCustomAction(name: localOutgoingEnvelopeRemovalTitle(for: message)) { [weak self] _ in
+                self?.discardLocalOutgoingEnvelope(message)
                 return true
             })
         }
@@ -1501,6 +1543,26 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     }
                 ))
             }
+        } else if canDiscardLocalOutgoingEnvelope(message) {
+            let precomputedMessageDeleteTarget = freezeSnapshotTarget(
+                (cellNode as? MessageCellNode)?.paintSplashTarget(
+                    frameInScreen: activeContextMenuBubbleFrameInScreen
+                ) ?? captureSnapshotTarget(
+                    from: info.node.view,
+                    frameInScreen: activeContextMenuBubbleFrameInScreen
+                )
+            )
+            actions.append(ContextMenuAction(
+                title: localOutgoingEnvelopeRemovalTitle(for: message),
+                image: UIImage(systemName: "trash"),
+                isDestructive: true,
+                handler: { [weak self] in
+                    self?.beginLocalOutgoingEnvelopeDelete(
+                        message,
+                        target: precomputedMessageDeleteTarget
+                    )
+                }
+            ))
         } else if message.itemIdentifier != nil && !message.content.isRedacted {
             let precomputedMessageDeleteTarget = freezeSnapshotTarget(
                 (cellNode as? MessageCellNode)?.paintSplashTarget(
@@ -2219,6 +2281,48 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         triggerPaintSplashDelete(for: message)
     }
 
+    private func beginLocalOutgoingEnvelopeDelete(
+        _ message: ChatMessage,
+        target: PaintSplashTrigger.SnapshotTarget?
+    ) {
+        guard let target else {
+            discardLocalOutgoingEnvelope(message)
+            return
+        }
+        PaintSplashTrigger.trigger(in: node.tableNode, target: target) { [weak self] in
+            self?.discardLocalOutgoingEnvelope(message)
+        }
+    }
+
+    private func discardLocalOutgoingEnvelope(_ message: ChatMessage) {
+        guard canDiscardLocalOutgoingEnvelope(message),
+              let envelopeId = message.outgoingEnvelopeId
+        else {
+            return
+        }
+        viewModel.discardOutgoingEnvelope(id: envelopeId)
+    }
+
+    private func canDiscardLocalOutgoingEnvelope(_ message: ChatMessage) -> Bool {
+        guard message.isSyntheticOutgoingEnvelope,
+              message.outgoingEnvelopeId != nil,
+              message.itemIdentifier == nil
+        else {
+            return false
+        }
+
+        switch message.effectiveSendStatus {
+        case "queued", "sending", "uploading", "retrying":
+            return false
+        default:
+            return true
+        }
+    }
+
+    private func localOutgoingEnvelopeRemovalTitle(for message: ChatMessage) -> String {
+        message.effectiveSendStatus == "failed" ? "Remove Failed Send" : "Remove Local Send"
+    }
+
     private func captureSnapshotTarget(
         from sourceSnapshotView: UIView,
         frameInScreen overrideFrameInScreen: CGRect? = nil
@@ -2371,7 +2475,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
            composerController.state.fileAttachments.count != composerController.state.attachments.count {
             composerController.clearAttachments()
         }
-        composerController.addFileURLs(files)
+        Task { [weak self] in
+            await self?.composerController.addFileURLs(files)
+        }
+    }
+
+    private func enqueueMediaAttachments(_ items: [ChatComposerMediaDraftInput]) {
+        guard !items.isEmpty,
+              viewModel.editingMessage == nil else { return }
+        viewModel.clearPendingForward()
+        Task { [weak self] in
+            await self?.composerController.addMediaItems(items)
+        }
     }
 
     private func enqueueScannedDocumentAttachment(_ attachment: DocumentScanAttachment) {
@@ -2410,11 +2525,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         if state.imageAttachments.count == state.attachments.count {
             presentPhotoGroupPreviewIfNeeded()
-        } else if state.fileAttachments.count == state.attachments.count {
-            presentFileAttachmentPreviewIfNeeded()
         } else {
-            assertionFailure("Mixed attachment drafts are unsupported")
-            composerController.clearAttachments()
+            presentFileAttachmentPreviewIfNeeded()
         }
     }
 
@@ -2466,8 +2578,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func presentFileAttachmentPreviewIfNeeded() {
         let state = composerController.state
-        guard !state.fileAttachments.isEmpty,
-              state.fileAttachments.count == state.attachments.count
+        guard !state.attachments.isEmpty,
+              state.imageAttachments.count != state.attachments.count
         else { return }
 
         guard photoPreviewController == nil, filePreviewController == nil else { return }
@@ -2478,7 +2590,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         shouldPresentAttachmentPreviewAfterDismiss = false
 
         let controller = FileAttachmentPreviewController(
-            attachments: state.fileAttachments,
+            attachments: state.attachments,
             initialCaption: glassInputBar.inputNode.currentText
         )
         controller.onDiscard = { [weak self, weak controller] in
@@ -2493,7 +2605,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             if self.filePreviewController === controller {
                 self.filePreviewController = nil
             }
-            self.composerController.clearAttachments()
+            let sentAttachmentIDs = Set(attachments.map(\.id))
+            self.composerController.clearAttachments(preservingTemporaryResourcesFor: sentAttachmentIDs)
             self.glassInputBar.inputNode.setCurrentText("")
             let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
             self.viewModel.sendComposerAttachments(
@@ -2538,10 +2651,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - Photo Picker
 
     private func presentPhotoPicker() {
+        logVideoUI("presentPhotoPicker filter=images+videos selectionLimit=10")
         isPickerPresented = true
         var config = PHPickerConfiguration()
         config.selectionLimit = 10
-        config.filter = .images
+        config.filter = .any(of: [.images, .videos])
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = self
         present(picker, animated: true)
@@ -2594,6 +2708,96 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 }
             }
         }
+    }
+
+    // MARK: - Video Player
+
+    private func handleVideoTap(message: ChatMessage, cellNode: VideoMessageCellNode) {
+        guard case .video(let source, _, _, _, _, let filename, let mimetype, _, _, _) = message.content
+        else {
+            return
+        }
+        guard let source else {
+            logVideoUI("video tap ignored reason=noSource message=\(message.id)")
+            return
+        }
+        let sourceFrame = cellNode.viewerSourceFrameInWindow() ?? .zero
+        let previewImage = cellNode.currentThumbnail
+        let aspectRatio = videoAspectRatio(for: message)
+        logVideoUI(
+            "tap video message=\(message.id) event=\(message.eventId ?? "<nil>") filename=\(filename) mime=\(mimetype ?? "<nil>") source=\(source.url())"
+        )
+
+        if let cachedURL = FileCacheService.shared.cachedURL(for: source) {
+            logVideoUI("video cached filename=\(filename) url=\(cachedURL.lastPathComponent)")
+            presentVideoPlayer(
+                url: cachedURL,
+                sourceFrame: sourceFrame,
+                previewImage: previewImage,
+                aspectRatio: aspectRatio
+            )
+            return
+        }
+
+        cellNode.setDownloadState(.downloading(progress: -1))
+
+        Task {
+            do {
+                let localURL = try await FileCacheService.shared.downloadFile(
+                    source: source,
+                    filename: filename,
+                    mimetype: mimetype
+                ) { [weak cellNode] progress in
+                    logVideoUI("video download progress filename=\(filename) progress=\(progress)")
+                    cellNode?.setDownloadState(.downloading(progress: progress))
+                }
+                await MainActor.run { [weak cellNode] in
+                    logVideoUI("video download done filename=\(filename) local=\(localURL.lastPathComponent)")
+                    cellNode?.setDownloadState(.downloaded)
+                    self.presentVideoPlayer(
+                        url: localURL,
+                        sourceFrame: sourceFrame,
+                        previewImage: previewImage,
+                        aspectRatio: aspectRatio
+                    )
+                }
+            } catch {
+                await MainActor.run { [weak cellNode] in
+                    logVideoUI(
+                        "video download failed filename=\(filename) errorType=\(String(describing: type(of: error))) error=\(error)"
+                    )
+                    cellNode?.setDownloadState(.idle)
+                }
+            }
+        }
+    }
+
+    private func presentVideoPlayer(
+        url: URL,
+        sourceFrame: CGRect,
+        previewImage: UIImage?,
+        aspectRatio: CGFloat?
+    ) {
+        logVideoUI("presentVideoPlayer url=\(url.lastPathComponent)")
+        let controller = VideoViewerController(
+            url: url,
+            previewImage: previewImage,
+            sourceFrame: sourceFrame,
+            aspectRatio: aspectRatio
+        )
+        present(controller, animated: false) {
+            controller.animateIn()
+        }
+    }
+
+    private func videoAspectRatio(for message: ChatMessage) -> CGFloat? {
+        guard case .video(_, _, let width, let height, _, _, _, _, _, _) = message.content,
+              let width,
+              let height,
+              height > 0 else {
+            return nil
+        }
+        return CGFloat(width) / CGFloat(height)
     }
 
     // MARK: - Image Viewer
@@ -2693,16 +2897,22 @@ extension ChatViewController: PHPickerViewControllerDelegate {
             }
         }
         guard !results.isEmpty else { return }
+        logVideoUI("picker didFinish results=\(results.count)")
 
         Task {
-            var imageDataItems: [Data] = []
+            var mediaItems: [ChatComposerMediaDraftInput] = []
             for result in results {
+                if let videoURL = await loadVideoURL(from: result) {
+                    mediaItems.append(.videoURL(videoURL))
+                    continue
+                }
                 guard let data = await loadImageData(from: result) else { continue }
-                imageDataItems.append(data)
+                mediaItems.append(.imageData(data))
             }
-            guard !imageDataItems.isEmpty else { return }
+            guard !mediaItems.isEmpty else { return }
             await MainActor.run {
-                self.enqueueImageAttachments(imageDataItems)
+                logVideoUI("picker enqueue mediaItems=\(mediaItems.count)")
+                self.enqueueMediaAttachments(mediaItems)
             }
         }
     }
@@ -2714,6 +2924,54 @@ extension ChatViewController: PHPickerViewControllerDelegate {
             ) { data, _ in
                 continuation.resume(returning: data)
             }
+        }
+    }
+
+    private func loadVideoURL(from result: PHPickerResult) async -> URL? {
+        guard let typeIdentifier = preferredVideoTypeIdentifier(from: result) else {
+            return nil
+        }
+
+        return await withCheckedContinuation { continuation in
+            result.itemProvider.loadFileRepresentation(
+                forTypeIdentifier: typeIdentifier
+            ) { url, _ in
+                guard let url else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                let ext = url.pathExtension.isEmpty
+                    ? (UTType(typeIdentifier)?.preferredFilenameExtension ?? "mov")
+                    : url.pathExtension
+                let destination = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("zyna-picked-\(UUID().uuidString).\(ext)")
+
+                do {
+                    try? FileManager.default.removeItem(at: destination)
+                    try FileManager.default.copyItem(at: url, to: destination)
+                    logVideoUI(
+                        "picker copied video type=\(typeIdentifier) temp=\(destination.lastPathComponent)"
+                    )
+                    continuation.resume(returning: destination)
+                } catch {
+                    logVideoUI(
+                        "picker copy video failed type=\(typeIdentifier) error=\(error)"
+                    )
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    private func preferredVideoTypeIdentifier(from result: PHPickerResult) -> String? {
+        guard !result.itemProvider.registeredTypeIdentifiers.contains(UTType.livePhoto.identifier) else {
+            return nil
+        }
+
+        return result.itemProvider.registeredTypeIdentifiers.first { identifier in
+            guard let type = UTType(identifier) else { return false }
+            return type.conforms(to: .movie) || type.conforms(to: .video)
         }
     }
 }

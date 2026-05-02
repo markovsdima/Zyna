@@ -555,6 +555,10 @@ private final class FileAttachmentPreviewCell: UICollectionViewCell {
     }
 
     private func resolvedIcon(for attachment: ChatComposerAttachmentDraft) -> UIImage? {
+        if attachment.isVideo {
+            return UIImage(systemName: "video.fill")
+        }
+
         guard case .file(let url) = attachment.payload else {
             return UIImage(systemName: "doc.fill")
         }

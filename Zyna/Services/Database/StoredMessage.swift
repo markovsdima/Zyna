@@ -31,6 +31,10 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var contentFilename: String?
     var contentMimetype: String?
     var contentFileSize: Int64?
+    var contentThumbnailMediaJSON: String?
+    var contentVideoWidth: Int64?
+    var contentVideoHeight: Int64?
+    var contentVideoDuration: TimeInterval?
     var reactionsJSON: String
     var sendStatus: String
     var replyEventId: String?
@@ -98,6 +102,23 @@ extension StoredMessage {
             contentMediaJSON = source.toJson()
             contentImageWidth = width.map(Int64.init)
             contentImageHeight = height.map(Int64.init)
+            contentCaption = caption
+        case .video(let source, let thumbnailSource, let width, let height, let duration, let filename, let mimetype, let size, let caption, _):
+            guard let source else {
+                assertionFailure("StoredMessage cannot persist video content without a media source")
+                contentType = "unsupported"
+                contentBody = "pendingOutgoingVideo"
+                break
+            }
+            contentType = "video"
+            contentMediaJSON = source.toJson()
+            contentThumbnailMediaJSON = thumbnailSource?.toJson()
+            contentVideoWidth = width.map(Int64.init)
+            contentVideoHeight = height.map(Int64.init)
+            contentVideoDuration = duration
+            contentFilename = filename
+            contentMimetype = mimetype
+            contentFileSize = size.map(Int64.init)
             contentCaption = caption
         case .voice(let source, let duration, let waveform):
             guard let source else {
@@ -251,6 +272,24 @@ extension StoredMessage {
                 height: contentImageHeight.map(UInt64.init),
                 caption: contentCaption,
                 previewImageData: nil
+            )
+        case "video":
+            guard let json = contentMediaJSON,
+                  let source = try? MediaSource.fromJson(json: json) else { return nil }
+            let thumbnailSource = contentThumbnailMediaJSON.flatMap {
+                try? MediaSource.fromJson(json: $0)
+            }
+            return .video(
+                source: source,
+                thumbnailSource: thumbnailSource,
+                width: contentVideoWidth.map(UInt64.init),
+                height: contentVideoHeight.map(UInt64.init),
+                duration: contentVideoDuration,
+                filename: contentFilename ?? "video.mp4",
+                mimetype: contentMimetype,
+                size: contentFileSize.map(UInt64.init),
+                caption: contentCaption,
+                previewThumbnailData: nil
             )
         case "voice":
             guard let json = contentMediaJSON,
