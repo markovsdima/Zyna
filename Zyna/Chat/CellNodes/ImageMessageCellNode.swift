@@ -63,6 +63,13 @@ final class ImageMessageCellNode: MessageCellNode {
             captionText = ownCaptionText
         }
 
+        let captionInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        let captionMaxWidth = max(
+            1,
+            ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
+                - captionInsets.left - captionInsets.right
+        )
+
         // Caption node
         let usesAccentBubbleStyle = message.isOutgoing || message.zynaAttributes.color != nil
         if let captionText {
@@ -77,6 +84,8 @@ final class ImageMessageCellNode: MessageCellNode {
                 ]
             )
             node.maximumNumberOfLines = 0
+            node.style.maxWidth = ASDimension(unit: .points, value: captionMaxWidth)
+            node.style.flexShrink = 1
             self.captionNode = node
         } else {
             self.captionNode = nil
@@ -205,11 +214,14 @@ final class ImageMessageCellNode: MessageCellNode {
                 ))
             }
 
+            let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
             let captionInset = self.captionNode.map {
-                ASInsetLayoutSpec(
-                    insets: UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12),
+                let spec = ASInsetLayoutSpec(
+                    insets: captionInsets,
                     child: $0
                 )
+                spec.style.maxWidth = ASDimension(unit: .points, value: maxWidth)
+                return spec
             }
 
             // Build vertical stack: [headers] + [caption?] + image or [headers] + image + [caption?]

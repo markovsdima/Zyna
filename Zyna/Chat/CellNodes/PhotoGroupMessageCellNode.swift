@@ -92,6 +92,9 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
         let mediaItems = presentation?.items ?? []
         self.mediaItems = mediaItems
         self.hasHeader = message.replyInfo != nil || message.zynaAttributes.forwardedFrom != nil
+        let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
+        let captionInsets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        let captionMaxWidth = max(1, maxWidth - captionInsets.left - captionInsets.right)
 
         let captionText = presentation?.caption
         if let captionText {
@@ -106,6 +109,8 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
                 ]
             )
             node.maximumNumberOfLines = 0
+            node.style.maxWidth = ASDimension(unit: .points, value: captionMaxWidth)
+            node.style.flexShrink = 1
             self.captionNode = node
         } else {
             self.captionNode = nil
@@ -123,7 +128,6 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
             return CGFloat(width) / CGFloat(height)
         }()
 
-        let maxWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
         self.mediaHeight = PhotoGroupLayout.preferredMediaHeight(
             for: maxWidth,
             itemCount: mediaItems.count,
@@ -218,10 +222,12 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
             }
 
             let captionInset = self.captionNode.map { captionNode in
-                ASInsetLayoutSpec(
-                    insets: UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12),
+                let spec = ASInsetLayoutSpec(
+                    insets: captionInsets,
                     child: captionNode
                 )
+                spec.style.maxWidth = ASDimension(unit: .points, value: maxWidth)
+                return spec
             }
 
             if let captionInset, self.captionPlacement == .top {

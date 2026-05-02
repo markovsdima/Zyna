@@ -133,6 +133,8 @@ final class FileCellNode: MessageCellNode {
                 ]
             )
             node.maximumNumberOfLines = 0
+            node.style.maxWidth = ASDimension(unit: .points, value: max(1, maxContentWidth))
+            node.style.flexShrink = 1
             self.captionNode = node
         } else {
             self.captionNode = nil
@@ -195,6 +197,10 @@ final class FileCellNode: MessageCellNode {
             let captionInset = ASInsetLayoutSpec(
                 insets: UIEdgeInsets(top: 0, left: 12, bottom: 10, right: 12),
                 child: captionNode
+            )
+            captionInset.style.maxWidth = ASDimension(
+                unit: .points,
+                value: ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
             )
 
             let stack = ASStackLayoutSpec(
