@@ -16,10 +16,11 @@ struct ProcessedImage {
     let imageData: Data
     let width: UInt64
     let height: UInt64
-    // TODO: Thumbnail ready for when sendImage SDK bug is fixed
-    // let thumbnailData: Data
-    // let thumbnailWidth: UInt64
-    // let thumbnailHeight: UInt64
+    let thumbnailData: Data
+    let thumbnailWidth: UInt64
+    let thumbnailHeight: UInt64
+    let thumbnailSize: UInt64
+    let blurhash: String?
 }
 
 struct ProcessedVideo {
@@ -44,7 +45,7 @@ enum MediaPreprocessor {
 
     static let maxDimension: CGFloat = 2048
     static let jpegQuality: CGFloat = 0.78
-    // static let thumbMaxDimension: CGFloat = 800  // TODO: for sendImage thumbnail
+    private static let imageThumbnailMaxDimension: CGFloat = 800
     private static let videoMaxLongSide: CGFloat = 1280
     private static let videoThumbnailMaxSize = CGSize(width: 800, height: 600)
     // TODO(video): Replace this soft budget with the homeserver max upload size
@@ -147,15 +148,24 @@ enum MediaPreprocessor {
 
     private static func processDecodedImage(_ original: UIImage) throws -> ProcessedImage {
         let resized = resizeUIImage(original, maxDimension: maxDimension)
+        let thumbnail = resizeUIImage(resized, maxDimension: imageThumbnailMaxDimension)
 
         guard let imageData = resized.jpegData(compressionQuality: jpegQuality) else {
+            throw PreprocessorError.encodingFailed
+        }
+        guard let thumbnailData = thumbnail.jpegData(compressionQuality: jpegQuality) else {
             throw PreprocessorError.encodingFailed
         }
 
         return ProcessedImage(
             imageData: imageData,
             width: UInt64(resized.size.width * resized.scale),
-            height: UInt64(resized.size.height * resized.scale)
+            height: UInt64(resized.size.height * resized.scale),
+            thumbnailData: thumbnailData,
+            thumbnailWidth: UInt64(thumbnail.size.width * thumbnail.scale),
+            thumbnailHeight: UInt64(thumbnail.size.height * thumbnail.scale),
+            thumbnailSize: UInt64(thumbnailData.count),
+            blurhash: thumbnail.zynaBlurHash(numberOfComponents: (3, 3))
         )
     }
 

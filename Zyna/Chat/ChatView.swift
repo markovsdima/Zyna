@@ -2806,7 +2806,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         guard let image = cell.currentImage else { return }
 
         var source: MediaSource?
-        if case .image(let src, _, _, _, _) = message.content {
+        if case .image(let src, _, _, _, _, _) = message.content {
             source = src
         }
 

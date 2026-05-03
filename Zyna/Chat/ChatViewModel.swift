@@ -979,12 +979,12 @@ final class ChatViewModel {
 
         let mediaItems = group.items.map { item -> MediaGroupItem in
             let primaryMessage = primaryMessagesByItemIndex[item.itemIndex]
-            let primaryImageContent: (source: MediaSource?, width: UInt64?, height: UInt64?, caption: String?)? = {
+            let primaryImageContent: (source: MediaSource?, thumbnailSource: MediaSource?, width: UInt64?, height: UInt64?, caption: String?)? = {
                 guard let primaryMessage,
-                      case .image(let source, let width, let height, let caption, _) = primaryMessage.content else {
+                      case .image(let source, let thumbnailSource, let width, let height, let caption, _) = primaryMessage.content else {
                     return nil
                 }
-                return (source, width, height, caption)
+                return (source, thumbnailSource, width, height, caption)
             }()
 
             return MediaGroupItem(
@@ -992,6 +992,7 @@ final class ChatViewModel {
                 eventId: item.eventId ?? primaryMessage?.eventId,
                 transactionId: item.transactionId ?? primaryMessage?.transactionId,
                 source: item.mediaSource ?? primaryImageContent?.source,
+                thumbnailSource: primaryImageContent?.thumbnailSource,
                 previewImageData: item.previewImageData,
                 previewIdentity: Self.pendingMediaPreviewIdentity(
                     groupId: group.id,
@@ -1157,7 +1158,7 @@ final class ChatViewModel {
             guard case .text(let body) = message.content else { return false }
             return body == textPayload.body
         case .image(let imagePayload):
-            guard case .image(let source, let width, let height, let caption, _) = message.content,
+            guard case .image(let source, _, let width, let height, let caption, _) = message.content,
                   source != nil
             else {
                 return false
@@ -1230,22 +1231,26 @@ final class ChatViewModel {
                 return .text(body: payload.body)
             case .image(let payload):
                 let primarySource: MediaSource?
+                let primaryThumbnailSource: MediaSource?
                 let primaryWidth: UInt64?
                 let primaryHeight: UInt64?
                 let primaryCaption: String?
-                if case .image(let source, let width, let height, let caption, _) = primaryContent {
+                if case .image(let source, let thumbnailSource, let width, let height, let caption, _) = primaryContent {
                     primarySource = source
+                    primaryThumbnailSource = thumbnailSource
                     primaryWidth = width
                     primaryHeight = height
                     primaryCaption = caption
                 } else {
                     primarySource = nil
+                    primaryThumbnailSource = nil
                     primaryWidth = nil
                     primaryHeight = nil
                     primaryCaption = nil
                 }
                 return .image(
                     source: envelope.primaryItem?.mediaSource ?? primarySource,
+                    thumbnailSource: primaryThumbnailSource,
                     width: envelope.primaryItem?.previewWidth ?? payload.width ?? primaryWidth,
                     height: envelope.primaryItem?.previewHeight ?? payload.height ?? primaryHeight,
                     caption: payload.caption ?? primaryCaption,
@@ -2183,7 +2188,7 @@ final class ChatViewModel {
         let envelopeId = UUID().uuidString
 
         switch preview.content {
-        case .image(let source, let width, let height, _, let previewImageData):
+        case .image(let source, _, let width, let height, _, let previewImageData):
             guard let source,
                   let mediaInfo = preview.content.mediaForwardInfo else {
                 await timelineService.sendForwardedContent(fallbackContent)
@@ -2518,16 +2523,14 @@ final class ChatViewModel {
             caption: caption,
             width: image.width,
             height: image.height,
-            previewImageData: image.imageData,
+            previewImageData: image.thumbnailData,
             replyInfo: replyInfo,
             zynaAttributes: zynaAttributes
         )
         await refreshWindow()
 
         let receipt = await timelineService.sendImage(
-            imageData: image.imageData,
-            width: image.width,
-            height: image.height,
+            image: image,
             caption: caption,
             zynaAttributes: zynaAttributes,
             replyEventId: replyEventId,
@@ -2655,7 +2658,7 @@ final class ChatViewModel {
                 group.addTask {
                     _ = await MediaCache.shared.loadPreviewBubbleImage(
                         previewIdentity: previewIdentity,
-                        imageData: image.imageData,
+                        imageData: image.thumbnailData,
                         maxPixelWidth: maxPixelWidth,
                         maxPixelHeight: maxPixelHeight
                     )
@@ -2709,7 +2712,7 @@ final class ChatViewModel {
             layoutOverride: layoutOverride,
             items: images.map {
                 OutgoingMediaDraftItem(
-                    previewImageData: $0.imageData,
+                    previewImageData: $0.thumbnailData,
                     width: $0.width,
                     height: $0.height
                 )
@@ -2732,9 +2735,7 @@ final class ChatViewModel {
             )
 
             let receipt = await timelineService.sendImage(
-                imageData: image.imageData,
-                width: image.width,
-                height: image.height,
+                image: image,
                 caption: normalizedCaption,
                 zynaAttributes: attrs,
                 replyEventId: replyEventId,
@@ -3376,7 +3377,7 @@ final class ChatViewModel {
                 return $0.timestamp < $1.timestamp
             }
             .compactMap { message in
-                guard case .image(let source, let width, let height, let caption, _) = message.content else {
+                guard case .image(let source, let thumbnailSource, let width, let height, let caption, _) = message.content else {
                     return nil
                 }
                 return MediaGroupItem(
@@ -3384,6 +3385,7 @@ final class ChatViewModel {
                     eventId: message.eventId,
                     transactionId: message.transactionId,
                     source: source,
+                    thumbnailSource: thumbnailSource,
                     previewImageData: partialReflowPreviewsByMessageId[message.id]?.imageData,
                     previewIdentity: partialReflowPreviewsByMessageId[message.id]?.identity,
                     width: width,
@@ -3584,9 +3586,10 @@ final class ChatViewModel {
         )
 
         for message in messages {
-            guard case .image(let source?, let width, let height, _, _) = message.content else { continue }
+            guard case .image(let source?, let thumbnailSource, let width, let height, _, _) = message.content else { continue }
+            let displaySource = thumbnailSource ?? source
             guard MediaCache.shared.bubbleImage(
-                for: source,
+                for: displaySource,
                 maxPixelWidth: maxPixelWidth,
                 maxPixelHeight: maxPixelHeight
             ) == nil else { continue }
@@ -3598,7 +3601,7 @@ final class ChatViewModel {
             }
             Task {
                 await MediaCache.shared.loadBubbleImage(
-                    source: source,
+                    source: displaySource,
                     maxPixelWidth: maxPixelWidth,
                     maxPixelHeight: maxPixelHeight,
                     knownAspectRatio: knownAspectRatio

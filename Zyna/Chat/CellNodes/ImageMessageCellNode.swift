@@ -34,7 +34,7 @@ final class ImageMessageCellNode: MessageCellNode {
     // MARK: - State
 
     private var aspectRatio: CGFloat
-    private let mediaSource: MediaSource?
+    private let displaySource: MediaSource?
     private let previewImageData: Data?
     private let hasSDKDimensions: Bool
     private let usesDirectImageContent: Bool
@@ -43,6 +43,7 @@ final class ImageMessageCellNode: MessageCellNode {
 
     override init(message: ChatMessage, isGroupChat: Bool = false) {
         var source: MediaSource?
+        var thumbnailSource: MediaSource?
         var imageWidth: UInt64?
         var imageHeight: UInt64?
         var previewImageData: Data?
@@ -50,8 +51,9 @@ final class ImageMessageCellNode: MessageCellNode {
         let ownCaptionText = message.content.visibleImageCaption
         let captionText: String?
 
-        if case .image(let src, let width, let height, _, let previewData) = message.content {
+        if case .image(let src, let thumbSrc, let width, let height, _, let previewData) = message.content {
             source = src
+            thumbnailSource = thumbSrc
             imageWidth = width
             imageHeight = height
             previewImageData = previewData
@@ -96,7 +98,7 @@ final class ImageMessageCellNode: MessageCellNode {
                 ?? message.zynaAttributes.mediaGroup?.captionPlacement
                 ?? .bottom)
 
-        self.mediaSource = source
+        self.displaySource = thumbnailSource ?? source
         self.previewImageData = previewImageData
         if let width = imageWidth, let height = imageHeight, height > 0 {
             self.aspectRatio = CGFloat(width) / CGFloat(height)
@@ -284,7 +286,7 @@ final class ImageMessageCellNode: MessageCellNode {
         }
 
         // Load image
-        if let source = mediaSource {
+        if let source = displaySource {
             let recipe = bubbleCacheRecipe()
             if let cached = MediaCache.shared.bubbleImage(
                 for: source,

@@ -10,7 +10,7 @@ import MatrixRustSDK
 
 enum ChatMessageContent: Equatable {
     case text(body: String)
-    case image(source: MediaSource?, width: UInt64?, height: UInt64?, caption: String?, previewImageData: Data?)
+    case image(source: MediaSource?, thumbnailSource: MediaSource?, width: UInt64?, height: UInt64?, caption: String?, previewImageData: Data?)
     case video(source: MediaSource?, thumbnailSource: MediaSource?, width: UInt64?, height: UInt64?, duration: TimeInterval?, filename: String, mimetype: String?, size: UInt64?, caption: String?, previewThumbnailData: Data?)
     case pendingOutgoingMediaBatch
     case notice(body: String)
@@ -36,12 +36,18 @@ enum ChatMessageContent: Equatable {
             return t1 == t2 && c1 == c2 && r1 == r2
         case (.systemEvent(let t1, let k1), .systemEvent(let t2, let k2)):
             return t1 == t2 && k1 == k2
-        case (.image(let s1, let w1, let h1, let c1, let p1), .image(let s2, let w2, let h2, let c2, let p2)):
+        case (.image(let s1, let ts1, let w1, let h1, let c1, let p1),
+              .image(let s2, let ts2, let w2, let h2, let c2, let p2)):
             // Treat nil dimensions as "not yet loaded" — don't trigger
             // cell recreation when SDK sends the same image without/with size.
             let wMatch = w1 == w2 || w1 == nil || w2 == nil
             let hMatch = h1 == h2 || h1 == nil || h2 == nil
-            return s1?.url() == s2?.url() && wMatch && hMatch && c1 == c2 && p1 == p2
+            return s1?.url() == s2?.url()
+                && ts1?.url() == ts2?.url()
+                && wMatch
+                && hMatch
+                && c1 == c2
+                && p1 == p2
         case (.video(let s1, let ts1, let w1, let h1, let d1, let f1, let m1, let sz1, let c1, let p1),
               .video(let s2, let ts2, let w2, let h2, let d2, let f2, let m2, let sz2, let c2, let p2)):
             let wMatch = w1 == w2 || w1 == nil || w2 == nil
@@ -82,7 +88,7 @@ enum ChatMessageContent: Equatable {
     /// Media source + mimetype for re-upload during forwarding.
     var mediaForwardInfo: (source: MediaSource, mimetype: String)? {
         switch self {
-        case .image(let source?, _, _, _, _):
+        case .image(let source?, _, _, _, _, _):
             return (source, "image/jpeg")
         case .video(let source?, _, _, _, _, _, let mime, _, _, _):
             return (source, mime ?? "video/mp4")
@@ -122,7 +128,7 @@ enum ChatMessageContent: Equatable {
     }
 
     var visibleImageCaption: String? {
-        guard case .image(_, _, _, let caption, _) = self,
+        guard case .image(_, _, _, _, let caption, _) = self,
               let caption
         else { return nil }
         let visible = caption
@@ -157,9 +163,10 @@ extension ChatMessageContent {
     func applyingPreviewImageData(_ previewImageData: Data?) -> ChatMessageContent {
         guard let previewImageData else { return self }
         switch self {
-        case .image(let source, let width, let height, let caption, let existingPreviewImageData):
+        case .image(let source, let thumbnailSource, let width, let height, let caption, let existingPreviewImageData):
             return .image(
                 source: source,
+                thumbnailSource: thumbnailSource,
                 width: width,
                 height: height,
                 caption: caption,
@@ -362,6 +369,7 @@ struct MediaGroupItem: Equatable {
     let eventId: String?
     let transactionId: String?
     let source: MediaSource?
+    let thumbnailSource: MediaSource?
     let previewImageData: Data?
     let previewIdentity: String?
     let width: UInt64?
@@ -373,8 +381,20 @@ struct MediaGroupItem: Equatable {
         source?.url()
     }
 
+    var thumbnailSourceURL: String? {
+        thumbnailSource?.url()
+    }
+
+    var displaySource: MediaSource? {
+        thumbnailSource ?? source
+    }
+
+    var displaySourceURL: String? {
+        displaySource?.url()
+    }
+
     var displayIdentity: String {
-        sourceURL ?? previewIdentity ?? messageId
+        displaySourceURL ?? previewIdentity ?? messageId
     }
 
     var itemIdentifier: ChatItemIdentifier? {
@@ -392,6 +412,7 @@ struct MediaGroupItem: Equatable {
             && lhs.eventId == rhs.eventId
             && lhs.transactionId == rhs.transactionId
             && lhs.sourceURL == rhs.sourceURL
+            && lhs.thumbnailSourceURL == rhs.thumbnailSourceURL
             && lhs.previewIdentity == rhs.previewIdentity
             && lhs.width == rhs.width
             && lhs.height == rhs.height

@@ -769,6 +769,7 @@ final class TimelineService {
         case .image(let content):
             return .image(
                 source: content.source,
+                thumbnailSource: content.info?.thumbnailSource,
                 width: content.info?.width,
                 height: content.info?.height,
                 caption: content.caption,
@@ -1177,9 +1178,7 @@ final class TimelineService {
 
     @discardableResult
     func sendImage(
-        imageData: Data,
-        width: UInt64,
-        height: UInt64,
+        image: ProcessedImage,
         caption: String?,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         replyEventId: String? = nil,
@@ -1189,17 +1188,25 @@ final class TimelineService {
 
         if let mediaGroup = zynaAttributes.mediaGroup {
             logMediaGroup(
-                "sendImage start group=\(Self.describe(mediaGroup)) width=\(width) height=\(height) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>")"
+                "sendImage start group=\(Self.describe(mediaGroup)) width=\(image.width) height=\(image.height) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>")"
             )
         } else {
             logMediaGroup(
-                "sendImage start standalone width=\(width) height=\(height) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>")"
+                "sendImage start standalone width=\(image.width) height=\(image.height) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>")"
             )
         }
 
-        let imageURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
-        do { try imageData.write(to: imageURL) } catch {
+        let workingDirectoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zyna-image-\(UUID().uuidString)", isDirectory: true)
+        let imageURL = workingDirectoryURL.appendingPathComponent("image.jpg")
+        let thumbnailURL = workingDirectoryURL.appendingPathComponent("thumbnail.jpg")
+        do {
+            try FileManager.default.createDirectory(at: workingDirectoryURL, withIntermediateDirectories: true)
+            try image.imageData.write(to: imageURL, options: .atomic)
+            try image.thumbnailData.write(to: thumbnailURL, options: .atomic)
+        } catch {
             logTimeline("Image write to temp failed: \(error)")
+            try? FileManager.default.removeItem(at: workingDirectoryURL)
             return .failed
         }
 
@@ -1219,11 +1226,21 @@ final class TimelineService {
             formattedCaption = FormattedBody(format: .html, body: encoded)
         }
 
-        // sendImage throws InvalidAttachmentData — using sendFile
-        // as workaround until SDK issue is resolved.
-        let fileInfo = FileInfo(
-            mimetype: "image/jpeg", size: UInt64(imageData.count),
-            thumbnailInfo: nil, thumbnailSource: nil
+        let thumbnailInfo = ThumbnailInfo(
+            height: image.thumbnailHeight,
+            width: image.thumbnailWidth,
+            mimetype: "image/jpeg",
+            size: image.thumbnailSize
+        )
+        let imageInfo = ImageInfo(
+            height: image.height,
+            width: image.width,
+            mimetype: "image/jpeg",
+            size: UInt64(image.imageData.count),
+            thumbnailInfo: thumbnailInfo,
+            thumbnailSource: nil,
+            blurhash: image.blurhash,
+            isAnimated: nil
         )
         let params = UploadParameters(
             source: .file(filename: imageURL.path(percentEncoded: false)),
@@ -1231,20 +1248,36 @@ final class TimelineService {
         )
         do {
             let transactionId = try await sendWithTransaction(bindingToken: bindingToken) {
-                _ = try timeline.sendFile(params: params, fileInfo: fileInfo)
+                let handle = try timeline.sendImage(
+                    params: params,
+                    thumbnailSource: .file(filename: thumbnailURL.path(percentEncoded: false)),
+                    imageInfo: imageInfo
+                )
+                try await handle.join()
             }
-            logTimeline("Image sent via sendFile, \(width)×\(height)")
+            logTimeline("Image sent, \(image.width)×\(image.height)")
             logMediaGroup(
                 "sendImage queued tx=\(transactionId ?? "<nil>") group=\(Self.describe(zynaAttributes.mediaGroup)) localURL=\(imageURL.lastPathComponent)"
             )
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-                try? FileManager.default.removeItem(at: imageURL)
-            }
+            Self.cleanupTemporaryMediaDirectory(workingDirectoryURL, delay: 10)
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("Image send failed: \(error)")
             logMediaGroup("sendImage failed group=\(Self.describe(zynaAttributes.mediaGroup)) error=\(error)")
+            Self.cleanupTemporaryMediaDirectory(workingDirectoryURL)
             return .failed
+        }
+    }
+
+    private static func cleanupTemporaryMediaDirectory(_ url: URL, delay: TimeInterval = 0) {
+        let cleanup: () -> Void = {
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        if delay > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: cleanup)
+        } else {
+            DispatchQueue.global(qos: .utility).async(execute: cleanup)
         }
     }
 

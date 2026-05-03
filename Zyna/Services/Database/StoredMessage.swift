@@ -91,7 +91,7 @@ extension StoredMessage {
         case .text(let body):
             contentType = "text"
             contentBody = body
-        case .image(let source, let width, let height, let caption, _):
+        case .image(let source, let thumbnailSource, let width, let height, let caption, _):
             guard let source else {
                 assertionFailure("StoredMessage cannot persist image content without a media source")
                 contentType = "unsupported"
@@ -100,6 +100,7 @@ extension StoredMessage {
             }
             contentType = "image"
             contentMediaJSON = source.toJson()
+            contentThumbnailMediaJSON = thumbnailSource?.toJson()
             contentImageWidth = width.map(Int64.init)
             contentImageHeight = height.map(Int64.init)
             contentCaption = caption
@@ -266,8 +267,12 @@ extension StoredMessage {
         case "image":
             guard let json = contentMediaJSON,
                   let source = try? MediaSource.fromJson(json: json) else { return nil }
+            let thumbnailSource = contentThumbnailMediaJSON.flatMap {
+                try? MediaSource.fromJson(json: $0)
+            }
             return .image(
                 source: source,
+                thumbnailSource: thumbnailSource,
                 width: contentImageWidth.map(UInt64.init),
                 height: contentImageHeight.map(UInt64.init),
                 caption: contentCaption,

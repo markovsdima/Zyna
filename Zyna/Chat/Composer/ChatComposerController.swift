@@ -226,7 +226,7 @@ final class ChatComposerController: ObservableObject {
 
     private func buildImageDraft(from data: Data) async -> ChatComposerAttachmentDraft? {
         guard let processed = try? await MediaPreprocessor.processImage(from: data),
-              let previewImage = UIImage(data: processed.imageData) else {
+              let previewImage = UIImage(data: processed.thumbnailData) else {
             return nil
         }
 
@@ -235,7 +235,7 @@ final class ChatComposerController: ObservableObject {
 
     private func buildImageDraft(from image: UIImage) async -> ChatComposerAttachmentDraft? {
         guard let processed = try? await MediaPreprocessor.processImage(from: image),
-              let previewImage = UIImage(data: processed.imageData) else {
+              let previewImage = UIImage(data: processed.thumbnailData) else {
             return nil
         }
 

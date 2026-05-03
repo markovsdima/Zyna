@@ -574,8 +574,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         }
 
         switch (old.content, new.content) {
-        case (.image(_, let oldWidth, let oldHeight, let oldCaption, let oldPreview),
-              .image(_, let newWidth, let newHeight, let newCaption, let newPreview)):
+        case (.image(_, _, let oldWidth, let oldHeight, let oldCaption, let oldPreview),
+              .image(_, _, let newWidth, let newHeight, let newCaption, let newPreview)):
             return oldWidth == newWidth
                 && oldHeight == newHeight
                 && oldCaption == newCaption
@@ -649,6 +649,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             guard lhs.items.count == rhs.items.count else { return false }
             return zip(lhs.items, rhs.items).allSatisfy { oldItem, newItem in
                 oldItem.sourceURL == newItem.sourceURL
+                    && oldItem.thumbnailSourceURL == newItem.thumbnailSourceURL
                     && oldItem.previewIdentity == newItem.previewIdentity
                     && oldItem.width == newItem.width
                     && oldItem.height == newItem.height

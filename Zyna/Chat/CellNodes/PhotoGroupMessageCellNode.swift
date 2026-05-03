@@ -571,7 +571,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
                 displayedItemIdentities[index] = renderIdentity
             }
 
-            if let source = item.source,
+            if let source = item.displaySource,
                let cached = MediaCache.shared.bubbleImage(
                 for: source,
                 maxPixelWidth: recipe.maxPixelWidth,
@@ -613,7 +613,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
                 }
             }
 
-            guard let source = item.source else { continue }
+            guard let source = item.displaySource else { continue }
 
             Task { [weak self] in
                 guard let self,
