@@ -124,7 +124,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         // Status icon only on the sender's own bubbles. For incoming
         // messages it carries no information and would just clutter.
         if message.isOutgoing,
-           let iconState = MessageStatusIcon.from(sendStatus: message.sendStatus) {
+           let iconState = MessageStatusIcon.from(sendStatus: message.effectiveSendStatus) {
             let node = MessageStatusIconNode()
             node.icon = iconState
             node.tintColour = usesAccentBubbleStyle
@@ -184,7 +184,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         // Timestamp (default colors — override in subclass if needed)
         timeNode.attributedText = NSAttributedString(
-                string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
+                string: MessageCellHelpers.timelineTimestampText(for: message),
                 attributes: [
                     .font: UIFont.systemFont(ofSize: 11),
                     .foregroundColor: bubbleTimestampColor
@@ -193,12 +193,15 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         // Sender name
         if showSenderName, let name = message.senderDisplayName {
-            let colorIndex = MessageCellHelpers.stableHash(message.senderId) % MessageCellHelpers.senderColors.count
+            let fallbackColorIndex = MessageCellHelpers.stableHash(message.senderId) % MessageCellHelpers.senderColors.count
+            let senderColor = message.senderNameColorHex
+                .flatMap(UIColor.fromHexString)
+                ?? MessageCellHelpers.senderColors[fallbackColorIndex]
             senderNameNode.attributedText = NSAttributedString(
                 string: name,
                 attributes: [
                     .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
-                    .foregroundColor: MessageCellHelpers.senderColors[colorIndex]
+                    .foregroundColor: senderColor
                 ]
             )
             senderNameNode.onDidLoad { [weak self] node in
@@ -219,7 +222,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             let avatarModel = AvatarViewModel(
                 userId: message.senderId,
                 displayName: message.senderDisplayName,
-                mxcAvatarURL: message.senderAvatarUrl
+                mxcAvatarURL: message.senderAvatarUrl,
+                colorOverrideHex: message.senderNameColorHex
             )
             avatarBackgroundNode.image = avatarModel.circleImage(
                 diameter: Self.avatarDiameter, fontSize: 13
@@ -315,7 +319,13 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             parts.append(sender)
         }
         parts.append(message.content.textPreview)
-        parts.append(MessageCellHelpers.timeFormatter.string(from: message.timestamp))
+        parts.append(MessageCellHelpers.timelineTimestampText(for: message))
+        if message.isEditPending {
+            parts.append(String(localized: "edit pending"))
+        }
+        if message.isEditFailed {
+            parts.append(String(localized: "edit failed"))
+        }
         if let reactionsText = reactionCountAccessibilityText(for: message.reactions) {
             parts.append(reactionsText)
         }
@@ -521,12 +531,17 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
               old.senderDisplayName == new.senderDisplayName,
               old.senderAvatarUrl == new.senderAvatarUrl,
               old.isFirstInCluster == new.isFirstInCluster,
+              old.isEdited == new.isEdited,
               mediaGroupPresentationIsVisuallyEquivalent(old: old.mediaGroupPresentation, new: new.mediaGroupPresentation)
         else {
             return false
         }
 
         if isVisuallyEquivalentCompositeMediaGroupRow(old: old, new: new) {
+            return true
+        }
+
+        if isVisuallyEquivalentPendingOutgoingEnvelope(old: old, new: new) {
             return true
         }
 
@@ -545,6 +560,45 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             }
         }
         return message.transactionId ?? message.eventId ?? message.id
+    }
+
+    private static func isVisuallyEquivalentPendingOutgoingEnvelope(
+        old: ChatMessage,
+        new: ChatMessage
+    ) -> Bool {
+        guard old.outgoingEnvelopeId != nil,
+              old.outgoingEnvelopeId == new.outgoingEnvelopeId,
+              old.zynaAttributes == new.zynaAttributes
+        else {
+            return false
+        }
+
+        switch (old.content, new.content) {
+        case (.image(_, _, let oldWidth, let oldHeight, let oldCaption, let oldPreview),
+              .image(_, _, let newWidth, let newHeight, let newCaption, let newPreview)):
+            return oldWidth == newWidth
+                && oldHeight == newHeight
+                && oldCaption == newCaption
+                && oldPreview == newPreview
+        case (.video(_, _, let oldWidth, let oldHeight, let oldDuration, let oldFilename, let oldMime, let oldSize, let oldCaption, let oldPreview),
+              .video(_, _, let newWidth, let newHeight, let newDuration, let newFilename, let newMime, let newSize, let newCaption, let newPreview)):
+            return oldWidth == newWidth
+                && oldHeight == newHeight
+                && oldDuration == newDuration
+                && oldFilename == newFilename
+                && oldMime == newMime
+                && oldSize == newSize
+                && oldCaption == newCaption
+                && oldPreview == newPreview
+        case (.file(_, let oldFilename, let oldMime, let oldSize, let oldCaption),
+              .file(_, let newFilename, let newMime, let newSize, let newCaption)):
+            return oldFilename == newFilename
+                && oldMime == newMime
+                && oldSize == newSize
+                && oldCaption == newCaption
+        default:
+            return old.content == new.content
+        }
     }
 
     private static func isVisuallyEquivalentCompositeMediaGroupRow(old: ChatMessage, new: ChatMessage) -> Bool {
@@ -595,6 +649,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             guard lhs.items.count == rhs.items.count else { return false }
             return zip(lhs.items, rhs.items).allSatisfy { oldItem, newItem in
                 oldItem.sourceURL == newItem.sourceURL
+                    && oldItem.thumbnailSourceURL == newItem.thumbnailSourceURL
                     && oldItem.previewIdentity == newItem.previewIdentity
                     && oldItem.width == newItem.width
                     && oldItem.height == newItem.height
@@ -660,20 +715,11 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         }
 
         let image = UIGraphicsImageRenderer(bounds: sourceView.bounds).image { ctx in
-            if usesSyntheticPortalPaintSplashFill {
-                ctx.cgContext.saveGState()
-                let bubbleFrame = bubbleNode.frame
-                ctx.cgContext.translateBy(x: bubbleFrame.minX, y: bubbleFrame.minY)
-                let bubblePath = bubbleNode.currentPath()
-                bubbleBaseFillColor.setFill()
-                bubblePath.fill()
-                ctx.cgContext.addPath(bubblePath.cgPath)
-                ctx.cgContext.clip()
-                bubbleNode.view.layer.render(in: ctx.cgContext)
-                ctx.cgContext.restoreGState()
-            } else {
-                sourceView.layer.render(in: ctx.cgContext)
-            }
+            BubblePortalCaptureRenderer.renderLayerForCapture(
+                sourceView.layer,
+                in: ctx.cgContext,
+                clipRectInLayer: sourceView.bounds
+            )
         }
 
         guard image.cgImage != nil else { return nil }
@@ -687,13 +733,6 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             image: image,
             hideSource: { [weak self] in self?.alpha = 0 }
         )
-    }
-
-    private var usesSyntheticPortalPaintSplashFill: Bool {
-        usesBubblePortal
-            && showsBubbleChrome
-            && !usesBareBubbleContent
-            && !rendersCompositeMediaBubble
     }
 
     // MARK: - Highlight

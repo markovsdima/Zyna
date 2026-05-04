@@ -120,6 +120,12 @@ public class ZynaNavigationController: UIViewController {
     public override var childForHomeIndicatorAutoHidden: UIViewController? { topViewController }
     public override var childForScreenEdgesDeferringSystemGestures: UIViewController? { topViewController }
     public override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
+    public override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        topViewController?.supportedInterfaceOrientations ?? .allButUpsideDown
+    }
+    public override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
+        topViewController?.preferredInterfaceOrientationForPresentation ?? .portrait
+    }
 
     // MARK: - Tab bar visibility (hidesBottomBarWhenPushed)
 

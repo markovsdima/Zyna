@@ -10,6 +10,8 @@ import UniformTypeIdentifiers
 import MatrixRustSDK
 
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
+private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
+private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
 
 enum ChatPresentationMode {
     case normal
@@ -69,8 +71,15 @@ final class ChatViewModel {
     /// are filtered (call signaling, redacted, etc.).
     var sdkPaginationExhausted = false
     @Published private(set) var replyingTo: ChatMessage?
+    @Published private(set) var editingMessage: ChatMessage?
     @Published private(set) var pendingForwardContent: (preview: ChatMessage, content: RoomMessageEventContentWithoutRelation)?
     @Published private(set) var isInvited: Bool = false
+    private var editingDraftOverride: String?
+    private var activeEditAttemptId: UUID?
+    private var recentlySentTransactionIds: Set<String> = []
+    private var recentlySentTransactionOrder: [String] = []
+    private var recentlyFailedTransactionIds: Set<String> = []
+    private var recentlyFailedTransactionOrder: [String] = []
 
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate) -> Void)?
@@ -85,6 +94,7 @@ final class ChatViewModel {
 
     /// Called when a redaction request fails.
     var onRedactionFailed: ((String, Error, PendingRedactionFailureDisposition) -> Void)?
+    var canRestoreFailedEditDraft: (() -> Bool)?
 
     let roomName: String
     let mode: ChatPresentationMode
@@ -159,9 +169,45 @@ final class ChatViewModel {
                 self?.seedReadReceiptBaseline(eventId: eventId)
             }
         }
-        timelineService.onSendQueueUpdate = { [weak self] _ in
-            DispatchQueue.main.async { [weak self] in
-                self?.window.refresh()
+        timelineService.onSendQueueUpdate = { [weak self] update, didMutateOutgoingEnvelopes in
+            Task { [weak self] in
+                guard let self else { return }
+                switch update {
+                case .sentEvent(let transactionId, _):
+                    await self.rememberSentTransaction(transactionId)
+                    let didClearPendingEdit = await self.clearPendingMessageEdit(
+                        transactionId: transactionId
+                    )
+                    if !didClearPendingEdit, didMutateOutgoingEnvelopes {
+                        await self.refreshWindow()
+                    }
+                case .sendError(let transactionId, _, let isRecoverable):
+                    guard !isRecoverable else {
+                        if didMutateOutgoingEnvelopes {
+                            await self.refreshWindow()
+                        }
+                        return
+                    }
+                    await self.rememberFailedTransaction(transactionId)
+                    let didFailPendingEdit = await self.failPendingMessageEdit(
+                        transactionId: transactionId
+                    )
+                    if !didFailPendingEdit, didMutateOutgoingEnvelopes {
+                        await self.refreshWindow()
+                    }
+                case .cancelledLocalEvent(let transactionId):
+                    await self.rememberFailedTransaction(transactionId)
+                    let didFailPendingEdit = await self.failPendingMessageEdit(
+                        transactionId: transactionId
+                    )
+                    if !didFailPendingEdit, didMutateOutgoingEnvelopes {
+                        await self.refreshWindow()
+                    }
+                default:
+                    if didMutateOutgoingEnvelopes {
+                        await self.refreshWindow()
+                    }
+                }
             }
         }
 
@@ -270,7 +316,7 @@ final class ChatViewModel {
         //    Only for content that was a visible message — not call
         //    signaling carriers (zero-width-space body), system
         //    notices, or unsupported event types.
-        let splashContentTypes: Set<String> = ["text", "image", "voice", "file", "emote"]
+        let splashContentTypes: Set<String> = ["text", "image", "video", "voice", "file", "emote"]
         let newlyRedactedIds: [String]
         let redactionBatch: DetectedRedactionBatch
         if let prevStored {
@@ -759,6 +805,11 @@ final class ChatViewModel {
                 content: .notice(body: body),
                 reactions: [],
                 replyInfo: nil,
+                isEditable: false,
+                isEdited: false,
+                isEditPending: false,
+                isEditFailed: false,
+                latestEditEventId: nil,
                 zynaAttributes: ZynaMessageAttributes(),
                 sendStatus: "sent"
             )
@@ -928,12 +979,12 @@ final class ChatViewModel {
 
         let mediaItems = group.items.map { item -> MediaGroupItem in
             let primaryMessage = primaryMessagesByItemIndex[item.itemIndex]
-            let primaryImageContent: (source: MediaSource?, width: UInt64?, height: UInt64?, caption: String?)? = {
+            let primaryImageContent: (source: MediaSource?, thumbnailSource: MediaSource?, width: UInt64?, height: UInt64?, caption: String?)? = {
                 guard let primaryMessage,
-                      case .image(let source, let width, let height, let caption, _) = primaryMessage.content else {
+                      case .image(let source, let thumbnailSource, let width, let height, let caption, _) = primaryMessage.content else {
                     return nil
                 }
-                return (source, width, height, caption)
+                return (source, thumbnailSource, width, height, caption)
             }()
 
             return MediaGroupItem(
@@ -941,6 +992,7 @@ final class ChatViewModel {
                 eventId: item.eventId ?? primaryMessage?.eventId,
                 transactionId: item.transactionId ?? primaryMessage?.transactionId,
                 source: item.mediaSource ?? primaryImageContent?.source,
+                thumbnailSource: primaryImageContent?.thumbnailSource,
                 previewImageData: item.previewImageData,
                 previewIdentity: Self.pendingMediaPreviewIdentity(
                     groupId: group.id,
@@ -987,6 +1039,11 @@ final class ChatViewModel {
             content: .pendingOutgoingMediaBatch,
             reactions: [],
             replyInfo: group.replyInfo,
+            isEditable: false,
+            isEdited: false,
+            isEditPending: false,
+            isEditFailed: false,
+            latestEditEventId: nil,
             zynaAttributes: ZynaMessageAttributes(),
             sendStatus: sendStatus
         )
@@ -1023,8 +1080,12 @@ final class ChatViewModel {
                 continue
             }
 
+            let isRelatedByContent = envelope.kind == .video
+                && message.eventId != nil
+                && hydratedMessage(message, matches: envelope)
             let isRelated = message.eventId.map { eventIds.contains($0) } == true
                 || message.transactionId.map { transactionIds.contains($0) } == true
+                || isRelatedByContent
             guard isRelated else { continue }
 
             hiddenMessageIndices.insert(messageIndex)
@@ -1053,6 +1114,8 @@ final class ChatViewModel {
         case (.text, .text):
             return true
         case (.image, .image):
+            return true
+        case (.video, .video):
             return true
         case (.voice, .voice):
             return true
@@ -1095,7 +1158,7 @@ final class ChatViewModel {
             guard case .text(let body) = message.content else { return false }
             return body == textPayload.body
         case .image(let imagePayload):
-            guard case .image(let source, let width, let height, let caption, _) = message.content,
+            guard case .image(let source, _, let width, let height, let caption, _) = message.content,
                   source != nil
             else {
                 return false
@@ -1103,6 +1166,26 @@ final class ChatViewModel {
             return normalized(caption) == normalized(imagePayload.caption)
                 && dimensionsMatch(expected: imagePayload.width, actual: width)
                 && dimensionsMatch(expected: imagePayload.height, actual: height)
+        case .video(let videoPayload):
+            guard case .video(let source, _, let width, let height, let duration, let filename, let mimetype, let size, let caption, _) = message.content,
+                  source != nil
+            else {
+                return false
+            }
+            let durationMatches: Bool
+            if let expectedDuration = videoPayload.duration,
+               let actualDuration = duration {
+                durationMatches = abs(actualDuration - expectedDuration) < 0.5
+            } else {
+                durationMatches = true
+            }
+            return filename == videoPayload.filename
+                && normalized(caption) == normalized(videoPayload.caption)
+                && dimensionsMatch(expected: videoPayload.width, actual: width)
+                && dimensionsMatch(expected: videoPayload.height, actual: height)
+                && durationMatches
+                && (videoPayload.mimetype == nil || mimetype == videoPayload.mimetype)
+                && (videoPayload.size == nil || size == videoPayload.size)
         case .voice(let voicePayload):
             guard case .voice(let source, let duration, _) = message.content,
                   source != nil
@@ -1148,26 +1231,64 @@ final class ChatViewModel {
                 return .text(body: payload.body)
             case .image(let payload):
                 let primarySource: MediaSource?
+                let primaryThumbnailSource: MediaSource?
                 let primaryWidth: UInt64?
                 let primaryHeight: UInt64?
                 let primaryCaption: String?
-                if case .image(let source, let width, let height, let caption, _) = primaryContent {
+                if case .image(let source, let thumbnailSource, let width, let height, let caption, _) = primaryContent {
                     primarySource = source
+                    primaryThumbnailSource = thumbnailSource
                     primaryWidth = width
                     primaryHeight = height
                     primaryCaption = caption
                 } else {
                     primarySource = nil
+                    primaryThumbnailSource = nil
                     primaryWidth = nil
                     primaryHeight = nil
                     primaryCaption = nil
                 }
                 return .image(
                     source: envelope.primaryItem?.mediaSource ?? primarySource,
+                    thumbnailSource: primaryThumbnailSource,
                     width: envelope.primaryItem?.previewWidth ?? payload.width ?? primaryWidth,
                     height: envelope.primaryItem?.previewHeight ?? payload.height ?? primaryHeight,
                     caption: payload.caption ?? primaryCaption,
                     previewImageData: envelope.primaryItem?.previewImageData
+                )
+            case .video(let payload):
+                let primarySource: MediaSource?
+                let primaryThumbnailSource: MediaSource?
+                let primaryWidth: UInt64?
+                let primaryHeight: UInt64?
+                let primaryDuration: TimeInterval?
+                let primaryCaption: String?
+                if case .video(let source, let thumbnailSource, let width, let height, let duration, _, _, _, let caption, _) = primaryContent {
+                    primarySource = source
+                    primaryThumbnailSource = thumbnailSource
+                    primaryWidth = width
+                    primaryHeight = height
+                    primaryDuration = duration
+                    primaryCaption = caption
+                } else {
+                    primarySource = nil
+                    primaryThumbnailSource = nil
+                    primaryWidth = nil
+                    primaryHeight = nil
+                    primaryDuration = nil
+                    primaryCaption = nil
+                }
+                return .video(
+                    source: envelope.primaryItem?.mediaSource ?? primarySource,
+                    thumbnailSource: primaryThumbnailSource,
+                    width: envelope.primaryItem?.previewWidth ?? payload.width ?? primaryWidth,
+                    height: envelope.primaryItem?.previewHeight ?? payload.height ?? primaryHeight,
+                    duration: payload.duration ?? primaryDuration,
+                    filename: payload.filename,
+                    mimetype: payload.mimetype,
+                    size: payload.size,
+                    caption: payload.caption ?? primaryCaption,
+                    previewThumbnailData: envelope.primaryItem?.previewImageData
                 )
             case .voice(let payload):
                 let primarySource: MediaSource?
@@ -1216,6 +1337,11 @@ final class ChatViewModel {
             content: content,
             reactions: [],
             replyInfo: envelope.replyInfo,
+            isEditable: false,
+            isEdited: false,
+            isEditPending: false,
+            isEditFailed: false,
+            latestEditEventId: nil,
             zynaAttributes: envelope.zynaAttributes,
             sendStatus: sendStatus
         )
@@ -1631,10 +1757,37 @@ final class ChatViewModel {
 
     func setReplyTarget(_ message: ChatMessage?) {
         replyingTo = message
+        if message != nil {
+            activeEditAttemptId = nil
+            editingDraftOverride = nil
+            editingMessage = nil
+            pendingForwardContent = nil
+        }
+    }
+
+    func setEditingTarget(_ message: ChatMessage?) {
+        activeEditAttemptId = nil
+        editingDraftOverride = nil
+        guard let message else {
+            editingMessage = nil
+            return
+        }
+        guard message.isTextEditable else { return }
+        replyingTo = nil
+        pendingForwardContent = nil
+        editingMessage = message
     }
 
     func setPendingForward(preview: ChatMessage, content: RoomMessageEventContentWithoutRelation) {
+        activeEditAttemptId = nil
+        editingDraftOverride = nil
+        replyingTo = nil
+        editingMessage = nil
         pendingForwardContent = (preview, content)
+    }
+
+    func editingInputText(for message: ChatMessage) -> String? {
+        editingDraftOverride ?? message.content.textBody
     }
 
     func clearPendingForward() {
@@ -1646,6 +1799,225 @@ final class ChatViewModel {
     private func refreshWindow() async {
         await MainActor.run {
             self.window.refresh()
+        }
+    }
+
+    @MainActor
+    private func rememberSentTransaction(_ transactionId: String) {
+        rememberTransaction(
+            transactionId,
+            ids: &recentlySentTransactionIds,
+            order: &recentlySentTransactionOrder
+        )
+    }
+
+    @MainActor
+    private func hasRecentlySentTransaction(_ transactionId: String) -> Bool {
+        recentlySentTransactionIds.contains(transactionId)
+    }
+
+    @MainActor
+    private func rememberFailedTransaction(_ transactionId: String) {
+        rememberTransaction(
+            transactionId,
+            ids: &recentlyFailedTransactionIds,
+            order: &recentlyFailedTransactionOrder
+        )
+    }
+
+    @MainActor
+    private func hasRecentlyFailedTransaction(_ transactionId: String) -> Bool {
+        recentlyFailedTransactionIds.contains(transactionId)
+    }
+
+    @MainActor
+    private func rememberTransaction(
+        _ transactionId: String,
+        ids: inout Set<String>,
+        order: inout [String]
+    ) {
+        if ids.insert(transactionId).inserted {
+            order.append(transactionId)
+        }
+
+        while order.count > 128 {
+            let removed = order.removeFirst()
+            ids.remove(removed)
+        }
+    }
+
+    @discardableResult
+    private func markMessageEditPending(
+        eventId: String
+    ) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 1,
+                            isEditFailed = 0,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND eventId = ?
+                          AND (isEditPending = 0
+                               OR isEditFailed = 1
+                               OR editTransactionId IS NOT NULL)
+                    """,
+                    arguments: [roomId, eventId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("pending event=\(eventId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to mark pending event=\(eventId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func bindPendingMessageEditTransaction(
+        eventId: String,
+        transactionId: String
+    ) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET editTransactionId = ?
+                        WHERE roomId = ?
+                          AND eventId = ?
+                          AND isEditPending = 1
+                          AND (editTransactionId IS NULL OR editTransactionId != ?)
+                    """,
+                    arguments: [transactionId, roomId, eventId, transactionId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("bound event=\(eventId) tx=\(transactionId)")
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to bind pending edit event=\(eventId) tx=\(transactionId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func clearPendingMessageEdit(transactionId: String) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 0,
+                            isEditFailed = 0,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND editTransactionId = ?
+                    """,
+                    arguments: [roomId, transactionId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("confirmed tx=\(transactionId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to clear pending tx=\(transactionId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func clearPendingMessageEdit(eventId: String) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 0,
+                            isEditFailed = 0,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND eventId = ?
+                    """,
+                    arguments: [roomId, eventId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("cleared event=\(eventId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to clear pending event=\(eventId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func failPendingMessageEdit(transactionId: String) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 0,
+                            isEditFailed = 1,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND editTransactionId = ?
+                    """,
+                    arguments: [roomId, transactionId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("failed tx=\(transactionId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to mark edit failed tx=\(transactionId): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func failPendingMessageEdit(eventId: String) async -> Bool {
+        do {
+            let didChange = try await DatabaseService.shared.dbQueue.write { [roomId] db -> Bool in
+                try db.execute(
+                    sql: """
+                        UPDATE storedMessage
+                        SET isEditPending = 0,
+                            isEditFailed = 1,
+                            editTransactionId = NULL
+                        WHERE roomId = ?
+                          AND eventId = ?
+                    """,
+                    arguments: [roomId, eventId]
+                )
+                return ((try Int.fetchOne(db, sql: "SELECT changes()")) ?? 0) > 0
+            }
+            if didChange {
+                logMessageEdit("failed event=\(eventId)")
+                await refreshWindow()
+            }
+            return didChange
+        } catch {
+            logMessageEdit("failed to mark edit failed event=\(eventId): \(error)")
+            return false
         }
     }
 
@@ -1816,7 +2188,7 @@ final class ChatViewModel {
         let envelopeId = UUID().uuidString
 
         switch preview.content {
-        case .image(let source, let width, let height, _, let previewImageData):
+        case .image(let source, _, let width, let height, _, let previewImageData):
             guard let source,
                   let mediaInfo = preview.content.mediaForwardInfo else {
                 await timelineService.sendForwardedContent(fallbackContent)
@@ -1898,6 +2270,75 @@ final class ChatViewModel {
     }
 
     func sendMessage(_ text: String, color: UIColor? = nil) {
+        if let editing = editingMessage {
+            guard let itemId = editing.itemIdentifier,
+                  let originalBody = editing.content.textBody
+            else {
+                setEditingTarget(nil)
+                return
+            }
+
+            let editedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !editedText.isEmpty else { return }
+            guard editedText != originalBody.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                setEditingTarget(nil)
+                return
+            }
+
+            editingMessage = nil
+            activeEditAttemptId = nil
+            editingDraftOverride = nil
+
+            let attemptId = UUID()
+            activeEditAttemptId = attemptId
+            Task { [weak self] in
+                guard let self else { return }
+                if let eventId = editing.eventId {
+                    await self.markMessageEditPending(eventId: eventId)
+                }
+
+                let receipt = await self.timelineService.editMessage(
+                    editedText,
+                    itemId: itemId,
+                    zynaAttributes: editing.zynaAttributes
+                )
+
+                if let eventId = editing.eventId {
+                    if receipt.acceptedByTransport {
+                        if let transactionId = receipt.transactionId,
+                           await self.hasRecentlySentTransaction(transactionId) {
+                            await self.clearPendingMessageEdit(eventId: eventId)
+                        } else if let transactionId = receipt.transactionId,
+                                  await self.hasRecentlyFailedTransaction(transactionId) {
+                            await self.failPendingMessageEdit(eventId: eventId)
+                        } else if let transactionId = receipt.transactionId {
+                            await self.bindPendingMessageEditTransaction(
+                                eventId: eventId,
+                                transactionId: transactionId
+                            )
+                        }
+                    } else {
+                        await self.clearPendingMessageEdit(eventId: eventId)
+                    }
+                }
+
+                await MainActor.run {
+                    guard self.activeEditAttemptId == attemptId else { return }
+                    self.activeEditAttemptId = nil
+                    guard !receipt.acceptedByTransport else { return }
+                    guard self.canRestoreFailedEditDraft?() ?? true else { return }
+                    self.editingDraftOverride = editedText
+                    self.replyingTo = nil
+                    self.pendingForwardContent = nil
+                    self.editingMessage = editing
+                }
+            }
+            return
+        }
+
+        activeEditAttemptId = nil
+        editingDraftOverride = nil
+
         // Forward takes priority
         if let forward = pendingForwardContent {
             pendingForwardContent = nil
@@ -1998,6 +2439,12 @@ final class ChatViewModel {
         layoutOverride: MediaGroupLayoutOverride? = nil
     ) {
         guard !attachments.isEmpty else { return }
+        let videoCount = attachments.filter(\.isVideo).count
+        if videoCount > 0 {
+            logVideoSend(
+                "sendComposerAttachments total=\(attachments.count) videos=\(videoCount) caption=\(caption ?? "<nil>")"
+            )
+        }
 
         let replyTarget = replyingTo
         let replyEventId = replyTarget?.eventId
@@ -2039,6 +2486,17 @@ final class ChatViewModel {
                         replyInfo: replyInfo,
                         zynaAttributes: ZynaMessageAttributes()
                     )
+                case .video(let video):
+                    logVideoSend(
+                        "sendComposerAttachments item index=\(index) video=\(video.filename) bytes=\(video.size) size=\(video.width)x\(video.height) duration=\(String(format: "%.3f", video.duration))"
+                    )
+                    await self.sendSingleVideo(
+                        video,
+                        caption: attachmentCaption,
+                        replyEventId: replyEventId,
+                        replyInfo: replyInfo,
+                        zynaAttributes: ZynaMessageAttributes()
+                    )
                 case .file(let url):
                     await self.sendOutgoingFile(
                         url: url,
@@ -2065,20 +2523,63 @@ final class ChatViewModel {
             caption: caption,
             width: image.width,
             height: image.height,
-            previewImageData: image.imageData,
+            previewImageData: image.thumbnailData,
             replyInfo: replyInfo,
             zynaAttributes: zynaAttributes
         )
         await refreshWindow()
 
         let receipt = await timelineService.sendImage(
-            imageData: image.imageData,
-            width: image.width,
-            height: image.height,
+            image: image,
             caption: caption,
             zynaAttributes: zynaAttributes,
             replyEventId: replyEventId,
             bindingToken: bindingToken
+        )
+        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+    }
+
+    private func sendSingleVideo(
+        _ video: ProcessedVideo,
+        caption: String?,
+        replyEventId: String?,
+        replyInfo: ReplyInfo?,
+        zynaAttributes: ZynaMessageAttributes
+    ) async {
+        let envelopeId = UUID().uuidString
+        logVideoSend(
+            "singleVideo start envelope=\(envelopeId) filename=\(video.filename) bytes=\(video.size) size=\(video.width)x\(video.height) duration=\(String(format: "%.3f", video.duration)) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>") attrsEmpty=\(zynaAttributes.isEmpty)"
+        )
+        let bindingToken = outgoingEnvelopes.createOutgoingVideo(
+            roomId: roomId,
+            envelopeId: envelopeId,
+            filename: video.filename,
+            caption: caption,
+            width: video.width,
+            height: video.height,
+            duration: video.duration,
+            mimetype: video.mimetype,
+            size: video.size,
+            previewThumbnailData: video.thumbnailData,
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes
+        )
+        logVideoSend(
+            "singleVideo envelopeCreated envelope=\(envelopeId) bindingToken=\(bindingToken.isEmpty ? "<empty>" : bindingToken) thumbBytes=\(video.thumbnailSize)"
+        )
+        await refreshWindow()
+
+        // TODO(video): Surface upload progress, retry, and terminal errors in
+        // the timeline UI once the basic send/receive path is stable.
+        let receipt = await timelineService.sendVideo(
+            video: video,
+            caption: caption,
+            zynaAttributes: zynaAttributes,
+            replyEventId: replyEventId,
+            bindingToken: bindingToken
+        )
+        logVideoSend(
+            "singleVideo receipt envelope=\(envelopeId) accepted=\(receipt.acceptedByTransport) tx=\(receipt.transactionId ?? "<nil>")"
         )
         await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
     }
@@ -2157,7 +2658,7 @@ final class ChatViewModel {
                 group.addTask {
                     _ = await MediaCache.shared.loadPreviewBubbleImage(
                         previewIdentity: previewIdentity,
-                        imageData: image.imageData,
+                        imageData: image.thumbnailData,
                         maxPixelWidth: maxPixelWidth,
                         maxPixelHeight: maxPixelHeight
                     )
@@ -2211,7 +2712,7 @@ final class ChatViewModel {
             layoutOverride: layoutOverride,
             items: images.map {
                 OutgoingMediaDraftItem(
-                    previewImageData: $0.imageData,
+                    previewImageData: $0.thumbnailData,
                     width: $0.width,
                     height: $0.height
                 )
@@ -2234,9 +2735,7 @@ final class ChatViewModel {
             )
 
             let receipt = await timelineService.sendImage(
-                imageData: image.imageData,
-                width: image.width,
-                height: image.height,
+                image: image,
                 caption: normalizedCaption,
                 zynaAttributes: attrs,
                 replyEventId: replyEventId,
@@ -2254,6 +2753,13 @@ final class ChatViewModel {
         guard let itemId = message.itemIdentifier else { return }
         Task {
             await timelineService.toggleReaction(key, to: itemId)
+        }
+    }
+
+    func discardOutgoingEnvelope(id envelopeId: String) {
+        outgoingEnvelopes.deleteEnvelopes(ids: [envelopeId])
+        Task { [weak self] in
+            await self?.refreshWindow()
         }
     }
 
@@ -2871,7 +3377,7 @@ final class ChatViewModel {
                 return $0.timestamp < $1.timestamp
             }
             .compactMap { message in
-                guard case .image(let source, let width, let height, let caption, _) = message.content else {
+                guard case .image(let source, let thumbnailSource, let width, let height, let caption, _) = message.content else {
                     return nil
                 }
                 return MediaGroupItem(
@@ -2879,6 +3385,7 @@ final class ChatViewModel {
                     eventId: message.eventId,
                     transactionId: message.transactionId,
                     source: source,
+                    thumbnailSource: thumbnailSource,
                     previewImageData: partialReflowPreviewsByMessageId[message.id]?.imageData,
                     previewIdentity: partialReflowPreviewsByMessageId[message.id]?.identity,
                     width: width,
@@ -3079,9 +3586,10 @@ final class ChatViewModel {
         )
 
         for message in messages {
-            guard case .image(let source?, let width, let height, _, _) = message.content else { continue }
+            guard case .image(let source?, let thumbnailSource, let width, let height, _, _) = message.content else { continue }
+            let displaySource = thumbnailSource ?? source
             guard MediaCache.shared.bubbleImage(
-                for: source,
+                for: displaySource,
                 maxPixelWidth: maxPixelWidth,
                 maxPixelHeight: maxPixelHeight
             ) == nil else { continue }
@@ -3093,7 +3601,7 @@ final class ChatViewModel {
             }
             Task {
                 await MediaCache.shared.loadBubbleImage(
-                    source: source,
+                    source: displaySource,
                     maxPixelWidth: maxPixelWidth,
                     maxPixelHeight: maxPixelHeight,
                     knownAspectRatio: knownAspectRatio

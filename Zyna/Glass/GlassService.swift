@@ -6,6 +6,41 @@
 import UIKit
 import Metal
 
+struct PaintSplashGlassHitTarget {
+    var rect: SIMD4<Float>    // x, y, width, height in paint-overlay points
+    var params: SIMD4<Float>  // radius, hitProbability, shapeKind, stableSeed
+
+    init(frame: CGRect, cornerRadius: CGFloat, hitProbability: Float = 0.16) {
+        rect = SIMD4<Float>(
+            Float(frame.origin.x),
+            Float(frame.origin.y),
+            Float(frame.width),
+            Float(frame.height)
+        )
+        params = SIMD4<Float>(Float(cornerRadius), hitProbability, 0, 0)
+    }
+
+    init(circleFrame frame: CGRect, radius: CGFloat, hitProbability: Float = 0.16, seed: Float) {
+        rect = SIMD4<Float>(
+            Float(frame.origin.x),
+            Float(frame.origin.y),
+            Float(frame.width),
+            Float(frame.height)
+        )
+        params = SIMD4<Float>(Float(radius), hitProbability, 1, seed)
+    }
+
+    init(roundedRectFrame frame: CGRect, cornerRadius: CGFloat, hitProbability: Float = 0.16, seed: Float) {
+        rect = SIMD4<Float>(
+            Float(frame.origin.x),
+            Float(frame.origin.y),
+            Float(frame.width),
+            Float(frame.height)
+        )
+        params = SIMD4<Float>(Float(cornerRadius), hitProbability, 0, seed)
+    }
+}
+
 // MARK: - GlassRegistration
 
 /// RAII token: deregisters the glass effect on deinit.
@@ -48,10 +83,91 @@ final class GlassService {
         var lastIsHDR: Bool = false
         var lastLiquidZone: GlassRenderer.LiquidZone?
         var lastBarData: GlassRenderer.BarData?
+        var adaptiveState = AdaptiveMaterialState()
     }
 
     private struct WeakSource {
         weak var source: GlassCaptureSource?
+    }
+
+    private struct WeakBackdropOverlaySource {
+        weak var source: GlassBackdropOverlaySource?
+    }
+
+    private struct BackdropStats {
+        let meanLuma: Float
+        let variance: Float
+        let brightFraction: Float
+        let darkFraction: Float
+    }
+
+    private struct CaptureResult {
+        let texture: MTLTexture
+        let stats: BackdropStats?
+    }
+
+    private struct AdaptiveMaterialState {
+        private(set) var appearance: Float = 1
+        private(set) var contrast: Float = 0
+
+        private var initialized = false
+        private var filteredLuma: Float = 0.5
+        private var targetAppearance: Float = 1
+        private var targetContrast: Float = 0
+        private static let appearanceSwitchLuma: Float = 0.50
+
+        var isAnimating: Bool {
+            abs(appearance - targetAppearance) > 0.003 ||
+            abs(contrast - targetContrast) > 0.003
+        }
+
+        mutating func ingest(_ stats: BackdropStats, dt: Float) {
+            let safeDt = max(dt, 1.0 / 120.0)
+            if !initialized {
+                initialized = true
+                filteredLuma = stats.meanLuma
+                targetAppearance = stats.meanLuma >= Self.appearanceSwitchLuma ? 1 : 0
+                targetContrast = Self.contrastTarget(for: stats)
+                appearance = targetAppearance
+                contrast = targetContrast
+                return
+            }
+
+            let sampleAlpha = Self.alpha(dt: safeDt, tau: 0.12)
+            filteredLuma += (stats.meanLuma - filteredLuma) * sampleAlpha
+
+            // Single threshold selects the target so returning to the same
+            // backdrop returns to the same material state. The visible
+            // transition remains smooth because both luma and appearance
+            // are temporally filtered.
+            targetAppearance = filteredLuma >= Self.appearanceSwitchLuma ? 1 : 0
+            targetContrast = Self.contrastTarget(for: stats)
+            advance(dt: safeDt)
+        }
+
+        mutating func advance(dt: Float) {
+            guard initialized else { return }
+            let safeDt = max(dt, 1.0 / 120.0)
+            let appearanceAlpha = Self.alpha(dt: safeDt, tau: 0.24)
+            let contrastAlpha = Self.alpha(dt: safeDt, tau: 0.18)
+            appearance += (targetAppearance - appearance) * appearanceAlpha
+            contrast += (targetContrast - contrast) * contrastAlpha
+        }
+
+        private static func contrastTarget(for stats: BackdropStats) -> Float {
+            let stdDev = sqrtf(max(stats.variance, 0))
+            let mixedExtremes = min(stats.brightFraction, stats.darkFraction)
+            let dominantExtreme = max(stats.brightFraction, stats.darkFraction)
+            return clamp(stdDev * 2.7 + mixedExtremes * 1.6 + dominantExtreme * 0.2, 0, 1)
+        }
+
+        private static func alpha(dt: Float, tau: Float) -> Float {
+            1.0 - expf(-dt / max(tau, 0.001))
+        }
+
+        private static func clamp(_ value: Float, _ minValue: Float, _ maxValue: Float) -> Float {
+            min(max(value, minValue), maxValue)
+        }
     }
 
     private final class RendererHost {
@@ -78,6 +194,7 @@ final class GlassService {
     private var needsCapture = true // true on first frame
     private var continuousCaptureUntil: CFTimeInterval = 0
     private var captureSources: [WeakSource] = []
+    private var backdropOverlaySources: [WeakBackdropOverlaySource] = []
     private var idleTicks = 0
     private let idleThreshold = 3  // stop display link after N consecutive idle ticks
     private var watchdogTimer: Timer?
@@ -151,6 +268,158 @@ final class GlassService {
         captureSources.removeAll { $0.source === source }
     }
 
+    func addBackdropOverlaySource(_ source: GlassBackdropOverlaySource) {
+        guard !backdropOverlaySources.contains(where: { $0.source === source }) else { return }
+        backdropOverlaySources.append(WeakBackdropOverlaySource(source: source))
+        needsCapture = true
+        ensureRunning()
+    }
+
+    func removeBackdropOverlaySource(_ source: GlassBackdropOverlaySource) {
+        backdropOverlaySources.removeAll { $0.source == nil || $0.source === source }
+    }
+
+    func paintSplashGlassHitTargets(
+        in overlayView: UIView,
+        maxCount: Int
+    ) -> [PaintSplashGlassHitTarget] {
+        guard let window = overlayView.window, maxCount > 0 else { return [] }
+
+        var targets: [PaintSplashGlassHitTarget] = []
+        targets.reserveCapacity(maxCount)
+        let scale = window.screen.scale
+
+        for reg in registrations.values {
+            guard targets.count < maxCount,
+                  let anchor = reg.anchor,
+                  anchor.window === window,
+                  let frameInWindow = anchor.presentationFrame()
+            else { continue }
+
+            let frame = overlayView.convert(frameInWindow, from: window)
+            guard frame.width > 0,
+                  frame.height > 0,
+                  frame.intersects(overlayView.bounds)
+            else { continue }
+
+            guard let provider = anchor.shapeProvider else {
+                continue
+            }
+            let captureFrame = frameInWindow
+            let shapes = provider(frameInWindow, captureFrame, scale)
+
+            let countBefore = targets.count
+            appendPaintSplashHitTargets(
+                shapes: shapes,
+                captureFrame: captureFrame,
+                overlayView: overlayView,
+                window: window,
+                fallbackCornerRadius: anchor.cornerRadius,
+                maxCount: maxCount,
+                into: &targets
+            )
+
+            if targets.count == countBefore {
+                // Do not fall back to the whole anchor frame: it produces
+                // deterministic drip points across the entire input bar
+                // instead of the actual circle/capsule shapes.
+                continue
+            }
+        }
+
+        return targets
+    }
+
+    private func appendPaintSplashHitTargets(
+        shapes: GlassRenderer.ShapeParams,
+        captureFrame: CGRect,
+        overlayView: UIView,
+        window: UIWindow,
+        fallbackCornerRadius: CGFloat,
+        maxCount: Int,
+        into targets: inout [PaintSplashGlassHitTarget]
+    ) {
+        let captureWidth = captureFrame.width
+        let captureHeight = captureFrame.height
+        guard captureWidth > 0, captureHeight > 0 else { return }
+
+        func stableSeed(_ slot: Float) -> Float {
+            Float(captureFrame.minX) * 0.013
+                + Float(captureFrame.minY) * 0.017
+                + slot * 0.371
+        }
+
+        func appendRoundedRect(_ shape: SIMD4<Float>, cornerR: Float, slot: Float) {
+            guard targets.count < maxCount,
+                  shape.z > 0.001,
+                  shape.w > 0.001 else { return }
+
+            let frameInWindow = CGRect(
+                x: captureFrame.minX + CGFloat(shape.x) * captureWidth,
+                y: captureFrame.minY + CGFloat(shape.y) * captureHeight,
+                width: CGFloat(shape.z) * captureWidth,
+                height: CGFloat(shape.w) * captureHeight
+            )
+            let frame = overlayView.convert(frameInWindow, from: window)
+            guard frame.width > 1,
+                  frame.height > 1,
+                  frame.intersects(overlayView.bounds)
+            else { return }
+
+            let radius = CGFloat(cornerR) * captureHeight
+            targets.append(
+                PaintSplashGlassHitTarget(
+                    roundedRectFrame: frame,
+                    cornerRadius: radius > 0 ? radius : fallbackCornerRadius,
+                    seed: stableSeed(slot)
+                )
+            )
+        }
+
+        func appendCircle(_ shape: SIMD4<Float>, slot: Float) {
+            guard targets.count < maxCount,
+                  shape.z > 0.001 else { return }
+
+            let radius = CGFloat(shape.z) * captureHeight
+            let center = CGPoint(
+                x: captureFrame.minX + CGFloat(shape.x) * captureWidth,
+                y: captureFrame.minY + CGFloat(shape.y) * captureHeight
+            )
+            let frameInWindow = CGRect(
+                x: center.x - radius,
+                y: center.y - radius,
+                width: radius * 2,
+                height: radius * 2
+            )
+            let frame = overlayView.convert(frameInWindow, from: window)
+            guard frame.width > 1,
+                  frame.height > 1,
+                  frame.intersects(overlayView.bounds)
+            else { return }
+
+            targets.append(
+                PaintSplashGlassHitTarget(
+                    circleFrame: frame,
+                    radius: min(frame.width, frame.height) * 0.5,
+                    seed: stableSeed(slot)
+                )
+            )
+        }
+
+        appendRoundedRect(shapes.shape0, cornerR: shapes.shape0cornerR, slot: 0)
+
+        let shapeCount = Int(shapes.shapeCount)
+        if shapeCount >= 2 {
+            appendCircle(shapes.shape1, slot: 1)
+        }
+        if shapeCount >= 3 {
+            appendCircle(shapes.shape2, slot: 2)
+        }
+        if shapeCount >= 4 || shapes.scrollButtonVisible > 0.5 {
+            appendCircle(shapes.shape3, slot: 3)
+        }
+    }
+
     private func tearDown() {
         displayLinkToken?.invalidate()
         displayLinkToken = nil
@@ -163,6 +432,7 @@ final class GlassService {
         }
         rendererHosts.removeAll()
         captureSources.removeAll()
+        backdropOverlaySources.removeAll()
     }
 
     // MARK: - Render Loop
@@ -287,6 +557,8 @@ final class GlassService {
         let anyAnimating = registrations.values.contains { $0.anchor?.isAnimating == true }
         let hasLiquidPool = registrations.values.contains { $0.anchor?.extendsCaptureToScreenBottom == true }
         let inBurst = CACurrentMediaTime() < continuousCaptureUntil
+        let activeBackdropOverlays = currentBackdropOverlays()
+        let hasBackdropOverlay = !activeBackdropOverlays.isEmpty
         let shouldCapture = needsCapture || inBurst || anyAnimating || hasActiveSourceUnderGlass()
 
         // Wave energy: ramps up during scroll, decays when idle
@@ -318,8 +590,11 @@ final class GlassService {
         }
 
         // Render when capturing OR waves still decaying OR bars active
+        // OR adaptive material is still easing toward a threshold-selected state.
         let hasActiveBars = registrations.values.contains { $0.anchor?.hasBars == true }
-        let shouldRender = shouldCapture || (hasLiquidPool && waveEnergy > 0.001) || hasActiveBars
+        let hasAdaptiveTransition = registrations.values.contains { $0.adaptiveState.isAnimating }
+        let shouldRender = shouldCapture || (hasLiquidPool && waveEnergy > 0.001)
+            || hasActiveBars || hasAdaptiveTransition || hasBackdropOverlay
 
         let scale = sourceWindow.screen.scale
         let renderHostContainers = registrations.values
@@ -422,10 +697,6 @@ final class GlassService {
                     )
                 }
 
-                guard let texture = captureRegion(captureFrame, from: sourceWindow, scale: scale,
-                                                     sourceView: anchor.sourceView,
-                                                     clearPattern: anchor.clearPatternBGRA) else { continue }
-
                 let shapes: GlassRenderer.ShapeParams
                 if let provider = anchor.shapeProvider {
                     shapes = provider(glassFrame, captureFrame, scale)
@@ -441,6 +712,17 @@ final class GlassService {
                     s.shapeCount = 1
                     shapes = s
                 }
+
+                guard let capture = captureRegion(captureFrame, from: sourceWindow, scale: scale,
+                                                  sourceView: anchor.sourceView,
+                                                  clearPattern: anchor.clearPatternBGRA,
+                                                  shapes: shapes) else { continue }
+                let texture = capture.texture
+                let adaptiveMaterial = updateAdaptiveMaterial(
+                    for: id,
+                    stats: capture.stats,
+                    dt: dt
+                )
 
                 let liquidZone: GlassRenderer.LiquidZone?
                 if wantsLiquid, captureFrame.height > 0 {
@@ -483,12 +765,19 @@ final class GlassService {
                         GlassRenderer.RenderItem(
                             name: anchor.debugName,
                             frame: destinationFrame,
+                            captureFrameInWindow: captureFrame,
                             sourceTexture: texture,
                             shapes: shapes,
                             isHDR: texture.pixelFormat == .bgr10a2Unorm,
                             liquidZone: liquidZone,
                             time: waveTime,
-                            barData: barData
+                            barData: barData,
+                            backdropOverlay: backdropOverlay(
+                                for: captureFrame,
+                                in: activeBackdropOverlays
+                            ),
+                            adaptiveAppearance: adaptiveMaterial.appearance,
+                            adaptiveContrast: adaptiveMaterial.contrast
                         )
                     )
                     renderItemsByContainer[key] = group
@@ -499,6 +788,11 @@ final class GlassService {
                       let shapes = reg.lastShapes,
                       let captureFrame = reg.lastCaptureFrame {
                 // ── Render-only: reuse cached texture, update wave animation ──
+                let adaptiveMaterial = updateAdaptiveMaterial(
+                    for: id,
+                    stats: nil,
+                    dt: dt
+                )
                 var lz = wantsLiquid ? reg.lastLiquidZone : nil
                 lz?.waveEnergy = waveEnergy
                 let destinationFrame = renderDestinationFrame(
@@ -519,12 +813,19 @@ final class GlassService {
                         GlassRenderer.RenderItem(
                             name: anchor.debugName,
                             frame: destinationFrame,
+                            captureFrameInWindow: captureFrame,
                             sourceTexture: texture,
                             shapes: shapes,
                             isHDR: reg.lastIsHDR,
                             liquidZone: lz,
                             time: waveTime,
-                            barData: anchor.hasBars ? reg.lastBarData : nil
+                            barData: anchor.hasBars ? reg.lastBarData : nil,
+                            backdropOverlay: backdropOverlay(
+                                for: captureFrame,
+                                in: activeBackdropOverlays
+                            ),
+                            adaptiveAppearance: adaptiveMaterial.appearance,
+                            adaptiveContrast: adaptiveMaterial.contrast
                         )
                     )
                     renderItemsByContainer[key] = group
@@ -546,6 +847,9 @@ final class GlassService {
         if captureSources.count > 0 && tickCount % 600 == 0 {
             captureSources.removeAll { $0.source == nil }
         }
+        if backdropOverlaySources.count > 0 && tickCount % 600 == 0 {
+            backdropOverlaySources.removeAll { $0.source == nil }
+        }
 
         // Stop display link when idle — 0% CPU between triggers
         if shouldRender {
@@ -557,6 +861,68 @@ final class GlassService {
                 return
             }
         }
+    }
+
+    private func currentBackdropOverlays() -> [GlassRenderer.BackdropOverlay] {
+        guard !backdropOverlaySources.isEmpty else { return [] }
+
+        var overlays: [GlassRenderer.BackdropOverlay] = []
+        var hasDeadSource = false
+
+        for weakSource in backdropOverlaySources {
+            guard let source = weakSource.source else {
+                hasDeadSource = true
+                continue
+            }
+            guard let overlay = source.glassBackdropOverlay,
+                  overlay.frameInWindow.width > 0,
+                  overlay.frameInWindow.height > 0 else {
+                continue
+            }
+            overlays.append(overlay)
+        }
+
+        if hasDeadSource {
+            backdropOverlaySources.removeAll { $0.source == nil }
+        }
+
+        return overlays
+    }
+
+    private func backdropOverlay(
+        for captureFrame: CGRect,
+        in overlays: [GlassRenderer.BackdropOverlay]
+    ) -> GlassRenderer.BackdropOverlay? {
+        overlays.first { $0.frameInWindow.intersects(captureFrame) }
+    }
+
+    // MARK: - Adaptive Material
+
+    private func updateAdaptiveMaterial(
+        for id: UUID,
+        stats: BackdropStats?,
+        dt: Float
+    ) -> (appearance: Float, contrast: Float) {
+        guard var reg = registrations[id] else {
+            return (appearance: 1, contrast: 0)
+        }
+
+        if let stats {
+            reg.adaptiveState.ingest(stats, dt: dt)
+        } else {
+            reg.adaptiveState.advance(dt: dt)
+        }
+
+        let material = (
+            appearance: reg.adaptiveState.appearance,
+            contrast: reg.adaptiveState.contrast
+        )
+        registrations[id] = reg
+        reg.anchor?.setAdaptiveMaterial(
+            appearance: material.appearance,
+            contrast: material.contrast
+        )
+        return material
     }
 
     // MARK: - Source Intersection Check
@@ -644,7 +1010,8 @@ final class GlassService {
     /// Zero-copy CPU→GPU on device (CGContext → MTLBuffer → texture view), fallback on Intel simulator.
     private func captureRegion(_ frame: CGRect, from window: UIWindow, scale: CGFloat,
                                 sourceView: UIView? = nil,
-                                clearPattern: UInt32) -> MTLTexture? {
+                                clearPattern: UInt32,
+                                shapes: GlassRenderer.ShapeParams) -> CaptureResult? {
         let renderScale = captureScale
         let w = Int(frame.width * renderScale)
         let h = Int(frame.height * renderScale)
@@ -826,7 +1193,145 @@ final class GlassService {
             )
         }
 
-        return slot.texture
+        let stats = sampleBackdropStats(
+            from: slot,
+            shapes: shapes,
+            captureSize: CGSize(width: CGFloat(w), height: CGFloat(h))
+        )
+        return CaptureResult(texture: slot.texture, stats: stats)
+    }
+
+    private func sampleBackdropStats(
+        from slot: CaptureSlot,
+        shapes: GlassRenderer.ShapeParams,
+        captureSize: CGSize
+    ) -> BackdropStats? {
+        let width = Int(captureSize.width)
+        let height = Int(captureSize.height)
+        guard width > 0, height > 0 else { return nil }
+
+        let rawData: UnsafeMutableRawPointer?
+        if let buffer = slot.buffer {
+            rawData = buffer.contents()
+        } else {
+            rawData = slot.ctx.data
+        }
+        guard let rawData else { return nil }
+
+        let data = rawData.assumingMemoryBound(to: UInt8.self)
+        let columns = 24
+        let rows = 12
+        let aspect = Float(width) / Float(max(height, 1))
+
+        var count: Float = 0
+        var sum: Float = 0
+        var sumSq: Float = 0
+        var bright: Float = 0
+        var dark: Float = 0
+
+        for row in 0..<rows {
+            let v = (Float(row) + 0.5) / Float(rows)
+            for column in 0..<columns {
+                let u = (Float(column) + 0.5) / Float(columns)
+                guard containsGlassPoint(u: u, v: v, shapes: shapes, aspect: aspect) else {
+                    continue
+                }
+
+                let x = min(width - 1, max(0, Int(u * Float(width))))
+                let y = min(height - 1, max(0, Int(v * Float(height))))
+                let offset = y * slot.bytesPerRow + x * 4
+
+                let b = Float(data[offset]) / 255.0
+                let g = Float(data[offset + 1]) / 255.0
+                let r = Float(data[offset + 2]) / 255.0
+                let luma = r * 0.299 + g * 0.587 + b * 0.114
+
+                count += 1
+                sum += luma
+                sumSq += luma * luma
+                if luma > 0.72 { bright += 1 }
+                if luma < 0.28 { dark += 1 }
+            }
+        }
+
+        guard count > 0 else { return nil }
+
+        let mean = sum / count
+        let variance = max(0, sumSq / count - mean * mean)
+        return BackdropStats(
+            meanLuma: mean,
+            variance: variance,
+            brightFraction: bright / count,
+            darkFraction: dark / count
+        )
+    }
+
+    private func containsGlassPoint(
+        u: Float,
+        v: Float,
+        shapes: GlassRenderer.ShapeParams,
+        aspect: Float
+    ) -> Bool {
+        if roundedRectContains(
+            u: u,
+            v: v,
+            rect: shapes.shape0,
+            cornerR: shapes.shape0cornerR,
+            aspect: aspect
+        ) {
+            return true
+        }
+
+        let shapeCount = Int(shapes.shapeCount)
+        if shapeCount >= 2, circleContains(u: u, v: v, circle: shapes.shape1, aspect: aspect) {
+            return true
+        }
+        if shapeCount >= 3, circleContains(u: u, v: v, circle: shapes.shape2, aspect: aspect) {
+            return true
+        }
+        if shapes.scrollButtonVisible > 0.5,
+           circleContains(u: u, v: v, circle: shapes.shape3, aspect: aspect) {
+            return true
+        }
+        return false
+    }
+
+    private func roundedRectContains(
+        u: Float,
+        v: Float,
+        rect: SIMD4<Float>,
+        cornerR: Float,
+        aspect: Float
+    ) -> Bool {
+        guard rect.z > 0, rect.w > 0 else { return false }
+
+        let centerX = (rect.x + rect.z * 0.5) * aspect
+        let centerY = rect.y + rect.w * 0.5
+        let halfX = rect.z * aspect * 0.5
+        let halfY = rect.w * 0.5
+        let radius = min(cornerR, halfY)
+        let px = u * aspect - centerX
+        let py = v - centerY
+
+        let dx = abs(px) - halfX + radius
+        let dy = abs(py) - halfY + radius
+        let outsideX = max(dx, 0)
+        let outsideY = max(dy, 0)
+        let sdf = sqrtf(outsideX * outsideX + outsideY * outsideY)
+            + min(max(dx, dy), 0) - radius
+        return sdf <= 0
+    }
+
+    private func circleContains(
+        u: Float,
+        v: Float,
+        circle: SIMD4<Float>,
+        aspect: Float
+    ) -> Bool {
+        guard circle.z > 0 else { return false }
+        let dx = (u - circle.x) * aspect
+        let dy = v - circle.y
+        return dx * dx + dy * dy <= circle.z * circle.z
     }
 
     private func pruneCaptureCachesIfNeeded() {
@@ -853,56 +1358,11 @@ final class GlassService {
         in ctx: CGContext,
         clipRectInLayer: CGRect
     ) {
-        guard !clipRectInLayer.isEmpty else { return }
-        if subtreeContainsBubblePortalBackground(layer) {
-            renderLayerSubtreeWithBubblePortalFallback(
-                layer,
-                in: ctx,
-                clipRectInLayer: clipRectInLayer
-            )
-        } else {
-            ctx.saveGState()
-            ctx.clip(to: clipRectInLayer)
-            layer.render(in: ctx)
-            ctx.restoreGState()
-        }
-    }
-
-    private func renderLayerSubtreeWithBubblePortalFallback(
-        _ layer: CALayer,
-        in ctx: CGContext,
-        clipRectInLayer: CGRect
-    ) {
-        guard !clipRectInLayer.isEmpty, !layer.isHidden, layer.opacity > 0 else { return }
-
-        if renderBubblePortalBackgroundLayer(
+        BubblePortalCaptureRenderer.renderLayerForCapture(
             layer,
             in: ctx,
             clipRectInLayer: clipRectInLayer
-        ) {
-            return
-        }
-
-        guard let sublayers = layer.sublayers, !sublayers.isEmpty else {
-            ctx.saveGState()
-            ctx.clip(to: clipRectInLayer)
-            layer.render(in: ctx)
-            ctx.restoreGState()
-            return
-        }
-
-        ctx.saveGState()
-        ctx.clip(to: clipRectInLayer)
-        for child in sublayers {
-            guard !child.isHidden, child.opacity > 0 else { continue }
-            let childFrame = child.frame
-            guard childFrame.intersects(clipRectInLayer) else { continue }
-
-            withLayerGeometry(child, in: ctx) {
-                renderLayerForCapture(child, in: ctx, clipRectInLayer: child.bounds)
-            }
-        }
-        ctx.restoreGState()
+        )
     }
 
     private func withLayerGeometry(
@@ -924,65 +1384,6 @@ final class GlassService {
         )
         body()
         ctx.restoreGState()
-    }
-
-    private func subtreeContainsBubblePortalBackground(_ layer: CALayer) -> Bool {
-        if isBubblePortalBackgroundLayer(layer) {
-            return true
-        }
-        return layer.sublayers?.contains(where: subtreeContainsBubblePortalBackground) ?? false
-    }
-
-    private func isBubblePortalBackgroundLayer(_ layer: CALayer) -> Bool {
-        if layer.name == "message.bubblePortalBackground" {
-            return true
-        }
-        guard let hostView = layer.delegate as? UIView else { return false }
-        return BubblePortalBackgroundNode.captureSourceView(for: hostView) != nil
-    }
-
-    private func renderBubblePortalBackgroundLayer(
-        _ layer: CALayer,
-        in ctx: CGContext,
-        clipRectInLayer: CGRect
-    ) -> Bool {
-        guard let hostView = layer.delegate as? UIView,
-              let sourceView = BubblePortalBackgroundNode.captureSourceView(for: hostView),
-              !hostView.isHidden,
-              hostView.alpha > 0 else {
-            return false
-        }
-
-        ctx.saveGState()
-        ctx.clip(to: clipRectInLayer)
-
-        if let maskLayer = hostView.layer.mask as? CAShapeLayer,
-           let maskPath = maskLayer.path {
-            ctx.addPath(maskPath)
-            ctx.clip()
-        } else {
-            ctx.clip(to: hostView.bounds)
-        }
-
-        let sourceSubviews = sourceView.subviews.filter { !$0.isHidden && $0.alpha > 0 }
-        if sourceSubviews.isEmpty {
-            let sourceFrame = sourceView.convert(sourceView.bounds, to: hostView)
-            ctx.saveGState()
-            ctx.translateBy(x: sourceFrame.minX, y: sourceFrame.minY)
-            sourceView.layer.render(in: ctx)
-            ctx.restoreGState()
-        } else {
-            for sourceSubview in sourceSubviews {
-                let sourceFrame = sourceSubview.convert(sourceSubview.bounds, to: hostView)
-                ctx.saveGState()
-                ctx.translateBy(x: sourceFrame.minX, y: sourceFrame.minY)
-                sourceSubview.layer.render(in: ctx)
-                ctx.restoreGState()
-            }
-        }
-
-        ctx.restoreGState()
-        return true
     }
 
 }

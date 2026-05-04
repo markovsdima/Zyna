@@ -31,12 +31,21 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var contentFilename: String?
     var contentMimetype: String?
     var contentFileSize: Int64?
+    var contentThumbnailMediaJSON: String?
+    var contentVideoWidth: Int64?
+    var contentVideoHeight: Int64?
+    var contentVideoDuration: TimeInterval?
     var reactionsJSON: String
     var sendStatus: String
     var replyEventId: String?
     var replySenderId: String?
     var replySenderName: String?
     var replyBody: String?
+    var isEdited: Bool
+    var isEditPending: Bool
+    var isEditFailed: Bool
+    var latestEditEventId: String?
+    var editTransactionId: String?
 
     var zynaAttributesJSON: String?
 }
@@ -57,6 +66,11 @@ extension StoredMessage {
         self.timestamp = msg.timestamp.timeIntervalSince1970
         self.reactionsJSON = Self.encodeReactions(msg.reactions)
         self.sendStatus = msg.sendStatus
+        self.isEdited = msg.isEdited
+        self.isEditPending = msg.isEditPending
+        self.isEditFailed = msg.isEditFailed
+        self.latestEditEventId = msg.latestEditEventId
+        self.editTransactionId = nil
 
         switch msg.itemIdentifier {
         case .eventId(let id):
@@ -77,7 +91,7 @@ extension StoredMessage {
         case .text(let body):
             contentType = "text"
             contentBody = body
-        case .image(let source, let width, let height, let caption, _):
+        case .image(let source, let thumbnailSource, let width, let height, let caption, _):
             guard let source else {
                 assertionFailure("StoredMessage cannot persist image content without a media source")
                 contentType = "unsupported"
@@ -86,8 +100,26 @@ extension StoredMessage {
             }
             contentType = "image"
             contentMediaJSON = source.toJson()
+            contentThumbnailMediaJSON = thumbnailSource?.toJson()
             contentImageWidth = width.map(Int64.init)
             contentImageHeight = height.map(Int64.init)
+            contentCaption = caption
+        case .video(let source, let thumbnailSource, let width, let height, let duration, let filename, let mimetype, let size, let caption, _):
+            guard let source else {
+                assertionFailure("StoredMessage cannot persist video content without a media source")
+                contentType = "unsupported"
+                contentBody = "pendingOutgoingVideo"
+                break
+            }
+            contentType = "video"
+            contentMediaJSON = source.toJson()
+            contentThumbnailMediaJSON = thumbnailSource?.toJson()
+            contentVideoWidth = width.map(Int64.init)
+            contentVideoHeight = height.map(Int64.init)
+            contentVideoDuration = duration
+            contentFilename = filename
+            contentMimetype = mimetype
+            contentFileSize = size.map(Int64.init)
             contentCaption = caption
         case .voice(let source, let duration, let waveform):
             guard let source else {
@@ -190,9 +222,42 @@ extension StoredMessage {
             content: content,
             reactions: Self.decodeReactions(reactionsJSON),
             replyInfo: replyInfo,
+            isEditable: Self.isStoredMessageEditable(
+                content: content,
+                isOutgoing: isOutgoing,
+                eventId: eventId,
+                sendStatus: sendStatus
+            ),
+            isEdited: isEdited,
+            isEditPending: isEditPending,
+            isEditFailed: isEditFailed,
+            latestEditEventId: latestEditEventId,
             zynaAttributes: Self.decodeZynaAttributes(zynaAttributesJSON),
             sendStatus: sendStatus
         )
+    }
+
+    private static func isStoredMessageEditable(
+        content: ChatMessageContent,
+        isOutgoing: Bool,
+        eventId: String?,
+        sendStatus: String
+    ) -> Bool {
+        guard isOutgoing,
+              eventId?.isEmpty == false
+        else {
+            return false
+        }
+        switch sendStatus {
+        case "sent", "synced", "read":
+            break
+        default:
+            return false
+        }
+        if case .text = content {
+            return true
+        }
+        return false
     }
 
     private func buildContent() -> ChatMessageContent? {
@@ -202,12 +267,34 @@ extension StoredMessage {
         case "image":
             guard let json = contentMediaJSON,
                   let source = try? MediaSource.fromJson(json: json) else { return nil }
+            let thumbnailSource = contentThumbnailMediaJSON.flatMap {
+                try? MediaSource.fromJson(json: $0)
+            }
             return .image(
                 source: source,
+                thumbnailSource: thumbnailSource,
                 width: contentImageWidth.map(UInt64.init),
                 height: contentImageHeight.map(UInt64.init),
                 caption: contentCaption,
                 previewImageData: nil
+            )
+        case "video":
+            guard let json = contentMediaJSON,
+                  let source = try? MediaSource.fromJson(json: json) else { return nil }
+            let thumbnailSource = contentThumbnailMediaJSON.flatMap {
+                try? MediaSource.fromJson(json: $0)
+            }
+            return .video(
+                source: source,
+                thumbnailSource: thumbnailSource,
+                width: contentVideoWidth.map(UInt64.init),
+                height: contentVideoHeight.map(UInt64.init),
+                duration: contentVideoDuration,
+                filename: contentFilename ?? "video.mp4",
+                mimetype: contentMimetype,
+                size: contentFileSize.map(UInt64.init),
+                caption: contentCaption,
+                previewThumbnailData: nil
             )
         case "voice":
             guard let json = contentMediaJSON,

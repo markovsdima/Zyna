@@ -11,6 +11,7 @@ import MatrixRustSDK
 enum OutgoingEnvelopeKind: String, Codable, Equatable {
     case text
     case image
+    case video
     case voice
     case file
     case mediaBatch
@@ -50,6 +51,16 @@ struct OutgoingImagePayload: Codable, Equatable {
     let height: UInt64?
 }
 
+struct OutgoingVideoPayload: Codable, Equatable {
+    let filename: String
+    let caption: String?
+    let width: UInt64?
+    let height: UInt64?
+    let duration: TimeInterval?
+    let mimetype: String?
+    let size: UInt64?
+}
+
 struct OutgoingVoicePayload: Codable, Equatable {
     let duration: TimeInterval
     let waveform: [UInt16]
@@ -72,6 +83,7 @@ struct OutgoingMediaBatchPayload: Codable, Equatable {
 enum OutgoingEnvelopePayload: Equatable {
     case text(OutgoingTextPayload)
     case image(OutgoingImagePayload)
+    case video(OutgoingVideoPayload)
     case voice(OutgoingVoicePayload)
     case file(OutgoingFilePayload)
     case mediaBatch(OutgoingMediaBatchPayload)
@@ -128,6 +140,23 @@ enum OutgoingEnvelopePayload: Equatable {
                 mimetype: nil,
                 size: nil,
                 duration: nil,
+                waveform: nil
+            )
+        case .video(let video):
+            payload = CodablePayload(
+                kind: OutgoingEnvelopeKind.video.rawValue,
+                body: nil,
+                caption: video.caption,
+                captionPlacement: nil,
+                expectedItemCount: 1,
+                width: video.width,
+                height: video.height,
+                primarySplitPermille: nil,
+                secondarySplitPermille: nil,
+                filename: video.filename,
+                mimetype: video.mimetype,
+                size: video.size,
+                duration: video.duration,
                 waveform: nil
             )
         case .voice(let voice):
@@ -210,6 +239,18 @@ enum OutgoingEnvelopePayload: Equatable {
                     height: payload.height
                 )
             )
+        case .video:
+            return .video(
+                OutgoingVideoPayload(
+                    filename: payload.filename ?? "video.mp4",
+                    caption: payload.caption,
+                    width: payload.width,
+                    height: payload.height,
+                    duration: payload.duration,
+                    mimetype: payload.mimetype,
+                    size: payload.size
+                )
+            )
         case .voice:
             return .voice(
                 OutgoingVoicePayload(
@@ -289,6 +330,18 @@ struct OutgoingEnvelopeRecord: Codable, FetchableRecord, PersistableRecord {
                     caption: caption,
                     width: nil,
                     height: nil
+                )
+            )
+        case .video:
+            return .video(
+                OutgoingVideoPayload(
+                    filename: caption ?? "video.mp4",
+                    caption: nil,
+                    width: nil,
+                    height: nil,
+                    duration: nil,
+                    mimetype: nil,
+                    size: nil
                 )
             )
         case .voice:
@@ -411,6 +464,11 @@ struct OutgoingEnvelopeSnapshot {
     var imagePayload: OutgoingImagePayload? {
         guard case .image(let imagePayload) = payload else { return nil }
         return imagePayload
+    }
+
+    var videoPayload: OutgoingVideoPayload? {
+        guard case .video(let videoPayload) = payload else { return nil }
+        return videoPayload
     }
 
     var voicePayload: OutgoingVoicePayload? {

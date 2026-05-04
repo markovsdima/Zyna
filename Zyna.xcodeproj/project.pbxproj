@@ -310,7 +310,7 @@
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = UM3QPHF8E3;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Zyna/App/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls and sharing photos.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls, sharing photos, and scanning documents.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Zyna needs access to your microphone for voice calls.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -354,7 +354,7 @@
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = UM3QPHF8E3;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Zyna/App/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls and sharing photos.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls, sharing photos, and scanning documents.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Zyna needs access to your microphone for voice calls.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

@@ -87,6 +87,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
             break
         case .reload:
             tableNode.reloadData()
+            scheduleVisibleProfileAppearancePrefetch()
         case .batch(let deletions, let insertions, let reloads):
             tableNode.performBatch(animated: true, updates: {
                 if !deletions.isEmpty {
@@ -98,8 +99,22 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
                 if !reloads.isEmpty {
                     tableNode.reloadRows(at: reloads, with: .none)
                 }
-            }, completion: nil)
+            }, completion: { [weak self] _ in
+                self?.scheduleVisibleProfileAppearancePrefetch()
+            })
         }
+    }
+
+    private func scheduleVisibleProfileAppearancePrefetch() {
+        DispatchQueue.main.async { [weak self] in
+            self?.prefetchVisibleProfileAppearances()
+        }
+    }
+
+    private func prefetchVisibleProfileAppearances() {
+        viewModel.prefetchProfileAppearanceForVisibleChats(
+            at: tableNode.indexPathsForVisibleRows()
+        )
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -107,6 +122,11 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         GlassService.shared.captureFor(duration: 0.5)
         viewModel.registerPresence()
         GlassService.shared.setNeedsCapture()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        prefetchVisibleProfileAppearances()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -293,6 +313,7 @@ extension RoomsViewController {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         previewPressInteraction.cancelForScroll()
         GlassService.shared.setNeedsCapture()
+        prefetchVisibleProfileAppearances()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {

@@ -39,6 +39,7 @@ struct LogScope: OptionSet {
     static let presence         = LogScope(rawValue: bit(12))
     static let database         = LogScope(rawValue: bit(13))
     static let push             = LogScope(rawValue: bit(14))
+    static let video            = LogScope(rawValue: bit(15))
 
     // MARK: - Presets
 
@@ -57,7 +58,8 @@ struct LogScope: OptionSet {
         .voiceRecording,
         .presence,
         .database,
-        .push
+        .push,
+        .video
     ]
 
     static let none: LogScope = []
@@ -150,6 +152,8 @@ private extension LogScope {
         if contains(.voiceRecording){ names.append("voiceRecording") }
         if contains(.presence)      { names.append("presence") }
         if contains(.database)      { names.append("database") }
+        if contains(.push)          { names.append("push") }
+        if contains(.video)         { names.append("video") }
         return names.isEmpty ? "NONE" : names.joined(separator: "|")
     }
 }

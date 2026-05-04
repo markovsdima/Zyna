@@ -29,11 +29,22 @@ final class ProfileCoordinator {
         vc.onThemeTapped = { [weak self] in
             self?.showChatThemeSettings()
         }
+        vc.onNameColorTapped = { [weak self] in
+            self?.showNameColorSettings()
+        }
         navigationController.push(vc)
     }
 
     private func showChatThemeSettings() {
         let vc = ChatThemeSettingsViewController()
+        vc.onBack = { [weak self] in
+            _ = self?.navigationController.pop()
+        }
+        navigationController.push(vc)
+    }
+
+    private func showNameColorSettings() {
+        let vc = ProfileNameColorSettingsViewController()
         vc.onBack = { [weak self] in
             _ = self?.navigationController.pop()
         }

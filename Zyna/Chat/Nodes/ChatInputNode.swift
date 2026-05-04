@@ -43,6 +43,9 @@ final class ChatInputNode: ASDisplayNode {
     private var colorPaletteLongPress: UILongPressGestureRecognizer?
     private var pendingFlashTask: DispatchWorkItem?
     private static let sendButtonDefaultTint: UIColor = AppColor.accent
+    private var glassMaterial = GlassAdaptiveMaterial.light
+    private var lastAppliedGlassAppearance: CGFloat = -1
+    private var lastAppliedGlassContrast: CGFloat = -1
 
     var onSend: ((String, UIColor?) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
@@ -50,6 +53,7 @@ final class ChatInputNode: ASDisplayNode {
     var onSizeChanged: (() -> Void)?
     var onWaveformUpdate: (([Float]) -> Void)?
     var onReplyCancelled: (() -> Void)?
+    var onEditCancelled: (() -> Void)?
     var onPastedImages: (([UIImage]) -> Void)?
 
     private var pendingPastedImages: [(sequence: Int, image: UIImage)] = []
@@ -57,43 +61,78 @@ final class ChatInputNode: ASDisplayNode {
     private var pendingPasteExpectedImageCount: Int?
     private var pendingPasteFlushWorkItem: DispatchWorkItem?
 
-    // MARK: - Reply Preview
+    // MARK: - Preview
 
     private let replyBackgroundNode = ASDisplayNode()
     private let replyBarNode = ASDisplayNode()
     private let replyNameNode = ASTextNode()
     private let replyBodyNode = ASTextNode()
     private let replyCancelNode = ASButtonNode()
-    private var isShowingReply = false
-    private var isShowingForward = false
+
+    private enum PreviewMode {
+        case none
+        case reply
+        case forward
+        case edit
+    }
+
+    private var previewMode: PreviewMode = .none
+
+    private var isShowingPreview: Bool {
+        previewMode != .none
+    }
+
+    private var isShowingForward: Bool {
+        previewMode == .forward
+    }
+
+    private var isShowingEdit: Bool {
+        previewMode == .edit
+    }
 
     func setForwardPreview(senderName: String?, body: String?) {
         let showing = senderName != nil
-        guard showing != isShowingForward else { return }
-        isShowingForward = showing
-        // Reuse reply UI — just change the label
         if showing {
+            previewMode = .forward
             updateReplyText(
                 senderName: "↗ \(senderName ?? "")",
                 body: body
             )
+        } else if previewMode == .forward {
+            previewMode = .none
+        } else {
+            return
         }
-        isShowingReply = showing
         setNeedsLayout()
         onSizeChanged?()
     }
 
     func setReplyPreview(senderName: String?, body: String?) {
         let showing = senderName != nil
-        guard showing != isShowingReply else {
-            if showing {
-                updateReplyText(senderName: senderName, body: body)
-            }
+        if showing {
+            previewMode = .reply
+            updateReplyText(senderName: senderName, body: body)
+        } else if previewMode == .reply {
+            previewMode = .none
+        } else {
             return
         }
-        isShowingReply = showing
+        setNeedsLayout()
+        onSizeChanged?()
+    }
+
+    func setEditPreview(body: String?) {
+        let showing = body != nil
         if showing {
-            updateReplyText(senderName: senderName, body: body)
+            previewMode = .edit
+            updateReplyText(
+                senderName: String(localized: "Editing message"),
+                body: body
+            )
+        } else if previewMode == .edit {
+            previewMode = .none
+        } else {
+            return
         }
         setNeedsLayout()
         onSizeChanged?()
@@ -111,7 +150,7 @@ final class ChatInputNode: ASDisplayNode {
             string: body ?? "",
             attributes: [
                 .font: UIFont.systemFont(ofSize: 13),
-                .foregroundColor: UIColor.secondaryLabel
+                .foregroundColor: glassMaterial.secondaryForeground
             ]
         )
     }
@@ -126,7 +165,11 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     @objc private func replyCancelTapped() {
-        onReplyCancelled?()
+        if isShowingEdit {
+            onEditCancelled?()
+        } else {
+            onReplyCancelled?()
+        }
     }
 
     private func setupNodes() {
@@ -143,16 +186,13 @@ final class ChatInputNode: ASDisplayNode {
         replyNameNode.maximumNumberOfLines = 1
         replyBodyNode.maximumNumberOfLines = 1
         replyBodyNode.truncationMode = .byTruncatingTail
-        replyCancelNode.setImage(
-            UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium))?
-                .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal),
-            for: .normal
-        )
+        replyCancelNode.setImage(AppIcon.xmark.template(size: 14, weight: .medium), for: .normal)
+        replyCancelNode.imageNode.tintColor = glassMaterial.secondaryForeground
         replyCancelNode.style.preferredSize = CGSize(width: 30, height: 30)
 
         textInputNode.typingAttributes = [
             NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
-            NSAttributedString.Key.foregroundColor.rawValue: UIColor.label
+            NSAttributedString.Key.foregroundColor.rawValue: glassMaterial.primaryForeground
         ]
         textInputNode.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
         textInputNode.style.flexGrow = 1
@@ -164,7 +204,8 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.isAccessibilityElement = true
         textInputNode.accessibilityLabel = "Message"
 
-        attachButtonNode.setImage(AppIcon.attach.rendered(size: 24, color: .gray), for: .normal)
+        attachButtonNode.setImage(AppIcon.attach.template(size: 24), for: .normal)
+        attachButtonNode.imageNode.tintColor = glassMaterial.glyphForeground
         attachButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
         attachButtonNode.isAccessibilityElement = true
         attachButtonNode.accessibilityLabel = "Attach"
@@ -176,7 +217,8 @@ final class ChatInputNode: ASDisplayNode {
         sendButtonNode.accessibilityLabel = "Send"
         sendButtonNode.accessibilityTraits = .button
 
-        micButtonNode.setImage(AppIcon.mic.rendered(size: 24, color: .gray), for: .normal)
+        micButtonNode.setImage(AppIcon.mic.template(size: 24), for: .normal)
+        micButtonNode.imageNode.tintColor = glassMaterial.glyphForeground
         micButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
         micButtonNode.isAccessibilityElement = true
         micButtonNode.accessibilityLabel = "Record voice message"
@@ -197,6 +239,7 @@ final class ChatInputNode: ASDisplayNode {
         textInputNode.delegate = self
         textInputNode.view.layer.cornerRadius = 24
         textInputNode.view.clipsToBounds = true
+        textInputNode.textView.textColor = glassMaterial.primaryForeground
         textInputNode.textView.pasteDelegate = self
         textInputNode.textView.pasteConfiguration = UIPasteConfiguration(
             acceptableTypeIdentifiers: [UTType.plainText.identifier, UTType.image.identifier]
@@ -244,7 +287,7 @@ final class ChatInputNode: ASDisplayNode {
             children: [attachButtonNode]
         )
 
-        let showSend = !isTextEmpty || isShowingForward
+        let showSend = !isTextEmpty || isShowingForward || isShowingEdit
         let rightButton = showSend ? sendButtonNode : micButtonNode
         let rightSpec = ASStackLayoutSpec(
             direction: .vertical, spacing: 0, justifyContent: .end, alignItems: .center,
@@ -252,7 +295,7 @@ final class ChatInputNode: ASDisplayNode {
         )
 
         var inputColumnChildren: [ASLayoutElement] = []
-        if isShowingReply {
+        if isShowingPreview {
             let textColumn = ASStackLayoutSpec(
                 direction: .vertical, spacing: 1, justifyContent: .start, alignItems: .start,
                 children: [replyNameNode, replyBodyNode]
@@ -613,9 +656,8 @@ final class ChatInputNode: ASDisplayNode {
         guard !text.isEmpty || isShowingForward else { return }
         onSend?(text, color)
         textInputNode.textView.text = ""
-        if isShowingForward {
-            isShowingForward = false
-            isShowingReply = false
+        if isShowingForward || isShowingEdit {
+            previewMode = .none
         }
         updateTextEmptyState()
         setNeedsLayout()
@@ -728,12 +770,12 @@ extension ChatInputNode: UIGestureRecognizerDelegate {
         // Send-colour palette long-press: only when text is non-empty and
         // the touch is over the Send button.
         if gestureRecognizer === colorPaletteLongPress {
-            guard !isTextEmpty, !isRecording, voicePreview == nil else { return false }
+            guard !isTextEmpty, !isRecording, voicePreview == nil, !isShowingEdit else { return false }
             return sendButtonHitRect.contains(point)
         }
 
         // Mic recording long-press: only when text is empty.
-        guard isTextEmpty, !isRecording, voicePreview == nil else { return false }
+        guard isTextEmpty, !isRecording, voicePreview == nil, !isShowingEdit else { return false }
         let micFrame = micButtonNode.view.frame.insetBy(dx: -20, dy: -20)
         let micFrameInSelf = view.convert(micFrame, from: micButtonNode.supernode?.view ?? view)
         return micFrameInSelf.contains(point)
@@ -771,6 +813,7 @@ extension ChatInputNode {
 
     func setCurrentText(_ text: String) {
         textInputNode.textView.text = text
+        applyInputTextColor(glassMaterial.primaryForeground)
         updateTextEmptyState()
         invalidateCalculatedLayout()
         onSizeChanged?()
@@ -778,6 +821,64 @@ extension ChatInputNode {
 
     func focusTextInput() {
         textInputNode.textView.becomeFirstResponder()
+    }
+}
+
+extension ChatInputNode {
+    func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {
+        guard abs(material.appearance - lastAppliedGlassAppearance) > 0.012 ||
+              abs(material.contrast - lastAppliedGlassContrast) > 0.03 else {
+            return
+        }
+
+        glassMaterial = material
+        lastAppliedGlassAppearance = material.appearance
+        lastAppliedGlassContrast = material.contrast
+
+        let primary = material.primaryForeground
+        let secondary = material.secondaryForeground
+        let glyph = material.glyphForeground
+
+        textInputNode.typingAttributes = [
+            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
+            NSAttributedString.Key.foregroundColor.rawValue: primary
+        ]
+
+        if isNodeLoaded {
+            textInputNode.textView.textColor = primary
+            applyInputTextColor(primary)
+        }
+
+        restyleReplyNodes(secondary: secondary)
+        replyCancelNode.imageNode.tintColor = secondary
+        attachButtonNode.imageNode.tintColor = glyph
+        micButtonNode.imageNode.tintColor = glyph
+    }
+
+    private func applyInputTextColor(_ color: UIColor) {
+        guard isNodeLoaded else { return }
+        let textView = textInputNode.textView
+        let selectedRange = textView.selectedRange
+        let length = textView.textStorage.length
+        guard length > 0 else { return }
+        textView.textStorage.addAttribute(
+            .foregroundColor,
+            value: color,
+            range: NSRange(location: 0, length: length)
+        )
+        textView.selectedRange = selectedRange
+    }
+
+    private func restyleReplyNodes(secondary: UIColor) {
+        if let text = replyBodyNode.attributedText?.string {
+            replyBodyNode.attributedText = NSAttributedString(
+                string: text,
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 13),
+                    .foregroundColor: secondary
+                ]
+            )
+        }
     }
 }
 
@@ -790,6 +891,10 @@ extension ChatInputNode: UITextPasteDelegate {
     ) {
         guard item.itemProvider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else {
             item.setDefaultResult()
+            return
+        }
+        guard !isShowingEdit else {
+            item.setNoResult()
             return
         }
 
@@ -927,6 +1032,10 @@ private extension ChatInputNode {
     }
 
     func completeImagePaste(with image: UIImage, item: any UITextPasteItem, sequence: Int) {
+        guard !isShowingEdit else {
+            item.setNoResult()
+            return
+        }
         pendingPastedImages.append((sequence: sequence, image: image))
         item.setNoResult()
         if let expected = pendingPasteExpectedImageCount,
