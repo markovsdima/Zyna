@@ -186,6 +186,12 @@ final class GlassAnchor: UIView {
         return currentLayer.convert(currentLayer.bounds, to: window.layer)
     }
 
+    /// Final model-layer frame in window coordinates.
+    func modelFrame() -> CGRect? {
+        guard let window else { return nil }
+        return layer.convert(layer.bounds, to: window.layer)
+    }
+
     /// True if this layer or any ancestor has an active CAAnimation.
     /// Comparing presentation vs. model frames doesn't work here:
     /// `convert(_:to:)` walks ancestor presentation layers, so both

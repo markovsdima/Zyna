@@ -82,6 +82,7 @@ final class GlassService {
         var lastShapes: GlassRenderer.ShapeParams?
         var lastIsHDR: Bool = false
         var lastLiquidZone: GlassRenderer.LiquidZone?
+        var liquidCaptureFrame: CGRect?
         var lastBarData: GlassRenderer.BarData?
         var adaptiveState = AdaptiveMaterialState()
     }
@@ -549,7 +550,7 @@ final class GlassService {
         var renderItemsByContainer: [ObjectIdentifier: (container: UIView, renderer: GlassRenderer, items: [GlassRenderer.RenderItem])] = [:]
         var deferredCaptureRequest = false
 
-        // Check if capture is needed:
+        // Check capture drivers:
         // 1. Explicit trigger (scroll, layout)
         // 2. Timed burst (context menu animation)
         // 3. Anchor is being animated (navigation push/pop, keyboard)
@@ -559,13 +560,14 @@ final class GlassService {
         let inBurst = CACurrentMediaTime() < continuousCaptureUntil
         let activeBackdropOverlays = currentBackdropOverlays()
         let hasBackdropOverlay = !activeBackdropOverlays.isEmpty
-        let shouldCapture = needsCapture || inBurst || anyAnimating || hasActiveSourceUnderGlass()
+        let hasActiveSources = hasActiveSourceUnderGlass()
 
-        // Wave energy: ramps up during scroll, decays when idle
+        // Wave energy: ramps up during keyboard movement, decays when idle.
         let now = CACurrentMediaTime()
         let dt = lastTickTime > 0 ? Float(now - lastTickTime) : 0
         lastTickTime = now
 
+        var didDisableLiquidPool = false
         if hasLiquidPool {
             // Splash only when the input bar itself moves (keyboard), not on scroll
             let anchorMoving = registrations.values.contains {
@@ -580,14 +582,22 @@ final class GlassService {
                     waveTime += dt * waveEnergy
                 } else if waveEnergy <= 0.001 {
                     // Waves fully decayed — shrink capture back to glass rect
-                    for (_, reg) in registrations {
+                    var idsToDisable: [UUID] = []
+                    for (id, reg) in registrations {
                         if reg.anchor?.extendsCaptureToScreenBottom == true {
-                            reg.anchor?.extendsCaptureToScreenBottom = false
+                            idsToDisable.append(id)
                         }
                     }
+                    for id in idsToDisable {
+                        registrations[id]?.anchor?.extendsCaptureToScreenBottom = false
+                        registrations[id]?.liquidCaptureFrame = nil
+                    }
+                    didDisableLiquidPool = !idsToDisable.isEmpty
                 }
             }
         }
+
+        let shouldCapture = needsCapture || inBurst || anyAnimating || hasActiveSources || didDisableLiquidPool
 
         // Render when capturing OR waves still decaying OR bars active
         // OR adaptive material is still easing toward a threshold-selected state.
@@ -632,13 +642,7 @@ final class GlassService {
                 continue
             }
 
-            // Snap to device pixels
-            let glassFrame = CGRect(
-                x: round(rawFrame.origin.x * scale) / scale,
-                y: round(rawFrame.origin.y * scale) / scale,
-                width: round(rawFrame.width * scale) / scale,
-                height: round(rawFrame.height * scale) / scale
-            )
+            let glassFrame = snappedFrame(rawFrame, scale: scale)
 
             let wantsLiquid = anchor.extendsCaptureToScreenBottom
 
@@ -678,23 +682,44 @@ final class GlassService {
                     topPadding = 20
                     bottomPadding = 24
                 }
-                let captureX = max(glassFrame.origin.x - horizontalPadding, 0)
-                let captureY = max(glassFrame.origin.y - topPadding, 0)
-                let captureFrame: CGRect
+                let captureBaseFrame: CGRect
+                if wantsLiquid, let modelFrame = anchor.modelFrame() {
+                    captureBaseFrame = glassFrame.union(snappedFrame(modelFrame, scale: scale))
+                } else {
+                    captureBaseFrame = glassFrame
+                }
+                let captureX = max(captureBaseFrame.origin.x - horizontalPadding, 0)
+                let captureY = max(captureBaseFrame.origin.y - topPadding, 0)
+                let rawCaptureFrame: CGRect
                 if wantsLiquid {
-                    captureFrame = CGRect(
+                    rawCaptureFrame = CGRect(
                         x: captureX,
                         y: captureY,
-                        width: min(glassFrame.width + horizontalPadding * 2, windowBounds.width - captureX),
+                        width: min(
+                            captureBaseFrame.width + horizontalPadding * 2,
+                            windowBounds.width - captureX
+                        ),
                         height: windowBounds.height - captureY
                     )
                 } else {
-                    captureFrame = CGRect(
+                    rawCaptureFrame = CGRect(
                         x: captureX,
                         y: captureY,
-                        width: min(glassFrame.width + horizontalPadding * 2, windowBounds.width - captureX),
-                        height: min(glassFrame.height + topPadding + bottomPadding, windowBounds.height - captureY)
+                        width: min(
+                            captureBaseFrame.width + horizontalPadding * 2,
+                            windowBounds.width - captureX
+                        ),
+                        height: min(
+                            captureBaseFrame.height + topPadding + bottomPadding,
+                            windowBounds.height - captureY
+                        )
                     )
+                }
+                let captureFrame = wantsLiquid
+                    ? stableLiquidCaptureFrame(rawCaptureFrame, for: id, in: windowBounds)
+                    : rawCaptureFrame
+                if !wantsLiquid {
+                    registrations[id]?.liquidCaptureFrame = nil
                 }
 
                 let shapes: GlassRenderer.ShapeParams
@@ -960,6 +985,63 @@ final class GlassService {
 
     /// Capture scale factor. @2x instead of @3x = fewer pixels, invisible behind blur.
     private let captureScale: CGFloat = 2.0
+    private let captureFrameBucketPixels = 64
+
+    private func snappedFrame(_ frame: CGRect, scale: CGFloat) -> CGRect {
+        CGRect(
+            x: round(frame.origin.x * scale) / scale,
+            y: round(frame.origin.y * scale) / scale,
+            width: round(frame.width * scale) / scale,
+            height: round(frame.height * scale) / scale
+        )
+    }
+
+    private func stableLiquidCaptureFrame(
+        _ frame: CGRect,
+        for id: UUID,
+        in bounds: CGRect
+    ) -> CGRect {
+        let bucketed = bucketedCaptureFrame(frame, in: bounds)
+        guard let existing = registrations[id]?.liquidCaptureFrame else {
+            registrations[id]?.liquidCaptureFrame = bucketed
+            return bucketed
+        }
+
+        let expanded = bucketedCaptureFrame(existing.union(bucketed), in: bounds)
+        registrations[id]?.liquidCaptureFrame = expanded
+        return expanded
+    }
+
+    private func bucketedCaptureFrame(_ frame: CGRect, in bounds: CGRect) -> CGRect {
+        let scale = captureScale
+        let bucket = CGFloat(captureFrameBucketPixels)
+        let minX = bucketFloor(frame.minX - bounds.minX, bucket: bucket, scale: scale)
+        let minY = bucketFloor(frame.minY - bounds.minY, bucket: bucket, scale: scale)
+        let maxX = bucketCeil(frame.maxX - bounds.minX, bucket: bucket, scale: scale)
+        let maxY = bucketCeil(frame.maxY - bounds.minY, bucket: bucket, scale: scale)
+
+        let boundsWidthPixels = bounds.width * scale
+        let boundsHeightPixels = bounds.height * scale
+        let clampedMinX = min(max(minX, 0), boundsWidthPixels)
+        let clampedMinY = min(max(minY, 0), boundsHeightPixels)
+        let clampedMaxX = min(max(maxX, clampedMinX + 1), boundsWidthPixels)
+        let clampedMaxY = min(max(maxY, clampedMinY + 1), boundsHeightPixels)
+
+        return CGRect(
+            x: bounds.minX + clampedMinX / scale,
+            y: bounds.minY + clampedMinY / scale,
+            width: (clampedMaxX - clampedMinX) / scale,
+            height: (clampedMaxY - clampedMinY) / scale
+        )
+    }
+
+    private func bucketFloor(_ value: CGFloat, bucket: CGFloat, scale: CGFloat) -> CGFloat {
+        floor(value * scale / bucket) * bucket
+    }
+
+    private func bucketCeil(_ value: CGFloat, bucket: CGFloat, scale: CGFloat) -> CGFloat {
+        ceil(value * scale / bucket) * bucket
+    }
 
     /// Cached capture: MTLBuffer(.shared) backs both CGContext and MTLTexture (zero-copy CPU→GPU).
     /// Double-buffered: CPU writes slot A while GPU reads slot B, then flip.
@@ -1013,8 +1095,8 @@ final class GlassService {
                                 clearPattern: UInt32,
                                 shapes: GlassRenderer.ShapeParams) -> CaptureResult? {
         let renderScale = captureScale
-        let w = Int(frame.width * renderScale)
-        let h = Int(frame.height * renderScale)
+        let w = Int((frame.width * renderScale).rounded(.toNearestOrAwayFromZero))
+        let h = Int((frame.height * renderScale).rounded(.toNearestOrAwayFromZero))
         guard w > 0, h > 0 else { return nil }
 
         // Double-buffered: pick next slot so CPU writes while GPU reads previous
