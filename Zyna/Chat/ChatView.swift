@@ -2047,7 +2047,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         for messageId in remainingIds {
             if let pendingTarget = pendingAnimatedDeleteTargets.removeValue(forKey: messageId) {
-                PaintSplashTrigger.trigger(in: node.tableNode, target: pendingTarget) { [weak self] in
+                PaintSplashTrigger.trigger(
+                    in: node.tableNode,
+                    overlayView: node.paintSplashHostView,
+                    target: pendingTarget
+                ) { [weak self] in
                     self?.viewModel.hideMessage(messageId)
                 }
                 continue
@@ -2069,7 +2073,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 continue
             }
 
-            PaintSplashTrigger.trigger(in: node.tableNode, at: indexPath) { [weak self] in
+            PaintSplashTrigger.trigger(
+                in: node.tableNode,
+                overlayView: node.paintSplashHostView,
+                at: indexPath
+            ) { [weak self] in
                 self?.viewModel.hideMessage(messageId)
             }
         }
@@ -2123,7 +2131,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         if pending.remainingCountAfter == 0 {
             if let splashTarget = pending.splashTarget {
-                PaintSplashTrigger.trigger(in: node.tableNode, target: splashTarget) { [weak self] in
+                PaintSplashTrigger.trigger(
+                    in: node.tableNode,
+                    overlayView: node.paintSplashHostView,
+                    target: splashTarget
+                ) { [weak self] in
                     self?.viewModel.hideMessages(Array(pending.allMessageIds))
                 }
             } else if !triggerCompositeGroupPaintSplashDelete(
@@ -2179,7 +2191,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             viewModel.registerPartialReflowPreviews(previews)
         }
 
-        PaintSplashTrigger.trigger(in: node.tableNode, target: target) { [weak self] in
+        PaintSplashTrigger.trigger(
+            in: node.tableNode,
+            overlayView: node.paintSplashHostView,
+            target: target
+        ) { [weak self] in
             self?.viewModel.hideMessage(messageId)
         }
         return true
@@ -2191,7 +2207,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         pendingDelete: PendingCompositeGroupDelete
     ) -> Bool {
         if let splashTarget = pendingDelete.splashTarget {
-            PaintSplashTrigger.trigger(in: node.tableNode, target: splashTarget) { [weak self] in
+            PaintSplashTrigger.trigger(
+                in: node.tableNode,
+                overlayView: node.paintSplashHostView,
+                target: splashTarget
+            ) { [weak self] in
                 self?.viewModel.hideMessages(Array(pendingDelete.messageIds))
             }
             return true
@@ -2201,7 +2221,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return false
         }
 
-        PaintSplashTrigger.trigger(in: node.tableNode, at: indexPath) { [weak self] in
+        PaintSplashTrigger.trigger(
+            in: node.tableNode,
+            overlayView: node.paintSplashHostView,
+            at: indexPath
+        ) { [weak self] in
             self?.viewModel.hideMessages(Array(pendingDelete.messageIds))
         }
         return true
@@ -2289,7 +2313,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             discardLocalOutgoingEnvelope(message)
             return
         }
-        PaintSplashTrigger.trigger(in: node.tableNode, target: target) { [weak self] in
+        PaintSplashTrigger.trigger(
+            in: node.tableNode,
+            overlayView: node.paintSplashHostView,
+            target: target
+        ) { [weak self] in
             self?.discardLocalOutgoingEnvelope(message)
         }
     }

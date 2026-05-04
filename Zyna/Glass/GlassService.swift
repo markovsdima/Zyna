@@ -6,6 +6,41 @@
 import UIKit
 import Metal
 
+struct PaintSplashGlassHitTarget {
+    var rect: SIMD4<Float>    // x, y, width, height in paint-overlay points
+    var params: SIMD4<Float>  // radius, hitProbability, shapeKind, stableSeed
+
+    init(frame: CGRect, cornerRadius: CGFloat, hitProbability: Float = 0.16) {
+        rect = SIMD4<Float>(
+            Float(frame.origin.x),
+            Float(frame.origin.y),
+            Float(frame.width),
+            Float(frame.height)
+        )
+        params = SIMD4<Float>(Float(cornerRadius), hitProbability, 0, 0)
+    }
+
+    init(circleFrame frame: CGRect, radius: CGFloat, hitProbability: Float = 0.16, seed: Float) {
+        rect = SIMD4<Float>(
+            Float(frame.origin.x),
+            Float(frame.origin.y),
+            Float(frame.width),
+            Float(frame.height)
+        )
+        params = SIMD4<Float>(Float(radius), hitProbability, 1, seed)
+    }
+
+    init(roundedRectFrame frame: CGRect, cornerRadius: CGFloat, hitProbability: Float = 0.16, seed: Float) {
+        rect = SIMD4<Float>(
+            Float(frame.origin.x),
+            Float(frame.origin.y),
+            Float(frame.width),
+            Float(frame.height)
+        )
+        params = SIMD4<Float>(Float(cornerRadius), hitProbability, 0, seed)
+    }
+}
+
 // MARK: - GlassRegistration
 
 /// RAII token: deregisters the glass effect on deinit.
@@ -53,6 +88,10 @@ final class GlassService {
 
     private struct WeakSource {
         weak var source: GlassCaptureSource?
+    }
+
+    private struct WeakBackdropOverlaySource {
+        weak var source: GlassBackdropOverlaySource?
     }
 
     private struct BackdropStats {
@@ -155,6 +194,7 @@ final class GlassService {
     private var needsCapture = true // true on first frame
     private var continuousCaptureUntil: CFTimeInterval = 0
     private var captureSources: [WeakSource] = []
+    private var backdropOverlaySources: [WeakBackdropOverlaySource] = []
     private var idleTicks = 0
     private let idleThreshold = 3  // stop display link after N consecutive idle ticks
     private var watchdogTimer: Timer?
@@ -228,6 +268,158 @@ final class GlassService {
         captureSources.removeAll { $0.source === source }
     }
 
+    func addBackdropOverlaySource(_ source: GlassBackdropOverlaySource) {
+        guard !backdropOverlaySources.contains(where: { $0.source === source }) else { return }
+        backdropOverlaySources.append(WeakBackdropOverlaySource(source: source))
+        needsCapture = true
+        ensureRunning()
+    }
+
+    func removeBackdropOverlaySource(_ source: GlassBackdropOverlaySource) {
+        backdropOverlaySources.removeAll { $0.source == nil || $0.source === source }
+    }
+
+    func paintSplashGlassHitTargets(
+        in overlayView: UIView,
+        maxCount: Int
+    ) -> [PaintSplashGlassHitTarget] {
+        guard let window = overlayView.window, maxCount > 0 else { return [] }
+
+        var targets: [PaintSplashGlassHitTarget] = []
+        targets.reserveCapacity(maxCount)
+        let scale = window.screen.scale
+
+        for reg in registrations.values {
+            guard targets.count < maxCount,
+                  let anchor = reg.anchor,
+                  anchor.window === window,
+                  let frameInWindow = anchor.presentationFrame()
+            else { continue }
+
+            let frame = overlayView.convert(frameInWindow, from: window)
+            guard frame.width > 0,
+                  frame.height > 0,
+                  frame.intersects(overlayView.bounds)
+            else { continue }
+
+            guard let provider = anchor.shapeProvider else {
+                continue
+            }
+            let captureFrame = frameInWindow
+            let shapes = provider(frameInWindow, captureFrame, scale)
+
+            let countBefore = targets.count
+            appendPaintSplashHitTargets(
+                shapes: shapes,
+                captureFrame: captureFrame,
+                overlayView: overlayView,
+                window: window,
+                fallbackCornerRadius: anchor.cornerRadius,
+                maxCount: maxCount,
+                into: &targets
+            )
+
+            if targets.count == countBefore {
+                // Do not fall back to the whole anchor frame: it produces
+                // deterministic drip points across the entire input bar
+                // instead of the actual circle/capsule shapes.
+                continue
+            }
+        }
+
+        return targets
+    }
+
+    private func appendPaintSplashHitTargets(
+        shapes: GlassRenderer.ShapeParams,
+        captureFrame: CGRect,
+        overlayView: UIView,
+        window: UIWindow,
+        fallbackCornerRadius: CGFloat,
+        maxCount: Int,
+        into targets: inout [PaintSplashGlassHitTarget]
+    ) {
+        let captureWidth = captureFrame.width
+        let captureHeight = captureFrame.height
+        guard captureWidth > 0, captureHeight > 0 else { return }
+
+        func stableSeed(_ slot: Float) -> Float {
+            Float(captureFrame.minX) * 0.013
+                + Float(captureFrame.minY) * 0.017
+                + slot * 0.371
+        }
+
+        func appendRoundedRect(_ shape: SIMD4<Float>, cornerR: Float, slot: Float) {
+            guard targets.count < maxCount,
+                  shape.z > 0.001,
+                  shape.w > 0.001 else { return }
+
+            let frameInWindow = CGRect(
+                x: captureFrame.minX + CGFloat(shape.x) * captureWidth,
+                y: captureFrame.minY + CGFloat(shape.y) * captureHeight,
+                width: CGFloat(shape.z) * captureWidth,
+                height: CGFloat(shape.w) * captureHeight
+            )
+            let frame = overlayView.convert(frameInWindow, from: window)
+            guard frame.width > 1,
+                  frame.height > 1,
+                  frame.intersects(overlayView.bounds)
+            else { return }
+
+            let radius = CGFloat(cornerR) * captureHeight
+            targets.append(
+                PaintSplashGlassHitTarget(
+                    roundedRectFrame: frame,
+                    cornerRadius: radius > 0 ? radius : fallbackCornerRadius,
+                    seed: stableSeed(slot)
+                )
+            )
+        }
+
+        func appendCircle(_ shape: SIMD4<Float>, slot: Float) {
+            guard targets.count < maxCount,
+                  shape.z > 0.001 else { return }
+
+            let radius = CGFloat(shape.z) * captureHeight
+            let center = CGPoint(
+                x: captureFrame.minX + CGFloat(shape.x) * captureWidth,
+                y: captureFrame.minY + CGFloat(shape.y) * captureHeight
+            )
+            let frameInWindow = CGRect(
+                x: center.x - radius,
+                y: center.y - radius,
+                width: radius * 2,
+                height: radius * 2
+            )
+            let frame = overlayView.convert(frameInWindow, from: window)
+            guard frame.width > 1,
+                  frame.height > 1,
+                  frame.intersects(overlayView.bounds)
+            else { return }
+
+            targets.append(
+                PaintSplashGlassHitTarget(
+                    circleFrame: frame,
+                    radius: min(frame.width, frame.height) * 0.5,
+                    seed: stableSeed(slot)
+                )
+            )
+        }
+
+        appendRoundedRect(shapes.shape0, cornerR: shapes.shape0cornerR, slot: 0)
+
+        let shapeCount = Int(shapes.shapeCount)
+        if shapeCount >= 2 {
+            appendCircle(shapes.shape1, slot: 1)
+        }
+        if shapeCount >= 3 {
+            appendCircle(shapes.shape2, slot: 2)
+        }
+        if shapeCount >= 4 || shapes.scrollButtonVisible > 0.5 {
+            appendCircle(shapes.shape3, slot: 3)
+        }
+    }
+
     private func tearDown() {
         displayLinkToken?.invalidate()
         displayLinkToken = nil
@@ -240,6 +432,7 @@ final class GlassService {
         }
         rendererHosts.removeAll()
         captureSources.removeAll()
+        backdropOverlaySources.removeAll()
     }
 
     // MARK: - Render Loop
@@ -364,6 +557,8 @@ final class GlassService {
         let anyAnimating = registrations.values.contains { $0.anchor?.isAnimating == true }
         let hasLiquidPool = registrations.values.contains { $0.anchor?.extendsCaptureToScreenBottom == true }
         let inBurst = CACurrentMediaTime() < continuousCaptureUntil
+        let activeBackdropOverlays = currentBackdropOverlays()
+        let hasBackdropOverlay = !activeBackdropOverlays.isEmpty
         let shouldCapture = needsCapture || inBurst || anyAnimating || hasActiveSourceUnderGlass()
 
         // Wave energy: ramps up during scroll, decays when idle
@@ -399,7 +594,7 @@ final class GlassService {
         let hasActiveBars = registrations.values.contains { $0.anchor?.hasBars == true }
         let hasAdaptiveTransition = registrations.values.contains { $0.adaptiveState.isAnimating }
         let shouldRender = shouldCapture || (hasLiquidPool && waveEnergy > 0.001)
-            || hasActiveBars || hasAdaptiveTransition
+            || hasActiveBars || hasAdaptiveTransition || hasBackdropOverlay
 
         let scale = sourceWindow.screen.scale
         let renderHostContainers = registrations.values
@@ -570,12 +765,17 @@ final class GlassService {
                         GlassRenderer.RenderItem(
                             name: anchor.debugName,
                             frame: destinationFrame,
+                            captureFrameInWindow: captureFrame,
                             sourceTexture: texture,
                             shapes: shapes,
                             isHDR: texture.pixelFormat == .bgr10a2Unorm,
                             liquidZone: liquidZone,
                             time: waveTime,
                             barData: barData,
+                            backdropOverlay: backdropOverlay(
+                                for: captureFrame,
+                                in: activeBackdropOverlays
+                            ),
                             adaptiveAppearance: adaptiveMaterial.appearance,
                             adaptiveContrast: adaptiveMaterial.contrast
                         )
@@ -613,12 +813,17 @@ final class GlassService {
                         GlassRenderer.RenderItem(
                             name: anchor.debugName,
                             frame: destinationFrame,
+                            captureFrameInWindow: captureFrame,
                             sourceTexture: texture,
                             shapes: shapes,
                             isHDR: reg.lastIsHDR,
                             liquidZone: lz,
                             time: waveTime,
                             barData: anchor.hasBars ? reg.lastBarData : nil,
+                            backdropOverlay: backdropOverlay(
+                                for: captureFrame,
+                                in: activeBackdropOverlays
+                            ),
                             adaptiveAppearance: adaptiveMaterial.appearance,
                             adaptiveContrast: adaptiveMaterial.contrast
                         )
@@ -642,6 +847,9 @@ final class GlassService {
         if captureSources.count > 0 && tickCount % 600 == 0 {
             captureSources.removeAll { $0.source == nil }
         }
+        if backdropOverlaySources.count > 0 && tickCount % 600 == 0 {
+            backdropOverlaySources.removeAll { $0.source == nil }
+        }
 
         // Stop display link when idle — 0% CPU between triggers
         if shouldRender {
@@ -653,6 +861,39 @@ final class GlassService {
                 return
             }
         }
+    }
+
+    private func currentBackdropOverlays() -> [GlassRenderer.BackdropOverlay] {
+        guard !backdropOverlaySources.isEmpty else { return [] }
+
+        var overlays: [GlassRenderer.BackdropOverlay] = []
+        var hasDeadSource = false
+
+        for weakSource in backdropOverlaySources {
+            guard let source = weakSource.source else {
+                hasDeadSource = true
+                continue
+            }
+            guard let overlay = source.glassBackdropOverlay,
+                  overlay.frameInWindow.width > 0,
+                  overlay.frameInWindow.height > 0 else {
+                continue
+            }
+            overlays.append(overlay)
+        }
+
+        if hasDeadSource {
+            backdropOverlaySources.removeAll { $0.source == nil }
+        }
+
+        return overlays
+    }
+
+    private func backdropOverlay(
+        for captureFrame: CGRect,
+        in overlays: [GlassRenderer.BackdropOverlay]
+    ) -> GlassRenderer.BackdropOverlay? {
+        overlays.first { $0.frameInWindow.intersects(captureFrame) }
     }
 
     // MARK: - Adaptive Material
