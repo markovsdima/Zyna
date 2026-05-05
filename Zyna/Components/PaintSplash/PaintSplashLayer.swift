@@ -103,6 +103,7 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
     private var glassDripRemaining: CFTimeInterval = 0
     private var glassDripElapsed: CFTimeInterval = 0
     private var shouldResetGlassSurface = true
+    private var frameInFlight = false
     weak var overlayHostView: UIView?
 
     // MARK: - Init
@@ -311,7 +312,7 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
         if !items.isEmpty || glassDripRemaining > 0 {
             if displayLinkToken == nil {
                 GlassService.shared.addBackdropOverlaySource(self)
-                displayLinkToken = DisplayLinkDriver.shared.subscribe(rate: .max) { [weak self] dt in
+                displayLinkToken = DisplayLinkDriver.shared.subscribe(rate: .fps(60)) { [weak self] dt in
                     self?.tick(deltaTime: dt)
                 }
             }
@@ -323,6 +324,8 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
     }
 
     private func tick(deltaTime: CFTimeInterval) {
+        guard !frameInFlight else { return }
+
         let dt = Float(min(max(deltaTime, 0.001), 0.05))
         let hadItems = !items.isEmpty
 
@@ -361,17 +364,24 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
     // MARK: - Metal Rendering
 
     private func render(timeStep: Float) {
+        guard !frameInFlight else { return }
         guard let pipelineStates else { return }
         let shouldRenderVisibleSplash = !items.isEmpty
         let shouldRenderDrawable = shouldRenderVisibleSplash || glassDripRemaining > 0
-        let drawable = shouldRenderDrawable ? nextDrawable() : nil
-        guard !shouldRenderDrawable || drawable != nil else { return }
+
+        let containerSize = bounds.size
+        guard containerSize.width > 0, containerSize.height > 0 else { return }
 
         let ctx = MetalContext.shared
         guard let commandBuffer = ctx.commandQueue.makeCommandBuffer() else { return }
 
-        let containerSize = bounds.size
-        guard containerSize.width > 0, containerSize.height > 0 else { return }
+        frameInFlight = true
+        let drawable = shouldRenderDrawable ? nextDrawable() : nil
+        guard !shouldRenderDrawable || drawable != nil else {
+            frameInFlight = false
+            return
+        }
+
         ensureGlassResources()
 
         // Ensure offscreen blob texture matches drawable
@@ -385,7 +395,10 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
             desc.storageMode = .private
             blobTexture = ctx.device.makeTexture(descriptor: desc)
         }
-        guard !shouldRenderVisibleSplash || blobTexture != nil else { return }
+        guard !shouldRenderVisibleSplash || blobTexture != nil else {
+            frameInFlight = false
+            return
+        }
 
         ensureGlassTextures(width: dw, height: dh)
         if shouldResetGlassSurface {
@@ -541,6 +554,11 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
             didDrawDrawable: didDrawDrawable
         )
 
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.frameInFlight = false
+            }
+        }
         if let drawable {
             commandBuffer.present(drawable)
         }
