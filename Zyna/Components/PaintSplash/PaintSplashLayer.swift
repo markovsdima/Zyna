@@ -669,16 +669,23 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
             glassSPHTexture
         ]
 
-        let rpd = MTLRenderPassDescriptor()
-        for (index, texture) in textures.enumerated() {
+        for texture in textures {
             guard let texture else { continue }
-            rpd.colorAttachments[index].texture = texture
-            rpd.colorAttachments[index].loadAction = .clear
-            rpd.colorAttachments[index].storeAction = .store
-            rpd.colorAttachments[index].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            let rpd = MTLRenderPassDescriptor()
+            rpd.colorAttachments[0].texture = texture
+            rpd.colorAttachments[0].loadAction = .clear
+            rpd.colorAttachments[0].storeAction = .store
+            rpd.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            commandBuffer.makeRenderCommandEncoder(descriptor: rpd)?.endEncoding()
         }
+    }
 
-        commandBuffer.makeRenderCommandEncoder(descriptor: rpd)?.endEncoding()
+    private func threadgroupCount(for grid: MTLSize, threadsPerThreadgroup tg: MTLSize) -> MTLSize {
+        MTLSize(
+            width: (grid.width + tg.width - 1) / tg.width,
+            height: (grid.height + tg.height - 1) / tg.height,
+            depth: (grid.depth + tg.depth - 1) / tg.depth
+        )
     }
 
     private func simulateGlassSurface(
@@ -721,7 +728,10 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
             height: glassSurfaceTexture.height,
             depth: 1
         )
-        encoder.dispatchThreads(grid, threadsPerThreadgroup: tg)
+        encoder.dispatchThreadgroups(
+            threadgroupCount(for: grid, threadsPerThreadgroup: tg),
+            threadsPerThreadgroup: tg
+        )
 
         encoder.setComputePipelineState(pipelineStates.clearGlassEventsCompute)
         encoder.setBuffer(glassEventBuffer, offset: 0, index: 0)
@@ -730,7 +740,10 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
         encoder.setBytes(&glassCapacity, length: MemoryLayout<UInt32>.size, index: 2)
         let eventGrid = MTLSize(width: Int(Self.maxGlassDropletCount), height: 1, depth: 1)
         let eventTG = MTLSize(width: 64, height: 1, depth: 1)
-        encoder.dispatchThreads(eventGrid, threadsPerThreadgroup: eventTG)
+        encoder.dispatchThreadgroups(
+            threadgroupCount(for: eventGrid, threadsPerThreadgroup: eventTG),
+            threadsPerThreadgroup: eventTG
+        )
         encoder.endEncoding()
 
         let previousSurface = self.glassSurfaceTexture
@@ -775,7 +788,10 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
 
         let grid = MTLSize(width: Int(Self.maxGlassSPHParticleCount), height: 1, depth: 1)
         let tg = MTLSize(width: 64, height: 1, depth: 1)
-        encoder.dispatchThreads(grid, threadsPerThreadgroup: tg)
+        encoder.dispatchThreadgroups(
+            threadgroupCount(for: grid, threadsPerThreadgroup: tg),
+            threadsPerThreadgroup: tg
+        )
         encoder.endEncoding()
 
         let previousParticles = self.glassSPHParticleBuffer
