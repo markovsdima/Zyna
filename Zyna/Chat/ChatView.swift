@@ -52,11 +52,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private enum RedactionAnimations {
+        // Give bootstrap/pagination/reset-shaped SDK updates time to settle
+        // before receiver-side redactions are allowed to animate.
         static let bootstrapArmDelay: TimeInterval = 0.75
+        // TODO: Replace this timing guard with an explicit first-render/table-ready signal.
+        // Redaction correctness must come from timeline origin + stable message identity.
     }
 
     private struct PendingCompositeGroupDelete {
         let messageIds: Set<String>
+        let identityKeys: Set<String>
         let splashTarget: PaintSplashTrigger.SnapshotTarget?
     }
 
@@ -143,6 +148,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private weak var filePreviewController: FileAttachmentPreviewController?
     private var shouldPresentAttachmentPreviewAfterDismiss = false
     private var pendingAnimatedDeleteTargets: [String: PaintSplashTrigger.SnapshotTarget] = [:]
+    private var pendingAnimatedDeleteIdentityKeys = Set<String>()
     private var pendingCompositeGroupDeletes: [String: PendingCompositeGroupDelete] = [:]
     private var pendingIncomingGroupRedactions: [String: PendingIncomingCompositeGroupRedaction] = [:]
     private var activeContextMenuBubbleFrameInScreen: CGRect?
@@ -1431,6 +1437,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             )
         }
         let isPendingOutgoingMessage = message.isSyntheticOutgoingEnvelope
+        let canDiscardOutgoingEnvelope = canDiscardLocalOutgoingEnvelope(message)
 
         var actions: [ContextMenuAction] = []
         if !isPendingOutgoingMessage {
@@ -1543,7 +1550,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     }
                 ))
             }
-        } else if canDiscardLocalOutgoingEnvelope(message) {
+        } else if canDiscardOutgoingEnvelope {
             let precomputedMessageDeleteTarget = freezeSnapshotTarget(
                 (cellNode as? MessageCellNode)?.paintSplashTarget(
                     frameInScreen: activeContextMenuBubbleFrameInScreen
@@ -1985,7 +1992,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func handleRedactionBatch(_ batch: ChatViewModel.DetectedRedactionBatch) {
         guard !batch.messageIds.isEmpty else { return }
 
-        guard redactionAnimationsArmed else {
+        guard redactionAnimationsArmed || hasUserInitiatedRedactionAnimation(for: batch) else {
             viewModel.hideMessages(batch.messageIds)
             return
         }
@@ -2014,6 +2021,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let immediateIds = batch.messageIds.filter { !deferredIds.contains($0) }
         guard !immediateIds.isEmpty else { return }
         handleRedactedMessages(immediateIds)
+        pendingAnimatedDeleteIdentityKeys.subtract(batch.identityKeys)
     }
 
     private func handleRedactedMessages(_ messageIds: [String]) {
@@ -2033,10 +2041,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             guard !memberIds.isDisjoint(with: remainingIds) else { continue }
 
             if viewModel.areMessagesRedacted(Array(memberIds)) {
-                if !triggerCompositeGroupPaintSplashDelete(
+                let didTriggerSplash = triggerCompositeGroupPaintSplashDelete(
                     forGroupId: groupId,
                     pendingDelete: pendingDelete
-                ) {
+                )
+                if !didTriggerSplash {
+                    clearPendingAnimatedDeleteIdentityKeys(
+                        for: pendingDelete.messageIds,
+                        fallbackKeys: pendingDelete.identityKeys
+                    )
                     viewModel.hideMessages(Array(memberIds))
                 }
                 pendingCompositeGroupDeletes.removeValue(forKey: groupId)
@@ -2047,6 +2060,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         for messageId in remainingIds {
             if let pendingTarget = pendingAnimatedDeleteTargets.removeValue(forKey: messageId) {
+                clearPendingAnimatedDeleteIdentityKeys(for: [messageId])
                 PaintSplashTrigger.trigger(
                     in: node.tableNode,
                     overlayView: node.paintSplashHostView,
@@ -2083,6 +2097,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
     }
 
+    private func clearPendingAnimatedDeleteIdentityKeys(
+        for messageIds: Set<String>,
+        fallbackKeys: Set<String> = []
+    ) {
+        guard !messageIds.isEmpty || !fallbackKeys.isEmpty else { return }
+        var identityKeys = fallbackKeys
+        identityKeys.formUnion(viewModel.timelineIdentityKeys(for: messageIds))
+        for messageId in messageIds {
+            identityKeys.insert(MessageIdentity.local(messageId).key)
+        }
+        pendingAnimatedDeleteIdentityKeys.subtract(identityKeys)
+    }
+
     private func shouldCoalesceIncomingGroupRedaction(
         _ group: ChatViewModel.DetectedRedactedMediaGroup
     ) -> Bool {
@@ -2094,6 +2121,22 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return false
         }
         return true
+    }
+
+    private func hasUserInitiatedRedactionAnimation(
+        for batch: ChatViewModel.DetectedRedactionBatch
+    ) -> Bool {
+        if batch.messageIds.contains(where: { pendingAnimatedDeleteTargets[$0] != nil }) {
+            return true
+        }
+        if !batch.identityKeys.isDisjoint(with: pendingAnimatedDeleteIdentityKeys) {
+            return true
+        }
+        let messageIds = Set(batch.messageIds)
+        return pendingCompositeGroupDeletes.values.contains { pending in
+            !pending.messageIds.isDisjoint(with: messageIds)
+                || !pending.identityKeys.isDisjoint(with: batch.identityKeys)
+        }
     }
 
     private func queueIncomingGroupRedaction(
@@ -2142,6 +2185,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 forGroupId: groupId,
                 pendingDelete: PendingCompositeGroupDelete(
                     messageIds: pending.allMessageIds,
+                    identityKeys: [],
                     splashTarget: nil
                 )
             ) {
@@ -2212,6 +2256,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 overlayView: node.paintSplashHostView,
                 target: splashTarget
             ) { [weak self] in
+                self?.clearPendingAnimatedDeleteIdentityKeys(
+                    for: pendingDelete.messageIds,
+                    fallbackKeys: pendingDelete.identityKeys
+                )
                 self?.viewModel.hideMessages(Array(pendingDelete.messageIds))
             }
             return true
@@ -2226,6 +2274,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             overlayView: node.paintSplashHostView,
             at: indexPath
         ) { [weak self] in
+            self?.clearPendingAnimatedDeleteIdentityKeys(
+                for: pendingDelete.messageIds,
+                fallbackKeys: pendingDelete.identityKeys
+            )
             self?.viewModel.hideMessages(Array(pendingDelete.messageIds))
         }
         return true
@@ -2239,8 +2291,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     ) {
         guard !messageIds.isEmpty else { return }
         viewModel.registerPendingAnimatedRedactions(Array(messageIds))
+        let identityKeys = Set(items.flatMap(\.timelineIdentityKeys))
+        pendingAnimatedDeleteIdentityKeys.formUnion(identityKeys)
         pendingCompositeGroupDeletes[groupId] = PendingCompositeGroupDelete(
             messageIds: messageIds,
+            identityKeys: identityKeys,
             splashTarget: splashTarget
         )
         viewModel.redactMediaGroupItems(items)
@@ -2251,6 +2306,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         disposition: PendingRedactionFailureDisposition
     ) {
         pendingAnimatedDeleteTargets.removeValue(forKey: messageId)
+        clearPendingAnimatedDeleteIdentityKeys(for: [messageId])
         let affectedGroups = pendingCompositeGroupDeletes.compactMap { groupId, pendingDelete -> (String, Set<String>)? in
             pendingDelete.messageIds.contains(messageId) ? (groupId, pendingDelete.messageIds) : nil
         }
@@ -2264,7 +2320,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         for (groupId, messageIds) in affectedGroups {
-            pendingCompositeGroupDeletes.removeValue(forKey: groupId)
+            if let pendingDelete = pendingCompositeGroupDeletes.removeValue(forKey: groupId) {
+                clearPendingAnimatedDeleteIdentityKeys(
+                    for: messageIds,
+                    fallbackKeys: pendingDelete.identityKeys
+                )
+            }
             viewModel.clearPendingAnimatedRedactions(Array(messageIds))
             let alreadyRedacted = messageIds.filter { viewModel.areMessagesRedacted([$0]) }
             if !alreadyRedacted.isEmpty {
@@ -2287,6 +2348,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if let target {
             pendingAnimatedDeleteTargets[item.messageId] = target
         }
+        pendingAnimatedDeleteIdentityKeys.formUnion(item.timelineIdentityKeys)
         if !reflowPreviews.isEmpty {
             viewModel.registerPartialReflowPreviews(reflowPreviews)
         }
@@ -2301,6 +2363,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if let target {
             pendingAnimatedDeleteTargets[message.id] = target
         }
+        pendingAnimatedDeleteIdentityKeys.formUnion(message.timelineIdentityKeys)
         viewModel.registerPendingAnimatedRedactions([message.id])
         triggerPaintSplashDelete(for: message)
     }

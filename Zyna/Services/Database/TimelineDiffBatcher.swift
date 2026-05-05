@@ -8,6 +8,7 @@ import GRDB
 import MatrixRustSDK
 
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
+private let logTimelineDB = ScopedLog(.database, prefix: "[TimelineDB]")
 
 /// Accumulates SDK timeline diffs and flushes them to GRDB in a single
 /// transaction after a 50 ms debounce window. Maintains a shadow
@@ -19,16 +20,17 @@ final class TimelineDiffBatcher {
     private let log = ScopedLog(.database)
     private let writeQueue = DispatchQueue(label: "com.zyna.db.write", qos: .userInitiated)
 
-    // MARK: - Shadow array
+    // MARK: - Shadow positions
 
-    /// Mirrors SDK timeline positions. Keeps just enough identity to
-    /// stitch a local echo to the synced event that later replaces it.
-    private struct ShadowItem {
-        let storedId: String?
-        let transactionId: String?
-    }
+    /// Mirrors the SDK timeline length/order so index-based diffs
+    /// (`insert`, `set`, `remove`, `truncate`) can be validated against
+    /// the previous SDK state. This intentionally stores no message
+    /// identity: durable identity lives in `StoredMessage` as Matrix
+    /// eventId / transactionId, because SDK item ids and positions can
+    /// change after reset or pagination.
+    private struct ShadowPosition {}
 
-    private var shadowItems: [ShadowItem] = []
+    private var shadowPositions: [ShadowPosition] = []
 
     // MARK: - Pending ops
 
@@ -38,6 +40,7 @@ final class TimelineDiffBatcher {
     }
 
     private var pendingOps: [DiffOp] = []
+    private var pendingFlushSummary = TimelineFlushSummary()
     private var debounceWork: DispatchWorkItem?
     private static let debounceInterval: TimeInterval = 0.05
 
@@ -46,7 +49,7 @@ final class TimelineDiffBatcher {
     private var readCursorTimestamp: TimeInterval?
 
     /// Called on main queue after each successful flush.
-    var onFlush: (() -> Void)?
+    var onFlush: ((TimelineFlushSummary) -> Void)?
 
     // MARK: - Init
 
@@ -59,6 +62,7 @@ final class TimelineDiffBatcher {
     func updateReadCursor(timestamp: TimeInterval) {
         if readCursorTimestamp == nil || timestamp > readCursorTimestamp! {
             readCursorTimestamp = timestamp
+            pendingFlushSummary.readReceiptCount += 1
             scheduleFlush()
         }
     }
@@ -72,6 +76,7 @@ final class TimelineDiffBatcher {
             let types = diffs.map { Self.diffName($0) }
             self.log("Received diffs: \(types.joined(separator: ", "))")
             for diff in diffs {
+                self.recordSummary(for: diff)
                 self.enqueueDiff(diff)
             }
             self.scheduleFlush()
@@ -108,6 +113,8 @@ final class TimelineDiffBatcher {
     private func flush() {
         let ops = pendingOps
         pendingOps.removeAll()
+        var summary = pendingFlushSummary
+        pendingFlushSummary = TimelineFlushSummary()
         let cursorTs = readCursorTimestamp
         readCursorTimestamp = nil
 
@@ -115,8 +122,17 @@ final class TimelineDiffBatcher {
 
         let roomId = self.roomId
         let dbQueue = self.dbQueue
+        summary.upsertCount = ops.filter { if case .upsert = $0 { return true }; return false }.count
+        summary.deleteCount = ops.count - summary.upsertCount
+        summary.redactedUpsertCount = ops.reduce(into: 0) { count, op in
+            if case .upsert(let record) = op, record.contentType == "redacted" {
+                count += 1
+            }
+        }
 
         writeQueue.async { [weak self] in
+            var internalDeleteCount = 0
+            var detachedIdentityCount = 0
             do {
                 try dbQueue.write { db in
                     // Collect eventIds already marked as read so upserts don't downgrade them
@@ -148,6 +164,16 @@ final class TimelineDiffBatcher {
                                 )
                             }
 
+                            if let existing = try Self.existingStoredMessage(
+                                for: record,
+                                in: db
+                            ) {
+                                Self.applyMonotonicMerge(
+                                    existing: existing,
+                                    incoming: &record
+                                )
+                            }
+
                             if record.sendStatus != "read",
                                let eventId = record.eventId,
                                readEventIds.contains(eventId) {
@@ -155,14 +181,20 @@ final class TimelineDiffBatcher {
                             }
 
                             if let eventId = record.eventId {
-                                try StoredMessage
-                                    .filter(Column("roomId") == record.roomId && Column("eventId") == eventId && Column("id") != record.id)
-                                    .deleteAll(db)
+                                let result = try Self.resolveEventIdDuplicates(
+                                    for: record,
+                                    eventId: eventId,
+                                    in: db
+                                )
+                                internalDeleteCount += result.deleted
+                                detachedIdentityCount += result.detached
                             }
                             if let txnId = record.transactionId {
-                                try StoredMessage
-                                    .filter(Column("roomId") == record.roomId && Column("transactionId") == txnId && Column("id") != record.id)
-                                    .deleteAll(db)
+                                internalDeleteCount += try Self.deleteSafeTransactionDuplicates(
+                                    for: record,
+                                    transactionId: txnId,
+                                    in: db
+                                )
                             }
                             Self.logMediaGroupUpsert(
                                 record,
@@ -192,13 +224,13 @@ final class TimelineDiffBatcher {
                     try StoredMessage.filter(Column("roomId") == roomId).fetchCount(db)
                 }
 
-                let upserts = ops.filter { if case .upsert = $0 { return true }; return false }.count
-                let deletes = ops.count - upserts
-
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    self.onFlush?()
-                    self.log("Flushed \(ops.count) ops (\(upserts)↑ \(deletes)↓) for room \(roomId) — \(total) stored")
+                    self.onFlush?(summary)
+                    let dedupe = internalDeleteCount > 0 || detachedIdentityCount > 0
+                        ? " dedupe=\(internalDeleteCount)↓ detached=\(detachedIdentityCount)"
+                        : ""
+                    self.log("Flushed \(ops.count) ops (\(summary.upsertCount)↑ \(summary.deleteCount)↓)\(dedupe) for room \(roomId) — \(total) stored")
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
@@ -209,6 +241,33 @@ final class TimelineDiffBatcher {
     }
 
     // MARK: - Enqueue
+
+    private func recordSummary(for diff: TimelineDiff) {
+        switch diff {
+        case .append:
+            pendingFlushSummary.appendCount += 1
+        case .pushBack:
+            pendingFlushSummary.pushBackCount += 1
+        case .pushFront:
+            pendingFlushSummary.pushFrontCount += 1
+        case .insert:
+            pendingFlushSummary.insertCount += 1
+        case .set:
+            pendingFlushSummary.setCount += 1
+        case .remove:
+            pendingFlushSummary.removeCount += 1
+        case .popBack:
+            pendingFlushSummary.removeCount += 1
+        case .popFront:
+            pendingFlushSummary.removeCount += 1
+        case .reset:
+            pendingFlushSummary.resetCount += 1
+        case .truncate:
+            pendingFlushSummary.truncateCount += 1
+        case .clear:
+            pendingFlushSummary.clearCount += 1
+        }
+    }
 
     private func enqueueDiff(_ diff: TimelineDiff) {
         switch diff {
@@ -223,91 +282,73 @@ final class TimelineDiffBatcher {
 
         case .pushFront(let item):
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(shadowItem(for: msg), at: 0)
+            shadowPositions.insert(shadowPosition(for: msg), at: 0)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
 
         case .insert(let index, let item):
             let idx = Int(index)
-            guard idx <= shadowItems.count else { return }
+            guard idx <= shadowPositions.count else { return }
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems.insert(shadowItem(for: msg), at: idx)
+            shadowPositions.insert(shadowPosition(for: msg), at: idx)
             if let msg {
                 pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
             }
 
         case .set(let index, let item):
             let idx = Int(index)
-            guard idx < shadowItems.count else { return }
-            let oldShadowItem = shadowItems[idx]
+            guard idx < shadowPositions.count else { return }
             let msg = TimelineService.mapTimelineItem(item)
-            shadowItems[idx] = shadowItem(for: msg, fallbackTransactionId: oldShadowItem.transactionId)
+            shadowPositions[idx] = shadowPosition(for: msg)
 
             if let msg {
-                var record = StoredMessage(from: msg, roomId: roomId)
-                if record.transactionId == nil {
-                    record.transactionId = oldShadowItem.transactionId
-                }
-                let newStoredId = storedId(msg.id)
-                if let oldId = oldShadowItem.storedId, oldId != newStoredId {
-                    pendingOps.append(.delete(oldId))
-                }
+                let record = StoredMessage(from: msg, roomId: roomId)
                 pendingOps.append(.upsert(record))
             }
 
         case .remove(let index):
             let idx = Int(index)
-            guard idx < shadowItems.count else { return }
-            shadowItems.remove(at: idx)
+            guard idx < shadowPositions.count else { return }
+            shadowPositions.remove(at: idx)
 
         case .popBack:
-            guard !shadowItems.isEmpty else { return }
-            shadowItems.removeLast()
+            guard !shadowPositions.isEmpty else { return }
+            shadowPositions.removeLast()
 
         case .popFront:
-            guard !shadowItems.isEmpty else { return }
-            shadowItems.removeFirst()
+            guard !shadowPositions.isEmpty else { return }
+            shadowPositions.removeFirst()
 
         case .reset(let items):
-            shadowItems.removeAll()
+            shadowPositions.removeAll()
             for item in items {
                 appendItem(item)
             }
 
         case .truncate(let length):
             let len = Int(length)
-            while shadowItems.count > len {
-                shadowItems.removeLast()
+            while shadowPositions.count > len {
+                shadowPositions.removeLast()
             }
 
         case .clear:
-            shadowItems.removeAll()
+            shadowPositions.removeAll()
         }
     }
 
     // MARK: - Helpers
 
-    private func storedId(_ msgId: String) -> String {
-        "\(roomId):\(msgId)"
-    }
-
     private func appendItem(_ item: TimelineItem) {
         let msg = TimelineService.mapTimelineItem(item)
-        shadowItems.append(shadowItem(for: msg))
+        shadowPositions.append(shadowPosition(for: msg))
         if let msg {
             pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
         }
     }
 
-    private func shadowItem(
-        for message: ChatMessage?,
-        fallbackTransactionId: String? = nil
-    ) -> ShadowItem {
-        ShadowItem(
-            storedId: message.map { storedId($0.id) },
-            transactionId: message?.transactionId ?? fallbackTransactionId
-        )
+    private func shadowPosition(for _: ChatMessage?) -> ShadowPosition {
+        ShadowPosition()
     }
 
     private static func inheritExistingZynaAttributesIfNeeded(
@@ -371,18 +412,305 @@ final class TimelineDiffBatcher {
             return existing
         }
         if let eventId = record.eventId,
-           let existing = try StoredMessage
+           !eventId.isEmpty {
+            let candidates = try StoredMessage
             .filter(Column("roomId") == record.roomId && Column("eventId") == eventId)
-            .fetchOne(db) {
-            return existing
+            .fetchAll(db)
+            if let existing = preferredExistingEventMessage(
+                for: record,
+                candidates: candidates
+            ) {
+                return existing
+            }
         }
         if let transactionId = record.transactionId,
-           let existing = try StoredMessage
+           !transactionId.isEmpty {
+            let candidates = try StoredMessage
             .filter(Column("roomId") == record.roomId && Column("transactionId") == transactionId)
-            .fetchOne(db) {
-            return existing
+            .fetchAll(db)
+            if let existing = candidates.first(where: {
+                isSafeTransactionDuplicate($0, of: record)
+            }) {
+                return existing
+            }
         }
         return nil
+    }
+
+    private struct DedupeResult {
+        var deleted = 0
+        var detached = 0
+    }
+
+    private static func preferredExistingEventMessage(
+        for record: StoredMessage,
+        candidates: [StoredMessage]
+    ) -> StoredMessage? {
+        if let sameEvent = candidates.first(where: {
+            isSafeEventDuplicate($0, of: record)
+        }) {
+            return sameEvent
+        }
+        return nil
+    }
+
+    private static func resolveEventIdDuplicates(
+        for record: StoredMessage,
+        eventId: String,
+        in db: Database
+    ) throws -> DedupeResult {
+        let candidates = try StoredMessage
+            .filter(
+                Column("roomId") == record.roomId
+                    && Column("eventId") == eventId
+                    && Column("id") != record.id
+            )
+            .fetchAll(db)
+
+        var result = DedupeResult()
+        for candidate in candidates {
+            if isSafeEventDuplicate(candidate, of: record) {
+                logTimelineDB(
+                    "event duplicate delete existing=\(describeForDedupe(candidate)) incoming=\(describeForDedupe(record))"
+                )
+                _ = try StoredMessage.deleteOne(db, key: candidate.id)
+                result.deleted += 1
+            } else {
+                logTimelineDB(
+                    "event duplicate detach existing=\(describeForDedupe(candidate)) incoming=\(describeForDedupe(record))"
+                )
+                if candidate.transactionId != nil,
+                   candidate.transactionId == record.transactionId {
+                    try db.execute(
+                        sql: """
+                            UPDATE storedMessage
+                            SET eventId = NULL, transactionId = NULL
+                            WHERE id = ?
+                            """,
+                        arguments: [candidate.id]
+                    )
+                } else {
+                    try db.execute(
+                        sql: """
+                            UPDATE storedMessage
+                            SET eventId = NULL
+                            WHERE id = ?
+                            """,
+                        arguments: [candidate.id]
+                    )
+                }
+                result.detached += 1
+            }
+        }
+        return result
+    }
+
+    private static func deleteSafeTransactionDuplicates(
+        for record: StoredMessage,
+        transactionId: String,
+        in db: Database
+    ) throws -> Int {
+        guard record.isOutgoing else { return 0 }
+
+        let candidates = try StoredMessage
+            .filter(
+                Column("roomId") == record.roomId
+                    && Column("transactionId") == transactionId
+                    && Column("id") != record.id
+                    && Column("isOutgoing") == true
+                    && Column("senderId") == record.senderId
+            )
+            .fetchAll(db)
+
+        var deleted = 0
+        for candidate in candidates where isSafeTransactionDuplicate(
+            candidate,
+            of: record
+        ) {
+            logTimelineDB(
+                "tx duplicate delete existing=\(describeForDedupe(candidate)) incoming=\(describeForDedupe(record))"
+            )
+            _ = try StoredMessage.deleteOne(db, key: candidate.id)
+            deleted += 1
+        }
+        return deleted
+    }
+
+    private static func isSafeEventDuplicate(
+        _ candidate: StoredMessage,
+        of record: StoredMessage
+    ) -> Bool {
+        guard candidate.senderId == record.senderId else {
+            return false
+        }
+        if abs(candidate.timestamp - record.timestamp) <= 0.05 {
+            return true
+        }
+        return contentFingerprint(candidate) == contentFingerprint(record)
+    }
+
+    private static func isSafeTransactionDuplicate(
+        _ candidate: StoredMessage,
+        of record: StoredMessage
+    ) -> Bool {
+        guard candidate.senderId == record.senderId,
+              candidate.isOutgoing == record.isOutgoing
+        else {
+            return false
+        }
+        if let candidateEventId = candidate.eventId,
+           let recordEventId = record.eventId,
+           candidateEventId != recordEventId {
+            return false
+        }
+        if candidate.isOutgoing,
+           candidate.transactionId != nil,
+           candidate.transactionId == record.transactionId {
+            return true
+        }
+        if candidate.contentType != record.contentType {
+            return false
+        }
+        return contentFingerprint(candidate) == contentFingerprint(record)
+    }
+
+    private struct ContentFingerprint: Equatable {
+        let contentType: String
+        let body: String
+        let caption: String
+        let filename: String
+        let mimetype: String
+        let fileSize: Int64
+        let imageWidth: Int64
+        let imageHeight: Int64
+        let videoWidth: Int64
+        let videoHeight: Int64
+        let videoDuration: TimeInterval
+        let zynaAttributesJSON: String
+    }
+
+    private static func contentFingerprint(_ message: StoredMessage) -> ContentFingerprint {
+        ContentFingerprint(
+            contentType: message.contentType,
+            body: message.contentBody ?? "",
+            caption: message.contentCaption ?? "",
+            filename: message.contentFilename ?? "",
+            mimetype: message.contentMimetype ?? "",
+            fileSize: message.contentFileSize ?? -1,
+            imageWidth: message.contentImageWidth ?? -1,
+            imageHeight: message.contentImageHeight ?? -1,
+            videoWidth: message.contentVideoWidth ?? -1,
+            videoHeight: message.contentVideoHeight ?? -1,
+            videoDuration: message.contentVideoDuration ?? -1,
+            zynaAttributesJSON: message.zynaAttributesJSON ?? ""
+        )
+    }
+
+    private static func describeForDedupe(_ message: StoredMessage) -> String {
+        let timestamp = String(format: "%.3f", message.timestamp)
+        let detail = message.contentBody
+            ?? message.contentCaption
+            ?? message.contentFilename
+            ?? "-"
+        return "id=\(shortForDedupe(message.id)) event=\(shortForDedupe(message.eventId)) tx=\(shortForDedupe(message.transactionId)) type=\(message.contentType) out=\(message.isOutgoing) status=\(message.sendStatus) ts=\(timestamp) detail=\(shortForDedupe(detail))"
+    }
+
+    private static func shortForDedupe(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return "-" }
+        guard value.count > 22 else { return value }
+        return "\(value.prefix(10))...\(value.suffix(8))"
+    }
+
+    private static func applyMonotonicMerge(
+        existing: StoredMessage,
+        incoming record: inout StoredMessage
+    ) {
+        // Matrix eventId is the stable identity. The SDK timeline item id
+        // can change after reset/pagination, so keep the first stored row id
+        // and treat later snapshots of the same event/transaction as updates.
+        record.id = existing.id
+        if record.eventId == nil {
+            record.eventId = existing.eventId
+        }
+        if record.transactionId == nil {
+            record.transactionId = existing.transactionId
+        }
+
+        if existing.contentType == "redacted",
+           record.contentType != "redacted" {
+            var preserved = existing
+            preserved.senderDisplayName = record.senderDisplayName ?? existing.senderDisplayName
+            preserved.senderAvatarUrl = record.senderAvatarUrl ?? existing.senderAvatarUrl
+            preserved.sendStatus = preferredSendStatus(existing.sendStatus, record.sendStatus)
+            preserved.reactionsJSON = record.reactionsJSON
+            if preserved.eventId == nil {
+                preserved.eventId = record.eventId
+            }
+            if preserved.transactionId == nil {
+                preserved.transactionId = record.transactionId
+            }
+            record = preserved
+            return
+        }
+
+        record.sendStatus = preferredSendStatus(existing.sendStatus, record.sendStatus)
+        if (record.zynaAttributesJSON ?? "").isEmpty,
+           let existingAttrs = existing.zynaAttributesJSON,
+           !existingAttrs.isEmpty {
+            record.zynaAttributesJSON = existingAttrs
+        }
+
+        guard existing.latestEditEventId?.isEmpty == false,
+              record.latestEditEventId == nil,
+              existing.contentType == record.contentType,
+              record.contentType != "redacted"
+        else {
+            return
+        }
+
+        preserveContentFields(from: existing, into: &record)
+        record.isEdited = true
+        record.latestEditEventId = existing.latestEditEventId
+    }
+
+    private static func preferredSendStatus(_ existing: String, _ incoming: String) -> String {
+        sendStatusRank(existing) >= sendStatusRank(incoming) ? existing : incoming
+    }
+
+    private static func sendStatusRank(_ status: String) -> Int {
+        switch status {
+        case "failed":
+            return 0
+        case "sending":
+            return 1
+        case "sent", "synced":
+            return 2
+        case "read":
+            return 3
+        default:
+            return 1
+        }
+    }
+
+    private static func preserveContentFields(
+        from existing: StoredMessage,
+        into record: inout StoredMessage
+    ) {
+        record.contentBody = existing.contentBody
+        record.contentMediaJSON = existing.contentMediaJSON
+        record.contentImageWidth = existing.contentImageWidth
+        record.contentImageHeight = existing.contentImageHeight
+        record.contentCaption = existing.contentCaption
+        record.contentVoiceDuration = existing.contentVoiceDuration
+        record.contentVoiceWaveform = existing.contentVoiceWaveform
+        record.contentFilename = existing.contentFilename
+        record.contentMimetype = existing.contentMimetype
+        record.contentFileSize = existing.contentFileSize
+        record.contentThumbnailMediaJSON = existing.contentThumbnailMediaJSON
+        record.contentVideoWidth = existing.contentVideoWidth
+        record.contentVideoHeight = existing.contentVideoHeight
+        record.contentVideoDuration = existing.contentVideoDuration
+        record.zynaAttributesJSON = existing.zynaAttributesJSON
     }
 
     private static func findMatchingPendingTransactionId(
@@ -391,7 +719,8 @@ final class TimelineDiffBatcher {
     ) throws -> String? {
         guard record.eventId != nil,
               record.transactionId == nil,
-              record.isOutgoing else {
+              record.isOutgoing,
+              record.contentType != "redacted" else {
             return record.transactionId
         }
 

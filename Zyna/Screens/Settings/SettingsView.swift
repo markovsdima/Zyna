@@ -35,9 +35,33 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
     var onThemeTapped: (() -> Void)?
     var onNameColorTapped: (() -> Void)?
 
-    private enum Row: Int, CaseIterable {
+    private enum Section: Int, CaseIterable {
+        case appearance
+        case diagnostics
+
+        var title: String {
+            switch self {
+            case .appearance:
+                return String(localized: "Appearance")
+            case .diagnostics:
+                return String(localized: "Diagnostics")
+            }
+        }
+
+        var rows: [Row] {
+            switch self {
+            case .appearance:
+                return [.chatTheme, .nameColor]
+            case .diagnostics:
+                return [.repairLocalMessageCache]
+            }
+        }
+    }
+
+    private enum Row {
         case chatTheme
         case nameColor
+        case repairLocalMessageCache
     }
 
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
@@ -124,7 +148,7 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
         Task { [weak self] in
             _ = await ProfileAppearanceService.shared.loadAppearance(userId: userId)
             await MainActor.run {
-                self?.tableView.reloadRows(at: [IndexPath(row: Row.nameColor.rawValue, section: 0)], with: .none)
+                self?.tableView.reloadRows(at: [IndexPath(row: 1, section: Section.appearance.rawValue)], with: .none)
             }
         }
     }
@@ -142,31 +166,40 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
 extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
 
     func numberOfSections(in tableView: UITableView) -> Int {
-        1
+        Section.allCases.count
     }
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        Row.allCases.count
+        (Section(rawValue: section) ?? .appearance).rows.count
     }
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        String(localized: "Appearance")
+        (Section(rawValue: section) ?? .appearance).title
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let identifier = "valueCell"
+        let section = Section(rawValue: indexPath.section) ?? .appearance
+        let row = section.rows[indexPath.row]
+        let identifier = row == .repairLocalMessageCache ? "subtitleCell" : "valueCell"
         let cell = tableView.dequeueReusableCell(withIdentifier: identifier)
-            ?? UITableViewCell(style: .value1, reuseIdentifier: identifier)
-        let row = Row(rawValue: indexPath.row) ?? .chatTheme
+            ?? UITableViewCell(
+                style: row == .repairLocalMessageCache ? .subtitle : .value1,
+                reuseIdentifier: identifier
+            )
         switch row {
         case .chatTheme:
             cell.textLabel?.text = String(localized: "Chat Theme")
             cell.detailTextLabel?.text = ChatBubbleThemeStore.shared.selectedTheme.title
+            cell.accessoryType = .disclosureIndicator
         case .nameColor:
             cell.textLabel?.text = String(localized: "Name Color")
             cell.detailTextLabel?.text = nameColorSummary
+            cell.accessoryType = .disclosureIndicator
+        case .repairLocalMessageCache:
+            cell.textLabel?.text = String(localized: "Repair Local Message Cache")
+            cell.detailTextLabel?.text = String(localized: "Fix duplicate or stuck local timeline rows")
+            cell.accessoryType = .none
         }
-        cell.accessoryType = .disclosureIndicator
         cell.selectionStyle = .default
         cell.backgroundColor = .secondarySystemGroupedBackground
         return cell
@@ -174,16 +207,98 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let row = Row(rawValue: indexPath.row) ?? .chatTheme
+        let section = Section(rawValue: indexPath.section) ?? .appearance
+        let row = section.rows[indexPath.row]
         switch row {
         case .chatTheme:
             onThemeTapped?()
         case .nameColor:
             onNameColorTapped?()
+        case .repairLocalMessageCache:
+            confirmRepairLocalMessageCache()
         }
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         GlassService.shared.setNeedsCapture()
+    }
+}
+
+// MARK: - Local Timeline Repair
+
+private extension SettingsViewController {
+
+    func confirmRepairLocalMessageCache() {
+        let alert = UIAlertController(
+            title: String(localized: "Repair Local Message Cache"),
+            message: String(localized: "This fixes local duplicate or stuck timeline rows. It does not delete messages from Matrix."),
+            preferredStyle: .alert
+        )
+        alert.addAction(
+            UIAlertAction(title: String(localized: "Cancel"), style: .cancel)
+        )
+        alert.addAction(
+            UIAlertAction(title: String(localized: "Repair"), style: .default) { [weak self] _ in
+                self?.repairLocalMessageCache()
+            }
+        )
+        present(alert, animated: true)
+    }
+
+    func repairLocalMessageCache() {
+        let progress = UIAlertController(
+            title: String(localized: "Repairing"),
+            message: nil,
+            preferredStyle: .alert
+        )
+        present(progress, animated: true)
+
+        Task { [weak self, weak progress] in
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try TimelineRepairService.shared.repairLocalTimelineCache()
+                }.value
+                await MainActor.run {
+                    progress?.dismiss(animated: true) {
+                        self?.presentRepairResult(result)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    progress?.dismiss(animated: true) {
+                        self?.presentRepairError(error)
+                    }
+                }
+            }
+        }
+    }
+
+    func presentRepairResult(_ result: TimelineRepairResult) {
+        let message: String
+        if result.didChange {
+            message = String(
+                localized: "Updated messages: \(result.updatedMessages)\nDeleted local duplicates: \(result.deletedLocalMessages)\nUpdated envelope items: \(result.updatedEnvelopeItems)\nRetired envelopes: \(result.retiredEnvelopes)"
+            )
+        } else {
+            message = String(localized: "No local timeline issues found.")
+        }
+
+        let alert = UIAlertController(
+            title: String(localized: "Repair Complete"),
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+        present(alert, animated: true)
+    }
+
+    func presentRepairError(_ error: Error) {
+        let alert = UIAlertController(
+            title: String(localized: "Repair Failed"),
+            message: String(describing: error),
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+        present(alert, animated: true)
     }
 }

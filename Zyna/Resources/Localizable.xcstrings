@@ -489,6 +489,16 @@
         }
       }
     },
+    "A previous scan was interrupted. Pages: %d." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Предыдущий скан был прерван. Страниц: %d."
+          }
+        }
+      }
+    },
     "Accept" : {
       "localizations" : {
         "ru" : {
@@ -824,6 +834,26 @@
         }
       }
     },
+    "Continue" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Продолжить"
+          }
+        }
+      }
+    },
+    "Continue Previous Scan?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Продолжить предыдущий скан?"
+          }
+        }
+      }
+    },
     "Copy" : {
       "localizations" : {
         "ru" : {
@@ -923,6 +953,9 @@
           }
         }
       }
+    },
+    "Diagnostics" : {
+
     },
     "Discard" : {
 
@@ -1059,6 +1092,9 @@
           }
         }
       }
+    },
+    "Fix duplicate or stuck local timeline rows" : {
+
     },
     "Forest" : {
       "localizations" : {
@@ -1530,6 +1566,9 @@
     "No emoji found." : {
 
     },
+    "No local timeline issues found." : {
+
+    },
     "No reactions yet." : {
 
     },
@@ -1741,6 +1780,21 @@
         }
       }
     },
+    "Repair" : {
+
+    },
+    "Repair Complete" : {
+
+    },
+    "Repair Failed" : {
+
+    },
+    "Repair Local Message Cache" : {
+
+    },
+    "Repairing" : {
+
+    },
     "Reset" : {
       "localizations" : {
         "ru" : {
@@ -1867,46 +1921,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось сканировать"
-          }
-        }
-      }
-    },
-    "A previous scan was interrupted. Pages: %d." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Предыдущий скан был прерван. Страниц: %d."
-          }
-        }
-      }
-    },
-    "Continue" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Продолжить"
-          }
-        }
-      }
-    },
-    "Continue Previous Scan?" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Продолжить предыдущий скан?"
-          }
-        }
-      }
-    },
-    "Start New Scan" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Начать новый скан"
           }
         }
       }
@@ -2123,6 +2137,16 @@
         }
       }
     },
+    "Start New Scan" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Начать новый скан"
+          }
+        }
+      }
+    },
     "Syncing encryption keys…" : {
       "localizations" : {
         "ru" : {
@@ -2174,6 +2198,9 @@
         }
       }
     },
+    "This fixes local duplicate or stuck timeline rows. It does not delete messages from Matrix." : {
+
+    },
     "This is how it looks in groups." : {
       "localizations" : {
         "ru" : {
@@ -2220,6 +2247,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось сохранить"
+          }
+        }
+      }
+    },
+    "Updated messages: %lld\nDeleted local duplicates: %lld\nUpdated envelope items: %lld\nRetired envelopes: %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Updated messages: %1$lld\nDeleted local duplicates: %2$lld\nUpdated envelope items: %3$lld\nRetired envelopes: %4$lld"
           }
         }
       }

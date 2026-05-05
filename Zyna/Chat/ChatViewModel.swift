@@ -12,6 +12,7 @@ import MatrixRustSDK
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
+private let timelineHealthLog = ScopedLog(.database, prefix: "[TimelineHealth]")
 
 enum ChatPresentationMode {
     case normal
@@ -36,6 +37,30 @@ final class ChatViewModel {
     struct DetectedRedactionBatch {
         let messageIds: [String]
         let mediaGroups: [DetectedRedactedMediaGroup]
+        let identityKeys: Set<String>
+
+        init(
+            messageIds: [String],
+            mediaGroups: [DetectedRedactedMediaGroup],
+            identityKeys: Set<String> = []
+        ) {
+            self.messageIds = messageIds
+            self.mediaGroups = mediaGroups
+            self.identityKeys = identityKeys
+        }
+    }
+
+    private struct RedactionTransitionCandidate {
+        let message: StoredMessage
+        let previous: StoredMessage
+
+        var identityKey: String {
+            message.timelineIdentityKey
+        }
+
+        var identityKeys: Set<String> {
+            message.timelineIdentityKeys
+        }
     }
 
     private struct PartialReflowPreview {
@@ -116,9 +141,10 @@ final class ChatViewModel {
     private let pendingRedactions = PendingRedactionService.shared
     private let room: Room
     private let roomId: String
-    private var hiddenIds = Set<String>()
+    private var hiddenMessageKeys = Set<String>()
     private var pendingPartialRedactions: [String: StoredMessage] = [:]
     private var pendingRedactionIds = Set<String>()
+    private var pendingRedactionKeys = Set<String>()
     private var partialReflowPreviewsByMessageId: [String: PartialReflowPreview] = [:]
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
@@ -151,6 +177,7 @@ final class ChatViewModel {
             dbQueue: DatabaseService.shared.dbQueue
         )
         self.pendingRedactionIds = pendingRedactions.pendingMessageIds(roomId: roomId)
+        self.pendingRedactionKeys = pendingRedactions.pendingMessageIdentityKeys(roomId: roomId)
 
         timelineService.isPaginatingSubject
             .receive(on: DispatchQueue.main)
@@ -213,13 +240,17 @@ final class ChatViewModel {
 
         // Bridge: batcher flush → window refresh
         let win = window
-        diffBatcher.onFlush = { [weak win] in
-            win?.refresh()
+        diffBatcher.onFlush = { [weak win] summary in
+            win?.refresh(origin: .timelineFlush(summary))
         }
 
         // Read path: window changes → UI
-        window.onChange = { [weak self] newStored, prevStored in
-            self?.handleObservationChange(newStored: newStored, prevStored: prevStored)
+        window.onChange = { [weak self] newStored, prevStored, origin in
+            self?.handleObservationChange(
+                newStored: newStored,
+                prevStored: prevStored,
+                origin: origin
+            )
         }
 
         // Defer timeline setup until invite is accepted
@@ -306,55 +337,84 @@ final class ChatViewModel {
 
     // MARK: - Window Change Handling
 
-    private func handleObservationChange(newStored: [StoredMessage], prevStored: [StoredMessage]?) {
-        let resolvedPendingIds = pendingRedactions.reconcileResolvedPendingMessageIds(roomId: roomId)
-        if !resolvedPendingIds.isEmpty {
-            pendingRedactionIds.subtract(resolvedPendingIds)
-        }
+    private func handleObservationChange(
+        newStored: [StoredMessage],
+        prevStored: [StoredMessage]?,
+        origin: MessageWindowChangeOrigin
+    ) {
+        let previousDisplayIdentityKeys = Set(messages.flatMap(\.timelineIdentityKeys))
+        let resolvedPending = pendingRedactions.reconcileResolvedPendingRedactions(roomId: roomId)
+        let resolvedPendingIds = resolvedPending.messageIds
+        let resolvedPendingKeys = resolvedPending.identityKeys.union(
+            Self.identityKeys(
+                for: resolvedPendingIds,
+                in: newStored + (prevStored ?? [])
+            )
+        )
+        let activePendingRedactionKeys = pendingRedactionKeys.union(resolvedPendingKeys)
 
         // 1. Detect newly redacted user messages (paint splash).
         //    Only for content that was a visible message — not call
         //    signaling carriers (zero-width-space body), system
         //    notices, or unsupported event types.
-        let splashContentTypes: Set<String> = ["text", "image", "video", "voice", "file", "emote"]
+        let redactionCandidates: [RedactionTransitionCandidate]
+        let animatedRedactions: [RedactionTransitionCandidate]
         let newlyRedactedIds: [String]
+        let newlyRedactedIdentityKeys: Set<String>
         let redactionBatch: DetectedRedactionBatch
         if let prevStored {
-            let prevById = Dictionary(prevStored.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-            newlyRedactedIds = newStored.compactMap { msg in
-                guard msg.contentType == "redacted" else { return nil }
-                guard let prev = prevById[msg.id],
-                      prev.contentType != "redacted",
-                      splashContentTypes.contains(prev.contentType)
-                else { return nil }
-                // Skip carrier messages stored as "text" with an
-                // invisible body (call signaling, future extensions).
-                if prev.contentType == "text" {
-                    let body = prev.contentBody ?? ""
-                    let visible = body
-                        .replacingOccurrences(of: "\u{200B}", with: "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    if visible.isEmpty { return nil }
+            let prevByIdentity = Dictionary(
+                prevStored.flatMap { stored in
+                    stored.timelineIdentityKeys.map { ($0, stored) }
+                },
+                uniquingKeysWith: { existing, candidate in
+                    Self.preferredTransitionPrevious(existing, candidate)
                 }
-                return msg.id
+            )
+            redactionCandidates = newStored.compactMap { msg in
+                guard msg.contentType == "redacted" else { return nil }
+                guard let prev = Self.previousMessage(for: msg, in: prevByIdentity),
+                      Self.isSplashEligiblePreviousContent(prev)
+                else { return nil }
+                return RedactionTransitionCandidate(message: msg, previous: prev)
             }
+            animatedRedactions = Self.animationEligibleRedactions(
+                candidates: redactionCandidates,
+                origin: origin,
+                previousDisplayIdentityKeys: previousDisplayIdentityKeys,
+                pendingRedactionKeys: activePendingRedactionKeys
+            )
+            newlyRedactedIds = animatedRedactions.map(\.message.id)
+            newlyRedactedIdentityKeys = Set(animatedRedactions.flatMap(\.identityKeys))
             redactionBatch = Self.detectedRedactionBatch(
-                newlyRedactedIds: newlyRedactedIds,
+                redactions: animatedRedactions,
                 newStored: newStored,
-                prevStored: prevStored,
-                prevById: prevById
+                prevStored: prevStored
             )
         } else {
+            redactionCandidates = []
+            animatedRedactions = []
             newlyRedactedIds = []
+            newlyRedactedIdentityKeys = []
             redactionBatch = DetectedRedactionBatch(messageIds: [], mediaGroups: [])
         }
+        if !resolvedPendingIds.isEmpty {
+            pendingRedactionIds.subtract(resolvedPendingIds)
+            pendingRedactionKeys.subtract(resolvedPendingKeys)
+        }
+        Self.logTimelineHealth(
+            origin: origin,
+            newStored: newStored,
+            prevStored: prevStored,
+            redactionCandidates: redactionCandidates,
+            animatedRedactions: animatedRedactions
+        )
 
         Self.registerPendingPartialRedactions(
             into: &pendingPartialRedactions,
             newStored: newStored,
-            prevStored: prevStored,
-            newlyRedactedIds: newlyRedactedIds,
-            hiddenIds: hiddenIds
+            animatedRedactions: animatedRedactions,
+            hiddenMessageKeys: hiddenMessageKeys
         )
         Self.prunePartialReflowPreviews(
             in: &partialReflowPreviewsByMessageId,
@@ -362,23 +422,28 @@ final class ChatViewModel {
         )
 
         // 2. Build display array: filter hidden and already-redacted (keep newly-redacted for animation)
-        let newlyRedactedSet = Set(newlyRedactedIds)
         let displayStored = newStored.compactMap { msg -> StoredMessage? in
-            if hiddenIds.contains(msg.id) { return nil }
-            if let pending = pendingPartialRedactions[msg.id] {
+            if Self.hasAnyIdentityKey(hiddenMessageKeys, for: msg) { return nil }
+            if let pending = Self.pendingPartialRedaction(
+                for: msg,
+                in: pendingPartialRedactions
+            ) {
                 return pending
             }
-            if pendingRedactionIds.contains(msg.id) {
+            if Self.hasAnyIdentityKey(pendingRedactionKeys, for: msg) {
                 return nil
             }
-            if msg.contentType == "redacted" && !newlyRedactedSet.contains(msg.id) { return nil }
+            if msg.contentType == "redacted"
+                && msg.timelineIdentityKeys.isDisjoint(with: newlyRedactedIdentityKeys) {
+                return nil
+            }
             return msg
         }
 
         let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: newStored)
         if !deletedMediaGroupIds.isEmpty || !newlyRedactedIds.isEmpty {
             logMediaGroup(
-                "deleteReflow observation newlyRedacted=\(newlyRedactedIds.joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ",")) hidden=\(hiddenIds.count)"
+                "deleteReflow observation newlyRedacted=\(newlyRedactedIds.joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ",")) hidden=\(hiddenMessageKeys.count)"
             )
         }
         let olderBoundary = window.peekOlderNeighbor()
@@ -447,9 +512,9 @@ final class ChatViewModel {
         }
     }
 
-    /// Stable key for diff comparison. Uses eventId (server-assigned,
-    /// immutable) or transactionId (local echo carried onto the synced
-    /// row) when available; falls back to id (SDK uniqueId) otherwise.
+    /// Stable key for table diff comparison. Matrix eventId is the canonical
+    /// identity once available; transactionId is only the pending local echo
+    /// identity, and SDK uniqueId is only a positional fallback.
     private static func stableKey(_ msg: ChatMessage) -> String {
         if let presentation = msg.mediaGroupPresentation {
             if presentation.rendersCompositeBubble {
@@ -460,7 +525,7 @@ final class ChatViewModel {
                 return "media-group:\(presentation.id):hidden:\(mediaGroup.index)"
             }
         }
-        return msg.transactionId ?? msg.eventId ?? msg.id
+        return msg.eventId ?? msg.transactionId ?? msg.id
     }
 
     private static func stableKey(_ row: ChatTimelineRow) -> String {
@@ -540,19 +605,25 @@ final class ChatViewModel {
             uniquingKeysWith: { _, last in last }
         )
         for messageId in messageIds {
-            guard pendingPartialRedactions[messageId] == nil,
-                  let stored = storedById[messageId]
-            else {
+            guard let stored = storedById[messageId] else {
                 continue
             }
-            pendingPartialRedactions[messageId] = stored
+            for identityKey in stored.timelineIdentityKeys {
+                guard pendingPartialRedactions[identityKey] == nil else { continue }
+                pendingPartialRedactions[identityKey] = stored
+            }
         }
     }
 
     func clearPendingAnimatedRedactions(_ messageIds: [String]) {
         guard !messageIds.isEmpty else { return }
+        let storedMessages = window.currentStoredMessages()
+        let identityKeys = Self.identityKeys(for: Set(messageIds), in: storedMessages)
+        for identityKey in identityKeys {
+            pendingPartialRedactions.removeValue(forKey: identityKey)
+        }
         for messageId in messageIds {
-            pendingPartialRedactions.removeValue(forKey: messageId)
+            pendingPartialRedactions.removeValue(forKey: MessageIdentity.local(messageId).key)
         }
     }
 
@@ -560,13 +631,15 @@ final class ChatViewModel {
         let idsToRestore = Set(messageIds)
         guard !idsToRestore.isEmpty else { return }
 
-        hiddenIds.subtract(idsToRestore)
+        let storedMessages = window.currentStoredMessages()
+        let keysToRestore = Self.identityKeys(for: idsToRestore, in: storedMessages)
+        hiddenMessageKeys.subtract(keysToRestore)
         pendingRedactionIds.subtract(idsToRestore)
-        for messageId in idsToRestore {
-            pendingPartialRedactions.removeValue(forKey: messageId)
+        pendingRedactionKeys.subtract(keysToRestore)
+        for identityKey in keysToRestore {
+            pendingPartialRedactions.removeValue(forKey: identityKey)
         }
 
-        let storedMessages = window.currentStoredMessages()
         let affectedMediaGroupIds = Set(
             storedMessages.compactMap { message -> String? in
                 guard idsToRestore.contains(message.id) else { return nil }
@@ -588,19 +661,22 @@ final class ChatViewModel {
 
         let oldRows = rows
         let oldMessages = messages
-        let visibleRedactedIds = Set(
+        let visibleRedactedKeys = Set(
             oldMessages
                 .filter { $0.content.isRedacted }
-                .map(\.id)
+                .flatMap(\.timelineIdentityKeys)
         )
         let displayStored = storedMessages.compactMap { msg -> StoredMessage? in
-            if hiddenIds.contains(msg.id) { return nil }
-            if let pending = pendingPartialRedactions[msg.id] {
+            if Self.hasAnyIdentityKey(hiddenMessageKeys, for: msg) { return nil }
+            if let pending = Self.pendingPartialRedaction(
+                for: msg,
+                in: pendingPartialRedactions
+            ) {
                 return pending
             }
-            if pendingRedactionIds.contains(msg.id) { return nil }
+            if Self.hasAnyIdentityKey(pendingRedactionKeys, for: msg) { return nil }
             if msg.contentType == "redacted" {
-                return visibleRedactedIds.contains(msg.id) ? msg : nil
+                return msg.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) ? nil : msg
             }
             return msg
         }
@@ -626,11 +702,16 @@ final class ChatViewModel {
 
     func areMessagesRedacted(_ messageIds: [String]) -> Bool {
         guard !messageIds.isEmpty else { return false }
-        let storedById = Dictionary(
-            window.currentStoredMessages().map { ($0.id, $0) },
-            uniquingKeysWith: { _, last in last }
+        let storedMessages = window.currentStoredMessages()
+        let redactedKeys = Set(
+            storedMessages
+                .filter { $0.contentType == "redacted" }
+                .flatMap(\.timelineIdentityKeys)
         )
-        return messageIds.allSatisfy { storedById[$0]?.contentType == "redacted" }
+        return messageIds.allSatisfy { messageId in
+            let identityKeys = Self.identityKeys(for: [messageId], in: storedMessages)
+            return !identityKeys.isEmpty && !identityKeys.isDisjoint(with: redactedKeys)
+        }
     }
 
     private struct PendingRenderableEnvelope {
@@ -858,6 +939,7 @@ final class ChatViewModel {
         var hiddenMessageIndices = Set<Int>()
         var syncedEventIndices: [Int: Int] = [:]
         var hasTransactionOnlyMessages = false
+        var fallbackClaimedItemIndices = Set<Int>()
 
         for (messageIndex, message) in messages.enumerated() {
             guard message.isOutgoing,
@@ -866,12 +948,24 @@ final class ChatViewModel {
                 continue
             }
 
-            let relatedItemIndex = message.eventId.flatMap { eventIndexById[$0] }
+            let explicitItemIndex = message.eventId.flatMap { eventIndexById[$0] }
                 ?? message.transactionId.flatMap { transactionIndexById[$0] }
                 ?? pendingMediaGroupItemIndex(of: message, in: group)
+            let fallbackItemIndex = explicitItemIndex == nil
+                ? pendingMediaGroupFallbackItemIndex(
+                    of: message,
+                    in: group,
+                    claimedItemIndices: fallbackClaimedItemIndices
+                )
+                : nil
+            let relatedItemIndex = explicitItemIndex
+                ?? fallbackItemIndex
 
             if let relatedItemIndex {
                 hiddenMessageIndices.insert(messageIndex)
+                if fallbackItemIndex != nil {
+                    fallbackClaimedItemIndices.insert(relatedItemIndex)
+                }
                 let previousIndex = primaryMessageIndexByItemIndex[relatedItemIndex]
                 if previousIndex == nil
                     || prefersPendingPrimaryCandidate(
@@ -929,6 +1023,38 @@ final class ChatViewModel {
             return nil
         }
         return mediaGroup.index
+    }
+
+    private static func pendingMediaGroupFallbackItemIndex(
+        of message: ChatMessage,
+        in group: OutgoingEnvelopeSnapshot,
+        claimedItemIndices: Set<Int>
+    ) -> Int? {
+        guard message.zynaAttributes.mediaGroup == nil,
+              message.timestamp >= group.createdAt.addingTimeInterval(-5),
+              message.timestamp <= group.createdAt.addingTimeInterval(600),
+              normalized(message.content.visibleImageCaption) == normalized(group.caption)
+        else {
+            return nil
+        }
+
+        let dimensions: (width: UInt64?, height: UInt64?)? = {
+            guard case .image(_, _, let width, let height, _, _) = message.content else {
+                return nil
+            }
+            return (width, height)
+        }()
+
+        guard let dimensions else { return nil }
+        let candidates = group.items
+            .filter { item in
+                !claimedItemIndices.contains(item.itemIndex)
+                    && dimensionsMatch(expected: item.previewWidth, actual: dimensions.width)
+                    && dimensionsMatch(expected: item.previewHeight, actual: dimensions.height)
+            }
+            .sorted { $0.itemIndex > $1.itemIndex }
+
+        return candidates.first?.itemIndex
     }
 
     private static func prefersPendingPrimaryCandidate(
@@ -1375,7 +1501,9 @@ final class ChatViewModel {
 
     private static func normalized(_ caption: String?) -> String? {
         guard let caption else { return nil }
-        let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = caption
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
@@ -1476,6 +1604,20 @@ final class ChatViewModel {
             }
         }
 
+        if !deletions.isEmpty {
+            let deletedRows = deletions.prefix(8).compactMap { indexPath -> String? in
+                guard old.indices.contains(indexPath.row) else { return nil }
+                return debugTimelineRow(old[indexPath.row])
+            }
+            let insertedRows = insertions.prefix(8).compactMap { indexPath -> String? in
+                guard new.indices.contains(indexPath.row) else { return nil }
+                return debugTimelineRow(new[indexPath.row])
+            }
+            timelineHealthLog(
+                "table diff delete=\(deletedRows.joined(separator: " || ")) insert=\(insertedRows.joined(separator: " || ")) old=\(old.count) new=\(new.count)"
+            )
+        }
+
         let newByKey = Dictionary(new.enumerated().map { (stableKey($1), $0) }, uniquingKeysWith: { _, last in last })
         var fullUpdates: [IndexPath] = []
         var inPlaceUpdates: [(IndexPath, ChatMessage)] = []
@@ -1502,6 +1644,55 @@ final class ChatViewModel {
             animated: animated
         )
         return (batch, inPlaceUpdates)
+    }
+
+    private static func debugTimelineRow(_ row: ChatTimelineRow) -> String {
+        switch row {
+        case .message(let message):
+            let detail: String
+            let type: String
+            switch message.content {
+            case .text(let body), .notice(let body), .emote(let body):
+                type = "text"
+                detail = body
+            case .image:
+                type = "image"
+                detail = "image"
+            case .video(_, _, _, _, _, let filename, _, _, _, _):
+                type = "video"
+                detail = filename
+            case .voice:
+                type = "voice"
+                detail = "voice"
+            case .file(_, let filename, _, _, _):
+                type = "file"
+                detail = filename
+            case .redacted:
+                type = "redacted"
+                detail = "redacted"
+            case .pendingOutgoingMediaBatch:
+                type = "pendingBatch"
+                detail = "pendingBatch"
+            case .callEvent(let callType, let callId, let reason):
+                type = "call"
+                detail = "\(callType.rawValue):\(callId):\(reason ?? "-")"
+            case .systemEvent(let text, _):
+                type = "system"
+                detail = text
+            case .unsupported(let typeName):
+                type = "unsupported"
+                detail = typeName
+            }
+            return "key=\(stableKey(row)) id=\(shortDebug(message.id)) event=\(shortDebug(message.eventId)) tx=\(shortDebug(message.transactionId)) type=\(type) ts=\(String(format: "%.3f", message.timestamp.timeIntervalSince1970)) detail=\(shortDebug(detail))"
+        case .dateDivider(let model):
+            return "key=\(stableKey(row)) divider=\(model.id)"
+        }
+    }
+
+    private static func shortDebug(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return "-" }
+        guard value.count > 26 else { return value }
+        return "\(value.prefix(12))...\(value.suffix(8))"
     }
 
     // MARK: - Pagination
@@ -1798,7 +1989,7 @@ final class ChatViewModel {
 
     private func refreshWindow() async {
         await MainActor.run {
-            self.window.refresh()
+            self.window.refresh(origin: .localMutation)
         }
     }
 
@@ -2825,6 +3016,14 @@ final class ChatViewModel {
         guard !intents.isEmpty else { return }
         pendingRedactions.register(intents)
         pendingRedactionIds.formUnion(intents.map(\.messageId))
+        pendingRedactionKeys.formUnion(
+            intents.map {
+                MessageIdentity.from(
+                    messageId: $0.messageId,
+                    itemIdentifier: $0.itemIdentifier
+                ).key
+            }
+        )
         Task { [weak self] in
             guard let self else { return }
             await withTaskGroup(of: Void.self) { group in
@@ -2860,6 +3059,9 @@ final class ChatViewModel {
         )
         pendingRedactions.register([intent])
         pendingRedactionIds.insert(messageId)
+        pendingRedactionKeys.insert(
+            MessageIdentity.from(messageId: messageId, itemIdentifier: itemId).key
+        )
         Task {
             do {
                 try await pendingRedactions.attempt(
@@ -2887,29 +3089,40 @@ final class ChatViewModel {
         let idsToHide = Set(messageIds)
         guard !idsToHide.isEmpty else { return }
 
-        hiddenIds.formUnion(idsToHide)
+        let storedMessages = window.currentStoredMessages()
+        let keysToHide = Self.identityKeys(for: idsToHide, in: storedMessages)
+        hiddenMessageKeys.formUnion(keysToHide)
+        for identityKey in keysToHide {
+            pendingPartialRedactions.removeValue(forKey: identityKey)
+        }
         for messageId in idsToHide {
-            pendingPartialRedactions.removeValue(forKey: messageId)
             partialReflowPreviewsByMessageId.removeValue(forKey: messageId)
         }
         let oldRows = rows
         let oldMessages = messages
-        var visibleRedactedIds = Set(
+        var visibleRedactedKeys = Set(
             oldMessages
                 .filter { $0.content.isRedacted }
-                .map(\.id)
+                .flatMap(\.timelineIdentityKeys)
         )
-        visibleRedactedIds.subtract(idsToHide)
-        let displayStored = window.currentStoredMessages().filter { msg in
-            if hiddenIds.contains(msg.id) { return false }
-            if msg.contentType == "redacted" {
-                return visibleRedactedIds.contains(msg.id)
+        visibleRedactedKeys.subtract(keysToHide)
+        let displayStored = storedMessages.compactMap { msg -> StoredMessage? in
+            if Self.hasAnyIdentityKey(hiddenMessageKeys, for: msg) { return nil }
+            if let pending = Self.pendingPartialRedaction(
+                for: msg,
+                in: pendingPartialRedactions
+            ) {
+                return pending
             }
-            return true
+            if Self.hasAnyIdentityKey(pendingRedactionKeys, for: msg) { return nil }
+            if msg.contentType == "redacted" {
+                return msg.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) ? nil : msg
+            }
+            return msg
         }
-        let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: window.currentStoredMessages())
+        let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: storedMessages)
         logMediaGroup(
-            "deleteReflow hide messageIds=\(idsToHide.sorted().joined(separator: ",")) visibleRedacted=\(visibleRedactedIds.sorted().joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ","))"
+            "deleteReflow hide messageIds=\(idsToHide.sorted().joined(separator: ",")) visibleRedactedKeys=\(visibleRedactedKeys.sorted().joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ","))"
         )
         let olderBoundary = window.peekOlderNeighbor()
         let newerBoundary = window.peekNewerNeighbor()
@@ -3421,33 +3634,180 @@ final class ChatViewModel {
         )
     }
 
+    private static func identityKeys(
+        for messageIds: Set<String>,
+        in storedMessages: [StoredMessage]
+    ) -> Set<String> {
+        guard !messageIds.isEmpty else { return [] }
+        let storedById = Dictionary(
+            storedMessages.map { ($0.id, $0) },
+            uniquingKeysWith: { _, last in last }
+        )
+        var identityKeys = Set<String>()
+        for messageId in messageIds {
+            if let stored = storedById[messageId] {
+                identityKeys.formUnion(stored.timelineIdentityKeys)
+            } else {
+                identityKeys.insert(MessageIdentity.local(messageId).key)
+            }
+        }
+        return identityKeys
+    }
+
+    func timelineIdentityKeys(for messageIds: Set<String>) -> Set<String> {
+        Self.identityKeys(for: messageIds, in: window.currentStoredMessages())
+    }
+
+    private static func hasAnyIdentityKey(
+        _ keys: Set<String>,
+        for message: StoredMessage
+    ) -> Bool {
+        !message.timelineIdentityKeys.isDisjoint(with: keys)
+    }
+
+    private static func pendingPartialRedaction(
+        for message: StoredMessage,
+        in pending: [String: StoredMessage]
+    ) -> StoredMessage? {
+        for identityKey in message.timelineIdentityKeys {
+            if let redaction = pending[identityKey] {
+                return redaction
+            }
+        }
+        return nil
+    }
+
+    private static func isSplashEligiblePreviousContent(_ message: StoredMessage) -> Bool {
+        guard message.contentType != "redacted" else { return false }
+        switch message.contentType {
+        case "text", "notice", "emote":
+            let body = (message.contentBody ?? "")
+                .replacingOccurrences(of: "\u{200B}", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return !body.isEmpty
+        case "image", "video", "voice", "file":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func preferredTransitionPrevious(
+        _ existing: StoredMessage,
+        _ candidate: StoredMessage
+    ) -> StoredMessage {
+        let existingEligible = isSplashEligiblePreviousContent(existing)
+        let candidateEligible = isSplashEligiblePreviousContent(candidate)
+        if existingEligible != candidateEligible {
+            return existingEligible ? existing : candidate
+        }
+        if existing.timestamp != candidate.timestamp {
+            return existing.timestamp > candidate.timestamp ? existing : candidate
+        }
+        return existing.id > candidate.id ? existing : candidate
+    }
+
+    private static func previousMessage(
+        for redactedMessage: StoredMessage,
+        in previousByIdentity: [String: StoredMessage]
+    ) -> StoredMessage? {
+        redactedMessage.timelineIdentityKeys
+            .compactMap { previousByIdentity[$0] }
+            .reduce(nil) { current, candidate in
+                current.map { preferredTransitionPrevious($0, candidate) } ?? candidate
+            }
+    }
+
+    private static func animationEligibleRedactions(
+        candidates: [RedactionTransitionCandidate],
+        origin: MessageWindowChangeOrigin,
+        previousDisplayIdentityKeys: Set<String>,
+        pendingRedactionKeys: Set<String>
+    ) -> [RedactionTransitionCandidate] {
+        candidates.filter { candidate in
+            if !candidate.identityKeys.isDisjoint(with: pendingRedactionKeys) {
+                return true
+            }
+            return origin.allowsRemoteRedactionAnimation
+                && !candidate.identityKeys.isDisjoint(with: previousDisplayIdentityKeys)
+        }
+    }
+
+    private static func logTimelineHealth(
+        origin: MessageWindowChangeOrigin,
+        newStored: [StoredMessage],
+        prevStored: [StoredMessage]?,
+        redactionCandidates: [RedactionTransitionCandidate],
+        animatedRedactions: [RedactionTransitionCandidate]
+    ) {
+        var duplicateIdentityCounts: [String: Int] = [:]
+        for message in newStored {
+            for identityKey in message.timelineIdentityKeys {
+                duplicateIdentityCounts[identityKey, default: 0] += 1
+            }
+        }
+        let duplicateKeys = duplicateIdentityCounts
+            .filter { $0.value > 1 }
+            .keys
+            .sorted()
+
+        let suppressedRedactions = redactionCandidates.count - animatedRedactions.count
+
+        var redactionRegressions: [String] = []
+        if let prevStored {
+            let previousByKey = Dictionary(
+                prevStored.flatMap { stored in
+                    stored.timelineIdentityKeys.map { ($0, stored) }
+                },
+                uniquingKeysWith: { existing, candidate in
+                    existing.timestamp >= candidate.timestamp ? existing : candidate
+                }
+            )
+            for message in newStored where message.contentType != "redacted" {
+                if message.timelineIdentityKeys.contains(where: {
+                    previousByKey[$0]?.contentType == "redacted"
+                }) {
+                    redactionRegressions.append(message.timelineIdentityKey)
+                }
+            }
+        }
+
+        guard !duplicateKeys.isEmpty
+            || suppressedRedactions > 0
+            || !redactionRegressions.isEmpty
+        else {
+            return
+        }
+
+        timelineHealthLog(
+            "origin=\(origin.compactDescription) suppressedRedactions=\(suppressedRedactions) animatedRedactions=\(animatedRedactions.count) duplicateKeys=\(duplicateKeys.prefix(6).joined(separator: ",")) redactionRegressions=\(redactionRegressions.prefix(6).joined(separator: ","))"
+        )
+    }
+
     private static func registerPendingPartialRedactions(
         into pendingPartialRedactions: inout [String: StoredMessage],
         newStored: [StoredMessage],
-        prevStored: [StoredMessage]?,
-        newlyRedactedIds: [String],
-        hiddenIds: Set<String>
+        animatedRedactions: [RedactionTransitionCandidate],
+        hiddenMessageKeys: Set<String>
     ) {
-        let existingIds = Set(newStored.map(\.id))
+        let existingKeys = Set(newStored.flatMap(\.timelineIdentityKeys))
         pendingPartialRedactions = pendingPartialRedactions.filter {
-            !hiddenIds.contains($0.key) && existingIds.contains($0.key)
+            !hiddenMessageKeys.contains($0.key) && existingKeys.contains($0.key)
         }
 
-        guard let prevStored, !newlyRedactedIds.isEmpty else { return }
-
-        let prevById = Dictionary(prevStored.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-
-        for messageId in newlyRedactedIds {
-            guard pendingPartialRedactions[messageId] == nil,
-                  let previous = prevById[messageId],
-                  previous.contentType == "image",
+        for redaction in animatedRedactions {
+            let previous = redaction.previous
+            guard previous.contentType == "image",
                   let mediaGroupId = previous.toChatMessage()?.zynaAttributes.mediaGroup?.id
             else {
                 continue
             }
-            pendingPartialRedactions[messageId] = previous
+            for identityKey in redaction.identityKeys {
+                guard pendingPartialRedactions[identityKey] == nil else { continue }
+                pendingPartialRedactions[identityKey] = previous
+            }
             logMediaGroup(
-                "deleteReflow pending messageId=\(messageId) group=\(mediaGroupId)"
+                "deleteReflow pending messageId=\(redaction.message.id) key=\(redaction.identityKey) group=\(mediaGroupId)"
             )
         }
     }
@@ -3478,24 +3838,26 @@ final class ChatViewModel {
     }
 
     private static func detectedRedactionBatch(
-        newlyRedactedIds: [String],
+        redactions: [RedactionTransitionCandidate],
         newStored: [StoredMessage],
-        prevStored: [StoredMessage],
-        prevById: [String: StoredMessage]
+        prevStored: [StoredMessage]
     ) -> DetectedRedactionBatch {
-        guard !newlyRedactedIds.isEmpty else {
+        guard !redactions.isEmpty else {
             return DetectedRedactionBatch(messageIds: [], mediaGroups: [])
         }
 
+        let newlyRedactedIds = redactions.map(\.message.id)
+        let identityKeys = Set(redactions.flatMap(\.identityKeys))
         let remainingLiveCounts = liveImageCountByMediaGroup(in: newStored)
         var groupedMessageIds: [String: Set<String>] = [:]
         var groupedAllMessageIds: [String: Set<String>] = [:]
         var groupedTotals: [String: Int] = [:]
         var groupOrder: [String] = []
 
-        for messageId in newlyRedactedIds {
-            guard let previous = prevById[messageId],
-                  previous.contentType == "image",
+        for redaction in redactions {
+            let messageId = redaction.message.id
+            let previous = redaction.previous
+            guard previous.contentType == "image",
                   let mediaGroup = previous.toChatMessage()?.zynaAttributes.mediaGroup
             else {
                 continue
@@ -3541,7 +3903,8 @@ final class ChatViewModel {
 
         return DetectedRedactionBatch(
             messageIds: newlyRedactedIds,
-            mediaGroups: mediaGroups
+            mediaGroups: mediaGroups,
+            identityKeys: identityKeys
         )
     }
 
