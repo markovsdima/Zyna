@@ -73,4 +73,10 @@ enum AppIcon {
                 .draw(in: CGRect(origin: .zero, size: symbol.size))
         }
     }
+
+    func template(size: CGFloat = 22, weight: UIImage.SymbolWeight = .medium) -> UIImage {
+        let config = UIImage.SymbolConfiguration(pointSize: size, weight: weight)
+        return UIImage(systemName: systemName, withConfiguration: config)!
+            .withRenderingMode(.alwaysTemplate)
+    }
 }

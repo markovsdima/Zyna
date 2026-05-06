@@ -67,6 +67,7 @@ final class GlassNavBar: ASDisplayNode {
     private let cornerR: CGFloat = 20
     private let titleHPad: CGFloat = 12
     private var cachedTitleW: CGFloat = 0
+    private var glassMaterial = GlassAdaptiveMaterial.light
 
     // MARK: - Init
 
@@ -74,20 +75,21 @@ final class GlassNavBar: ASDisplayNode {
         super.init()
         anchor.debugName = "nav"
 
-        // Images: pre-rendered via AppIcon (safe off-main)
         backButtonNode.setImage(
-            AppIcon.chevronLeft.rendered(size: 17, weight: .semibold, color: AppColor.accent),
+            AppIcon.chevronLeft.template(size: 17, weight: .semibold),
             for: .normal
         )
+        backButtonNode.imageNode.tintColor = glassMaterial.glyphForeground
         backButtonNode.isAccessibilityElement = true
         backButtonNode.accessibilityLabel = "Back"
         backButtonNode.accessibilityTraits = .button
         backButtonNode.style.preferredSize = CGSize(width: btnSize, height: btnSize)
 
         callButtonNode.setImage(
-            AppIcon.phone.rendered(size: 16, weight: .medium, color: AppColor.accent),
+            AppIcon.phone.template(size: 16, weight: .medium),
             for: .normal
         )
+        callButtonNode.imageNode.tintColor = glassMaterial.glyphForeground
         callButtonNode.isAccessibilityElement = true
         callButtonNode.accessibilityLabel = "Call"
         callButtonNode.accessibilityTraits = .button
@@ -123,6 +125,9 @@ final class GlassNavBar: ASDisplayNode {
             self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
                 ?? GlassRenderer.ShapeParams()
         }
+        anchor.onAdaptiveMaterialChanged = { [weak self] material in
+            self?.applyGlassAdaptiveMaterial(material)
+        }
         view.addSubview(anchor)
         anchor.accessibilityElementsHidden = true
 
@@ -130,6 +135,7 @@ final class GlassNavBar: ASDisplayNode {
         addSubnode(backButtonNode)
         addSubnode(titleNode)
         addSubnode(callButtonNode)
+        applyGlassAdaptiveMaterial(anchor.adaptiveMaterial)
 
         view.sendSubviewToBack(anchor)
 
@@ -244,5 +250,13 @@ final class GlassNavBar: ASDisplayNode {
 
         p.shapeCount = 3
         return p
+    }
+
+    private func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {
+        glassMaterial = material
+        let glyph = material.glyphForeground
+        backButtonNode.imageNode.tintColor = glyph
+        callButtonNode.imageNode.tintColor = glyph
+        titleNode.applyGlassAdaptiveMaterial(material)
     }
 }

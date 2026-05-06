@@ -54,6 +54,11 @@ final class DatabaseService {
                 t.column("replySenderId", .text)
                 t.column("replySenderName", .text)
                 t.column("replyBody", .text)
+                t.column("isEdited", .boolean).notNull().defaults(to: false)
+                t.column("isEditPending", .boolean).notNull().defaults(to: false)
+                t.column("isEditFailed", .boolean).notNull().defaults(to: false)
+                t.column("latestEditEventId", .text)
+                t.column("editTransactionId", .text)
             }
 
             try db.create(
@@ -73,6 +78,13 @@ final class DatabaseService {
                 on: "storedMessage",
                 columns: ["transactionId"],
                 condition: Column("transactionId") != nil
+            )
+            try db.execute(
+                sql: """
+                    CREATE INDEX idx_storedMessage_editTransactionId
+                    ON storedMessage(roomId, editTransactionId)
+                    WHERE editTransactionId IS NOT NULL
+                """
             )
 
             try db.create(table: "storedRoom") { t in
@@ -293,8 +305,68 @@ final class DatabaseService {
                     CREATE UNIQUE INDEX idx_storedMessage_eventId
                     ON storedMessage(roomId, eventId)
                     WHERE eventId IS NOT NULL
-                    """
+                """
             )
+        }
+
+        migrator.registerMigration("v10_messageEdits") { db in
+            let existingColumns = try db.columns(in: "storedMessage").map(\.name)
+            if !existingColumns.contains("isEdited") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "isEdited", .boolean).notNull().defaults(to: false)
+                }
+            }
+            if !existingColumns.contains("isEditPending") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "isEditPending", .boolean).notNull().defaults(to: false)
+                }
+            }
+            if !existingColumns.contains("isEditFailed") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "isEditFailed", .boolean).notNull().defaults(to: false)
+                }
+            }
+            if !existingColumns.contains("latestEditEventId") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "latestEditEventId", .text)
+                }
+            }
+            if !existingColumns.contains("editTransactionId") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "editTransactionId", .text)
+                }
+            }
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS idx_storedMessage_editTransactionId
+                    ON storedMessage(roomId, editTransactionId)
+                    WHERE editTransactionId IS NOT NULL
+                """
+            )
+        }
+
+        migrator.registerMigration("v11_videoMessages") { db in
+            let existingColumns = try db.columns(in: "storedMessage").map(\.name)
+            if !existingColumns.contains("contentThumbnailMediaJSON") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "contentThumbnailMediaJSON", .text)
+                }
+            }
+            if !existingColumns.contains("contentVideoWidth") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "contentVideoWidth", .integer)
+                }
+            }
+            if !existingColumns.contains("contentVideoHeight") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "contentVideoHeight", .integer)
+                }
+            }
+            if !existingColumns.contains("contentVideoDuration") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "contentVideoDuration", .double)
+                }
+            }
         }
 
         return migrator
@@ -305,16 +377,33 @@ final class DatabaseService {
         let eventId: String
     }
 
+    private struct StoredMessageDedupCandidate: Decodable, FetchableRecord {
+        let id: String
+        let roomId: String
+        let eventId: String?
+        let transactionId: String?
+        let timestamp: TimeInterval
+        let contentType: String
+        let sendStatus: String
+        let zynaAttributesJSON: String?
+    }
+
     private static func pruneStoredMessageEventIdDuplicates(in db: Database) throws {
         try db.execute(sql: "UPDATE storedMessage SET eventId = NULL WHERE eventId = ''")
 
-        let messages = try StoredMessage
-            .filter(Column("eventId") != nil)
-            .fetchAll(db)
+        let messages = try StoredMessageDedupCandidate.fetchAll(
+            db,
+            sql: """
+                SELECT id, roomId, eventId, transactionId, timestamp,
+                       contentType, sendStatus, zynaAttributesJSON
+                FROM storedMessage
+                WHERE eventId IS NOT NULL
+                """
+        )
 
         guard messages.count > 1 else { return }
 
-        var bestByKey: [StoredMessageEventKey: StoredMessage] = [:]
+        var bestByKey: [StoredMessageEventKey: StoredMessageDedupCandidate] = [:]
         for message in messages {
             guard let eventId = message.eventId, !eventId.isEmpty else { continue }
             let key = StoredMessageEventKey(roomId: message.roomId, eventId: eventId)
@@ -329,14 +418,17 @@ final class DatabaseService {
             guard let eventId = message.eventId, !eventId.isEmpty else { continue }
             let key = StoredMessageEventKey(roomId: message.roomId, eventId: eventId)
             guard bestByKey[key]?.id != message.id else { continue }
-            try StoredMessage.deleteOne(db, key: message.id)
+            try db.execute(
+                sql: "DELETE FROM storedMessage WHERE id = ?",
+                arguments: [message.id]
+            )
         }
     }
 
     private static func preferredStoredMessage(
-        _ lhs: StoredMessage,
-        _ rhs: StoredMessage
-    ) -> StoredMessage {
+        _ lhs: StoredMessageDedupCandidate,
+        _ rhs: StoredMessageDedupCandidate
+    ) -> StoredMessageDedupCandidate {
         let lhsScore = storedMessageDedupScore(lhs)
         let rhsScore = storedMessageDedupScore(rhs)
         if lhsScore != rhsScore {
@@ -348,7 +440,7 @@ final class DatabaseService {
         return lhs.id > rhs.id ? lhs : rhs
     }
 
-    private static func storedMessageDedupScore(_ message: StoredMessage) -> Int {
+    private static func storedMessageDedupScore(_ message: StoredMessageDedupCandidate) -> Int {
         var score = 0
         if message.contentType == "redacted" { score += 1_000 }
         if message.eventId != nil { score += 100 }

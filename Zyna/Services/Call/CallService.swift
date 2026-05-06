@@ -334,6 +334,11 @@ final class CallService {
             replySenderId: nil,
             replySenderName: nil,
             replyBody: nil,
+            isEdited: false,
+            isEditPending: false,
+            isEditFailed: false,
+            latestEditEventId: nil,
+            editTransactionId: nil,
             zynaAttributesJSON: nil
         )
 

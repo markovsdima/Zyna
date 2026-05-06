@@ -11,6 +11,8 @@ import GRDB
 
 private let logTimeline = ScopedLog(.timeline)
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
+private let logVideoTimeline = ScopedLog(.video, prefix: "[VideoTimeline]")
+private let logVideoQueue = ScopedLog(.video, prefix: "[VideoQueue]")
 
 struct OutgoingDispatchReceipt {
     let acceptedByTransport: Bool
@@ -43,7 +45,8 @@ final class TimelineService {
     var onOwnFullyReadMarker: ((String) -> Void)?
 
     /// Room-local send queue updates used to bind outgoing envelopes.
-    var onSendQueueUpdate: ((RoomSendQueueUpdate) -> Void)?
+    /// The Bool indicates whether the outgoing envelope store changed.
+    var onSendQueueUpdate: ((RoomSendQueueUpdate, Bool) -> Void)?
 
     private let room: Room
     private var timeline: Timeline?
@@ -168,21 +171,31 @@ final class TimelineService {
         switch update {
         case .newLocalEvent(let transactionId):
             logMediaGroup("sendQueue newLocalEvent tx=\(transactionId)")
+            logVideoQueue("newLocalEvent tx=\(transactionId)")
         case .cancelledLocalEvent(let transactionId):
             logMediaGroup("sendQueue cancelled tx=\(transactionId)")
+            logVideoQueue("cancelled tx=\(transactionId)")
         case .replacedLocalEvent(let transactionId):
             logMediaGroup("sendQueue replaced tx=\(transactionId)")
+            logVideoQueue("replaced tx=\(transactionId)")
         case .sendError(let transactionId, let error, let isRecoverable):
             logMediaGroup("sendQueue error tx=\(transactionId) recoverable=\(isRecoverable) error=\(error)")
+            logVideoQueue(
+                "error tx=\(transactionId) recoverable=\(isRecoverable) errorType=\(String(describing: type(of: error))) error=\(error)"
+            )
         case .retryEvent(let transactionId):
             logMediaGroup("sendQueue retry tx=\(transactionId)")
+            logVideoQueue("retry tx=\(transactionId)")
         case .sentEvent(let transactionId, let eventId):
             logMediaGroup("sendQueue sent tx=\(transactionId) event=\(eventId)")
+            logVideoQueue("sent tx=\(transactionId) event=\(eventId)")
         case .mediaUpload(let relatedTo, let file, let index, _):
             if let file {
                 logMediaGroup("sendQueue mediaUpload tx=\(relatedTo) index=\(index) url=\(file.url())")
+                logVideoQueue("mediaUpload tx=\(relatedTo) index=\(index) url=\(file.url())")
             } else {
                 logMediaGroup("sendQueue mediaUpload progress tx=\(relatedTo) index=\(index)")
+                logVideoQueue("mediaUpload progress tx=\(relatedTo) index=\(index)")
             }
         }
 
@@ -197,7 +210,7 @@ final class TimelineService {
                     )
                     if didBind {
                         DispatchQueue.main.async {
-                            callback?(update)
+                            callback?(update, true)
                         }
                     }
                 }
@@ -209,9 +222,20 @@ final class TimelineService {
             update: update
         )
 
-        guard didMutateOutgoingEnvelopes else { return }
+        guard didMutateOutgoingEnvelopes || Self.shouldNotifySendQueueObserver(update) else {
+            return
+        }
         DispatchQueue.main.async { [weak self] in
-            self?.onSendQueueUpdate?(update)
+            self?.onSendQueueUpdate?(update, didMutateOutgoingEnvelopes)
+        }
+    }
+
+    private static func shouldNotifySendQueueObserver(_ update: RoomSendQueueUpdate) -> Bool {
+        switch update {
+        case .sentEvent, .sendError, .cancelledLocalEvent:
+            return true
+        default:
+            return false
         }
     }
 
@@ -245,6 +269,8 @@ final class TimelineService {
         let reactions = buildReactions(from: event)
         let replyInfo = buildReplyInfo(from: event)
         let zynaAttributes = extractZynaAttributes(from: event)
+        let isEdited = messageContentIsEdited(from: event)
+        let editState = messageEditState(from: event, isEdited: isEdited)
 
         let itemIdentifier: ChatItemIdentifier? = {
             switch event.eventOrTransactionId {
@@ -269,9 +295,49 @@ final class TimelineService {
             content: content,
             reactions: reactions,
             replyInfo: replyInfo,
+            isEditable: event.isEditable,
+            isEdited: isEdited,
+            isEditPending: editState.isPending,
+            isEditFailed: false,
+            latestEditEventId: editState.eventId,
             zynaAttributes: zynaAttributes,
             sendStatus: "synced"
         )
+    }
+
+    private static func messageContentIsEdited(from event: EventTimelineItem) -> Bool {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let message) = msgContent.kind
+        else {
+            return false
+        }
+        return message.isEdited
+    }
+
+    private struct MessageEditState {
+        let isPending: Bool
+        let eventId: String?
+    }
+
+    private static func messageEditState(from event: EventTimelineItem, isEdited: Bool) -> MessageEditState {
+        guard isEdited,
+              let latestEditJSON = event.lazyProvider.debugInfo().latestEditJson
+        else {
+            return MessageEditState(isPending: false, eventId: nil)
+        }
+        let eventId = rawEventServerEventId(latestEditJSON)
+        return MessageEditState(isPending: eventId == nil, eventId: eventId)
+    }
+
+    private static func rawEventServerEventId(_ json: String) -> String? {
+        guard let data = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let eventId = root["event_id"] as? String,
+              eventId.hasPrefix("$")
+        else {
+            return nil
+        }
+        return eventId
     }
 
     /// Extracts Zyna-specific attributes embedded in the event's
@@ -703,10 +769,27 @@ final class TimelineService {
         case .image(let content):
             return .image(
                 source: content.source,
+                thumbnailSource: content.info?.thumbnailSource,
                 width: content.info?.width,
                 height: content.info?.height,
                 caption: content.caption,
                 previewImageData: nil
+            )
+        case .video(let content):
+            logVideoTimeline(
+                "receive video filename=\(content.filename) source=\(content.source.url()) thumb=\(content.info?.thumbnailSource?.url() ?? "<nil>") size=\(content.info?.width.map(String.init) ?? "<nil>")x\(content.info?.height.map(String.init) ?? "<nil>") duration=\(content.info?.duration.map { String(format: "%.3f", $0) } ?? "<nil>") bytes=\(content.info?.size.map(String.init) ?? "<nil>")"
+            )
+            return .video(
+                source: content.source,
+                thumbnailSource: content.info?.thumbnailSource,
+                width: content.info?.width,
+                height: content.info?.height,
+                duration: content.info?.duration,
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                size: content.info?.size,
+                caption: content.caption,
+                previewThumbnailData: nil
             )
         case .notice(let content):
             return .notice(body: content.body)
@@ -717,6 +800,26 @@ final class TimelineService {
             let waveform = content.audio?.waveform ?? []
             return .voice(source: content.source, duration: duration, waveform: waveform)
         case .file(let content):
+            if Self.isLikelyVideoFile(
+                filename: content.filename,
+                mimetype: content.info?.mimetype
+            ) {
+                logVideoTimeline(
+                    "receive video-file fallback filename=\(content.filename) source=\(content.source.url()) bytes=\(content.info?.size.map(String.init) ?? "<nil>") mime=\(content.info?.mimetype ?? "<nil>")"
+                )
+                return .video(
+                    source: content.source,
+                    thumbnailSource: content.info?.thumbnailSource,
+                    width: nil,
+                    height: nil,
+                    duration: nil,
+                    filename: content.filename,
+                    mimetype: content.info?.mimetype,
+                    size: content.info?.size,
+                    caption: content.caption,
+                    previewThumbnailData: nil
+                )
+            }
             return .file(
                 source: content.source,
                 filename: content.filename,
@@ -871,6 +974,8 @@ final class TimelineService {
         switch mimetype {
         case "image/jpeg": return "jpg"
         case "image/png": return "png"
+        case "video/mp4": return "mp4"
+        case "video/quicktime": return "mov"
         case "audio/mp4", "audio/m4a": return "m4a"
         case "audio/ogg": return "ogg"
         default: return "bin"
@@ -879,17 +984,39 @@ final class TimelineService {
 
     private func sendWithTransaction(
         bindingToken: String,
+        timeout: Duration = .seconds(10),
+        debugLabel: String? = nil,
         _ operation: @escaping () async throws -> Void
     ) async throws -> String? {
+        if let debugLabel {
+            logVideoTimeline("sendWithTransaction reserve label=\(debugLabel) token=\(bindingToken)")
+        }
         await localEventTransactionBroker.reserveWaiter(token: bindingToken)
         do {
+            if let debugLabel {
+                logVideoTimeline("sendWithTransaction operation start label=\(debugLabel)")
+            }
             try await operation()
-            return await localEventTransactionBroker.awaitTransaction(
+            if let debugLabel {
+                logVideoTimeline("sendWithTransaction operation returned label=\(debugLabel)")
+            }
+            let transactionId = await localEventTransactionBroker.awaitTransaction(
                 for: bindingToken,
-                timeout: .seconds(10)
+                timeout: timeout
             )
+            if let debugLabel {
+                logVideoTimeline(
+                    "sendWithTransaction waiter done label=\(debugLabel) tx=\(transactionId ?? "<nil>") timeout=\(timeout)"
+                )
+            }
+            return transactionId
         } catch {
             await localEventTransactionBroker.cancel(token: bindingToken)
+            if let debugLabel {
+                logVideoTimeline(
+                    "sendWithTransaction failed label=\(debugLabel) errorType=\(String(describing: type(of: error))) error=\(error)"
+                )
+            }
             throw error
         }
     }
@@ -965,6 +1092,43 @@ final class TimelineService {
     }
 
     @discardableResult
+    func editMessage(
+        _ text: String,
+        itemId: ChatItemIdentifier,
+        zynaAttributes: ZynaMessageAttributes
+    ) async -> OutgoingDispatchReceipt {
+        guard let timeline else { return .failed }
+        let bindingToken = UUID().uuidString
+
+        let content: RoomMessageEventContentWithoutRelation
+        if zynaAttributes.isEmpty {
+            content = messageEventContentFromMarkdown(md: text)
+        } else {
+            let htmlBody = ZynaHTMLCodec.encode(
+                userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(text),
+                attributes: zynaAttributes
+            )
+            content = messageEventContentFromHtml(body: text, htmlBody: htmlBody)
+        }
+
+        do {
+            let transactionId = try await sendWithTransaction(
+                bindingToken: bindingToken
+            ) {
+                try await timeline.edit(
+                    eventOrTransactionId: itemId.toSDK(),
+                    newContent: .roomMessage(content: content)
+                )
+            }
+            logTimeline("Edited message \(itemId) tx=\(transactionId ?? "nil")")
+            return .accepted(transactionId: transactionId)
+        } catch {
+            logTimeline("Edit failed: \(error)")
+            return .failed
+        }
+    }
+
+    @discardableResult
     func sendVoiceMessage(
         url: URL,
         duration: TimeInterval,
@@ -1014,9 +1178,7 @@ final class TimelineService {
 
     @discardableResult
     func sendImage(
-        imageData: Data,
-        width: UInt64,
-        height: UInt64,
+        image: ProcessedImage,
         caption: String?,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         replyEventId: String? = nil,
@@ -1026,17 +1188,25 @@ final class TimelineService {
 
         if let mediaGroup = zynaAttributes.mediaGroup {
             logMediaGroup(
-                "sendImage start group=\(Self.describe(mediaGroup)) width=\(width) height=\(height) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>")"
+                "sendImage start group=\(Self.describe(mediaGroup)) width=\(image.width) height=\(image.height) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>")"
             )
         } else {
             logMediaGroup(
-                "sendImage start standalone width=\(width) height=\(height) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>")"
+                "sendImage start standalone width=\(image.width) height=\(image.height) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>")"
             )
         }
 
-        let imageURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
-        do { try imageData.write(to: imageURL) } catch {
+        let workingDirectoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zyna-image-\(UUID().uuidString)", isDirectory: true)
+        let imageURL = workingDirectoryURL.appendingPathComponent("image.jpg")
+        let thumbnailURL = workingDirectoryURL.appendingPathComponent("thumbnail.jpg")
+        do {
+            try FileManager.default.createDirectory(at: workingDirectoryURL, withIntermediateDirectories: true)
+            try image.imageData.write(to: imageURL, options: .atomic)
+            try image.thumbnailData.write(to: thumbnailURL, options: .atomic)
+        } catch {
             logTimeline("Image write to temp failed: \(error)")
+            try? FileManager.default.removeItem(at: workingDirectoryURL)
             return .failed
         }
 
@@ -1056,11 +1226,21 @@ final class TimelineService {
             formattedCaption = FormattedBody(format: .html, body: encoded)
         }
 
-        // sendImage throws InvalidAttachmentData — using sendFile
-        // as workaround until SDK issue is resolved.
-        let fileInfo = FileInfo(
-            mimetype: "image/jpeg", size: UInt64(imageData.count),
-            thumbnailInfo: nil, thumbnailSource: nil
+        let thumbnailInfo = ThumbnailInfo(
+            height: image.thumbnailHeight,
+            width: image.thumbnailWidth,
+            mimetype: "image/jpeg",
+            size: image.thumbnailSize
+        )
+        let imageInfo = ImageInfo(
+            height: image.height,
+            width: image.width,
+            mimetype: "image/jpeg",
+            size: UInt64(image.imageData.count),
+            thumbnailInfo: thumbnailInfo,
+            thumbnailSource: nil,
+            blurhash: image.blurhash,
+            isAnimated: nil
         )
         let params = UploadParameters(
             source: .file(filename: imageURL.path(percentEncoded: false)),
@@ -1068,21 +1248,149 @@ final class TimelineService {
         )
         do {
             let transactionId = try await sendWithTransaction(bindingToken: bindingToken) {
-                _ = try timeline.sendFile(params: params, fileInfo: fileInfo)
+                let handle = try timeline.sendImage(
+                    params: params,
+                    thumbnailSource: .file(filename: thumbnailURL.path(percentEncoded: false)),
+                    imageInfo: imageInfo
+                )
+                try await handle.join()
             }
-            logTimeline("Image sent via sendFile, \(width)×\(height)")
+            logTimeline("Image sent, \(image.width)×\(image.height)")
             logMediaGroup(
                 "sendImage queued tx=\(transactionId ?? "<nil>") group=\(Self.describe(zynaAttributes.mediaGroup)) localURL=\(imageURL.lastPathComponent)"
             )
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-                try? FileManager.default.removeItem(at: imageURL)
-            }
+            Self.cleanupTemporaryMediaDirectory(workingDirectoryURL, delay: 10)
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("Image send failed: \(error)")
             logMediaGroup("sendImage failed group=\(Self.describe(zynaAttributes.mediaGroup)) error=\(error)")
+            Self.cleanupTemporaryMediaDirectory(workingDirectoryURL)
             return .failed
         }
+    }
+
+    private static func cleanupTemporaryMediaDirectory(_ url: URL, delay: TimeInterval = 0) {
+        let cleanup: () -> Void = {
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        if delay > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: cleanup)
+        } else {
+            DispatchQueue.global(qos: .utility).async(execute: cleanup)
+        }
+    }
+
+    @discardableResult
+    func sendVideo(
+        video: ProcessedVideo,
+        caption: String?,
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        replyEventId: String? = nil,
+        bindingToken: String
+    ) async -> OutgoingDispatchReceipt {
+        guard let timeline else { return .failed }
+        logVideoTimeline(
+            "sendVideo start filename=\(video.filename) bindingToken=\(bindingToken.isEmpty ? "<empty>" : bindingToken) bytes=\(video.size) size=\(video.width)x\(video.height) duration=\(String(format: "%.3f", video.duration)) thumbBytes=\(video.thumbnailSize) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>") attrsEmpty=\(zynaAttributes.isEmpty)"
+        )
+        logVideoTimeline(
+            "sendVideo files videoExists=\(FileManager.default.fileExists(atPath: video.videoURL.path)) thumbExists=\(FileManager.default.fileExists(atPath: video.thumbnailURL.path)) videoPath=\(video.videoURL.lastPathComponent) thumbPath=\(video.thumbnailURL.lastPathComponent)"
+        )
+
+        let plainCaption: String?
+        let formattedCaption: FormattedBody?
+        if zynaAttributes.isEmpty {
+            plainCaption = caption
+            formattedCaption = nil
+        } else {
+            let visibleCaption = caption?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let userCaption = (visibleCaption?.isEmpty == false) ? visibleCaption! : "\u{200B}"
+            plainCaption = userCaption
+            let encoded = ZynaHTMLCodec.encode(
+                userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(userCaption),
+                attributes: zynaAttributes
+            )
+            formattedCaption = FormattedBody(format: .html, body: encoded)
+        }
+
+        let thumbnailInfo = ThumbnailInfo(
+            height: video.thumbnailHeight,
+            width: video.thumbnailWidth,
+            mimetype: "image/jpeg",
+            size: video.thumbnailSize
+        )
+        let videoInfo = VideoInfo(
+            duration: video.duration,
+            height: video.height,
+            width: video.width,
+            mimetype: video.mimetype,
+            size: video.size,
+            thumbnailInfo: thumbnailInfo,
+            thumbnailSource: nil,
+            blurhash: video.blurhash
+        )
+        let params = UploadParameters(
+            source: .file(filename: video.videoURL.path(percentEncoded: false)),
+            caption: plainCaption,
+            formattedCaption: formattedCaption,
+            mentions: nil,
+            inReplyTo: replyEventId
+        )
+
+        do {
+            logVideoTimeline(
+                "sendVideo sdkCall method=sendVideo source=file videoPath=\(video.videoURL.path(percentEncoded: false)) thumbPath=\(video.thumbnailURL.path(percentEncoded: false)) blurhash=\(video.blurhash != nil ? "true" : "false")"
+            )
+            let transactionId = try await sendWithTransaction(
+                bindingToken: bindingToken,
+                debugLabel: "video:\(video.filename)"
+            ) {
+                let handle = try timeline.sendVideo(
+                    params: params,
+                    thumbnailSource: .file(filename: video.thumbnailURL.path(percentEncoded: false)),
+                    videoInfo: videoInfo
+                )
+                logVideoTimeline("sendVideo join start filename=\(video.filename)")
+                try await handle.join()
+                logVideoTimeline("sendVideo join done filename=\(video.filename)")
+            }
+            logTimeline("Video sent: \(video.filename), \(video.size) bytes")
+            logVideoTimeline("sendVideo accepted filename=\(video.filename) tx=\(transactionId ?? "<nil>")")
+            Self.cleanupProcessedVideoFiles(video, delay: 10)
+            return .accepted(transactionId: transactionId)
+        } catch {
+            logTimeline("Video send failed: \(error)")
+            logVideoTimeline(
+                "sendVideo failed filename=\(video.filename) errorType=\(String(describing: type(of: error))) error=\(error)"
+            )
+            Self.cleanupProcessedVideoFiles(video)
+            return .failed
+        }
+    }
+
+    private static func cleanupProcessedVideoFiles(_ video: ProcessedVideo, delay: TimeInterval = 0) {
+        let videoURL = video.videoURL
+        let thumbnailURL = video.thumbnailURL
+        let workingDirectoryURL = video.videoURL.deletingLastPathComponent()
+        let cleanup = {
+            try? FileManager.default.removeItem(at: videoURL)
+            try? FileManager.default.removeItem(at: thumbnailURL)
+            try? FileManager.default.removeItem(at: workingDirectoryURL)
+        }
+
+        if delay > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: cleanup)
+        } else {
+            DispatchQueue.global(qos: .utility).async(execute: cleanup)
+        }
+    }
+
+    private static func isLikelyVideoFile(filename: String, mimetype: String?) -> Bool {
+        if mimetype?.lowercased().hasPrefix("video/") == true { return true }
+        guard let type = UTType(filenameExtension: (filename as NSString).pathExtension) else {
+            return false
+        }
+        return type.conforms(to: .movie) || type.conforms(to: .audiovisualContent)
     }
 
     @discardableResult

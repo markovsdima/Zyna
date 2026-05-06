@@ -42,6 +42,10 @@ final class GlassInputBar: ASDisplayNode {
     /// Driven by the spring animation in `scrollButtonTick`.
     var onScrollButtonLayoutChanged: ((CGRect, CGFloat, CGRect, CGFloat) -> Void)?
 
+    /// Mirrors the shader's smoothed material state so icons outside this
+    /// node (scroll-to-live chevron) can stay legible too.
+    var onAdaptiveMaterialChanged: ((GlassAdaptiveMaterial) -> Void)?
+
     // MARK: - Private
 
     private let anchor = GlassAnchor()
@@ -83,8 +87,13 @@ final class GlassInputBar: ASDisplayNode {
         anchor.barProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildBarData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
         }
+        anchor.onAdaptiveMaterialChanged = { [weak self] material in
+            self?.inputNode.applyGlassAdaptiveMaterial(material)
+            self?.onAdaptiveMaterialChanged?(material)
+        }
         view.addSubview(anchor)
         anchor.accessibilityElementsHidden = true
+        inputNode.applyGlassAdaptiveMaterial(anchor.adaptiveMaterial)
 
         // Input node as subnode (already ASDisplayNode)
         addSubnode(inputNode)

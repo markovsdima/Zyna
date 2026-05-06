@@ -8,6 +8,7 @@ import GRDB
 import MatrixRustSDK
 
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
+private let logVideoEnvelope = ScopedLog(.video, prefix: "[VideoEnvelope]")
 
 final class OutgoingEnvelopeService {
 
@@ -95,6 +96,60 @@ final class OutgoingEnvelopeService {
         )
         logMediaGroup(
             "outgoing create kind=image room=\(roomId) envelope=\(envelopeId) caption=\(normalizedCaption ?? "<nil>")"
+        )
+        return item.bindingToken ?? ""
+    }
+
+    @discardableResult
+    func createOutgoingVideo(
+        roomId: String,
+        envelopeId: String,
+        filename: String,
+        caption: String?,
+        width: UInt64?,
+        height: UInt64?,
+        duration: TimeInterval?,
+        mimetype: String?,
+        size: UInt64?,
+        previewThumbnailData: Data?,
+        replyInfo: ReplyInfo?,
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
+    ) -> String {
+        let normalizedCaption = Self.normalizeCaption(caption)
+        let item = makeEnvelopeItem(
+            groupId: envelopeId,
+            itemIndex: 0,
+            previewImageData: previewThumbnailData,
+            previewWidth: width,
+            previewHeight: height
+        )
+        createEnvelope(
+            roomId: roomId,
+            envelopeId: envelopeId,
+            kind: .video,
+            payload: .video(
+                OutgoingVideoPayload(
+                    filename: filename,
+                    caption: normalizedCaption,
+                    width: width,
+                    height: height,
+                    duration: duration,
+                    mimetype: mimetype,
+                    size: size
+                )
+            ),
+            caption: normalizedCaption,
+            captionPlacement: .bottom,
+            expectedItemCount: 1,
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes,
+            items: [item]
+        )
+        logMediaGroup(
+            "outgoing create kind=video room=\(roomId) envelope=\(envelopeId) filename=\(filename) caption=\(normalizedCaption ?? "<nil>")"
+        )
+        logVideoEnvelope(
+            "create room=\(roomId) envelope=\(envelopeId) bindingToken=\(item.bindingToken ?? "<nil>") filename=\(filename) bytes=\(size.map(String.init) ?? "<nil>") size=\(width.map(String.init) ?? "<nil>")x\(height.map(String.init) ?? "<nil>") duration=\(duration.map { String(format: "%.3f", $0) } ?? "<nil>") thumbBytes=\(previewThumbnailData?.count ?? 0) caption=\(normalizedCaption ?? "<nil>")"
         )
         return item.bindingToken ?? ""
     }

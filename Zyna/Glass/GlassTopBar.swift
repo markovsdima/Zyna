@@ -85,6 +85,7 @@ final class GlassTopBar: ASDisplayNode {
 
     private var entries: [Entry] = []
     private var fittedTitleW: CGFloat = 0
+    private var glassMaterial = GlassAdaptiveMaterial.light
 
     // MARK: - Init
 
@@ -104,11 +105,15 @@ final class GlassTopBar: ASDisplayNode {
             self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
                 ?? GlassRenderer.ShapeParams()
         }
+        anchor.onAdaptiveMaterialChanged = { [weak self] material in
+            self?.applyGlassAdaptiveMaterial(material)
+        }
         view.addSubview(anchor)
         anchor.accessibilityElementsHidden = true
 
         // Subnodes may already exist (items set before node loaded).
         view.sendSubviewToBack(anchor)
+        applyGlassAdaptiveMaterial(anchor.adaptiveMaterial)
     }
 
     // MARK: - Layout
@@ -179,7 +184,8 @@ final class GlassTopBar: ASDisplayNode {
             switch item {
             case .circleButton(let icon, let label, let action):
                 let btn = AccessibleButtonNode()
-                btn.setImage(icon, for: .normal)
+                btn.setImage(icon.withRenderingMode(.alwaysTemplate), for: .normal)
+                btn.imageNode.tintColor = glassMaterial.glyphForeground
                 btn.isAccessibilityElement = true
                 btn.accessibilityLabel = label
                 btn.accessibilityTraits = .button
@@ -195,6 +201,7 @@ final class GlassTopBar: ASDisplayNode {
                 let tv = GlassTopBarTitleView()
                 tv.text = text
                 tv.subtitle = subtitle
+                tv.applyGlassAdaptiveMaterial(glassMaterial)
                 tv.onTapped = { [weak self] in self?.onTitleTapped?() }
                 let titleNode = ASDisplayNode(viewBlock: { tv })
                 addSubnode(titleNode)
@@ -205,6 +212,8 @@ final class GlassTopBar: ASDisplayNode {
                 entries.append(Entry(kind: .flexibleSpace, node: nil, titleView: nil))
             }
         }
+
+        applyGlassAdaptiveMaterial(glassMaterial)
 
         // Ensure glass renderer stays behind interactive content
         if isNodeLoaded {
@@ -317,6 +326,22 @@ final class GlassTopBar: ASDisplayNode {
         p.shapeCount = Float(1 + circleIndex)
         return p
     }
+
+    private func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {
+        glassMaterial = material
+        let glyph = material.glyphForeground
+        for entry in entries {
+            switch entry.kind {
+            case .circle:
+                guard let button = entry.node as? ASButtonNode else { continue }
+                button.imageNode.tintColor = glyph
+            case .title:
+                entry.titleView?.applyGlassAdaptiveMaterial(material)
+            case .flexibleSpace:
+                break
+            }
+        }
+    }
 }
 
 // MARK: - Title view
@@ -350,15 +375,17 @@ private final class GlassTopBarTitleView: UIView {
 
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
+    private var glassMaterial = GlassAdaptiveMaterial.light
 
     override init(frame: CGRect) {
         super.init(frame: frame)
 
         titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.textColor = glassMaterial.primaryForeground
         titleLabel.textAlignment = .center
 
         subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
-        subtitleLabel.textColor = .secondaryLabel
+        subtitleLabel.textColor = glassMaterial.secondaryForeground
         subtitleLabel.textAlignment = .center
         subtitleLabel.isHidden = true
 
@@ -397,5 +424,11 @@ private final class GlassTopBarTitleView: UIView {
             label += ", \(subtitle)"
         }
         accessibilityLabel = label
+    }
+
+    func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {
+        glassMaterial = material
+        titleLabel.textColor = material.primaryForeground
+        subtitleLabel.textColor = material.secondaryForeground
     }
 }

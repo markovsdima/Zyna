@@ -19,6 +19,7 @@ enum PaintSplashTrigger {
 
     static func trigger(
         in tableNode: ASTableNode,
+        overlayView preferredOverlayView: UIView? = nil,
         at indexPath: IndexPath,
         completion: @escaping () -> Void
     ) {
@@ -32,11 +33,12 @@ enum PaintSplashTrigger {
             completion()
             return
         }
-        trigger(in: tableNode, target: target, completion: completion)
+        trigger(in: tableNode, overlayView: preferredOverlayView, target: target, completion: completion)
     }
 
     static func trigger(
         in tableNode: ASTableNode,
+        overlayView preferredOverlayView: UIView? = nil,
         target: SnapshotTarget,
         completion: @escaping () -> Void
     ) {
@@ -45,8 +47,9 @@ enum PaintSplashTrigger {
             return
         }
 
-        let screenSpace = tableNode.view.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
-        let splashFrame = tableNode.view.convert(target.frameInScreen, from: screenSpace)
+        let overlayView = preferredOverlayView ?? tableNode.view.superview ?? tableNode.view
+        let screenSpace = overlayView.window?.screen.coordinateSpace ?? UIScreen.main.coordinateSpace
+        let splashFrame = overlayView.convert(target.frameInScreen, from: screenSpace)
 
         // Phase 1: Anticipation — squash the bubble
         UIView.animate(
@@ -62,20 +65,24 @@ enum PaintSplashTrigger {
                 target.hideSource()
 
                 let splashLayer: PaintSplashLayer
-                if let existing = activeSplashLayer {
+                if let existing = activeSplashLayer,
+                   existing.superlayer === overlayView.layer {
                     splashLayer = existing
                 } else {
+                    activeSplashLayer?.removeFromSuperlayer()
                     splashLayer = PaintSplashLayer()
-                    splashLayer.frame = CGRect(origin: .zero, size: tableNode.view.bounds.size)
+                    splashLayer.frame = CGRect(origin: .zero, size: overlayView.bounds.size)
                     splashLayer.zPosition = 10
-                    tableNode.view.layer.addSublayer(splashLayer)
+                    overlayView.layer.addSublayer(splashLayer)
                     activeSplashLayer = splashLayer
                 }
 
-                splashLayer.frame = CGRect(origin: .zero, size: tableNode.view.bounds.size)
+                splashLayer.overlayHostView = overlayView
+                splashLayer.frame = CGRect(origin: .zero, size: overlayView.bounds.size)
+                let screenScale = overlayView.window?.screen.scale ?? UIScreen.main.scale
                 splashLayer.drawableSize = CGSize(
-                    width: tableNode.view.bounds.width * UIScreen.main.scale,
-                    height: tableNode.view.bounds.height * UIScreen.main.scale
+                    width: overlayView.bounds.width * screenScale,
+                    height: overlayView.bounds.height * screenScale
                 )
 
                 splashLayer.addItem(

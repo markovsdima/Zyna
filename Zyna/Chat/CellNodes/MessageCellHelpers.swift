@@ -24,6 +24,11 @@ enum MessageCellHelpers {
         return formatter
     }()
 
+    static func timelineTimestampText(for message: ChatMessage) -> String {
+        let time = timeFormatter.string(from: message.timestamp)
+        return message.isEdited ? "\(String(localized: "edited")) \(time)" : time
+    }
+
     static let senderColors: [UIColor] = [
         .systemRed, .systemBlue, .systemGreen, .systemOrange,
         .systemPurple, .systemTeal, .systemIndigo, .systemPink

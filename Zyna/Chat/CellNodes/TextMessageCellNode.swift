@@ -37,6 +37,8 @@ final class TextMessageCellNode: MessageCellNode {
             bodyText = "* \(message.senderDisplayName ?? "") \(body)"
         case .image:
             bodyText = "📷 Photo"
+        case .video(_, _, _, _, _, let filename, _, _, _, _):
+            bodyText = "🎬 \(filename)"
         case .pendingOutgoingMediaBatch:
             bodyText = "📷 Photo"
         case .voice:
@@ -108,7 +110,7 @@ final class TextMessageCellNode: MessageCellNode {
         }
 
         let timeAttributedText = NSAttributedString(
-            string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
+            string: MessageCellHelpers.timelineTimestampText(for: message),
             attributes: [
                 .font: UIFont.systemFont(ofSize: 11),
                 .foregroundColor: bubbleTimestampColor
@@ -116,7 +118,7 @@ final class TextMessageCellNode: MessageCellNode {
         )
 
         let statusIcon = message.isOutgoing
-            ? MessageStatusIcon.from(sendStatus: message.sendStatus)
+            ? MessageStatusIcon.from(sendStatus: message.effectiveSendStatus)
             : nil
 
         let maxContentWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio
