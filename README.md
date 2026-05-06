@@ -1,88 +1,84 @@
+# Zyna
 
-<img width="1206" height="799" alt="ZynaGitHubLogo" src="https://github.com/user-attachments/assets/0ef25bcc-f1c9-49f6-812e-c9883ad98876" /><br>
+**Zyna is an open-source native iOS client for Matrix, focused on encrypted chat, rich media, voice calls, and a custom native UI.**
 
+It is built with Matrix Rust SDK, GRDB, Texture, Metal, WebRTC, and a lightweight companion presence service.
 
-**Matrix-based iOS messenger with a focus on visual interaction**
+Demo: [YouTube quick tour](https://youtube.com/shorts/Tv3BSCmnINg?feature=share)
 
-Zyna is an iOS client for the Matrix protocol. The core messaging works — text, images, voice messages, VoIP calls. On top of that, it explores what a messenger can look like when you invest in animations and GPU-rendered effects (Metal shaders for message deletion, 120fps scroll, custom transitions).
+<p align="center">
+  <img width="640" alt="Zyna app preview" src="https://github.com/user-attachments/assets/0ef25bcc-f1c9-49f6-812e-c9883ad98876">
+  &nbsp;
+  <img width="240" alt="Zyna message deletion effect" src="https://github.com/user-attachments/assets/a15fb115-059d-4464-86f3-16182afd4c94">
+</p>
 
-End-to-end encrypted. Open source. Work in progress.
+## Features
 
-## 📦 What's Built
+- Encrypted Matrix messaging: text, replies, edits, redactions, reactions, forwarding, and copy actions
+- Local-first sending with optimistic messages, send queue, and failed-send states
+- Media and attachments: images, grouped media, captions, videos, voice messages, files, thumbnails, and Quick Look file previews
+- Rooms and people: DMs, group rooms, unread state, encryption indicators, members, profiles, avatars, presence, and last seen
+- Companion presence service for realtime online status and last seen updates
+- Voice calls using Matrix call events and WebRTC audio
+- Custom native UI with asynchronous chat rendering, glass navigation/input bars, chat bubble themes, deletion animation, and custom transitions
+- VoiceOver support for the main chat flow
 
-**Messaging**
-- Text, image, and voice messages
-- Voice recording with waveform visualization, lock gesture, and slide-to-cancel
-- Emoji reactions with custom context menu
-- Message deletion with paint-splash animation (Metal compute shaders)
-- Image preprocessing and thumbnail caching
+## Architecture
 
-**Calls**
-- VoIP calls over WebRTC with ICE candidate exchange
+Zyna keeps the Matrix client, local persistence, realtime presence, and UI rendering layers separate.
 
-**Authentication**
-- Password login and OIDC registration
-- Session restore from Keychain
-- Device verification
+- **Matrix Rust SDK** provides the Matrix protocol layer: sync, end-to-end encryption, rooms, timelines, and media APIs.
+- **GRDB** stores the on-device cache for rooms, messages, and outgoing events.
+- **Texture (AsyncDisplayKit)** renders room lists and chat timelines asynchronously.
+- **Metal** powers the custom glass UI and message deletion effect.
+- **WebRTC** handles voice call media.
+- **[Zyna Presence Server](https://github.com/markovsdima/zyna-presence)** provides realtime online status and last seen updates through a lightweight WebSocket service.
+- **KeychainAccess** stores session and encryption-related credentials.
 
-**Rooms**
-- Real-time room list with sliding sync
-- Unread badges, last message preview, encryption indicators
-- DM and group creation
+This separation lets the app render cached timelines, show pending and failed sends, update presence independently, and keep scrolling responsive while sync, media loading, and uploads continue in the background.
 
-**Profile & Presence**
-- Editable profile with avatar upload
-- Online / offline / last seen indicators
+## Implementation Notes
 
-**Performance**
-- 120fps scroll optimization
-- Full-screen swipe-to-pop navigation
+Detailed notes for specific subsystems live in the repo:
 
-## 🔧 Tech Stack & Architecture
+- [Navigation](Zyna/Navigation/NAVIGATION.md)
+- [Glass renderer](Zyna/Glass/RESEARCH.md)
+- [Chat bubble themes](Zyna/Glass/PORTAL.md)
+- [Message deletion animation](Zyna/Components/PaintSplash/PAINT_SPLASH.md)
+- [Outgoing message layer](Zyna/Chat/OUTGOING_LAYER.md)
+- [Media grouping](Zyna/Chat/MEDIA_GROUPING.md)
+- [Incoming message assembly](Zyna/Chat/INCOMING_ASSEMBLY.md)
+- [Message deletion flow](Zyna/Chat/REDACTION_FLOW.md)
+- [Scroll and pagination](Zyna/Chat/SCROLL_AND_PAGINATION.md)
+- [Accessibility](Zyna/Accessibility/ACCESSIBILITY.md)
 
-- **Matrix Rust SDK** — messaging, E2E encryption, sliding sync
-- **Texture (AsyncDisplayKit)** — async UI rendering
-- **Combine** — reactive state and data flow
-- **Metal** — GPU-accelerated visual effects
-- **WebRTC** — peer-to-peer voice calls
-- **KeychainAccess** — session and credential storage
+## Requirements
 
-Coordinator pattern for navigation. Texture nodes for screens, SwiftUI for auth flow.
-
-## 🗺 Up Next
-
-- Settings screen (theme, notifications, account management)
-- CallKit integration
-- Push notifications
-- Local database (GRDB) for offline-first UI
-- Visual message styling and color-coded conversations
-- App Store release
-
-## ⚡ Getting Started
-
-**Requirements**
-- Xcode 16.2+
+- Xcode 26.3+
 - iOS 16.0+
-- [Carthage](https://github.com/Carthage/Carthage) 0.39+
+- Carthage 0.39+
+- A Matrix account on a compatible homeserver
 
-**Build**
+## Build
 
 ```bash
 git clone https://github.com/markovsdima/Zyna.git
 cd Zyna
 
-# Rebuild Carthage dependencies if needed (pre-built frameworks are included):
 carthage bootstrap --use-xcframeworks --platform iOS
-
 open Zyna.xcodeproj
 ```
 
-SPM dependencies (Matrix Rust SDK, WebRTC, KeychainAccess, GRDB) resolve automatically on first build.
+Xcode resolves the SPM dependencies on first build.
 
-**Run**
+Build and run the `Zyna` scheme on a simulator or device. On the login screen, enter a Matrix homeserver and sign in with an existing account.
 
-Build and run on a simulator or device. On the login screen, enter any Matrix homeserver (defaults to `matrix.org`). You can use an existing account or register via OIDC if the server supports it.
+## Collaboration
+
+Open to commercial collaboration around white-label Matrix clients, private deployments, and custom iOS communication products.
+
+Contact: [@markovsdima](https://t.me/markovsdima)
 
 ## License
 
-AGPL-3.0
+AGPL-3.0-only
