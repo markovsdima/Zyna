@@ -305,12 +305,12 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = UM3QPHF8E3;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Zyna/App/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls and sharing photos.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls, sharing photos, and scanning documents.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Zyna needs access to your microphone for voice calls.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -322,7 +322,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.2;
+				MARKETING_VERSION = 2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.app.zyna.Zyna;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -349,12 +349,12 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 13;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = UM3QPHF8E3;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Zyna/App/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls and sharing photos.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls, sharing photos, and scanning documents.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Zyna needs access to your microphone for voice calls.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -366,7 +366,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.2;
+				MARKETING_VERSION = 2.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.app.zyna.Zyna;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

@@ -6,6 +6,95 @@
 import Foundation
 import GRDB
 
+/// Compact description of one debounced SDK timeline flush.
+///
+/// These counts are not just logging metadata: `ChatViewModel` uses the
+/// shape of the flush to distinguish live updates from bootstrap/history
+/// hydration. For example, a focused `set` can animate a newly-redacted
+/// visible message, while reset/pagination-shaped flushes must not.
+struct TimelineFlushSummary: Equatable {
+    var appendCount = 0
+    var pushBackCount = 0
+    var pushFrontCount = 0
+    var insertCount = 0
+    var setCount = 0
+    var removeCount = 0
+    var resetCount = 0
+    var truncateCount = 0
+    var clearCount = 0
+    var readReceiptCount = 0
+    var upsertCount = 0
+    var deleteCount = 0
+    var redactedUpsertCount = 0
+
+    var hasHistoryOrResetShape: Bool {
+        resetCount > 0
+            || pushFrontCount > 0
+            || appendCount > 0
+            || insertCount > 0
+            || clearCount > 0
+    }
+
+    /// Redactions that arrive as a focused SDK `set` against the currently
+    /// retained timeline can be live user-visible changes. Reset/pagination
+    /// shapes are treated as history hydration and must not drive splash UI.
+    var allowsRemoteRedactionAnimation: Bool {
+        setCount > 0 && !hasHistoryOrResetShape
+    }
+
+    var compactDescription: String {
+        [
+            appendCount > 0 ? "append=\(appendCount)" : nil,
+            pushBackCount > 0 ? "pushBack=\(pushBackCount)" : nil,
+            pushFrontCount > 0 ? "pushFront=\(pushFrontCount)" : nil,
+            insertCount > 0 ? "insert=\(insertCount)" : nil,
+            setCount > 0 ? "set=\(setCount)" : nil,
+            removeCount > 0 ? "remove=\(removeCount)" : nil,
+            resetCount > 0 ? "reset=\(resetCount)" : nil,
+            truncateCount > 0 ? "truncate=\(truncateCount)" : nil,
+            clearCount > 0 ? "clear=\(clearCount)" : nil,
+            readReceiptCount > 0 ? "read=\(readReceiptCount)" : nil,
+            upsertCount > 0 ? "upsert=\(upsertCount)" : nil,
+            deleteCount > 0 ? "delete=\(deleteCount)" : nil,
+            redactedUpsertCount > 0 ? "redacted=\(redactedUpsertCount)" : nil
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+    }
+}
+
+/// Why `MessageWindow` emitted a snapshot; controls UI interpretation
+/// of the same data diff, especially redaction animation eligibility.
+enum MessageWindowChangeOrigin: Equatable {
+    case initialLoad
+    case databasePagination
+    case jump
+    case localMutation
+    case timelineFlush(TimelineFlushSummary)
+
+    var allowsRemoteRedactionAnimation: Bool {
+        if case .timelineFlush(let summary) = self {
+            return summary.allowsRemoteRedactionAnimation
+        }
+        return false
+    }
+
+    var compactDescription: String {
+        switch self {
+        case .initialLoad:
+            return "initial"
+        case .databasePagination:
+            return "dbPage"
+        case .jump:
+            return "jump"
+        case .localMutation:
+            return "local"
+        case .timelineFlush(let summary):
+            return "flush(\(summary.compactDescription))"
+        }
+    }
+}
+
 /// Manages the session-retained set of messages that have been loaded
 /// for a single room. Queries GRDB on demand instead of observing all
 /// rows. Most methods mutate state and emit UI updates — call them on
@@ -49,8 +138,8 @@ final class MessageWindow {
 
     // MARK: - Callback
 
-    /// Fired after any window content change with (new, previous).
-    var onChange: ((_ new: [StoredMessage], _ previous: [StoredMessage]?) -> Void)?
+    /// Fired after any window content change with (new, previous, origin).
+    var onChange: ((_ new: [StoredMessage], _ previous: [StoredMessage]?, _ origin: MessageWindowChangeOrigin) -> Void)?
 
     private var previousStored: [StoredMessage]?
 
@@ -68,7 +157,7 @@ final class MessageWindow {
         updateCursors(from: stored)
         hasNewerInDB = false
         hasOlderInDB = stored.count >= Self.windowSize || checkHasOlderInDB()
-        emitChange(stored)
+        emitChange(stored, origin: .initialLoad)
         log("loadInitial: \(stored.count) messages")
     }
 
@@ -101,7 +190,7 @@ final class MessageWindow {
         updateCursors(from: page.merged)
         hasOlderInDB = checkHasOlderInDB()
         hasNewerInDB = checkHasNewerInDB()
-        emitChange(page.merged)
+        emitChange(page.merged, origin: .databasePagination)
         log("loadOlder: +\(page.fetchedCount), window=\(page.merged.count)")
     }
 
@@ -139,14 +228,14 @@ final class MessageWindow {
         updateCursors(from: all)
         hasOlderInDB = checkHasOlderInDB()
         hasNewerInDB = checkHasNewerInDB()
-        emitChange(all)
+        emitChange(all, origin: .databasePagination)
         log("loadNewer: +\(newer.count), window=\(all.count)")
         return true
     }
 
     // MARK: - Refresh (batcher flush callback)
 
-    func refresh() {
+    func refresh(origin: MessageWindowChangeOrigin = .localMutation) {
         guard let oldestTs = oldestTimestamp else {
             loadInitial()
             return
@@ -159,7 +248,7 @@ final class MessageWindow {
             updateCursors(from: stored)
             hasNewerInDB = false
             hasOlderInDB = checkHasOlderInDB()
-            emitChange(stored)
+            emitChange(stored, origin: origin)
         } else {
             // Re-query existing bounds (picks up updates/redactions)
             guard let newestTs = newestTimestamp else { return }
@@ -167,7 +256,7 @@ final class MessageWindow {
             updateCursors(from: stored)
             hasOlderInDB = checkHasOlderInDB()
             hasNewerInDB = checkHasNewerInDB()
-            emitChange(stored)
+            emitChange(stored, origin: origin)
         }
     }
 
@@ -197,7 +286,7 @@ final class MessageWindow {
         updateCursors(from: combined)
         hasOlderInDB = checkHasOlderInDB()
         hasNewerInDB = checkHasNewerInDB()
-        emitChange(combined)
+        emitChange(combined, origin: .jump)
         log("jumpTo \(eventId): window=\(combined.count)")
     }
 
@@ -211,7 +300,7 @@ final class MessageWindow {
         updateCursors(from: stored)
         hasNewerInDB = false
         hasOlderInDB = checkHasOlderInDB()
-        emitChange(stored)
+        emitChange(stored, origin: .jump)
         log("jumpToLive: window=\(stored.count)")
     }
 
@@ -220,7 +309,7 @@ final class MessageWindow {
         updateCursors(from: stored)
         hasOlderInDB = false
         hasNewerInDB = checkHasNewerInDB()
-        emitChange(stored)
+        emitChange(stored, origin: .jump)
         log("jumpToOldest: window=\(stored.count)")
     }
 
@@ -357,11 +446,14 @@ final class MessageWindow {
         oldestTimestamp = normalized.last?.timestamp
     }
 
-    private func emitChange(_ stored: [StoredMessage]) {
+    private func emitChange(
+        _ stored: [StoredMessage],
+        origin: MessageWindowChangeOrigin
+    ) {
         let normalized = normalizedStored(stored)
         let prev = previousStored
         previousStored = normalized
-        onChange?(normalized, prev)
+        onChange?(normalized, prev, origin)
     }
 
     private func normalizedStored(_ stored: [StoredMessage]) -> [StoredMessage] {

@@ -61,13 +61,32 @@ struct GlassUniforms {
     float  ior;             // index of refraction (1.5=glass, 3-4=crystal)
     float  squircleN;       // profile exponent (2=hemisphere, 3=steep)
     float  refractScale;    // displacement multiplier
+    // Adaptive material state (set from sampled backdrop luminance)
+    float  adaptiveAppearance; // 0=dark material, 1=light material
+    float  adaptiveContrast;   // 0=clear, 1=strong range compression
+    // Optional GPU-side paint splash field, mapped from capture UV to overlay UV.
+    float2 splashCaptureOrigin;
+    float2 splashCaptureSize;
+    float2 splashOverlayOrigin;
+    float2 splashOverlaySize;
+    float  splashActive;
+    float  splashSurfaceIntensity;
+    float  splashSurfaceAge;
+};
+
+struct BackdropCompositeUniforms {
+    float2 captureOrigin;
+    float2 captureSize;
+    float2 overlayOrigin;
+    float2 overlaySize;
+    float  overlayAlpha;
 };
 
 // ─── Glass appearance constants ─────────────────────────────────────
 
 constant float CHROMA_SPREAD  = 0.02;   // chromatic aberration (0=none, 0.08=heavy)
-constant float TINT_GRAY      = 0.45;   // luminance compression target
-constant float TINT_STRENGTH  = 0.06;   // how much to compress toward gray (was 0.15)
+constant float TINT_GRAY      = 0.45;   // baseline luminance compression target
+constant float TINT_STRENGTH  = 0.04;   // baseline compression before adaptive material
 constant float GLASS_TINT     = 1.0;    // overall darkening (1.0=none)
 
 // ─── Border / rim constants ─────────────────────────────────────────
@@ -201,11 +220,233 @@ vertex VertexOut glassVertex(const device GlassVertex *vertices [[buffer(1)]],
 
 constant sampler samp(filter::linear, address::clamp_to_edge);
 
+struct SplashSurface {
+    float energy;
+    float trail;
+    float edge;
+    float2 normal;
+    float3 color;
+};
+
+float glassSplashHash(float2 p) {
+    float3 p3 = fract(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float glassSplashNoise(float2 p) {
+    float2 i = floor(p);
+    float2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = glassSplashHash(i);
+    float b = glassSplashHash(i + float2(1.0, 0.0));
+    float c = glassSplashHash(i + float2(0.0, 1.0));
+    float d = glassSplashHash(i + float2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+inline float2 glassSplashOverlayUV(float2 captureUV, constant GlassUniforms& u) {
+    float2 windowPoint = u.splashCaptureOrigin + captureUV * u.splashCaptureSize;
+    return (windowPoint - u.splashOverlayOrigin) / max(u.splashOverlaySize, float2(1.0));
+}
+
+inline float glassSplashRawEnergy(texture2d<float> blobTex, float2 uv) {
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+        return 0.0;
+    }
+    return blobTex.sample(samp, uv).a;
+}
+
+inline float4 glassSplashRawSample(texture2d<float> blobTex, float2 uv) {
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+        return float4(0.0);
+    }
+    return blobTex.sample(samp, uv);
+}
+
+inline float glassSplashHeightFromEnergy(float energy) {
+    return 1.0 - exp(-max(energy, 0.0) * 0.64);
+}
+
+inline float glassSplashPaintedSurfaceMask(float4 state) {
+    float mass = max(state.a, 0.0);
+    if (mass <= 0.001) {
+        return 0.0;
+    }
+
+    float paintMass = max(max(state.r, state.g), state.b);
+    float paintRatio = paintMass / max(mass, 0.001);
+    return smoothstep(0.006, 0.026, paintMass)
+        * smoothstep(0.010, 0.055, paintRatio);
+}
+
+inline float glassSplashCoverageFromHeight(float height) {
+    return smoothstep(0.055, 0.30, height);
+}
+
+inline float glassSplashPointCoverage(texture2d<float> blobTex, float2 uv) {
+    return glassSplashCoverageFromHeight(
+        glassSplashHeightFromEnergy(glassSplashRawEnergy(blobTex, uv))
+    );
+}
+
+inline float glassSplashSoftHeight(texture2d<float> blobTex, float2 uv, float2 smoothStep) {
+    float energy = glassSplashRawEnergy(blobTex, uv) * 0.46;
+    energy += glassSplashRawEnergy(blobTex, uv - float2(smoothStep.x, 0.0)) * 0.135;
+    energy += glassSplashRawEnergy(blobTex, uv + float2(smoothStep.x, 0.0)) * 0.135;
+    energy += glassSplashRawEnergy(blobTex, uv - float2(0.0, smoothStep.y)) * 0.135;
+    energy += glassSplashRawEnergy(blobTex, uv + float2(0.0, smoothStep.y)) * 0.135;
+    return glassSplashHeightFromEnergy(energy);
+}
+
+inline float glassSplashSoftCoverage(texture2d<float> blobTex, float2 uv, float2 smoothStep) {
+    return glassSplashCoverageFromHeight(glassSplashSoftHeight(blobTex, uv, smoothStep));
+}
+
+inline float glassSplashMergedCoverage(
+    texture2d<float> blobTex,
+    float2 uv,
+    float2 smoothStep,
+    float2 mergeStep
+) {
+    float center = glassSplashSoftCoverage(blobTex, uv, smoothStep);
+    float l = glassSplashPointCoverage(blobTex, uv - float2(mergeStep.x, 0.0));
+    float r = glassSplashPointCoverage(blobTex, uv + float2(mergeStep.x, 0.0));
+    float u = glassSplashPointCoverage(blobTex, uv - float2(0.0, mergeStep.y));
+    float d = glassSplashPointCoverage(blobTex, uv + float2(0.0, mergeStep.y));
+    float nw = glassSplashPointCoverage(blobTex, uv - mergeStep);
+    float ne = glassSplashPointCoverage(blobTex, uv + float2(mergeStep.x, -mergeStep.y));
+    float sw = glassSplashPointCoverage(blobTex, uv + float2(-mergeStep.x, mergeStep.y));
+    float se = glassSplashPointCoverage(blobTex, uv + mergeStep);
+
+    float bridge = max(max(min(l, r), min(u, d)), max(min(nw, se), min(ne, sw)));
+    float surround = (l + r + u + d) * 0.18 + (nw + ne + sw + se) * 0.07;
+    float tension = saturate(max(bridge * 0.86, surround));
+    return saturate(max(center, tension * (1.0 - center * 0.28)));
+}
+
+inline SplashSurface glassSampleSplashSurface(
+    texture2d<float> blobTex,
+    float2 captureUV,
+    constant GlassUniforms& u
+) {
+    SplashSurface surface;
+    surface.energy = 0.0;
+    surface.trail = 0.0;
+    surface.edge = 0.0;
+    surface.normal = float2(0.0);
+    surface.color = float3(0.0);
+
+    if (u.splashActive < 0.5) {
+        return surface;
+    }
+
+    float intensity = saturate(u.splashSurfaceIntensity);
+    if (intensity <= 0.001) {
+        return surface;
+    }
+
+    float2 uv = glassSplashOverlayUV(captureUV, u);
+    float2 texel = 1.0 / float2(blobTex.get_width(), blobTex.get_height());
+    float2 smoothStep = texel * 0.88;
+
+    float4 rawSample = glassSplashRawSample(blobTex, uv) * 0.58;
+    rawSample += glassSplashRawSample(blobTex, uv - float2(smoothStep.x, 0.0)) * 0.105;
+    rawSample += glassSplashRawSample(blobTex, uv + float2(smoothStep.x, 0.0)) * 0.105;
+    rawSample += glassSplashRawSample(blobTex, uv - float2(0.0, smoothStep.y)) * 0.105;
+    rawSample += glassSplashRawSample(blobTex, uv + float2(0.0, smoothStep.y)) * 0.105;
+    float paintedSource = glassSplashPaintedSurfaceMask(rawSample);
+    if (paintedSource <= 0.001) {
+        return surface;
+    }
+
+    float height = glassSplashHeightFromEnergy(rawSample.a);
+    float visibleBody = smoothstep(0.030, 0.24, height);
+    surface.energy = visibleBody * intensity * paintedSource;
+
+    float hL = glassSplashSoftHeight(blobTex, uv - float2(smoothStep.x, 0.0), smoothStep);
+    float hR = glassSplashSoftHeight(blobTex, uv + float2(smoothStep.x, 0.0), smoothStep);
+    float hU = glassSplashSoftHeight(blobTex, uv - float2(0.0, smoothStep.y), smoothStep);
+    float hD = glassSplashSoftHeight(blobTex, uv + float2(0.0, smoothStep.y), smoothStep);
+    float2 grad = float2(hR - hL, hD - hU);
+    float gradLen = length(grad);
+    surface.normal = clamp(grad * 9.6, float2(-0.86), float2(0.86));
+
+    float rimBand = smoothstep(0.052, 0.24, height) * (1.0 - smoothstep(0.68, 0.98, height));
+    surface.edge = smoothstep(0.007, 0.058, gradLen) * rimBand * intensity * paintedSource;
+    surface.trail = smoothstep(0.040, 0.16, height)
+        * (1.0 - smoothstep(0.22, 0.58, height))
+        * intensity
+        * paintedSource;
+    surface.edge = max(surface.edge, surface.trail * 0.10 * rimBand);
+    surface.color = rawSample.rgb / max(rawSample.a, 0.001);
+
+    return surface;
+}
+
+inline float4 glassSamplePaintSplashBlob(texture2d<float> blobTex, float2 uv) {
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+        return float4(0.0);
+    }
+
+    float4 blob = blobTex.sample(samp, uv);
+    float energy = blob.a;
+    if (energy < 0.05) {
+        return float4(0.0);
+    }
+
+    float2 pixelCoord = uv * float2(blobTex.get_width(), blobTex.get_height());
+    float n = glassSplashNoise(pixelCoord * 0.04) * 0.06
+            + glassSplashNoise(pixelCoord * 0.12) * 0.04;
+
+    float threshold = 0.4;
+    float edge = smoothstep(threshold - 0.06 + n, threshold + 0.02 + n, energy);
+    if (edge < 0.01) {
+        return float4(0.0);
+    }
+
+    float3 baseColor = blob.rgb / max(energy, 0.001);
+    float2 texelSize = 1.0 / float2(blobTex.get_width(), blobTex.get_height());
+    float eL = blobTex.sample(samp, uv + float2(-texelSize.x, 0.0)).a;
+    float eR = blobTex.sample(samp, uv + float2( texelSize.x, 0.0)).a;
+    float eU = blobTex.sample(samp, uv + float2(0.0, -texelSize.y)).a;
+    float eD = blobTex.sample(samp, uv + float2(0.0,  texelSize.y)).a;
+
+    float3 normal = normalize(float3((eL - eR) * 2.0, (eU - eD) * 2.0, 0.15));
+    float3 lightDir = normalize(float3(0.3, -0.5, 1.0));
+    float diffuse = max(dot(normal, lightDir), 0.0) * 0.2 + 0.8;
+    float3 halfVec = normalize(lightDir + float3(0.0, 0.0, 1.0));
+    float spec = pow(max(dot(normal, halfVec), 0.0), 32.0);
+
+    float3 finalColor = baseColor * diffuse + spec * 0.3;
+    float alpha = edge * 0.95;
+    return float4(finalColor, alpha);
+}
+
+fragment float4 glassBackdropCompositeFragment(
+    VertexOut in [[stage_in]],
+    constant BackdropCompositeUniforms& u [[buffer(0)]],
+    texture2d<float> sourceTex [[texture(0)]],
+    texture2d<float> splashBlobTex [[texture(1)]]
+) {
+    float2 uv = in.uv;
+    float4 base = sourceTex.sample(samp, uv);
+
+    float2 windowPoint = u.captureOrigin + uv * u.captureSize;
+    float2 overlayUV = (windowPoint - u.overlayOrigin) / max(u.overlaySize, float2(1.0));
+    float4 splash = glassSamplePaintSplashBlob(splashBlobTex, overlayUV);
+
+    float alpha = saturate(splash.a * u.overlayAlpha);
+    float3 color = mix(base.rgb, splash.rgb, alpha);
+    return float4(color, max(base.a, alpha));
+}
+
 fragment float4 glassFragment(
     VertexOut in [[stage_in]],
     constant GlassUniforms& u [[buffer(0)]],
     texture2d<float> clearTex [[texture(0)]],
-    texture2d<float> blurTex  [[texture(1)]]
+    texture2d<float> blurTex  [[texture(1)]],
+    texture2d<float> splashBlobTex [[texture(2)]]
 ) {
     float2 uv = in.uv;
     float aspect = u.aspect;
@@ -360,6 +601,13 @@ fragment float4 glassFragment(
         //  Base = blurTex with refraction offset (frosted + displaced).
         //  On bevel, mix in clearTex for sharper refraction detail.
 
+        SplashSurface splashSurface = glassSampleSplashSurface(splashBlobTex, uv, u);
+        float wetEnergy = saturate(max(splashSurface.energy, splashSurface.trail * 0.72));
+        float dropThickness = pow(wetEnergy, 0.74);
+        float wetRipple = (dropThickness * 0.82 + splashSurface.edge * 0.20)
+            * smoothstep(0.0, 0.18, distFromEdge);
+        offset += splashSurface.normal * wetRipple * u.glassThickness * 0.58;
+
         float chromaAmt = slope * CHROMA_SPREAD;
         float2 offsetR = offset * (1.0 - chromaAmt);
         float2 offsetG = offset;
@@ -375,6 +623,37 @@ fragment float4 glassFragment(
             decodeHDR(blurTex.sample(samp, uvG).rgb, u.isHDR).g,
             decodeHDR(blurTex.sample(samp, uvB).rgb, u.isHDR).b
         );
+
+        if (wetEnergy > 0.001) {
+            float3 clearWet = decodeHDR(clearTex.sample(samp, uvG).rgb, u.isHDR);
+            col = mix(col, clearWet, saturate(wetEnergy * 0.26 + splashSurface.trail * 0.10));
+
+            float3 rawPaint = clamp(splashSurface.color, 0.0, 1.0);
+            float paintLuma = dot(rawPaint, float3(0.299, 0.587, 0.114));
+            float3 paintColor = clamp(mix(float3(paintLuma), rawPaint, 1.42), 0.0, 1.0);
+            float body = saturate(splashSurface.energy * 0.95 + splashSurface.trail * 0.42);
+            float absorption = saturate(body * 0.54 + splashSurface.edge * 0.035);
+            float3 transmission = mix(float3(1.0), paintColor, 0.58);
+            float3 coloredGlass = col * transmission + paintColor * (0.12 + body * 0.18);
+            col = mix(col, coloredGlass, absorption);
+
+            float surfaceClock = u.time + u.splashSurfaceAge;
+            float surfaceNoise = glassSplashNoise(float2(uv.x * 130.0, uv.y * 42.0 + surfaceClock * 0.8));
+            float thinStream = smoothstep(0.70, 1.0, surfaceNoise) * splashSurface.trail;
+            float contactShadow = splashSurface.edge * 0.10 + thinStream * 0.045;
+            col *= 1.0 - contactShadow;
+
+            float3 dropNormal = normalize(float3(-splashSurface.normal.x * 0.62,
+                                                 -splashSurface.normal.y * 0.88,
+                                                  1.0));
+            float3 dropLight = normalize(float3(-0.32, -0.62, 1.0));
+            float primarySpec = pow(saturate(dot(dropNormal, dropLight)), 28.0)
+                * splashSurface.edge * 0.82;
+            float wetSheen = pow(saturate(dot(dropNormal, normalize(float3(0.20, -0.46, 1.0)))), 46.0)
+                * wetEnergy * 0.08;
+            col += mix(float3(0.90, 0.95, 1.0), paintColor, 0.10) * (primarySpec + wetSheen) * 0.42;
+            col += paintColor * (thinStream * 0.10 + splashSurface.energy * 0.13 + splashSurface.edge * 0.08);
+        }
 
         // ── 4. Underwater overlay (during liquid splash) ──
 
@@ -396,28 +675,52 @@ fragment float4 glassFragment(
         float3 chroma = (col - luma) * 0.92;
         col = clamp(float3(targetLuma) + chroma, 0.0, 1.0);
 
-        // ── 6. Glass luminance boost — Apple glass amplifies background ──
+        // ── 6. Adaptive material — smooth light/dark glass state ──
+        //
+        // GlassService samples the already-captured backdrop and sends a
+        // temporally-smoothed state. Keep the math local to luma/chroma so
+        // the material still picks up background color instead of becoming
+        // a flat overlay.
+
+        float appearance = saturate(u.adaptiveAppearance);
+        float contrast = saturate(u.adaptiveContrast);
+        float adaptiveTarget = mix(0.18, 0.82, appearance);
+        float adaptiveStrength = mix(0.16, 0.38, contrast);
+
+        luma = dot(col, float3(0.299, 0.587, 0.114));
+        chroma = col - luma;
+        float adaptiveLuma = mix(luma, adaptiveTarget, adaptiveStrength);
+        float chromaKeep = mix(0.90, 0.68, contrast);
+        col = clamp(float3(adaptiveLuma) + chroma * chromaKeep, 0.0, 1.0);
+
+        // ── 7. Glass luminance boost — state-aware lift/dim ──
 
         float preLuma = dot(col, float3(0.299, 0.587, 0.114));
-        col += float3(0.0435) * (1.0 - smoothstep(0.0, 0.12, preLuma));  // lift dark areas only  0.0435
-        col *= 1.15;          // uniform brightness lift
+        col += float3(0.034) * appearance * (1.0 - smoothstep(0.0, 0.12, preLuma));
+        col *= mix(0.92, 1.10, appearance);
         float boostLuma = dot(col, float3(0.299, 0.587, 0.114));
         col = mix(float3(boostLuma), col, 1.08);  // slight saturation push
 
-        // ── 7. Fresnel rim — thin bright edge ──
+        // ── 8. Fresnel rim — thin bright edge ──
 
         float fresnelZone = saturate(distFromEdge / (bw * 0.15));
         float fresnel = pow(1.0 - fresnelZone, 4.0);
         float lightDir = saturate((-edgeNormal.x - edgeNormal.y) * 0.5 + 0.5);
         col += float3(1.0, 1.0, 1.02) * fresnel * mix(0.02, 0.08, lightDir);
 
-        // ── 8. Inner shadow ──
+        if (wetEnergy > 0.001) {
+            float rimWet = fresnel * wetEnergy + splashSurface.edge * 0.12;
+            float3 rimPaint = clamp(splashSurface.color, 0.0, 1.0);
+            col += mix(float3(0.75, 0.86, 1.0), rimPaint, 0.48) * rimWet * 0.10;
+        }
+
+        // ── 9. Inner shadow ──
 
         float shadowZone = smoothstep(0.0, bw * 0.12, distFromEdge);
         float shadowSide = saturate((edgeNormal.x + edgeNormal.y) * 0.5 + 0.5);
         col *= 1.0 - (1.0 - shadowZone) * shadowSide * 0.08;
 
-        // ── 9. Border line ──
+        // ── 10. Border line ──
 
         float bInner = bw * 0.02;
         float bOuter = BORDER_WIDTH * bw;
@@ -429,7 +732,7 @@ fragment float4 glassFragment(
                                BORDER_COLOR_MIX);
         col += borderCol * borderMask * bBright;
 
-        // ── 10. Light bridge: mic ↔ scroll button ──
+        // ── 11. Light bridge: mic ↔ scroll button ──
 
         if (u.scrollButtonVisible > 0.5) {
             float bridgeWidth = BRIDGE_WIDTH_SCALE * s0size.y;
@@ -441,7 +744,7 @@ fragment float4 glassFragment(
             col += BRIDGE_COLOR * bridgeIntensity;
         }
 
-        // ── 11. Final tint ──
+        // ── 12. Final tint ──
 
         col *= GLASS_TINT;
 

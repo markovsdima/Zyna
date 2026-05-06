@@ -68,11 +68,12 @@ struct ZynaHTMLCodecTests {
 
     @Test("Call signal (ICE candidate) round-trip")
     func callSignalRoundTrip() {
+        let payload = """
+        {"call_id":"call-123","candidates":["candidate:foundation 1 udp 2130706431 192.168.1.1 54321 typ host"]}
+        """
         let signal = CallSignalData(
             type: "ice-candidate",
-            callId: "call-123",
-            sdp: nil,
-            candidate: "candidate:foundation 1 udp 2130706431 192.168.1.1 54321 typ host"
+            payload: payload
         )
         let html = ZynaHTMLCodec.encode(
             userHTML: "📞",
@@ -84,19 +85,19 @@ struct ZynaHTMLCodecTests {
 
     @Test("Call signal (offer with SDP) round-trip")
     func callOfferRoundTrip() {
+        let payload = """
+        {"call_id":"call-abc","sdp":"v=0\\r\\no=- 123 2 IN IP4 0.0.0.0\\r\\n"}
+        """
         let signal = CallSignalData(
             type: "offer",
-            callId: "call-abc",
-            sdp: "v=0\r\no=- 123 2 IN IP4 0.0.0.0\r\n",
-            candidate: nil
+            payload: payload
         )
         let html = ZynaHTMLCodec.encode(
             userHTML: "📞",
             attributes: ZynaMessageAttributes(callSignal: signal)
         )
         let decoded = ZynaHTMLCodec.decode(htmlBody: html)
-        #expect(decoded.callSignal?.sdp == signal.sdp)
-        #expect(decoded.callSignal?.candidate == nil)
+        #expect(decoded.callSignal == signal)
     }
 
     // MARK: - All fields

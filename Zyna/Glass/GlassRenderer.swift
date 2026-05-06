@@ -7,6 +7,10 @@ import UIKit
 import Metal
 import MetalPerformanceShaders
 
+protocol GlassBackdropOverlaySource: AnyObject {
+    var glassBackdropOverlay: GlassRenderer.BackdropOverlay? { get }
+}
+
 /// Renders the glass effect into a CAMetalLayer.
 /// Driven externally by GlassService via DisplayLink.
 /// Uses CAMetalLayer.nextDrawable() directly to avoid MTKView drawable reuse issues.
@@ -17,7 +21,10 @@ final class GlassRenderer: UIView {
     // swiftlint:disable:next force_cast
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     private let gaussianBlur: MPSImageGaussianBlur
-    private var blurTexture: MTLTexture?
+    private var blurTextures: [ReusableTextureKey: CachedTexture] = [:]
+    private var compositedSourceTextures: [ReusableTextureKey: CachedTexture] = [:]
+    private var emptyOverlayTexture: MTLTexture?
+    private var textureCacheFrame = 0
     private var frameInFlight = false
 
     var isFrameInFlight: Bool { frameInFlight }
@@ -101,15 +108,30 @@ final class GlassRenderer: UIView {
         var zone: SIMD4<Float>
     }
 
+    struct BackdropOverlay {
+        let backdropTexture: MTLTexture
+        let surfaceTexture: MTLTexture
+        let frameInWindow: CGRect
+        let backdropAlpha: Float
+        let surfaceIntensity: Float
+        let surfaceAge: Float
+    }
+
     struct RenderItem {
         let name: String
         let frame: CGRect
+        let captureFrameInWindow: CGRect
         let sourceTexture: MTLTexture
         let shapes: ShapeParams
         let isHDR: Bool
         let liquidZone: LiquidZone?
         let time: Float
         let barData: BarData?
+        let backdropOverlay: BackdropOverlay?
+        /// 0 = dark material, 1 = light material. Smoothed by GlassService.
+        let adaptiveAppearance: Float
+        /// 0 = clear/low intervention, 1 = stronger range compression.
+        let adaptiveContrast: Float
     }
 
     struct ItemBreakdown {
@@ -152,6 +174,41 @@ final class GlassRenderer: UIView {
         var ior: Float = 0
         var squircleN: Float = 0
         var refractScale: Float = 0
+        var adaptiveAppearance: Float = 1
+        var adaptiveContrast: Float = 0
+        var splashCaptureOrigin: SIMD2<Float> = .zero
+        var splashCaptureSize: SIMD2<Float> = .zero
+        var splashOverlayOrigin: SIMD2<Float> = .zero
+        var splashOverlaySize: SIMD2<Float> = .zero
+        var splashActive: Float = 0
+        var splashSurfaceIntensity: Float = 0
+        var splashSurfaceAge: Float = 0
+    }
+
+    private struct BackdropCompositeUniforms {
+        var captureOrigin: SIMD2<Float>
+        var captureSize: SIMD2<Float>
+        var overlayOrigin: SIMD2<Float>
+        var overlaySize: SIMD2<Float>
+        var overlayAlpha: Float
+    }
+
+    private struct ReusableTextureKey: Hashable {
+        let width: Int
+        let height: Int
+        let pixelFormat: UInt
+
+        init(_ texture: MTLTexture) {
+            width = texture.width
+            height = texture.height
+            pixelFormat = texture.pixelFormat.rawValue
+        }
+    }
+
+    private struct CachedTexture {
+        let texture: MTLTexture
+        let estimatedBytes: Int
+        var lastUsedFrame: Int
     }
 
     // MARK: - Render
@@ -180,13 +237,17 @@ final class GlassRenderer: UIView {
         var batch = BatchBreakdown()
         batch.drawableMs = (CACurrentMediaTime() - nextDrawableStart) * 1000
 
+        textureCacheFrame &+= 1
+        cmdBuf.label = "GlassRenderer.render"
+
         var isFirstPass = true
         for item in validItems {
-            blurTexture = ensureBlurTexture(matching: item.sourceTexture)
-            guard let blurTex = blurTexture else { continue }
+            let backdropTexture = makeBackdropTexture(for: item, commandBuffer: cmdBuf)
+
+            guard let blurTex = ensureBlurTexture(matching: backdropTexture) else { continue }
 
             let blurStart = CACurrentMediaTime()
-            gaussianBlur.encode(commandBuffer: cmdBuf, sourceTexture: item.sourceTexture, destinationTexture: blurTex)
+            gaussianBlur.encode(commandBuffer: cmdBuf, sourceTexture: backdropTexture, destinationTexture: blurTex)
             let blurMs = (CACurrentMediaTime() - blurStart) * 1000
 
             let passStart = CACurrentMediaTime()
@@ -197,15 +258,19 @@ final class GlassRenderer: UIView {
             rpd.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
 
             guard let encoder = cmdBuf.makeRenderCommandEncoder(descriptor: rpd) else { continue }
+            encoder.label = "GlassRenderer.glassPass.\(item.name)"
 
             var uniforms = makeUniforms(for: item)
             var vertices = makeVertices(for: item.frame)
 
             encoder.setRenderPipelineState(GlassPipeline.shared.pipelineState)
             encoder.setVertexBytes(&vertices, length: MemoryLayout<QuadVertex>.stride * vertices.count, index: 1)
-            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 0)
-            encoder.setFragmentTexture(item.sourceTexture, index: 0)
+            // Metal validates constant buffers against the struct's aligned
+            // stride, not Swift's logical size without tail padding.
+            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+            encoder.setFragmentTexture(backdropTexture, index: 0)
             encoder.setFragmentTexture(blurTex, index: 1)
+            encoder.setFragmentTexture(item.backdropOverlay?.surfaceTexture ?? emptyOverlayFallbackTexture(), index: 2)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             encoder.endEncoding()
 
@@ -238,14 +303,97 @@ final class GlassRenderer: UIView {
         return batch
     }
 
+    private func makeBackdropTexture(for item: RenderItem, commandBuffer: MTLCommandBuffer) -> MTLTexture {
+        guard let overlay = item.backdropOverlay,
+              overlay.backdropAlpha > 0.001,
+              overlay.frameInWindow.intersects(item.captureFrameInWindow),
+              let targetTexture = ensureCompositedSourceTexture(matching: item.sourceTexture)
+        else {
+            return item.sourceTexture
+        }
+
+        let rpd = MTLRenderPassDescriptor()
+        rpd.colorAttachments[0].texture = targetTexture
+        rpd.colorAttachments[0].loadAction = .clear
+        rpd.colorAttachments[0].storeAction = .store
+        rpd.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: rpd) else {
+            return item.sourceTexture
+        }
+        encoder.label = "GlassRenderer.backdropComposite.\(item.name)"
+
+        var vertices = makeFullscreenVertices()
+        var uniforms = BackdropCompositeUniforms(
+            captureOrigin: SIMD2<Float>(
+                Float(item.captureFrameInWindow.origin.x),
+                Float(item.captureFrameInWindow.origin.y)
+            ),
+            captureSize: SIMD2<Float>(
+                Float(item.captureFrameInWindow.width),
+                Float(item.captureFrameInWindow.height)
+            ),
+            overlayOrigin: SIMD2<Float>(
+                Float(overlay.frameInWindow.origin.x),
+                Float(overlay.frameInWindow.origin.y)
+            ),
+            overlaySize: SIMD2<Float>(
+                Float(max(overlay.frameInWindow.width, 1)),
+                Float(max(overlay.frameInWindow.height, 1))
+            ),
+            overlayAlpha: overlay.backdropAlpha
+        )
+
+        encoder.setRenderPipelineState(GlassPipeline.shared.backdropCompositePipelineState)
+        encoder.setVertexBytes(&vertices, length: MemoryLayout<QuadVertex>.stride * vertices.count, index: 1)
+        encoder.setFragmentBytes(
+            &uniforms,
+            length: MemoryLayout<BackdropCompositeUniforms>.stride,
+            index: 0
+        )
+        encoder.setFragmentTexture(item.sourceTexture, index: 0)
+        encoder.setFragmentTexture(overlay.backdropTexture, index: 1)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+
+        return targetTexture
+    }
+
+    private func emptyOverlayFallbackTexture() -> MTLTexture? {
+        if let emptyOverlayTexture {
+            return emptyOverlayTexture
+        }
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: 1,
+            height: 1,
+            mipmapped: false
+        )
+        desc.usage = .shaderRead
+        desc.storageMode = .shared
+        guard let texture = MetalContext.shared.device.makeTexture(descriptor: desc) else { return nil }
+        texture.label = "Glass empty splash overlay 1x1"
+
+        var zero: UInt32 = 0
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, 1, 1),
+            mipmapLevel: 0,
+            withBytes: &zero,
+            bytesPerRow: MemoryLayout<UInt32>.stride
+        )
+        emptyOverlayTexture = texture
+        return texture
+    }
+
     // MARK: - Blur Texture
 
     private func ensureBlurTexture(matching source: MTLTexture) -> MTLTexture? {
-        if let existing = blurTexture,
-           existing.width == source.width,
-           existing.height == source.height,
-           existing.pixelFormat == source.pixelFormat {
-            return existing
+        let key = ReusableTextureKey(source)
+        if var cached = blurTextures[key] {
+            cached.lastUsedFrame = textureCacheFrame
+            blurTextures[key] = cached
+            return cached.texture
         }
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
@@ -256,7 +404,90 @@ final class GlassRenderer: UIView {
         )
         desc.usage = [.shaderRead, .shaderWrite]
         desc.storageMode = .private
-        return MetalContext.shared.device.makeTexture(descriptor: desc)
+        guard let texture = MetalContext.shared.device.makeTexture(descriptor: desc) else { return nil }
+
+        texture.label = "Glass blur \(source.width)x\(source.height)"
+        blurTextures[key] = CachedTexture(
+            texture: texture,
+            estimatedBytes: Self.estimatedTextureBytes(source),
+            lastUsedFrame: textureCacheFrame
+        )
+        Self.pruneReusableTextures(
+            &blurTextures,
+            maxBytes: Self.maxReusableTextureCacheBytes,
+            currentFrame: textureCacheFrame
+        )
+        return texture
+    }
+
+    private func ensureCompositedSourceTexture(matching source: MTLTexture) -> MTLTexture? {
+        let key = ReusableTextureKey(source)
+        if var cached = compositedSourceTextures[key] {
+            cached.lastUsedFrame = textureCacheFrame
+            compositedSourceTextures[key] = cached
+            return cached.texture
+        }
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: source.pixelFormat,
+            width: source.width,
+            height: source.height,
+            mipmapped: false
+        )
+        desc.usage = [.renderTarget, .shaderRead]
+        desc.storageMode = .private
+        guard let texture = MetalContext.shared.device.makeTexture(descriptor: desc) else { return nil }
+
+        texture.label = "Glass composited source \(source.width)x\(source.height)"
+        compositedSourceTextures[key] = CachedTexture(
+            texture: texture,
+            estimatedBytes: Self.estimatedTextureBytes(source),
+            lastUsedFrame: textureCacheFrame
+        )
+        Self.pruneReusableTextures(
+            &compositedSourceTextures,
+            maxBytes: Self.maxReusableTextureCacheBytes,
+            currentFrame: textureCacheFrame
+        )
+        return texture
+    }
+
+    private static let maxReusableTextureCacheBytes = 32 * 1024 * 1024
+
+    private static func estimatedTextureBytes(_ texture: MTLTexture) -> Int {
+        let bytesPerPixel: Int
+        switch texture.pixelFormat {
+        case .rgba16Float:
+            bytesPerPixel = 8
+        case .rgba32Float:
+            bytesPerPixel = 16
+        default:
+            bytesPerPixel = 4
+        }
+        return texture.width * texture.height * bytesPerPixel
+    }
+
+    private static func pruneReusableTextures(
+        _ cache: inout [ReusableTextureKey: CachedTexture],
+        maxBytes: Int,
+        currentFrame: Int
+    ) {
+        var totalBytes = cache.values.reduce(0) { $0 + $1.estimatedBytes }
+        guard totalBytes > maxBytes else { return }
+
+        let entriesByAge = cache.sorted {
+            if $0.value.lastUsedFrame == $1.value.lastUsedFrame {
+                return $0.value.estimatedBytes > $1.value.estimatedBytes
+            }
+            return $0.value.lastUsedFrame < $1.value.lastUsedFrame
+        }
+
+        for (key, entry) in entriesByAge {
+            guard totalBytes > maxBytes else { break }
+            guard entry.lastUsedFrame < currentFrame else { continue }
+            cache.removeValue(forKey: key)
+            totalBytes -= entry.estimatedBytes
+        }
     }
 
     private func makeUniforms(for item: RenderItem) -> Uniforms {
@@ -292,6 +523,30 @@ final class GlassRenderer: UIView {
         uniforms.ior = tuning.ior
         uniforms.squircleN = tuning.squircleN
         uniforms.refractScale = tuning.refractScale
+        uniforms.adaptiveAppearance = item.adaptiveAppearance
+        uniforms.adaptiveContrast = item.adaptiveContrast
+
+        if let overlay = item.backdropOverlay {
+            uniforms.splashActive = 1
+            uniforms.splashSurfaceIntensity = overlay.surfaceIntensity
+            uniforms.splashSurfaceAge = overlay.surfaceAge
+            uniforms.splashCaptureOrigin = SIMD2<Float>(
+                Float(item.captureFrameInWindow.origin.x),
+                Float(item.captureFrameInWindow.origin.y)
+            )
+            uniforms.splashCaptureSize = SIMD2<Float>(
+                Float(max(item.captureFrameInWindow.width, 1)),
+                Float(max(item.captureFrameInWindow.height, 1))
+            )
+            uniforms.splashOverlayOrigin = SIMD2<Float>(
+                Float(overlay.frameInWindow.origin.x),
+                Float(overlay.frameInWindow.origin.y)
+            )
+            uniforms.splashOverlaySize = SIMD2<Float>(
+                Float(max(overlay.frameInWindow.width, 1)),
+                Float(max(overlay.frameInWindow.height, 1))
+            )
+        }
 
         if let barData = item.barData {
             uniforms.barActive = 1.0
@@ -322,6 +577,15 @@ final class GlassRenderer: UIView {
             QuadVertex(position: SIMD2<Float>(maxX, minY), uv: SIMD2<Float>(1, 1)),
             QuadVertex(position: SIMD2<Float>(minX, maxY), uv: SIMD2<Float>(0, 0)),
             QuadVertex(position: SIMD2<Float>(maxX, maxY), uv: SIMD2<Float>(1, 0))
+        ]
+    }
+
+    private func makeFullscreenVertices() -> [QuadVertex] {
+        [
+            QuadVertex(position: SIMD2<Float>(-1, -1), uv: SIMD2<Float>(0, 1)),
+            QuadVertex(position: SIMD2<Float>(1, -1), uv: SIMD2<Float>(1, 1)),
+            QuadVertex(position: SIMD2<Float>(-1, 1), uv: SIMD2<Float>(0, 0)),
+            QuadVertex(position: SIMD2<Float>(1, 1), uv: SIMD2<Float>(1, 0))
         ]
     }
 }

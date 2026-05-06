@@ -103,12 +103,25 @@ final class PendingRedactionService {
         let error: Error
     }
 
+    struct ResolvedPendingRedactions {
+        let messageIds: Set<String>
+        let identityKeys: Set<String>
+    }
+
     static let shared = PendingRedactionService(dbQueue: DatabaseService.shared.dbQueue)
 
     private struct StoredMessageIdentifierState: FetchableRecord, Decodable {
         let eventId: String?
         let transactionId: String?
         let contentType: String
+    }
+
+    private struct PendingIdentityState: FetchableRecord, Decodable {
+        let messageId: String
+        let identifierKind: String?
+        let identifierValue: String?
+        let eventId: String?
+        let transactionId: String?
     }
 
     private let dbQueue: DatabaseQueue
@@ -132,6 +145,51 @@ final class PendingRedactionService {
                     """,
                 arguments: [roomId]
             ))
+        }) ?? []
+    }
+
+    func pendingMessageIdentityKeys(roomId: String) -> Set<String> {
+        (try? dbQueue.read { db in
+            let rows = try PendingIdentityState.fetchAll(
+                db,
+                sql: """
+                    SELECT p.messageId,
+                           p.identifierKind,
+                           p.identifierValue,
+                           s.eventId,
+                           s.transactionId
+                    FROM pendingRedaction AS p
+                    LEFT JOIN storedMessage AS s
+                      ON s.id = p.messageId
+                    WHERE p.roomId = ?
+                    """,
+                arguments: [roomId]
+            )
+            var keys = Set<String>()
+            for row in rows {
+                switch row.identifierKind {
+                case "eventId":
+                    if let value = row.identifierValue, !value.isEmpty {
+                        keys.insert(MessageIdentity.event(value).key)
+                        continue
+                    }
+                case "transactionId":
+                    if let value = row.identifierValue, !value.isEmpty {
+                        keys.insert(MessageIdentity.transaction(value).key)
+                        continue
+                    }
+                default:
+                    break
+                }
+                keys.insert(
+                    MessageIdentity.from(
+                        eventId: row.eventId,
+                        transactionId: row.transactionId,
+                        localId: row.messageId
+                    ).key
+                )
+            }
+            return keys
         }) ?? []
     }
 
@@ -160,24 +218,37 @@ final class PendingRedactionService {
     }
 
     func reconcileResolvedPendingMessageIds(roomId: String) -> Set<String> {
-        let pendingIds = pendingMessageIds(roomId: roomId)
-        guard !pendingIds.isEmpty else { return [] }
+        reconcileResolvedPendingRedactions(roomId: roomId).messageIds
+    }
 
-        let resolvedIds: [String] = (try? dbQueue.read { db in
-            try String.fetchAll(
-                db,
-                sql: """
-                    SELECT id
-                    FROM storedMessage
-                    WHERE roomId = ?
-                      AND id IN (\(pendingIds.map { _ in "?" }.joined(separator: ",")))
-                      AND contentType = 'redacted'
-                    """,
-                arguments: StatementArguments([roomId] + pendingIds)
-            )
+    func reconcileResolvedPendingRedactions(roomId: String) -> ResolvedPendingRedactions {
+        let records: [PendingRedactionRecord] = (try? dbQueue.read { db in
+            try PendingRedactionRecord
+                .filter(Column("roomId") == roomId)
+                .fetchAll(db)
+        }) ?? []
+        guard !records.isEmpty else {
+            return ResolvedPendingRedactions(messageIds: [], identityKeys: [])
+        }
+
+        let resolved: [(String, Set<String>)] = (try? dbQueue.read { db in
+            var ids: [String] = []
+            var keys: [Set<String>] = []
+            for record in records {
+                if try Self.isResolvedRedaction(record, in: db) {
+                    ids.append(record.messageId)
+                    keys.append(try Self.identityKeys(for: record, in: db))
+                }
+            }
+            return zip(ids, keys).map { ($0.0, $0.1) }
         }) ?? []
 
-        guard !resolvedIds.isEmpty else { return [] }
+        guard !resolved.isEmpty else {
+            return ResolvedPendingRedactions(messageIds: [], identityKeys: [])
+        }
+
+        let resolvedIds = resolved.map(\.0)
+        let resolvedKeys = resolved.flatMap(\.1)
 
         do {
             try dbQueue.write { db in
@@ -189,7 +260,10 @@ final class PendingRedactionService {
             logPendingRedaction("reconcile failed: \(error)")
         }
 
-        return Set(resolvedIds)
+        return ResolvedPendingRedactions(
+            messageIds: Set(resolvedIds),
+            identityKeys: Set(resolvedKeys)
+        )
     }
 
     func attempt(_ intent: PendingRedactionIntent, timelineService: TimelineService) async throws {
@@ -325,6 +399,89 @@ final class PendingRedactionService {
         if let transactionId = storedState.transactionId {
             record.apply(.transactionId(transactionId))
         }
+    }
+
+    private static func isResolvedRedaction(
+        _ record: PendingRedactionRecord,
+        in db: Database
+    ) throws -> Bool {
+        if let itemIdentifier = record.itemIdentifier {
+            switch itemIdentifier {
+            case .eventId(let eventId):
+                if try redactedStoredMessageExists(
+                    roomId: record.roomId,
+                    column: "eventId",
+                    value: eventId,
+                    in: db
+                ) {
+                    return true
+                }
+            case .transactionId(let transactionId):
+                if try redactedStoredMessageExists(
+                    roomId: record.roomId,
+                    column: "transactionId",
+                    value: transactionId,
+                    in: db
+                ) {
+                    return true
+                }
+            }
+        }
+
+        return try StoredMessage
+            .filter(
+                Column("roomId") == record.roomId
+                    && Column("id") == record.messageId
+                    && Column("contentType") == "redacted"
+            )
+            .fetchCount(db) > 0
+    }
+
+    private static func identityKeys(
+        for record: PendingRedactionRecord,
+        in db: Database
+    ) throws -> Set<String> {
+        var keys = Set<String>()
+        if let itemIdentifier = record.itemIdentifier {
+            keys.insert(MessageIdentity.from(
+                messageId: record.messageId,
+                itemIdentifier: itemIdentifier
+            ).key)
+        }
+
+        let storedState = try StoredMessageIdentifierState.fetchOne(
+            db,
+            sql: """
+                SELECT eventId, transactionId, contentType
+                FROM storedMessage
+                WHERE id = ?
+                LIMIT 1
+            """,
+            arguments: [record.messageId]
+        )
+        keys.formUnion(
+            MessageIdentity.keys(
+                eventId: storedState?.eventId,
+                transactionId: storedState?.transactionId,
+                localId: record.messageId
+            )
+        )
+        return keys
+    }
+
+    private static func redactedStoredMessageExists(
+        roomId: String,
+        column: String,
+        value: String,
+        in db: Database
+    ) throws -> Bool {
+        try StoredMessage
+            .filter(
+                Column("roomId") == roomId
+                    && Column(column) == value
+                    && Column("contentType") == "redacted"
+            )
+            .fetchCount(db) > 0
     }
 
     private func beginAttempt(for messageId: String) -> Bool {

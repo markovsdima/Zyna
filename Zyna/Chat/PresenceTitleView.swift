@@ -11,7 +11,7 @@ final class PresenceTitleNode: ASDisplayNode {
         didSet {
             nameNode.attributedText = NSAttributedString(
                 string: name,
-                attributes: Self.nameAttributes
+                attributes: nameAttributes
             )
             invalidateCalculatedLayout()
             updateAccessibility()
@@ -42,18 +42,23 @@ final class PresenceTitleNode: ASDisplayNode {
     private let nameNode = ASTextNode()
     private let statusNode = ASTextNode()
     private var statusHidden = true
+    private var glassMaterial = GlassAdaptiveMaterial.light
+    private var lastAppliedGlassAppearance: CGFloat = -1
+    private var lastAppliedGlassContrast: CGFloat = -1
 
-    private static let nameAttributes: [NSAttributedString.Key: Any] = [
-        .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
-        .foregroundColor: UIColor.label,
-        .paragraphStyle: {
-            let p = NSMutableParagraphStyle()
-            p.alignment = .center
-            return p
-        }()
-    ]
+    private var nameAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
+            .foregroundColor: glassMaterial.primaryForeground,
+            .paragraphStyle: {
+                let p = NSMutableParagraphStyle()
+                p.alignment = .center
+                return p
+            }()
+        ]
+    }
 
-    private static func statusAttributes(color: UIColor) -> [NSAttributedString.Key: Any] {
+    private func statusAttributes(color: UIColor) -> [NSAttributedString.Key: Any] {
         [
             .font: UIFont.systemFont(ofSize: 12, weight: .regular),
             .foregroundColor: color,
@@ -112,7 +117,7 @@ final class PresenceTitleNode: ASDisplayNode {
             if presence.online {
                 setStatus(String(localized: "online"), color: .systemGreen)
             } else if let lastSeen = presence.lastSeen {
-                setStatus(lastSeen.presenceLastSeenString(style: .chat), color: .secondaryLabel)
+                setStatus(lastSeen.presenceLastSeenString(style: .chat), color: glassMaterial.secondaryForeground)
             } else {
                 hideStatus()
             }
@@ -121,7 +126,7 @@ final class PresenceTitleNode: ASDisplayNode {
 
         // Group: show member count
         if let memberCount {
-            setStatus(String(localized: "\(memberCount) members"), color: .secondaryLabel)
+            setStatus(String(localized: "\(memberCount) members"), color: glassMaterial.secondaryForeground)
             return
         }
 
@@ -132,7 +137,7 @@ final class PresenceTitleNode: ASDisplayNode {
         statusHidden = false
         statusNode.attributedText = NSAttributedString(
             string: text,
-            attributes: Self.statusAttributes(color: color)
+            attributes: statusAttributes(color: color)
         )
         invalidateCalculatedLayout()
         updateAccessibility()
@@ -152,5 +157,25 @@ final class PresenceTitleNode: ASDisplayNode {
         }
         accessibilityLabel = label
         accessibilityTraits = isTappable ? [.header, .button] : .header
+    }
+}
+
+extension PresenceTitleNode {
+    func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {
+        guard abs(material.appearance - lastAppliedGlassAppearance) > 0.012 ||
+              abs(material.contrast - lastAppliedGlassContrast) > 0.03 else {
+            return
+        }
+
+        glassMaterial = material
+        lastAppliedGlassAppearance = material.appearance
+        lastAppliedGlassContrast = material.contrast
+
+        nameNode.attributedText = NSAttributedString(
+            string: name,
+            attributes: nameAttributes
+        )
+        updateStatus()
+        invalidateCalculatedLayout()
     }
 }

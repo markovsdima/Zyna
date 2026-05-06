@@ -489,6 +489,16 @@
         }
       }
     },
+    "A previous scan was interrupted. Pages: %d." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Предыдущий скан был прерван. Страниц: %d."
+          }
+        }
+      }
+    },
     "Accept" : {
       "localizations" : {
         "ru" : {
@@ -505,6 +515,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Примите запрос верификации на другом устройстве."
+          }
+        }
+      }
+    },
+    "Add" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить"
           }
         }
       }
@@ -625,12 +645,32 @@
         }
       }
     },
+    "Blue" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Синий"
+          }
+        }
+      }
+    },
     "Calls" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Звонки"
+          }
+        }
+      }
+    },
+    "Can you check this?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можешь проверить?"
           }
         }
       }
@@ -734,6 +774,26 @@
     "Close" : {
 
     },
+    "Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Цвет"
+          }
+        }
+      }
+    },
+    "Color Name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название цвета"
+          }
+        }
+      }
+    },
     "Compare Emojis" : {
       "localizations" : {
         "ru" : {
@@ -774,12 +834,42 @@
         }
       }
     },
+    "Continue" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Продолжить"
+          }
+        }
+      }
+    },
+    "Continue Previous Scan?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Продолжить предыдущий скан?"
+          }
+        }
+      }
+    },
     "Copy" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Скопировать"
+          }
+        }
+      }
+    },
+    "Copy Caption" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скопировать подпись"
           }
         }
       }
@@ -804,6 +894,46 @@
         }
       }
     },
+    "Custom Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Свой цвет"
+          }
+        }
+      }
+    },
+    "Dark" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Тёмная"
+          }
+        }
+      }
+    },
+    "Default" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "По умолчанию"
+          }
+        }
+      }
+    },
+    "Delete" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить"
+          }
+        }
+      }
+    },
     "Delete backup and reset" : {
       "localizations" : {
         "ru" : {
@@ -823,6 +953,9 @@
           }
         }
       }
+    },
+    "Diagnostics" : {
+
     },
     "Discard" : {
 
@@ -847,8 +980,45 @@
         }
       }
     },
-    "emoji" : {
-
+    "edit failed" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "изменение не отправлено"
+          }
+        }
+      }
+    },
+    "edit pending" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "изменение ожидает отправки"
+          }
+        }
+      }
+    },
+    "edited" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "изменено"
+          }
+        }
+      }
+    },
+    "Editing message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Редактирование сообщения"
+          }
+        }
+      }
     },
     "Ember Rose" : {
       "localizations" : {
@@ -859,6 +1029,9 @@
           }
         }
       }
+    },
+    "emoji" : {
+
     },
     "Encryption enabled" : {
       "localizations" : {
@@ -876,6 +1049,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ключи шифрования не удалось передать автоматически. Введите ключ восстановления, сохранённый при настройке аккаунта, чтобы восстановить доступ к истории сообщений."
+          }
+        }
+      }
+    },
+    "Enter Hex" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ввести HEX"
+          }
+        }
+      }
+    },
+    "Enter Hex Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите HEX-цвет"
           }
         }
       }
@@ -899,6 +1092,9 @@
           }
         }
       }
+    },
+    "Fix duplicate or stuck local timeline rows" : {
+
     },
     "Forest" : {
       "localizations" : {
@@ -950,12 +1146,38 @@
         }
       }
     },
+    "Green" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Зелёный"
+          }
+        }
+      }
+    },
     "Group Name" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Название группы"
+          }
+        }
+      }
+    },
+    "Hex Color Placeholder" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "#RRGGBB or RRGGBB"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "#RRGGBB или RRGGBB"
           }
         }
       }
@@ -980,12 +1202,42 @@
         }
       }
     },
+    "I picked this name color." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Я выбрал этот цвет имени."
+          }
+        }
+      }
+    },
     "I've saved it" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Я сохранил"
+          }
+        }
+      }
+    },
+    "Indigo" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Индиго"
+          }
+        }
+      }
+    },
+    "Invalid Hex Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Неверный HEX-цвет"
           }
         }
       }
@@ -1161,7 +1413,18 @@
         }
       }
     },
+    "Light" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Светлая"
+          }
+        }
+      }
+    },
     "Login" : {
+      "extractionState" : "stale",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
@@ -1224,6 +1487,42 @@
     "More Emoji" : {
 
     },
+    "My Colors" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Свои цвета"
+          }
+        }
+      }
+    },
+    "Name Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Цвет имени"
+          }
+        }
+      }
+    },
+    "Name Color Explanation" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your personal color for other Zyna users: it tints your name in group chats and your avatar when no photo is set."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ваш персональный цвет для других пользователей Zyna: он окрашивает имя в групповых чатах и аватарку, если фото не выбрано."
+          }
+        }
+      }
+    },
     "New Chat" : {
       "localizations" : {
         "ru" : {
@@ -1267,6 +1566,9 @@
     "No emoji found." : {
 
     },
+    "No local timeline issues found." : {
+
+    },
     "No reactions yet." : {
 
     },
@@ -1302,6 +1604,16 @@
     "Opens this emoji category" : {
 
     },
+    "Orange" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Оранжевый"
+          }
+        }
+      }
+    },
     "Outgoing Bubbles" : {
       "localizations" : {
         "ru" : {
@@ -1332,6 +1644,16 @@
         }
       }
     },
+    "Paste" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вставить"
+          }
+        }
+      }
+    },
     "Paste the recovery key you saved when setting up the account." : {
       "localizations" : {
         "ru" : {
@@ -1352,6 +1674,16 @@
         }
       }
     },
+    "Pink" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Розовый"
+          }
+        }
+      }
+    },
     "Previous Theme" : {
       "localizations" : {
         "ru" : {
@@ -1368,6 +1700,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Профиль"
+          }
+        }
+      }
+    },
+    "Purple" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Фиолетовый"
+          }
+        }
+      }
+    },
+    "Random" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Случайные"
           }
         }
       }
@@ -1395,7 +1747,52 @@
         }
       }
     },
+    "Red" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Красный"
+          }
+        }
+      }
+    },
     "Remove reaction" : {
+
+    },
+    "Rename" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Переименовать"
+          }
+        }
+      }
+    },
+    "Rename Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Переименовать цвет"
+          }
+        }
+      }
+    },
+    "Repair" : {
+
+    },
+    "Repair Complete" : {
+
+    },
+    "Repair Failed" : {
+
+    },
+    "Repair Local Message Cache" : {
+
+    },
+    "Repairing" : {
 
     },
     "Reset" : {
@@ -1468,6 +1865,26 @@
         }
       }
     },
+    "Save" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранить"
+          }
+        }
+      }
+    },
+    "Save Color" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранить цвет"
+          }
+        }
+      }
+    },
     "Save this key in a password manager or somewhere safe. You'll need it to restore encrypted messages on other devices." : {
       "localizations" : {
         "ru" : {
@@ -1484,6 +1901,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Сохранили ключ восстановления?"
+          }
+        }
+      }
+    },
+    "Scan" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скан"
+          }
+        }
+      }
+    },
+    "Scan Failed" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сканировать"
           }
         }
       }
@@ -1620,6 +2057,16 @@
         }
       }
     },
+    "Ship it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправляем."
+          }
+        }
+      }
+    },
     "Sign In" : {
       "localizations" : {
         "ru" : {
@@ -1660,6 +2107,16 @@
         }
       }
     },
+    "Solar Coral" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Солнечный коралл"
+          }
+        }
+      }
+    },
     "Something went wrong" : {
       "localizations" : {
         "ru" : {
@@ -1670,12 +2127,22 @@
         }
       }
     },
-    "Solar Coral" : {
+    "Standard Colors" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Солнечный коралл"
+            "value" : "Стандартные цвета"
+          }
+        }
+      }
+    },
+    "Start New Scan" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Начать новый скан"
           }
         }
       }
@@ -1701,6 +2168,16 @@
         }
       }
     },
+    "Teal" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Бирюзовый"
+          }
+        }
+      }
+    },
     "They can be re-invited later." : {
       "localizations" : {
         "ru" : {
@@ -1717,6 +2194,19 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Это действие необратимо. Зашифрованная история сообщений будет потеряна навсегда."
+          }
+        }
+      }
+    },
+    "This fixes local duplicate or stuck timeline rows. It does not delete messages from Matrix." : {
+
+    },
+    "This is how it looks in groups." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Так это выглядит в группах."
           }
         }
       }
@@ -1747,6 +2237,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Тема (необязательно)"
+          }
+        }
+      }
+    },
+    "Unable to Save" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить"
+          }
+        }
+      }
+    },
+    "Updated messages: %lld\nDeleted local duplicates: %lld\nUpdated envelope items: %lld\nRetired envelopes: %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Updated messages: %1$lld\nDeleted local duplicates: %2$lld\nUpdated envelope items: %3$lld\nRetired envelopes: %4$lld"
+          }
+        }
+      }
+    },
+    "Use #RRGGBB or RRGGBB." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Используйте #RRGGBB или RRGGBB."
+          }
+        }
+      }
+    },
+    "Username" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Логин"
           }
         }
       }
@@ -1811,12 +2341,32 @@
         }
       }
     },
+    "Yellow" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Жёлтый"
+          }
+        }
+      }
+    },
     "Yesterday" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Вчера"
+          }
+        }
+      }
+    },
+    "You" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы"
           }
         }
       }
@@ -2142,6 +2692,9 @@
         }
       }
     },
+    "Zyna" : {
+
+    },
     "Zyna Blue" : {
       "localizations" : {
         "ru" : {
@@ -2151,9 +2704,6 @@
           }
         }
       }
-    },
-    "Zyna" : {
-
     }
   },
   "version" : "1.1"

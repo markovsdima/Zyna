@@ -110,7 +110,7 @@ final class VoiceMessageCellNode: MessageCellNode {
         let samples = Self.resampleWaveform(waveformData, to: Self.barCount)
         let maxContentWidth = ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio - Self.bubbleInsets.left - Self.bubbleInsets.right
         let statusIcon = message.isOutgoing
-            ? MessageStatusIcon.from(sendStatus: message.sendStatus)
+            ? MessageStatusIcon.from(sendStatus: message.effectiveSendStatus)
             : nil
 
         self.flatContentNode = VoiceBubbleContentNode(

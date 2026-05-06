@@ -9,12 +9,14 @@ final class GlassPipeline {
     static let shared = GlassPipeline()
 
     let pipelineState: MTLRenderPipelineState
+    let backdropCompositePipelineState: MTLRenderPipelineState
 
     private init() {
         let ctx = MetalContext.shared
 
         let vertexFunction = ctx.library.makeFunction(name: "glassVertex")!
         let fragmentFunction = ctx.library.makeFunction(name: "glassFragment")!
+        let backdropCompositeFunction = ctx.library.makeFunction(name: "glassBackdropCompositeFragment")!
 
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertexFunction
@@ -28,6 +30,13 @@ final class GlassPipeline {
         ca.sourceAlphaBlendFactor = .one
         ca.destinationAlphaBlendFactor = .oneMinusSourceAlpha
 
-        self.pipelineState = try! ctx.device.makeRenderPipelineState(descriptor: descriptor)
+        pipelineState = try! ctx.device.makeRenderPipelineState(descriptor: descriptor)
+
+        let backdropDescriptor = MTLRenderPipelineDescriptor()
+        backdropDescriptor.vertexFunction = vertexFunction
+        backdropDescriptor.fragmentFunction = backdropCompositeFunction
+        backdropDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        backdropDescriptor.colorAttachments[0].isBlendingEnabled = false
+        backdropCompositePipelineState = try! ctx.device.makeRenderPipelineState(descriptor: backdropDescriptor)
     }
 }

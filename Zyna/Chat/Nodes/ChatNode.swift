@@ -7,6 +7,7 @@ import AsyncDisplayKit
 
 final class ChatNode: ASDisplayNode {
     let tableNode = ASTableNode()
+    let paintSplashHostView = UIView()
     private let bubbleGradientHostView = UIView()
     private let bubbleGradientSources: [BubbleGradientRole: BubbleGradientSource]
 
@@ -41,11 +42,15 @@ final class ChatNode: ASDisplayNode {
         tableNode.backgroundColor = AppColor.chatBackground
         bubbleGradientHostView.backgroundColor = .clear
         bubbleGradientHostView.isUserInteractionEnabled = false
+        paintSplashHostView.backgroundColor = .clear
+        paintSplashHostView.isOpaque = false
+        paintSplashHostView.isUserInteractionEnabled = false
     }
 
     override func didLoad() {
         super.didLoad()
         view.insertSubview(bubbleGradientHostView, belowSubview: tableNode.view)
+        view.insertSubview(paintSplashHostView, aboveSubview: tableNode.view)
         for role in BubbleGradientRole.allCases {
             guard let source = bubbleGradientSources[role] else { continue }
             bubbleGradientHostView.addSubview(source)
@@ -56,6 +61,7 @@ final class ChatNode: ASDisplayNode {
         super.layout()
         tableNode.frame = bounds
         bubbleGradientHostView.frame = bounds
+        paintSplashHostView.frame = bounds
         for source in bubbleGradientSources.values {
             source.frame = bubbleGradientHostView.bounds
         }
