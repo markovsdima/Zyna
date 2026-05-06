@@ -7,10 +7,10 @@ It is built with Matrix Rust SDK, GRDB, Texture, Metal, WebRTC, and a lightweigh
 Demo: [YouTube quick tour](https://youtube.com/shorts/Tv3BSCmnINg?feature=share)
 
 <p align="center">
-  <img width="640" alt="Zyna app preview" src="https://github.com/user-attachments/assets/0ef25bcc-f1c9-49f6-812e-c9883ad98876">
+  <img width="340" alt="Zyna app preview" src="https://github.com/user-attachments/assets/0ef25bcc-f1c9-49f6-812e-c9883ad98876">
   &nbsp;
   <img width="240" alt="Zyna message deletion effect" src="https://github.com/user-attachments/assets/a15fb115-059d-4464-86f3-16182afd4c94">
-</p>
+
 
 ## Features
 
