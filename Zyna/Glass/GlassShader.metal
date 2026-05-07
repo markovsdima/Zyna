@@ -72,6 +72,16 @@ struct GlassUniforms {
     float  splashActive;
     float  splashSurfaceIntensity;
     float  splashSurfaceAge;
+    // Optional glyph atlas composited into the glass material.
+    float  glyphActive;
+    float4 glyphRect;
+    float4 glyphEffectRect;
+    float4 glyphSource0;
+    float4 glyphSource1;
+    float  glyphProgress;
+    float  glyphOpacity;
+    float  glyphActivity;
+    float4 glyphSendColor;
 };
 
 struct BackdropCompositeUniforms {
@@ -264,6 +274,8 @@ inline float4 glassSplashRawSample(texture2d<float> blobTex, float2 uv) {
     return blobTex.sample(samp, uv);
 }
 
+#include "GlassGlyphShader.h"
+
 inline float glassSplashHeightFromEnergy(float energy) {
     return 1.0 - exp(-max(energy, 0.0) * 0.64);
 }
@@ -446,7 +458,8 @@ fragment float4 glassFragment(
     constant GlassUniforms& u [[buffer(0)]],
     texture2d<float> clearTex [[texture(0)]],
     texture2d<float> blurTex  [[texture(1)]],
-    texture2d<float> splashBlobTex [[texture(2)]]
+    texture2d<float> splashBlobTex [[texture(2)]],
+    texture2d<float> glyphAtlasTex [[texture(3)]]
 ) {
     float2 uv = in.uv;
     float aspect = u.aspect;
@@ -747,6 +760,7 @@ fragment float4 glassFragment(
         // ── 12. Final tint ──
 
         col *= GLASS_TINT;
+        col = glassCompositeGlyph(col, uv, u, glyphAtlasTex, clearTex, blurTex);
 
         return float4(clamp(col, 0.0, 1.0), glassMask);
     }

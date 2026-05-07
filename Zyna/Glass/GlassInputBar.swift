@@ -62,12 +62,31 @@ final class GlassInputBar: ASDisplayNode {
     private var scrollButtonDisplayLink: CADisplayLink?
     private var scrollButtonLastTime: CFTimeInterval = 0
 
+    // Metal-rendered right action glyph (mic ↔ send)
+    private var rightGlyphVisible: Bool = true
+    private var rightGlyphProgress: CGFloat = 0  // 0 = mic, 1 = send
+    private var rightGlyphTarget: CGFloat = 0
+    private var rightGlyphVelocity: CGFloat = 0
+    private var rightGlyphDisplayLink: CADisplayLink?
+    private var rightGlyphLastTime: CFTimeInterval = 0
+    private var rightGlyphSendColor: UIColor = AppColor.accent
+    // 1 = normal speed. Raise to 8 when inspecting the mic/send morph.
+    private let rightGlyphAnimationSlowdown: CGFloat = 1
+    private var rightGlyphAnimationTimeScale: CGFloat {
+        max(1, rightGlyphAnimationSlowdown)
+    }
+
     // MARK: - Init
 
     override init() {
         super.init()
         anchor.debugName = "input"
         inputNode.backgroundColor = .clear
+    }
+
+    deinit {
+        scrollButtonDisplayLink?.invalidate()
+        rightGlyphDisplayLink?.invalidate()
     }
 
     // MARK: - didLoad
@@ -87,6 +106,9 @@ final class GlassInputBar: ASDisplayNode {
         anchor.barProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildBarData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
         }
+        anchor.glyphProvider = { [weak self] glassFrame, captureFrame, scale in
+            self?.buildGlyphData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
+        }
         anchor.onAdaptiveMaterialChanged = { [weak self] material in
             self?.inputNode.applyGlassAdaptiveMaterial(material)
             self?.onAdaptiveMaterialChanged?(material)
@@ -98,6 +120,11 @@ final class GlassInputBar: ASDisplayNode {
         // Input node as subnode (already ASDisplayNode)
         addSubnode(inputNode)
         inputNode.view.backgroundColor = .clear
+        inputNode.setMetalRightActionGlyphEnabled(true)
+        inputNode.onRightGlyphStateChanged = { [weak self] state in
+            self?.applyRightGlyphState(state)
+        }
+        applyRightGlyphState(inputNode.rightGlyphState, animated: false)
 
         view.sendSubviewToBack(anchor)
 
@@ -303,10 +330,18 @@ final class GlassInputBar: ASDisplayNode {
     private func observeInputSize() {
         inputNode.onSizeChanged = { [weak self] in
             guard let self, let parentView = self.view.superview else { return }
+            let oldFrame = self.frame
             self.updateLayout(in: parentView)
             parentView.setNeedsLayout()
-            // Sustain capture while layout settles (reply show/hide, text grow/shrink)
-            GlassService.shared.captureFor(duration: 0.5)
+            let frameChanged = abs(self.frame.height - oldFrame.height) > 0.5
+                || abs(self.frame.origin.y - oldFrame.origin.y) > 0.5
+                || abs(self.frame.width - oldFrame.width) > 0.5
+            if frameChanged {
+                // Sustain capture while layout settles (reply show/hide, text grow/shrink).
+                GlassService.shared.captureFor(duration: 0.5)
+            } else {
+                GlassService.shared.setNeedsRender()
+            }
         }
     }
 
@@ -331,6 +366,137 @@ final class GlassInputBar: ASDisplayNode {
         currentBarHeights = heights
 
         GlassService.shared.setNeedsCapture()
+    }
+
+    // MARK: - Right Glyph Morph
+
+    private func applyRightGlyphState(
+        _ state: ChatInputNode.RightGlyphState,
+        animated: Bool = true
+    ) {
+        rightGlyphVisible = state.visible
+        rightGlyphSendColor = state.sendColor
+
+        let target: CGFloat = state.showsSend ? 1 : 0
+        guard animated else {
+            rightGlyphDisplayLink?.invalidate()
+            rightGlyphDisplayLink = nil
+            rightGlyphTarget = target
+            rightGlyphProgress = target
+            rightGlyphVelocity = 0
+            GlassService.shared.setNeedsRender()
+            return
+        }
+
+        rightGlyphTarget = target
+        startRightGlyphDisplayLink()
+        GlassService.shared.renderFor(duration: 0.55 * TimeInterval(rightGlyphAnimationTimeScale))
+        GlassService.shared.setNeedsRender()
+    }
+
+    private func startRightGlyphDisplayLink() {
+        guard rightGlyphDisplayLink == nil else { return }
+        rightGlyphLastTime = CACurrentMediaTime()
+        let link = CADisplayLink(target: self, selector: #selector(rightGlyphTick))
+        link.add(to: .main, forMode: .common)
+        rightGlyphDisplayLink = link
+    }
+
+    @objc private func rightGlyphTick() {
+        let now = CACurrentMediaTime()
+        let dt = CGFloat(now - rightGlyphLastTime) / rightGlyphAnimationTimeScale
+        rightGlyphLastTime = now
+
+        let stiffness: CGFloat = 135
+        let damping: CGFloat = 20
+        let displacement = rightGlyphProgress - rightGlyphTarget
+        let springForce = -stiffness * displacement
+        let dampingForce = -damping * rightGlyphVelocity
+        rightGlyphVelocity += (springForce + dampingForce) * dt
+        rightGlyphProgress += rightGlyphVelocity * dt
+        rightGlyphProgress = max(0, min(1, rightGlyphProgress))
+
+        let settled = abs(rightGlyphProgress - rightGlyphTarget) < 0.001
+                   && abs(rightGlyphVelocity) < 0.01
+        if settled {
+            rightGlyphProgress = rightGlyphTarget
+            rightGlyphVelocity = 0
+            rightGlyphDisplayLink?.invalidate()
+            rightGlyphDisplayLink = nil
+        }
+
+        GlassService.shared.setNeedsRender()
+    }
+
+    private func buildGlyphData(
+        glassFrame: CGRect, captureFrame: CGRect, scale: CGFloat
+    ) -> GlassRenderer.GlyphData? {
+        guard rightGlyphVisible else { return nil }
+
+        let cw = captureFrame.width
+        let ch = captureFrame.height
+        guard cw > 0, ch > 0 else { return nil }
+
+        let hPad: CGFloat = 14
+        let vPad: CGFloat = 6
+        let btnSize: CGFloat = 48
+        let iconSize: CGFloat = 27
+        let renderSize: CGFloat = 35
+
+        let contentY = glassFrame.origin.y + vPad
+        let contentH = glassFrame.height - vPad * 2
+        let centerX = glassFrame.maxX - hPad - btnSize / 2
+        let centerY = contentY + contentH - btnSize / 2
+        let iconFrame = CGRect(
+            x: centerX - iconSize / 2,
+            y: centerY - iconSize / 2,
+            width: iconSize,
+            height: iconSize
+        )
+        let effectFrame = CGRect(
+            x: centerX - renderSize / 2,
+            y: centerY - renderSize / 2,
+            width: renderSize,
+            height: renderSize
+        )
+
+        let sendColor = resolvedRGBA(rightGlyphSendColor)
+        let activity = min(1, Float(abs(rightGlyphVelocity) * 0.035)
+            + Float(abs(rightGlyphTarget - rightGlyphProgress) * 1.4))
+
+        return GlassRenderer.GlyphData(
+            rect: SIMD4<Float>(
+                Float((iconFrame.origin.x - captureFrame.origin.x) / cw),
+                Float((iconFrame.origin.y - captureFrame.origin.y) / ch),
+                Float(iconFrame.width / cw),
+                Float(iconFrame.height / ch)
+            ),
+            effectRect: SIMD4<Float>(
+                Float((effectFrame.origin.x - captureFrame.origin.x) / cw),
+                Float((effectFrame.origin.y - captureFrame.origin.y) / ch),
+                Float(effectFrame.width / cw),
+                Float(effectFrame.height / ch)
+            ),
+            progress: Float(rightGlyphProgress),
+            opacity: 1,
+            activity: activity,
+            sendColor: sendColor
+        )
+    }
+
+    private func resolvedRGBA(_ color: UIColor) -> SIMD4<Float> {
+        let resolved = color.resolvedColor(with: view.traitCollection)
+        var r: CGFloat = 0
+        var g: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 1
+        resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return SIMD4<Float>(
+            Float(max(0, min(1, r))),
+            Float(max(0, min(1, g))),
+            Float(max(0, min(1, b))),
+            Float(max(0, min(1, a)))
+        )
     }
 
     // MARK: - Scroll Button

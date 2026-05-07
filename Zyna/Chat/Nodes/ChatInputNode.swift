@@ -10,6 +10,12 @@ import UniformTypeIdentifiers
 
 final class ChatInputNode: ASDisplayNode {
 
+    struct RightGlyphState {
+        var visible: Bool
+        var showsSend: Bool
+        var sendColor: UIColor
+    }
+
     let textInputNode = ASEditableTextNode()
     let sendButtonNode = AccessibleButtonNode()
     let micButtonNode = AccessibleButtonNode()
@@ -42,10 +48,15 @@ final class ChatInputNode: ASDisplayNode {
     private var colorPalette: SendColorPaletteView?
     private var colorPaletteLongPress: UILongPressGestureRecognizer?
     private var pendingFlashTask: DispatchWorkItem?
-    private static let sendButtonDefaultTint: UIColor = AppColor.accent
+    private static var sendButtonDefaultTint: UIColor {
+        ChatBubbleThemeStore.shared.selectedTheme.actionAccentColor
+    }
+    private var sendGlyphTint: UIColor = ChatInputNode.sendButtonDefaultTint
     private var glassMaterial = GlassAdaptiveMaterial.light
     private var lastAppliedGlassAppearance: CGFloat = -1
     private var lastAppliedGlassContrast: CGFloat = -1
+    private var lastEmittedRightGlyphState: RightGlyphState?
+    private var metalRightActionGlyphEnabled = false
 
     var onSend: ((String, UIColor?) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
@@ -55,6 +66,15 @@ final class ChatInputNode: ASDisplayNode {
     var onReplyCancelled: (() -> Void)?
     var onEditCancelled: (() -> Void)?
     var onPastedImages: (([UIImage]) -> Void)?
+    var onRightGlyphStateChanged: ((RightGlyphState) -> Void)?
+
+    var rightGlyphState: RightGlyphState {
+        RightGlyphState(
+            visible: shouldShowRightGlyph,
+            showsSend: showsSendButton,
+            sendColor: sendGlyphTint
+        )
+    }
 
     private var pendingPastedImages: [(sequence: Int, image: UIImage)] = []
     private var nextPastedImageSequence: Int = 0
@@ -90,6 +110,14 @@ final class ChatInputNode: ASDisplayNode {
         previewMode == .edit
     }
 
+    private var showsSendButton: Bool {
+        !isTextEmpty || isShowingForward || isShowingEdit
+    }
+
+    private var shouldShowRightGlyph: Bool {
+        !isRecording && voicePreview == nil
+    }
+
     func setForwardPreview(senderName: String?, body: String?) {
         let showing = senderName != nil
         if showing {
@@ -105,6 +133,7 @@ final class ChatInputNode: ASDisplayNode {
         }
         setNeedsLayout()
         onSizeChanged?()
+        emitRightGlyphStateIfNeeded()
     }
 
     func setReplyPreview(senderName: String?, body: String?) {
@@ -119,6 +148,7 @@ final class ChatInputNode: ASDisplayNode {
         }
         setNeedsLayout()
         onSizeChanged?()
+        emitRightGlyphStateIfNeeded()
     }
 
     func setEditPreview(body: String?) {
@@ -136,6 +166,7 @@ final class ChatInputNode: ASDisplayNode {
         }
         setNeedsLayout()
         onSizeChanged?()
+        emitRightGlyphStateIfNeeded()
     }
 
     private func updateReplyText(senderName: String?, body: String?) {
@@ -211,7 +242,10 @@ final class ChatInputNode: ASDisplayNode {
         attachButtonNode.accessibilityLabel = "Attach"
         attachButtonNode.accessibilityTraits = .button
 
-        sendButtonNode.setImage(AppIcon.send.rendered(size: 24, weight: .semibold, color: AppColor.accent), for: .normal)
+        sendButtonNode.setImage(
+            AppIcon.send.rendered(size: 24, weight: .semibold, color: Self.sendButtonDefaultTint),
+            for: .normal
+        )
         sendButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
         sendButtonNode.isAccessibilityElement = true
         sendButtonNode.accessibilityLabel = "Send"
@@ -229,6 +263,29 @@ final class ChatInputNode: ASDisplayNode {
 
         overlayNode.onStop = { [weak self] in self?.finishRecording() }
         overlayNode.onCancel = { [weak self] in self?.cancelRecording() }
+    }
+
+    func setMetalRightActionGlyphEnabled(_ enabled: Bool) {
+        metalRightActionGlyphEnabled = enabled
+        applyRightActionImageVisibility()
+    }
+
+    private func applyRightActionImageVisibility() {
+        let alpha: CGFloat = metalRightActionGlyphEnabled ? 0 : 1
+        micButtonNode.imageNode.alpha = alpha
+        sendButtonNode.imageNode.alpha = alpha
+    }
+
+    private func emitRightGlyphStateIfNeeded() {
+        let state = rightGlyphState
+        if let last = lastEmittedRightGlyphState,
+           last.visible == state.visible,
+           last.showsSend == state.showsSend,
+           last.sendColor.isEqual(state.sendColor) {
+            return
+        }
+        lastEmittedRightGlyphState = state
+        onRightGlyphStateChanged?(state)
     }
 
     // MARK: - didLoad
@@ -287,8 +344,7 @@ final class ChatInputNode: ASDisplayNode {
             children: [attachButtonNode]
         )
 
-        let showSend = !isTextEmpty || isShowingForward || isShowingEdit
-        let rightButton = showSend ? sendButtonNode : micButtonNode
+        let rightButton = showsSendButton ? sendButtonNode : micButtonNode
         let rightSpec = ASStackLayoutSpec(
             direction: .vertical, spacing: 0, justifyContent: .end, alignItems: .center,
             children: [rightButton]
@@ -490,6 +546,7 @@ final class ChatInputNode: ASDisplayNode {
         overlayNode.isUserInteractionEnabled = false
         setNeedsLayout()
         onSizeChanged?()
+        emitRightGlyphStateIfNeeded()
         showPulse()
         showLock()
     }
@@ -504,6 +561,7 @@ final class ChatInputNode: ASDisplayNode {
         lockView = nil
         setNeedsLayout()
         onSizeChanged?()
+        emitRightGlyphStateIfNeeded()
     }
 
     // MARK: - Pulse (UIView — per-frame position tracking)
@@ -599,6 +657,7 @@ final class ChatInputNode: ASDisplayNode {
 
         setNeedsLayout()
         onSizeChanged?()
+        emitRightGlyphStateIfNeeded()
     }
 
     private func discardVoicePreview() {
@@ -609,6 +668,7 @@ final class ChatInputNode: ASDisplayNode {
         voicePreview = nil
         setNeedsLayout()
         onSizeChanged?()
+        emitRightGlyphStateIfNeeded()
     }
 
     private func sendVoicePreview() {
@@ -619,6 +679,7 @@ final class ChatInputNode: ASDisplayNode {
         voicePreview = nil
         setNeedsLayout()
         onSizeChanged?()
+        emitRightGlyphStateIfNeeded()
     }
 
     private func finishRecording() {
@@ -662,6 +723,7 @@ final class ChatInputNode: ASDisplayNode {
         updateTextEmptyState()
         setNeedsLayout()
         onSizeChanged?()
+        emitRightGlyphStateIfNeeded()
     }
 
     // MARK: - Send Colour Palette
@@ -724,10 +786,13 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func applySendButtonTint(_ color: UIColor) {
+        sendGlyphTint = color
         sendButtonNode.setImage(
             AppIcon.send.rendered(size: 24, weight: .semibold, color: color),
             for: .normal
         )
+        applyRightActionImageVisibility()
+        emitRightGlyphStateIfNeeded()
     }
 
     private func scheduleSendButtonFlashBack() {
@@ -757,6 +822,7 @@ final class ChatInputNode: ASDisplayNode {
         if empty != isTextEmpty {
             isTextEmpty = empty
             setNeedsLayout()
+            emitRightGlyphStateIfNeeded()
         }
     }
 }

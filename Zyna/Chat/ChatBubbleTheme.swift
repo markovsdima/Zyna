@@ -150,6 +150,16 @@ struct ChatBubbleTheme: Equatable {
     }
 }
 
+extension ChatBubbleTheme {
+    var actionAccentColor: UIColor {
+        guard !outgoingGradientColors.isEmpty else { return AppColor.accent }
+        if outgoingGradientColors.count >= 3 {
+            return outgoingGradientColors[1]
+        }
+        return outgoingGradientColors[outgoingGradientColors.count - 1]
+    }
+}
+
 final class ChatBubbleThemeStore {
     static let shared = ChatBubbleThemeStore()
 

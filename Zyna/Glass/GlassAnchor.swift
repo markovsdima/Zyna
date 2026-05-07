@@ -71,6 +71,10 @@ final class GlassAnchor: UIView {
     /// Chrome bar data provider. Return nil when bars are inactive.
     var barProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.BarData?)?
 
+    /// Optional foreground glyphs drawn by Metal inside the glass pass.
+    /// Interactive controls should still live in UIKit/Texture above the anchor.
+    var glyphProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.GlyphData?)?
+
     /// Quick flag: true when bars are active (avoids calling barProvider just to check).
     /// Used by GlassService to expand capture frame upward.
     var hasBars: Bool = false
