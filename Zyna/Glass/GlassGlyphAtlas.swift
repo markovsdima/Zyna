@@ -58,8 +58,8 @@ enum GlassGlyphAtlasBuilder {
             drawSymbolGlyph(.mic, systemName: "mic.fill", tileSize: tile, pointSize: 92, weight: .medium)
             drawRoundedSendGlyph(.send, tileSize: tile)
             drawAttachGlyph(.attach, tileSize: tile)
-            drawSymbolGlyph(.chevronDown, systemName: "chevron.down", tileSize: tile, pointSize: 76, weight: .semibold)
-            drawSymbolGlyph(.chevronLeft, systemName: "chevron.left", tileSize: tile, pointSize: 76, weight: .semibold)
+            drawSoftChevronDownGlyph(.chevronDown, tileSize: tile)
+            drawSoftChevronLeftGlyph(.chevronLeft, tileSize: tile)
             drawSymbolGlyph(.phone, systemName: "phone.fill", tileSize: tile, pointSize: 78, weight: .medium)
             UIGraphicsPopContext()
             return true
@@ -192,5 +192,63 @@ enum GlassGlyphAtlasBuilder {
         )
         inner.addLine(to: point(-8, -13.5))
         inner.stroke()
+    }
+
+    private static func drawSoftChevronDownGlyph(_ kind: GlassGlyphKind, tileSize: Int) {
+        let originX = CGFloat(kind.rawValue * tileSize)
+        let tileRect = CGRect(x: originX, y: 0, width: CGFloat(tileSize), height: CGFloat(tileSize))
+        let center = CGPoint(x: tileRect.midX, y: tileRect.midY)
+
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: center.x + x, y: center.y + y)
+        }
+
+        UIColor.white.setStroke()
+
+        let path = UIBezierPath()
+        path.lineWidth = 13.5
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.move(to: point(-31, -9))
+        path.addCurve(
+            to: point(0, 20),
+            controlPoint1: point(-22, -2),
+            controlPoint2: point(-12, 14)
+        )
+        path.addCurve(
+            to: point(31, -9),
+            controlPoint1: point(12, 14),
+            controlPoint2: point(22, -2)
+        )
+        path.stroke()
+    }
+
+    private static func drawSoftChevronLeftGlyph(_ kind: GlassGlyphKind, tileSize: Int) {
+        let originX = CGFloat(kind.rawValue * tileSize)
+        let tileRect = CGRect(x: originX, y: 0, width: CGFloat(tileSize), height: CGFloat(tileSize))
+        let center = CGPoint(x: tileRect.midX, y: tileRect.midY)
+
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: center.x + x, y: center.y + y)
+        }
+
+        UIColor.white.setStroke()
+
+        let path = UIBezierPath()
+        path.lineWidth = 13
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.move(to: point(13, -31))
+        path.addCurve(
+            to: point(-21, 0),
+            controlPoint1: point(3, -23),
+            controlPoint2: point(-13, -10)
+        )
+        path.addCurve(
+            to: point(13, 31),
+            controlPoint1: point(-13, 10),
+            controlPoint2: point(3, 23)
+        )
+        path.stroke()
     }
 }
