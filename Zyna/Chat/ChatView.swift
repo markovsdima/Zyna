@@ -1113,14 +1113,42 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             renderedMessage = message
         }
 
-        // Ask ChatNode for the source view here on the main thread.
-        // Texture may build the cell inside the returned block on a background thread,
-        // and that block should use the already-resolved view instead of touching
-        // `self.node` / the live node hierarchy again.
+        // Resolve controller/view state and callbacks before returning the Texture
+        // node block. Texture may build the cell on a background thread, so the
+        // block should only create nodes and assign already-prepared values.
+        // This avoids thread-sensitive bugs during fast scroll/preload if these
+        // handlers later grow to touch UIKit, live nodes, or view-model state.
         let gradientSource = self.node.bubbleGradientSource(for: renderedMessage)
         let roomId = viewModel.roomIdentifier
         let roomName = viewModel.roomName
-        return { [weak self] in
+        let configureMessageInteractions = makeMessageInteractionConfigurator(for: message)
+        let openGroupedPhoto: (PhotoGroupMessageCellNode, Int) -> Void = { [weak self] groupCell, index in
+            self?.presentImageViewer(for: groupCell, itemIndex: index)
+        }
+        let openImage: (ImageMessageCellNode) -> Void = { [weak self] imageCell in
+            self?.presentImageViewer(for: message, from: imageCell)
+        }
+        let openVideo: (VideoMessageCellNode) -> Void = { [weak self] videoCell in
+            self?.handleVideoTap(message: message, cellNode: videoCell)
+        }
+        let openFile: (FileCellNode) -> Void = { [weak self] fileCell in
+            self?.handleFileTap(message: message, cellNode: fileCell)
+        }
+        let openSender: (String) -> Void = { [weak self] userId in
+            self?.onTitleTapped?(userId)
+        }
+        let updateInteractionLock: (Bool) -> Void = { [weak self] locked in
+            if locked {
+                self?.lockInteraction("contextMenu")
+            } else {
+                self?.unlockInteraction("contextMenu")
+            }
+        }
+        let openReplyHeader: (String) -> Void = { [weak self] eventId in
+            self?.navigateToMessage(eventId: eventId)
+        }
+
+        return {
 
             // Call events use a standalone centered cell, not a MessageCellNode
             if case .callEvent = renderedMessage.content {
@@ -1137,29 +1165,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             if renderedMessage.mediaGroupPresentation?.rendersCompositeBubble == true {
                 let groupCell = PhotoGroupMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
-                    groupCell.onPhotoTapped = { [weak self, weak groupCell] index in
-                        guard let self, let groupCell else { return }
-                        self.presentImageViewer(for: groupCell, itemIndex: index)
+                    groupCell.onPhotoTapped = { [weak groupCell] index in
+                        guard let groupCell else { return }
+                        openGroupedPhoto(groupCell, index)
                     }
                 }
                 let cellNode = groupCell
                 cellNode.bubbleGradientSource = gradientSource
 
                 if !isPreview {
-                    cellNode.onSenderTapped = { [weak self] userId in
-                        self?.onTitleTapped?(userId)
-                    }
-
-                    cellNode.onInteractionLockChanged = { [weak self] locked in
-                        if locked {
-                            self?.lockInteraction("contextMenu")
-                        } else {
-                            self?.unlockInteraction("contextMenu")
-                        }
-                    }
+                    cellNode.onSenderTapped = openSender
+                    cellNode.onInteractionLockChanged = updateInteractionLock
                 }
 
-                self?.configureMessageDrivenInteractions(for: cellNode, message: message)
+                configureMessageInteractions(cellNode)
                 return cellNode
             }
 
@@ -1176,27 +1195,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             case .image:
                 let imageCell = ImageMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
-                    imageCell.onImageTapped = { [weak self, weak imageCell] in
-                        guard let self, let imageCell else { return }
-                        self.presentImageViewer(for: message, from: imageCell)
+                    imageCell.onImageTapped = { [weak imageCell] in
+                        guard let imageCell else { return }
+                        openImage(imageCell)
                     }
                 }
                 cellNode = imageCell
             case .video:
                 let videoCell = VideoMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
-                    videoCell.onVideoTapped = { [weak self, weak videoCell] in
-                        guard let self, let videoCell else { return }
-                        self.handleVideoTap(message: message, cellNode: videoCell)
+                    videoCell.onVideoTapped = { [weak videoCell] in
+                        guard let videoCell else { return }
+                        openVideo(videoCell)
                     }
                 }
                 cellNode = videoCell
             case .file:
                 let fileCell = FileCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
-                    fileCell.onFileTapped = { [weak self] in
-                        guard let self else { return }
-                        self.handleFileTap(message: message, cellNode: fileCell)
+                    fileCell.onFileTapped = { [weak fileCell] in
+                        guard let fileCell else { return }
+                        openFile(fileCell)
                     }
                 }
                 cellNode = fileCell
@@ -1209,25 +1228,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             cellNode.bubbleGradientSource = gradientSource
 
             if !isPreview {
-                cellNode.onSenderTapped = { [weak self] userId in
-                    self?.onTitleTapped?(userId)
-                }
-
-                cellNode.onInteractionLockChanged = { [weak self] locked in
-                    if locked {
-                        self?.lockInteraction("contextMenu")
-                    } else {
-                        self?.unlockInteraction("contextMenu")
-                    }
-                }
+                cellNode.onSenderTapped = openSender
+                cellNode.onInteractionLockChanged = updateInteractionLock
             }
 
-            self?.configureMessageDrivenInteractions(for: cellNode, message: message)
+            configureMessageInteractions(cellNode)
 
             if !isPreview {
-                cellNode.onReplyHeaderTapped = { [weak self] eventId in
-                    self?.navigateToMessage(eventId: eventId)
-                }
+                cellNode.onReplyHeaderTapped = openReplyHeader
             }
 
             return cellNode
@@ -1239,47 +1247,64 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         ProfileAppearanceService.shared.prefetchAppearance(userId: userId)
     }
 
-    private func configureMessageDrivenInteractions(for cellNode: MessageCellNode, message: ChatMessage) {
-        guard !isPreviewMode else {
-            configurePreviewInteractions(for: cellNode)
-            return
-        }
-
+    private func makeMessageInteractionConfigurator(for message: ChatMessage) -> (MessageCellNode) -> Void {
+        let isPreview = isPreviewMode
         let suppressSyntheticActions = message.isSyntheticOutgoingEnvelope || message.isSyntheticIncomingAssembly
-        if suppressSyntheticActions {
-            cellNode.onReplySwipeActivated = nil
-            cellNode.onReplySwipeChanged = nil
-            cellNode.onReplySwipeEnded = nil
-        } else {
-            cellNode.onReplySwipeActivated = { [weak self] in
-                self?.viewModel.setReplyTarget(message)
-            }
-            cellNode.onReplySwipeChanged = { [weak self] progress, anchorPointInWindow in
-                self?.updateReplySwipeIndicator(
-                    progress: progress,
-                    anchorPointInWindow: anchorPointInWindow
-                )
-            }
-            cellNode.onReplySwipeEnded = { [weak self] in
-                self?.hideReplySwipeIndicator()
-            }
+        let suppressContextMenu = message.isSyntheticIncomingAssembly
+        let setReplyTarget: () -> Void = { [weak self] in
+            self?.viewModel.setReplyTarget(message)
         }
-
-        if message.isSyntheticIncomingAssembly {
-            cellNode.onContextMenuActivated = nil
-            cellNode.accessibilityActionsProvider = { [] }
-        } else {
-            cellNode.onContextMenuActivated = { [weak self, weak cellNode] point in
-                guard let self, let cellNode else { return }
-                self.presentContextMenu(for: message, from: cellNode, activationPoint: point)
-            }
-            cellNode.accessibilityActionsProvider = { [weak self] in
-                self?.buildAccessibilityActions(for: message) ?? []
-            }
+        let updateReplySwipe: (CGFloat, CGPoint) -> Void = { [weak self] progress, anchorPointInWindow in
+            self?.updateReplySwipeIndicator(
+                progress: progress,
+                anchorPointInWindow: anchorPointInWindow
+            )
         }
-        cellNode.onReactionTapped = { [weak self] key in
+        let hideReplySwipe: () -> Void = { [weak self] in
+            self?.hideReplySwipeIndicator()
+        }
+        let presentContextMenu: (MessageCellNode, CGPoint) -> Void = { [weak self] cellNode, point in
+            self?.presentContextMenu(for: message, from: cellNode, activationPoint: point)
+        }
+        let buildActions: () -> [UIAccessibilityCustomAction] = { [weak self] in
+            self?.buildAccessibilityActions(for: message) ?? []
+        }
+        let toggleReaction: (String) -> Void = { [weak self] key in
             self?.viewModel.toggleReaction(key, for: message)
         }
+
+        return { cellNode in
+            guard !isPreview else {
+                Self.configurePreviewInteractions(for: cellNode)
+                return
+            }
+
+            if suppressSyntheticActions {
+                cellNode.onReplySwipeActivated = nil
+                cellNode.onReplySwipeChanged = nil
+                cellNode.onReplySwipeEnded = nil
+            } else {
+                cellNode.onReplySwipeActivated = setReplyTarget
+                cellNode.onReplySwipeChanged = updateReplySwipe
+                cellNode.onReplySwipeEnded = hideReplySwipe
+            }
+
+            if suppressContextMenu {
+                cellNode.onContextMenuActivated = nil
+                cellNode.accessibilityActionsProvider = { [] }
+            } else {
+                cellNode.onContextMenuActivated = { [weak cellNode] point in
+                    guard let cellNode else { return }
+                    presentContextMenu(cellNode, point)
+                }
+                cellNode.accessibilityActionsProvider = buildActions
+            }
+            cellNode.onReactionTapped = toggleReaction
+        }
+    }
+
+    private func configureMessageDrivenInteractions(for cellNode: MessageCellNode, message: ChatMessage) {
+        makeMessageInteractionConfigurator(for: message)(cellNode)
     }
 
     private func configureAttachmentTapHandler(for cellNode: MessageCellNode, message: ChatMessage) {
@@ -1303,7 +1328,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
     }
 
-    private func configurePreviewInteractions(for cellNode: MessageCellNode) {
+    private static func configurePreviewInteractions(for cellNode: MessageCellNode) {
         cellNode.allowsInteractiveActions = false
         cellNode.contextSourceNode.isGestureEnabled = false
         cellNode.contextSourceNode.onQuickTap = nil
