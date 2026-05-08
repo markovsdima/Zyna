@@ -113,12 +113,56 @@ final class GlassRenderer: UIView {
     /// Optional foreground glyph composited inside the glass pass.
     /// Rect is normalized in capture UV, matching ShapeParams.
     struct GlyphData {
+        var items: [GlyphItem]
+    }
+
+    struct GlyphItem {
         var rect: SIMD4<Float>
         var effectRect: SIMD4<Float>
+        var source0: GlassGlyphKind
+        var source1: GlassGlyphKind
         var progress: Float
         var opacity: Float
         var activity: Float
         var sendColor: SIMD4<Float>
+
+        init(
+            rect: SIMD4<Float>,
+            effectRect: SIMD4<Float>,
+            source: GlassGlyphKind,
+            opacity: Float = 1,
+            activity: Float = 0,
+            sendColor: SIMD4<Float> = SIMD4<Float>(0, 0.478, 1, 1)
+        ) {
+            self.rect = rect
+            self.effectRect = effectRect
+            self.source0 = source
+            self.source1 = source
+            self.progress = 0
+            self.opacity = opacity
+            self.activity = activity
+            self.sendColor = sendColor
+        }
+
+        init(
+            rect: SIMD4<Float>,
+            effectRect: SIMD4<Float>,
+            source0: GlassGlyphKind,
+            source1: GlassGlyphKind,
+            progress: Float,
+            opacity: Float = 1,
+            activity: Float = 0,
+            sendColor: SIMD4<Float>
+        ) {
+            self.rect = rect
+            self.effectRect = effectRect
+            self.source0 = source0
+            self.source1 = source1
+            self.progress = progress
+            self.opacity = opacity
+            self.activity = activity
+            self.sendColor = sendColor
+        }
     }
 
     struct BackdropOverlay {
@@ -164,7 +208,16 @@ final class GlassRenderer: UIView {
         var skippedReason: String?
     }
 
+    private typealias GlyphVec4Slots = (
+        SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+        SIMD4<Float>, SIMD4<Float>, SIMD4<Float>
+    )
+
     private struct Uniforms {
+        static let emptyGlyphVec4Slots: GlyphVec4Slots = (
+            .zero, .zero, .zero, .zero, .zero, .zero
+        )
+
         var resolution: SIMD2<Float>
         var isHDR: Float
         var aspect: Float
@@ -199,15 +252,13 @@ final class GlassRenderer: UIView {
         var splashActive: Float = 0
         var splashSurfaceIntensity: Float = 0
         var splashSurfaceAge: Float = 0
-        var glyphActive: Float = 0
-        var glyphRect: SIMD4<Float> = .zero
-        var glyphEffectRect: SIMD4<Float> = .zero
-        var glyphSource0: SIMD4<Float> = .zero
-        var glyphSource1: SIMD4<Float> = .zero
-        var glyphProgress: Float = 0
-        var glyphOpacity: Float = 0
-        var glyphActivity: Float = 0
-        var glyphSendColor: SIMD4<Float> = SIMD4<Float>(0, 0.478, 1, 1)
+        var glyphMeta: SIMD4<Float> = .zero
+        var glyphRects: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphEffectRects: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphSource0s: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphSource1s: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphParams: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphSendColors: GlyphVec4Slots = Self.emptyGlyphVec4Slots
     }
 
     private struct BackdropCompositeUniforms {
@@ -572,6 +623,14 @@ final class GlassRenderer: UIView {
         }
     }
 
+    private static let maxGlyphSlots = 6
+
+    private static func setGlyphVec4(_ value: SIMD4<Float>, in slots: inout GlyphVec4Slots, at index: Int) {
+        withUnsafeMutableBytes(of: &slots) { rawBuffer in
+            rawBuffer.bindMemory(to: SIMD4<Float>.self)[index] = value
+        }
+    }
+
     private func makeUniforms(for item: RenderItem, glyphAtlas: GlassGlyphAtlas?) -> Uniforms {
         let itemScale = window?.screen.scale ?? UIScreen.main.scale
         let res = SIMD2<Float>(Float(item.frame.width * itemScale), Float(item.frame.height * itemScale))
@@ -608,16 +667,23 @@ final class GlassRenderer: UIView {
         uniforms.adaptiveAppearance = item.adaptiveAppearance
         uniforms.adaptiveContrast = item.adaptiveContrast
 
-        if let glyphData = item.glyphData, let glyphAtlas, glyphData.opacity > 0.001 {
-            uniforms.glyphActive = 1
-            uniforms.glyphRect = glyphData.rect
-            uniforms.glyphEffectRect = glyphData.effectRect
-            uniforms.glyphSource0 = glyphAtlas.micUV
-            uniforms.glyphSource1 = glyphAtlas.sendUV
-            uniforms.glyphProgress = glyphData.progress
-            uniforms.glyphOpacity = glyphData.opacity
-            uniforms.glyphActivity = glyphData.activity
-            uniforms.glyphSendColor = glyphData.sendColor
+        if let glyphData = item.glyphData, let glyphAtlas {
+            var glyphCount = 0
+            for glyph in glyphData.items where glyph.opacity > 0.001 {
+                guard glyphCount < Self.maxGlyphSlots else { break }
+                Self.setGlyphVec4(glyph.rect, in: &uniforms.glyphRects, at: glyphCount)
+                Self.setGlyphVec4(glyph.effectRect, in: &uniforms.glyphEffectRects, at: glyphCount)
+                Self.setGlyphVec4(glyphAtlas.uv(for: glyph.source0), in: &uniforms.glyphSource0s, at: glyphCount)
+                Self.setGlyphVec4(glyphAtlas.uv(for: glyph.source1), in: &uniforms.glyphSource1s, at: glyphCount)
+                Self.setGlyphVec4(
+                    SIMD4<Float>(glyph.progress, glyph.opacity, glyph.activity, 0),
+                    in: &uniforms.glyphParams,
+                    at: glyphCount
+                )
+                Self.setGlyphVec4(glyph.sendColor, in: &uniforms.glyphSendColors, at: glyphCount)
+                glyphCount += 1
+            }
+            uniforms.glyphMeta.x = Float(glyphCount)
         }
 
         if let overlay = item.backdropOverlay {

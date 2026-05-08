@@ -81,7 +81,8 @@ inline float glassGlyphProceduralMorphMask(float2 local, float progress, float a
 inline float glassGlyphMorphMask(
     texture2d<float> atlasTex,
     float2 local,
-    constant GlassUniforms& u,
+    float4 source0,
+    float4 source1,
     float micReveal,
     float sendReveal,
     float micScale,
@@ -98,8 +99,8 @@ inline float glassGlyphMorphMask(
     float2 sendTangent = float2(-sendCentered.y, sendCentered.x);
     float2 micLocal = 0.5 + (micCentered + micTangent * swirl) / max(micScale, 0.01);
     float2 sendLocal = 0.5 + (sendCentered - sendTangent * swirl) / max(sendScale, 0.01);
-    float micMask = glassGlyphMask(atlasTex, micLocal, u.glyphSource0) * micReveal;
-    float sendMask = glassGlyphMask(atlasTex, sendLocal, u.glyphSource1) * sendReveal;
+    float micMask = glassGlyphMask(atlasTex, micLocal, source0) * micReveal;
+    float sendMask = glassGlyphMask(atlasTex, sendLocal, source1) * sendReveal;
     float atlasMask = max(micMask, sendMask);
     if (morphBlend <= 0.001) {
         return atlasMask;
@@ -112,20 +113,26 @@ inline float glassGlyphMorphMask(
     return saturate(max(atlasMask, morphMask * morphBlend));
 }
 
-inline float3 glassCompositeGlyph(
+inline float3 glassCompositeGlyphSlot(
     float3 baseColor,
     float2 uv,
     constant GlassUniforms& u,
     texture2d<float> glyphAtlasTex,
     texture2d<float> clearTex,
-    texture2d<float> blurTex
+    texture2d<float> blurTex,
+    float4 rect,
+    float4 effectRect,
+    float4 source0,
+    float4 source1,
+    float4 params,
+    float4 sendColorValue
 ) {
-    if (u.glyphActive < 0.5 || u.glyphOpacity <= 0.001) {
+    float opacity = params.y;
+    if (opacity <= 0.001) {
         return baseColor;
     }
 
-    float4 rect = u.glyphRect;
-    float4 boundsRect = u.glyphEffectRect;
+    float4 boundsRect = effectRect;
     if (boundsRect.z <= 0.0 || boundsRect.w <= 0.0) {
         boundsRect = rect;
     }
@@ -136,9 +143,9 @@ inline float3 glassCompositeGlyph(
     }
 
     float2 local = (uv - rect.xy) / rect.zw;
-    float progress = smoothstep(0.0, 1.0, saturate(u.glyphProgress));
+    float progress = smoothstep(0.0, 1.0, saturate(params.x));
     float2 centered = local - 0.5;
-    float activity = saturate(u.glyphActivity);
+    float activity = saturate(params.z);
 
     float transitionPulse = sin(progress * 3.14159265);
     float motionPulse = transitionPulse * (0.45 + activity * 0.55);
@@ -158,8 +165,8 @@ inline float3 glassCompositeGlyph(
     float2 micLocal = 0.5 + (micCentered + micTangent * swirl) / max(micScale, 0.01);
     float2 sendLocal = 0.5 + (sendCentered - sendTangent * swirl) / max(sendScale, 0.01);
 
-    float micMask = glassGlyphMask(glyphAtlasTex, micLocal, u.glyphSource0);
-    float sendMask = glassGlyphMask(glyphAtlasTex, sendLocal, u.glyphSource1);
+    float micMask = glassGlyphMask(glyphAtlasTex, micLocal, source0);
+    float sendMask = glassGlyphMask(glyphAtlasTex, sendLocal, source1);
 
     float micReveal = 1.0 - smoothstep(0.08, 0.62, progress);
     float sendReveal = smoothstep(0.38, 0.92, progress);
@@ -180,22 +187,22 @@ inline float3 glassCompositeGlyph(
         aa
     );
     float atlasAlpha = max(micAlpha, sendAlpha);
-    float alpha = saturate(max(atlasAlpha, morphMask * morphBlend) * u.glyphOpacity);
+    float alpha = saturate(max(atlasAlpha, morphMask * morphBlend) * opacity);
     if (alpha <= 0.001) {
         return baseColor;
     }
 
     float maskL = glassGlyphMorphMask(
-        glyphAtlasTex, local - float2(localStep.x, 0.0), u,
+        glyphAtlasTex, local - float2(localStep.x, 0.0), source0, source1,
         micReveal, sendReveal, micScale, sendScale, swirl, progress, morphBlend, aa);
     float maskR = glassGlyphMorphMask(
-        glyphAtlasTex, local + float2(localStep.x, 0.0), u,
+        glyphAtlasTex, local + float2(localStep.x, 0.0), source0, source1,
         micReveal, sendReveal, micScale, sendScale, swirl, progress, morphBlend, aa);
     float maskU = glassGlyphMorphMask(
-        glyphAtlasTex, local - float2(0.0, localStep.y), u,
+        glyphAtlasTex, local - float2(0.0, localStep.y), source0, source1,
         micReveal, sendReveal, micScale, sendScale, swirl, progress, morphBlend, aa);
     float maskD = glassGlyphMorphMask(
-        glyphAtlasTex, local + float2(0.0, localStep.y), u,
+        glyphAtlasTex, local + float2(0.0, localStep.y), source0, source1,
         micReveal, sendReveal, micScale, sendScale, swirl, progress, morphBlend, aa);
 
     float2 grad = float2(maskR - maskL, maskD - maskU);
@@ -206,7 +213,7 @@ inline float3 glassCompositeGlyph(
     float lightMaterial = appearance;
     float neutralWhite = mix(0.95, 0.12, lightMaterial);
     float3 neutralColor = float3(neutralWhite);
-    float3 sendColor = clamp(u.glyphSendColor.rgb, 0.0, 1.0);
+    float3 sendColor = clamp(sendColorValue.rgb, 0.0, 1.0);
     float sendInk = smoothstep(0.22, 0.88, progress);
     float3 glyphColor = mix(neutralColor, sendColor, sendInk);
 
@@ -267,6 +274,35 @@ inline float3 glassCompositeGlyph(
     float topSheen = alpha * smoothstep(0.82, 0.10, local.y) * 0.026 * (0.65 + motionPulse * 0.35);
     color += float3(1.0, 1.0, 1.02) * topSheen;
     return clamp(color, 0.0, 1.0);
+}
+
+inline float3 glassCompositeGlyph(
+    float3 baseColor,
+    float2 uv,
+    constant GlassUniforms& u,
+    texture2d<float> glyphAtlasTex,
+    texture2d<float> clearTex,
+    texture2d<float> blurTex
+) {
+    float3 color = baseColor;
+    int glyphCount = min(int(u.glyphMeta.x), 6);
+    for (int i = 0; i < glyphCount; i++) {
+        color = glassCompositeGlyphSlot(
+            color,
+            uv,
+            u,
+            glyphAtlasTex,
+            clearTex,
+            blurTex,
+            u.glyphRects[i],
+            u.glyphEffectRects[i],
+            u.glyphSource0s[i],
+            u.glyphSource1s[i],
+            u.glyphParams[i],
+            u.glyphSendColors[i]
+        );
+    }
+    return color;
 }
 
 #endif

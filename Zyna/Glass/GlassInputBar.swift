@@ -120,7 +120,7 @@ final class GlassInputBar: ASDisplayNode {
         // Input node as subnode (already ASDisplayNode)
         addSubnode(inputNode)
         inputNode.view.backgroundColor = .clear
-        inputNode.setMetalRightActionGlyphEnabled(true)
+        inputNode.setMetalActionGlyphsEnabled(true)
         inputNode.onRightGlyphStateChanged = { [weak self] state in
             self?.applyRightGlyphState(state)
         }
@@ -431,8 +431,6 @@ final class GlassInputBar: ASDisplayNode {
     private func buildGlyphData(
         glassFrame: CGRect, captureFrame: CGRect, scale: CGFloat
     ) -> GlassRenderer.GlyphData? {
-        guard rightGlyphVisible else { return nil }
-
         let cw = captureFrame.width
         let ch = captureFrame.height
         guard cw > 0, ch > 0 else { return nil }
@@ -440,47 +438,97 @@ final class GlassInputBar: ASDisplayNode {
         let hPad: CGFloat = 14
         let vPad: CGFloat = 6
         let btnSize: CGFloat = 48
-        let iconSize: CGFloat = 27
-        let renderSize: CGFloat = 35
 
         let contentY = glassFrame.origin.y + vPad
         let contentH = glassFrame.height - vPad * 2
-        let centerX = glassFrame.maxX - hPad - btnSize / 2
         let centerY = contentY + contentH - btnSize / 2
-        let iconFrame = CGRect(
-            x: centerX - iconSize / 2,
-            y: centerY - iconSize / 2,
-            width: iconSize,
-            height: iconSize
-        )
-        let effectFrame = CGRect(
-            x: centerX - renderSize / 2,
-            y: centerY - renderSize / 2,
-            width: renderSize,
-            height: renderSize
-        )
+        let attachCenterX = glassFrame.origin.x + hPad + btnSize / 2
+        let rightCenterX = glassFrame.maxX - hPad - btnSize / 2
 
         let sendColor = resolvedRGBA(rightGlyphSendColor)
         let activity = min(1, Float(abs(rightGlyphVelocity) * 0.035)
             + Float(abs(rightGlyphTarget - rightGlyphProgress) * 1.4))
 
-        return GlassRenderer.GlyphData(
-            rect: SIMD4<Float>(
-                Float((iconFrame.origin.x - captureFrame.origin.x) / cw),
-                Float((iconFrame.origin.y - captureFrame.origin.y) / ch),
-                Float(iconFrame.width / cw),
-                Float(iconFrame.height / ch)
-            ),
-            effectRect: SIMD4<Float>(
-                Float((effectFrame.origin.x - captureFrame.origin.x) / cw),
-                Float((effectFrame.origin.y - captureFrame.origin.y) / ch),
-                Float(effectFrame.width / cw),
-                Float(effectFrame.height / ch)
-            ),
-            progress: Float(rightGlyphProgress),
-            opacity: 1,
-            activity: activity,
-            sendColor: sendColor
+        var items: [GlassRenderer.GlyphItem] = []
+        if rightGlyphVisible {
+            items.append(
+                staticGlyph(
+                    source: .attach,
+                    center: CGPoint(x: attachCenterX, y: centerY),
+                    iconSize: 25,
+                    effectSize: 33,
+                    captureFrame: captureFrame
+                )
+            )
+            items.append(
+                GlassRenderer.GlyphItem(
+                    rect: normalizedRect(centeredAt: CGPoint(x: rightCenterX, y: centerY), size: 27, in: captureFrame),
+                    effectRect: normalizedRect(centeredAt: CGPoint(x: rightCenterX, y: centerY), size: 35, in: captureFrame),
+                    source0: .mic,
+                    source1: .send,
+                    progress: Float(rightGlyphProgress),
+                    opacity: 1,
+                    activity: activity,
+                    sendColor: sendColor
+                )
+            )
+        }
+
+        if scrollButtonProgress > 0.001 {
+            let scrollRadius = btnSize / 2
+            let scrollTargetY = glassFrame.origin.y - 12 - scrollRadius
+            let t = scrollButtonProgress
+            let radiusFactor = min(1, t * 4)
+            let scrollCenter = CGPoint(
+                x: rightCenterX,
+                y: centerY + (scrollTargetY - centerY) * t
+            )
+            let iconSize = max(1, 27 * radiusFactor)
+            let effectSize = max(1, 35 * radiusFactor)
+            items.append(
+                staticGlyph(
+                    source: .chevronDown,
+                    center: scrollCenter,
+                    iconSize: iconSize,
+                    effectSize: effectSize,
+                    opacity: Float(radiusFactor),
+                    captureFrame: captureFrame
+                )
+            )
+        }
+
+        guard !items.isEmpty else { return nil }
+        return GlassRenderer.GlyphData(items: items)
+    }
+
+    private func staticGlyph(
+        source: GlassGlyphKind,
+        center: CGPoint,
+        iconSize: CGFloat,
+        effectSize: CGFloat,
+        opacity: Float = 1,
+        captureFrame: CGRect
+    ) -> GlassRenderer.GlyphItem {
+        GlassRenderer.GlyphItem(
+            rect: normalizedRect(centeredAt: center, size: iconSize, in: captureFrame),
+            effectRect: normalizedRect(centeredAt: center, size: effectSize, in: captureFrame),
+            source: source,
+            opacity: opacity
+        )
+    }
+
+    private func normalizedRect(centeredAt center: CGPoint, size: CGFloat, in captureFrame: CGRect) -> SIMD4<Float> {
+        let frame = CGRect(
+            x: center.x - size / 2,
+            y: center.y - size / 2,
+            width: size,
+            height: size
+        )
+        return SIMD4<Float>(
+            Float((frame.origin.x - captureFrame.origin.x) / captureFrame.width),
+            Float((frame.origin.y - captureFrame.origin.y) / captureFrame.height),
+            Float(frame.width / captureFrame.width),
+            Float(frame.height / captureFrame.height)
         )
     }
 

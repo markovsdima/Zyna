@@ -73,15 +73,15 @@ struct GlassUniforms {
     float  splashSurfaceIntensity;
     float  splashSurfaceAge;
     // Optional glyph atlas composited into the glass material.
-    float  glyphActive;
-    float4 glyphRect;
-    float4 glyphEffectRect;
-    float4 glyphSource0;
-    float4 glyphSource1;
-    float  glyphProgress;
-    float  glyphOpacity;
-    float  glyphActivity;
-    float4 glyphSendColor;
+    // glyphMeta.x = active glyph slot count.
+    float4 glyphMeta;
+    float4 glyphRects[6];
+    float4 glyphEffectRects[6];
+    float4 glyphSource0s[6];
+    float4 glyphSource1s[6];
+    // x = progress, y = opacity, z = activity.
+    float4 glyphParams[6];
+    float4 glyphSendColors[6];
 };
 
 struct BackdropCompositeUniforms {

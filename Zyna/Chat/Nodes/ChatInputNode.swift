@@ -56,7 +56,7 @@ final class ChatInputNode: ASDisplayNode {
     private var lastAppliedGlassAppearance: CGFloat = -1
     private var lastAppliedGlassContrast: CGFloat = -1
     private var lastEmittedRightGlyphState: RightGlyphState?
-    private var metalRightActionGlyphEnabled = false
+    private var metalActionGlyphsEnabled = false
 
     var onSend: ((String, UIColor?) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
@@ -265,13 +265,14 @@ final class ChatInputNode: ASDisplayNode {
         overlayNode.onCancel = { [weak self] in self?.cancelRecording() }
     }
 
-    func setMetalRightActionGlyphEnabled(_ enabled: Bool) {
-        metalRightActionGlyphEnabled = enabled
-        applyRightActionImageVisibility()
+    func setMetalActionGlyphsEnabled(_ enabled: Bool) {
+        metalActionGlyphsEnabled = enabled
+        applyActionImageVisibility()
     }
 
-    private func applyRightActionImageVisibility() {
-        let alpha: CGFloat = metalRightActionGlyphEnabled ? 0 : 1
+    private func applyActionImageVisibility() {
+        let alpha: CGFloat = metalActionGlyphsEnabled ? 0 : 1
+        attachButtonNode.imageNode.alpha = alpha
         micButtonNode.imageNode.alpha = alpha
         sendButtonNode.imageNode.alpha = alpha
     }
@@ -791,7 +792,7 @@ final class ChatInputNode: ASDisplayNode {
             AppIcon.send.rendered(size: 24, weight: .semibold, color: color),
             for: .normal
         )
-        applyRightActionImageVisibility()
+        applyActionImageVisibility()
         emitRightGlyphStateIfNeeded()
     }
 

@@ -125,6 +125,9 @@ final class GlassNavBar: ASDisplayNode {
             self?.buildShapes(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
                 ?? GlassRenderer.ShapeParams()
         }
+        anchor.glyphProvider = { [weak self] glassFrame, captureFrame, scale in
+            self?.buildGlyphData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
+        }
         anchor.onAdaptiveMaterialChanged = { [weak self] material in
             self?.applyGlassAdaptiveMaterial(material)
         }
@@ -135,6 +138,8 @@ final class GlassNavBar: ASDisplayNode {
         addSubnode(backButtonNode)
         addSubnode(titleNode)
         addSubnode(callButtonNode)
+        backButtonNode.imageNode.alpha = 0
+        callButtonNode.imageNode.alpha = 0
         applyGlassAdaptiveMaterial(anchor.adaptiveMaterial)
 
         view.sendSubviewToBack(anchor)
@@ -250,6 +255,73 @@ final class GlassNavBar: ASDisplayNode {
 
         p.shapeCount = 3
         return p
+    }
+
+    private func buildGlyphData(
+        glassFrame: CGRect,
+        captureFrame: CGRect,
+        scale: CGFloat
+    ) -> GlassRenderer.GlyphData? {
+        let cw = captureFrame.width
+        let ch = captureFrame.height
+        guard cw > 0, ch > 0 else { return nil }
+
+        let cy = glassFrame.midY
+        let backCenter = CGPoint(
+            x: glassFrame.origin.x + btnPad + btnSize / 2,
+            y: cy
+        )
+        let callCenter = CGPoint(
+            x: glassFrame.maxX - btnPad - btnSize / 2,
+            y: cy
+        )
+
+        let items: [GlassRenderer.GlyphItem] = [
+            staticGlyph(
+                source: .chevronLeft,
+                center: backCenter,
+                iconSize: 20,
+                effectSize: 28,
+                captureFrame: captureFrame
+            ),
+            staticGlyph(
+                source: .phone,
+                center: callCenter,
+                iconSize: 20,
+                effectSize: 28,
+                captureFrame: captureFrame
+            )
+        ]
+        return GlassRenderer.GlyphData(items: items)
+    }
+
+    private func staticGlyph(
+        source: GlassGlyphKind,
+        center: CGPoint,
+        iconSize: CGFloat,
+        effectSize: CGFloat,
+        captureFrame: CGRect
+    ) -> GlassRenderer.GlyphItem {
+        GlassRenderer.GlyphItem(
+            rect: normalizedRect(centeredAt: center, size: iconSize, in: captureFrame),
+            effectRect: normalizedRect(centeredAt: center, size: effectSize, in: captureFrame),
+            source: source
+        )
+    }
+
+    private func normalizedRect(centeredAt center: CGPoint, size: CGFloat, in captureFrame: CGRect) -> SIMD4<Float> {
+        let frame = CGRect(
+            x: center.x - size / 2,
+            y: center.y - size / 2,
+            width: size,
+            height: size
+        )
+        return SIMD4<Float>(
+            Float((frame.origin.x - captureFrame.origin.x) / captureFrame.width),
+            Float((frame.origin.y - captureFrame.origin.y) / captureFrame.height),
+            Float(frame.width / captureFrame.width),
+            Float(frame.height / captureFrame.height)
+        )
     }
 
     private func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {

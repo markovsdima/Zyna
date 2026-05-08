@@ -109,9 +109,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     /// Scroll-to-live button lives at node.view level (not inside input bar)
     /// so its tap target works even when positioned above the bar's bounds.
-    /// The glass circle itself is rendered by GlassInputBar's shader
-    /// (shape3, metaball with mic). These are just the chevron + tap area.
+    /// The glass circle and chevron are rendered by GlassInputBar's shader
+    /// (shape3, metaball with mic). These are just geometry + tap area.
     private let scrollButtonIcon = UIImageView()
+    private var scrollButtonGlyphAlpha: CGFloat = 0
     private let scrollButtonTap = UIButton(type: .custom)
     private let scrollButtonBadgeBackground = UIView()
     private let scrollButtonBadgeLabel = UILabel()
@@ -679,7 +680,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         updateScrollButtonAccessibilityLabel()
         updateScrollButtonBadgeLayout(
             relativeTo: scrollButtonIcon.frame,
-            iconAlpha: scrollButtonIcon.alpha,
+            iconAlpha: scrollButtonGlyphAlpha,
             tapAlpha: scrollButtonTap.alpha
         )
     }
@@ -717,7 +718,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassInputBar.scrollButtonVisible = shouldShow
         updateScrollButtonBadgeLayout(
             relativeTo: scrollButtonIcon.frame,
-            iconAlpha: scrollButtonIcon.alpha,
+            iconAlpha: scrollButtonGlyphAlpha,
             tapAlpha: scrollButtonTap.alpha
         )
     }
@@ -1029,7 +1030,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassInputBar.onScrollButtonLayoutChanged = { [weak self] iconFrame, iconAlpha, tapFrame, tapAlpha in
             guard let self else { return }
             self.scrollButtonIcon.frame = iconFrame
-            self.scrollButtonIcon.alpha = iconAlpha
+            self.scrollButtonGlyphAlpha = iconAlpha
+            self.scrollButtonIcon.alpha = 0
             self.scrollButtonTap.frame = tapFrame
             self.scrollButtonTap.alpha = tapAlpha
             self.updateScrollButtonBadgeLayout(

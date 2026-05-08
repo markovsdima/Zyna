@@ -6,17 +6,35 @@
 import UIKit
 import Metal
 
+enum GlassGlyphKind: Int, CaseIterable {
+    case mic
+    case send
+    case attach
+    case chevronDown
+    case chevronLeft
+    case phone
+}
+
 struct GlassGlyphAtlas {
     let texture: MTLTexture
-    let micUV: SIMD4<Float>
-    let sendUV: SIMD4<Float>
+    private let sourceRects: [SIMD4<Float>]
+
+    init(texture: MTLTexture, sourceRects: [SIMD4<Float>]) {
+        self.texture = texture
+        self.sourceRects = sourceRects
+    }
+
+    func uv(for kind: GlassGlyphKind) -> SIMD4<Float> {
+        sourceRects[kind.rawValue]
+    }
 }
 
 enum GlassGlyphAtlasBuilder {
 
     static func makeAtlas(device: MTLDevice) -> GlassGlyphAtlas? {
         let tile = 128
-        let width = tile * 2
+        let glyphs = GlassGlyphKind.allCases
+        let width = tile * glyphs.count
         let height = tile
         let bytesPerPixel = 4
         let bytesPerRow = width * bytesPerPixel
@@ -37,8 +55,12 @@ enum GlassGlyphAtlasBuilder {
 
             UIGraphicsPushContext(context)
             context.clear(CGRect(x: 0, y: 0, width: width, height: height))
-            drawSymbolGlyph(systemName: "mic.fill", tileIndex: 0, tileSize: tile, pointSize: 92, weight: .medium)
-            drawRoundedSendGlyph(tileIndex: 1, tileSize: tile)
+            drawSymbolGlyph(.mic, systemName: "mic.fill", tileSize: tile, pointSize: 92, weight: .medium)
+            drawRoundedSendGlyph(.send, tileSize: tile)
+            drawAttachGlyph(.attach, tileSize: tile)
+            drawSymbolGlyph(.chevronDown, systemName: "chevron.down", tileSize: tile, pointSize: 76, weight: .semibold)
+            drawSymbolGlyph(.chevronLeft, systemName: "chevron.left", tileSize: tile, pointSize: 76, weight: .semibold)
+            drawSymbolGlyph(.phone, systemName: "phone.fill", tileSize: tile, pointSize: 78, weight: .medium)
             UIGraphicsPopContext()
             return true
         }
@@ -63,7 +85,7 @@ enum GlassGlyphAtlasBuilder {
         guard let texture = device.makeTexture(descriptor: desc) else {
             return nil
         }
-        texture.label = "Glass glyph atlas mic-send"
+        texture.label = "Glass glyph atlas"
         alpha.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else { return }
             texture.replace(
@@ -74,23 +96,24 @@ enum GlassGlyphAtlasBuilder {
             )
         }
 
-        return GlassGlyphAtlas(
-            texture: texture,
-            micUV: SIMD4<Float>(0.0, 0.0, 0.5, 1.0),
-            sendUV: SIMD4<Float>(0.5, 0.0, 0.5, 1.0)
-        )
+        let tileWidth = 1.0 / Float(glyphs.count)
+        let sourceRects = glyphs.map { kind in
+            SIMD4<Float>(Float(kind.rawValue) * tileWidth, 0.0, tileWidth, 1.0)
+        }
+
+        return GlassGlyphAtlas(texture: texture, sourceRects: sourceRects)
     }
 
     private static func drawSymbolGlyph(
+        _ kind: GlassGlyphKind,
         systemName: String,
-        tileIndex: Int,
         tileSize: Int,
         pointSize: CGFloat,
         weight: UIImage.SymbolWeight
     ) {
         let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
         guard let image = UIImage(systemName: systemName, withConfiguration: config) else { return }
-        let originX = CGFloat(tileIndex * tileSize)
+        let originX = CGFloat(kind.rawValue * tileSize)
         let tileRect = CGRect(x: originX, y: 0, width: CGFloat(tileSize), height: CGFloat(tileSize))
         let imageSize = image.size
         let drawRect = CGRect(
@@ -102,8 +125,8 @@ enum GlassGlyphAtlasBuilder {
         image.withTintColor(.white, renderingMode: .alwaysOriginal).draw(in: drawRect)
     }
 
-    private static func drawRoundedSendGlyph(tileIndex: Int, tileSize: Int) {
-        let originX = CGFloat(tileIndex * tileSize)
+    private static func drawRoundedSendGlyph(_ kind: GlassGlyphKind, tileSize: Int) {
+        let originX = CGFloat(kind.rawValue * tileSize)
         let tileRect = CGRect(x: originX, y: 0, width: CGFloat(tileSize), height: CGFloat(tileSize))
         let centerX = tileRect.midX
         let topY = tileRect.minY + 27
@@ -124,5 +147,50 @@ enum GlassGlyphAtlasBuilder {
         path.move(to: CGPoint(x: centerX, y: topY))
         path.addLine(to: CGPoint(x: centerX + halfHeadWidth, y: shoulderY))
         path.stroke()
+    }
+
+    private static func drawAttachGlyph(_ kind: GlassGlyphKind, tileSize: Int) {
+        let originX = CGFloat(kind.rawValue * tileSize)
+        let tileRect = CGRect(x: originX, y: 0, width: CGFloat(tileSize), height: CGFloat(tileSize))
+        let center = CGPoint(x: tileRect.midX, y: tileRect.midY)
+
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: center.x + x, y: center.y + y)
+        }
+
+        UIColor.white.setStroke()
+
+        let outer = UIBezierPath()
+        outer.lineWidth = 9.5
+        outer.lineCapStyle = .round
+        outer.lineJoinStyle = .round
+        outer.move(to: point(19, -42))
+        outer.addCurve(
+            to: point(-24, -24),
+            controlPoint1: point(4, -58),
+            controlPoint2: point(-24, -55)
+        )
+        outer.addLine(to: point(-24, 32))
+        outer.addCurve(
+            to: point(27, 27),
+            controlPoint1: point(-24, 60),
+            controlPoint2: point(27, 60)
+        )
+        outer.addLine(to: point(27, -21))
+        outer.stroke()
+
+        let inner = UIBezierPath()
+        inner.lineWidth = 7.5
+        inner.lineCapStyle = .round
+        inner.lineJoinStyle = .round
+        inner.move(to: point(11, -17.5))
+        inner.addLine(to: point(11, 28))
+        inner.addCurve(
+            to: point(-8, 28),
+            controlPoint1: point(11, 42),
+            controlPoint2: point(-8, 42)
+        )
+        inner.addLine(to: point(-8, -13.5))
+        inner.stroke()
     }
 }
