@@ -814,6 +814,9 @@
         }
       }
     },
+    "Close voice player" : {
+
+    },
     "Color" : {
       "localizations" : {
         "ru" : {
@@ -1473,6 +1476,9 @@
         }
       }
     },
+    "Loading" : {
+
+    },
     "Login" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1714,6 +1720,12 @@
         }
       }
     },
+    "Pause voice message" : {
+
+    },
+    "Paused" : {
+
+    },
     "Photos" : {
       "localizations" : {
         "ru" : {
@@ -1733,6 +1745,12 @@
           }
         }
       }
+    },
+    "Play voice message" : {
+
+    },
+    "Playback speed" : {
+
     },
     "Previous Theme" : {
       "localizations" : {
@@ -2037,6 +2055,9 @@
           }
         }
       }
+    },
+    "Seek voice message" : {
+
     },
     "Send" : {
 
@@ -2370,6 +2391,9 @@
           }
         }
       }
+    },
+    "Voice message" : {
+
     },
     "Waiting for Approval" : {
       "localizations" : {

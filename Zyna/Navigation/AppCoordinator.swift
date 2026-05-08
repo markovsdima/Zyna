@@ -152,6 +152,7 @@ final class AppCoordinator {
 
     private func performLogout() {
         PresenceTracker.shared.disconnect()
+        mainCoordinator?.stopVoicePlayback()
         Task { @MainActor in
             await MatrixClientService.shared.logout()
             self.mainCoordinator = nil

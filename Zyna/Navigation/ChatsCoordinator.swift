@@ -11,7 +11,12 @@ final class ChatsCoordinator {
 
     let navigationController = ZynaNavigationController()
     private let roomListService = ZynaRoomListService()
+    private let audioPlayer: AudioPlayerService
     private var cancellables = Set<AnyCancellable>()
+
+    init(audioPlayer: AudioPlayerService) {
+        self.audioPlayer = audioPlayer
+    }
 
     func start() {
         let vc = RoomsViewController()
@@ -107,7 +112,7 @@ final class ChatsCoordinator {
         guard navigationController.presentedViewController == nil else { return }
 
         let viewModel = ChatViewModel(room: room, mode: .preview)
-        let chatController = ChatViewController(viewModel: viewModel)
+        let chatController = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
         let resolvedBackgroundSourceView = navigationController.parent?.view
             ?? backgroundSourceView
             ?? navigationController.view
@@ -152,7 +157,7 @@ final class ChatsCoordinator {
 
     private func makeChatScreen(room: Room) -> (controller: ChatViewController, viewModel: ChatViewModel) {
         let viewModel = ChatViewModel(room: room)
-        let vc = ChatViewController(viewModel: viewModel)
+        let vc = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -184,7 +189,7 @@ final class ChatsCoordinator {
         else { return }
 
         let viewModel = ChatViewModel(room: room)
-        let vc = ChatViewController(viewModel: viewModel)
+        let vc = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }

@@ -8,6 +8,7 @@ import MatrixRustSDK
 
 final class MainCoordinator {
 
+    private let voicePlayback = AudioPlayerService()
     let tabBarController = ZynaTabBarController()
     var onLogout: (() -> Void)?
 
@@ -17,7 +18,7 @@ final class MainCoordinator {
     private var profileCoordinator: ProfileCoordinator?
 
     func start() {
-        let chats = ChatsCoordinator()
+        let chats = ChatsCoordinator(audioPlayer: voicePlayback)
         chats.start()
 
         let contacts = ContactsCoordinator()
@@ -49,6 +50,7 @@ final class MainCoordinator {
             items: items,
             selectedIndex: 2
         )
+        tabBarController.setVoicePlaybackService(voicePlayback)
 
         self.chatsCoordinator = chats
         self.contactsCoordinator = contacts
@@ -68,6 +70,10 @@ final class MainCoordinator {
     }
 
     // MARK: - Route entry points
+
+    func stopVoicePlayback() {
+        voicePlayback.stop()
+    }
 
     private func routeToChat(room: Room) {
         guard let chats = chatsCoordinator else { return }

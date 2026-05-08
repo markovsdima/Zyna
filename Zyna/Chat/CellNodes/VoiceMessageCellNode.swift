@@ -23,6 +23,7 @@ final class VoiceMessageCellNode: MessageCellNode {
     // MARK: - State
 
     private let mediaSource: MediaSource?
+    private let nowPlayingItem: AudioPlayerService.NowPlayingItem?
     private let totalDuration: TimeInterval
     private weak var audioPlayer: AudioPlayerService?
     private var cancellable: AnyCancellable?
@@ -35,20 +36,49 @@ final class VoiceMessageCellNode: MessageCellNode {
     private static let barCount = 40
     private static let bubbleInsets = UIEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
 
-    init(message: ChatMessage, audioPlayer: AudioPlayerService, isGroupChat: Bool = false) {
+    init(
+        message: ChatMessage,
+        audioPlayer: AudioPlayerService,
+        roomId: String,
+        roomName: String,
+        isGroupChat: Bool = false
+    ) {
         self.audioPlayer = audioPlayer
         self.replyEventId = message.replyInfo?.eventId
 
+        let voiceMediaSource: MediaSource?
+        let voiceDuration: TimeInterval
         let waveformData: [UInt16]
         if case .voice(let source, let duration, let waveform) = message.content {
-            self.mediaSource = source
-            self.totalDuration = duration
+            voiceMediaSource = source
+            voiceDuration = duration
             waveformData = waveform
         } else {
             assertionFailure("VoiceMessageCellNode requires voice content")
-            self.mediaSource = nil
-            self.totalDuration = 0
+            voiceMediaSource = nil
+            voiceDuration = 0
             waveformData = []
+        }
+        self.mediaSource = voiceMediaSource
+        self.totalDuration = voiceDuration
+
+        if let source = voiceMediaSource {
+            let senderTitle = message.isOutgoing
+                ? String(localized: "You")
+                : (message.senderDisplayName ?? message.senderId)
+            self.nowPlayingItem = .voice(
+                AudioPlayerService.NowPlayingVoice(
+                    sourceURL: source.url(),
+                    title: senderTitle,
+                    subtitle: roomName,
+                    duration: voiceDuration,
+                    waveform: Self.normalizedWaveform(waveformData),
+                    roomId: roomId,
+                    eventId: message.eventId
+                )
+            )
+        } else {
+            self.nowPlayingItem = nil
         }
 
         let usesAccentBubbleStyle = message.isOutgoing || message.zynaAttributes.color != nil
@@ -203,7 +233,7 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     @objc private func playTapped() {
         guard let mediaSource else { return }
-        audioPlayer?.togglePlayPause(source: mediaSource)
+        audioPlayer?.togglePlayPause(source: mediaSource, nowPlaying: nowPlayingItem)
     }
 
     override func accessibilityActivate() -> Bool {
@@ -247,5 +277,10 @@ final class VoiceMessageCellNode: MessageCellNode {
             result.append(UInt16(min(value, 1024)))
         }
         return result
+    }
+
+    private static func normalizedWaveform(_ waveform: [UInt16]) -> [Float] {
+        guard !waveform.isEmpty else { return [] }
+        return waveform.map { min(Float($0) / 1024, 1) }
     }
 }

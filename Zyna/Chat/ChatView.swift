@@ -147,7 +147,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private lazy var glassComparison = GlassComparisonView()
     private lazy var glassTuning = GlassTuningView()
     private var previousInputCoveredHeight: CGFloat?
-    private let audioPlayer = AudioPlayerService()
+    private let audioPlayer: AudioPlayerService
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactionBatches: [ChatViewModel.DetectedRedactionBatch] = []
     private var isTeleporting = false
@@ -180,8 +180,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     // MARK: - Init
 
-    init(viewModel: ChatViewModel) {
+    init(viewModel: ChatViewModel, audioPlayer: AudioPlayerService) {
         self.viewModel = viewModel
+        self.audioPlayer = audioPlayer
         super.init(node: ChatNode())
         hidesBottomBarWhenPushed = !viewModel.mode.isPreview
     }
@@ -418,7 +419,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func cleanupViewModelIfNeeded() {
         guard !didCleanupViewModel else { return }
         didCleanupViewModel = true
-        audioPlayer.stop()
         viewModel.cleanup()
     }
 
@@ -1118,6 +1118,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         // and that block should use the already-resolved view instead of touching
         // `self.node` / the live node hierarchy again.
         let gradientSource = self.node.bubbleGradientSource(for: renderedMessage)
+        let roomId = viewModel.roomIdentifier
+        let roomName = viewModel.roomName
         return { [weak self] in
 
             // Call events use a standalone centered cell, not a MessageCellNode
@@ -1164,7 +1166,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             let cellNode: MessageCellNode
             switch renderedMessage.content {
             case .voice:
-                cellNode = VoiceMessageCellNode(message: renderedMessage, audioPlayer: audioPlayer, isGroupChat: isGroup)
+                cellNode = VoiceMessageCellNode(
+                    message: renderedMessage,
+                    audioPlayer: audioPlayer,
+                    roomId: roomId,
+                    roomName: roomName,
+                    isGroupChat: isGroup
+                )
             case .image:
                 let imageCell = ImageMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {

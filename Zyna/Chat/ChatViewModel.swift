@@ -159,6 +159,7 @@ final class ChatViewModel {
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
     var hasOlderInDB: Bool { window.hasOlderInDB }
+    var roomIdentifier: String { roomId }
 
     init(room: Room, mode: ChatPresentationMode = .normal) {
         let roomId = room.id()
