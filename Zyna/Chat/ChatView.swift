@@ -44,6 +44,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let maxCount = 99
     }
 
+    private enum ReplySwipeIndicator {
+        static let size: CGFloat = 30
+        static let hiddenTrailingOverflow: CGFloat = 16
+        static let visibleTrailingInset: CGFloat = 30
+        static let minScale: CGFloat = 0.62
+        static let maxScale: CGFloat = 1
+        static let verticalMargin: CGFloat = 14
+    }
+
     private enum ReadReceipts {
         static let visibilityThreshold: CGFloat = 0.6
         static let baselineLiveTolerance: CGFloat = 24
@@ -116,6 +125,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let scrollButtonTap = UIButton(type: .custom)
     private let scrollButtonBadgeBackground = UIView()
     private let scrollButtonBadgeLabel = UILabel()
+    private let replySwipeIndicatorView = UIImageView()
     private let dateHeaderOverlayManager = DateHeaderOverlayManager()
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
@@ -158,6 +168,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var unseenIncomingMessageCount = 0
     private var pendingPostSendPinToLive = false
     private var isEditingInputActive = false
+    private var isReplySwipeInteractionActive = false
     private var redactionAnimationsArmed = false
     private var redactionAnimationArmWork: DispatchWorkItem?
     private var didCleanupViewModel = false
@@ -310,6 +321,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         if !isPreviewMode {
             node.view.addSubview(dateHeaderOverlayManager.containerView)
+            setupReplySwipeIndicator()
         }
 
         if Self.showGlassComparison && !isPreviewMode {
@@ -1225,6 +1237,26 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
 
+        let suppressSyntheticActions = message.isSyntheticOutgoingEnvelope || message.isSyntheticIncomingAssembly
+        if suppressSyntheticActions {
+            cellNode.onReplySwipeActivated = nil
+            cellNode.onReplySwipeChanged = nil
+            cellNode.onReplySwipeEnded = nil
+        } else {
+            cellNode.onReplySwipeActivated = { [weak self] in
+                self?.viewModel.setReplyTarget(message)
+            }
+            cellNode.onReplySwipeChanged = { [weak self] progress, anchorPointInWindow in
+                self?.updateReplySwipeIndicator(
+                    progress: progress,
+                    anchorPointInWindow: anchorPointInWindow
+                )
+            }
+            cellNode.onReplySwipeEnded = { [weak self] in
+                self?.hideReplySwipeIndicator()
+            }
+        }
+
         if message.isSyntheticIncomingAssembly {
             cellNode.onContextMenuActivated = nil
             cellNode.accessibilityActionsProvider = { [] }
@@ -1274,6 +1306,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         cellNode.onReactionTapped = nil
         cellNode.onSenderTapped = nil
         cellNode.onReplyHeaderTapped = nil
+        cellNode.onReplySwipeActivated = nil
+        cellNode.onReplySwipeChanged = nil
+        cellNode.onReplySwipeEnded = nil
         cellNode.accessibilityActionsProvider = { [] }
 
         (cellNode as? PhotoGroupMessageCellNode)?.onPhotoTapped = nil
@@ -1283,6 +1318,89 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         if Thread.isMainThread {
             cellNode.refreshAccessibilityForwarding()
+        }
+    }
+
+    private func setupReplySwipeIndicator() {
+        let config = UIImage.SymbolConfiguration(pointSize: 21, weight: .semibold)
+        replySwipeIndicatorView.image = UIImage(
+            systemName: "arrowshape.turn.up.left",
+            withConfiguration: config
+        )?.withRenderingMode(.alwaysTemplate)
+        replySwipeIndicatorView.tintColor = ChatBubbleThemeStore.shared.selectedTheme.actionAccentColor
+        replySwipeIndicatorView.contentMode = .center
+        replySwipeIndicatorView.isUserInteractionEnabled = false
+        replySwipeIndicatorView.alpha = 0
+        replySwipeIndicatorView.bounds = CGRect(
+            x: 0,
+            y: 0,
+            width: ReplySwipeIndicator.size,
+            height: ReplySwipeIndicator.size
+        )
+        replySwipeIndicatorView.center = CGPoint(
+            x: node.view.bounds.width + ReplySwipeIndicator.hiddenTrailingOverflow,
+            y: node.view.bounds.midY
+        )
+        replySwipeIndicatorView.transform = CGAffineTransform(
+            scaleX: ReplySwipeIndicator.minScale,
+            y: ReplySwipeIndicator.minScale
+        )
+        node.view.addSubview(replySwipeIndicatorView)
+    }
+
+    private func updateReplySwipeIndicator(progress: CGFloat, anchorPointInWindow: CGPoint) {
+        guard !isPreviewMode else { return }
+        if !isReplySwipeInteractionActive {
+            isReplySwipeInteractionActive = true
+            lockInteraction("replySwipe")
+        }
+
+        let clampedProgress = max(0, min(1, progress))
+        let easedProgress = clampedProgress * (2 - clampedProgress)
+        let localAnchor = node.view.convert(anchorPointInWindow, from: nil)
+
+        let topY = glassNavBar.coveredHeight + ReplySwipeIndicator.verticalMargin
+        let bottomY = node.view.bounds.height
+            - glassInputBar.coveredHeight
+            - ReplySwipeIndicator.verticalMargin
+        let clampedY = min(max(localAnchor.y, topY), max(topY, bottomY))
+        let hiddenCenterX = node.view.bounds.width + ReplySwipeIndicator.hiddenTrailingOverflow
+        let visibleCenterX = node.view.bounds.width - ReplySwipeIndicator.visibleTrailingInset
+        let centerX = hiddenCenterX + (visibleCenterX - hiddenCenterX) * easedProgress
+        let scale = ReplySwipeIndicator.minScale
+            + (ReplySwipeIndicator.maxScale - ReplySwipeIndicator.minScale) * easedProgress
+
+        replySwipeIndicatorView.layer.removeAllAnimations()
+        UIView.performWithoutAnimation {
+            self.replySwipeIndicatorView.alpha = clampedProgress
+            self.replySwipeIndicatorView.center = CGPoint(x: centerX, y: clampedY)
+            self.replySwipeIndicatorView.transform = CGAffineTransform(scaleX: scale, y: scale)
+        }
+    }
+
+    private func hideReplySwipeIndicator() {
+        guard !isPreviewMode else { return }
+        if isReplySwipeInteractionActive {
+            isReplySwipeInteractionActive = false
+            unlockInteraction("replySwipe")
+        }
+
+        let currentY = replySwipeIndicatorView.center.y
+        let hiddenCenterX = node.view.bounds.width + ReplySwipeIndicator.hiddenTrailingOverflow
+        UIView.animate(
+            withDuration: 0.16,
+            delay: 0,
+            options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseOut]
+        ) {
+            self.replySwipeIndicatorView.alpha = 0
+            self.replySwipeIndicatorView.center = CGPoint(
+                x: hiddenCenterX,
+                y: currentY
+            )
+            self.replySwipeIndicatorView.transform = CGAffineTransform(
+                scaleX: ReplySwipeIndicator.minScale,
+                y: ReplySwipeIndicator.minScale
+            )
         }
     }
 
