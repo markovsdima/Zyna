@@ -623,6 +623,8 @@ final class GlassService {
 
         // Render when capturing OR waves still decaying OR bars active
         // OR adaptive material is still easing toward a threshold-selected state.
+        // Preview presence only expands the capture frame; it must not keep an
+        // idle bar on the display link after the reveal animation settles.
         let hasActiveBars = registrations.values.contains { $0.anchor?.hasBars == true }
         let hasAdaptiveTransition = registrations.values.contains { $0.adaptiveState.isAnimating }
         let shouldRender = shouldCapture || needsRender || inRenderBurst || (hasLiquidPool && waveEnergy > 0.001)
@@ -684,6 +686,7 @@ final class GlassService {
                 // Bars mode: extend upward to capture environment for chrome reflections
                 let anchorHasBars = anchor.hasBars
                 let anchorHasScrollButton = anchor.hasScrollButton
+                let anchorHasPreview = anchor.hasPreview
                 let isInputCapture = anchor.debugName == "input"
                 let isNavCapture = anchor.debugName == "nav"
                 let topPadding: CGFloat
@@ -695,6 +698,9 @@ final class GlassService {
                     topPadding = 100
                     bottomPadding = 24
                 } else if anchorHasScrollButton {
+                    topPadding = 72
+                    bottomPadding = 12
+                } else if anchorHasPreview {
                     topPadding = 72
                     bottomPadding = 12
                 } else if isNavCapture {
@@ -790,6 +796,7 @@ final class GlassService {
                 // Chrome bars
                 let barData = anchor.barProvider?(glassFrame, captureFrame, scale)
                 let glyphData = anchor.glyphProvider?(glassFrame, captureFrame, scale)
+                let previewData = anchor.previewProvider?(glassFrame, captureFrame, scale)
 
                 // Cache for render-only frames
                 registrations[id]?.lastTexture = texture
@@ -824,6 +831,7 @@ final class GlassService {
                             time: waveTime,
                             barData: barData,
                             glyphData: glyphData,
+                            previewData: previewData,
                             backdropOverlay: backdropOverlay(
                                 for: captureFrame,
                                 in: activeBackdropOverlays
@@ -854,6 +862,7 @@ final class GlassService {
                     sourceWindow: sourceWindow
                 )
                 let glyphData = anchor.glyphProvider?(glassFrame, captureFrame, scale)
+                let previewData = anchor.previewProvider?(glassFrame, captureFrame, scale)
                 let key = ObjectIdentifier(renderHostContainer)
                 if renderItemsByContainer[key] == nil {
                     renderItemsByContainer[key] = (
@@ -875,6 +884,7 @@ final class GlassService {
                             time: waveTime,
                             barData: anchor.hasBars ? reg.lastBarData : nil,
                             glyphData: glyphData,
+                            previewData: previewData,
                             backdropOverlay: backdropOverlay(
                                 for: captureFrame,
                                 in: activeBackdropOverlays

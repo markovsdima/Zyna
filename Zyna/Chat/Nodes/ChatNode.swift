@@ -15,7 +15,7 @@ final class ChatNode: ASDisplayNode {
     /// accessibility tree so VoiceOver hit-tests the bars before the
     /// table cells visually behind them (the bars are transparent glass).
     weak var glassNavBar: ASDisplayNode?
-    weak var glassInputBar: ASDisplayNode?
+    weak var glassInputBar: GlassInputBar?
 
     /// Set by ChatViewController. The scroll-to-live floating button lives
     /// at this node's view level (not inside the input bar) so its tap
@@ -78,8 +78,16 @@ final class ChatNode: ASDisplayNode {
             if let nav = glassNavBar?.view, nav.superview === view {
                 elements.append(nav)
             }
-            if let input = glassInputBar?.view, input.superview === view {
-                elements.append(input)
+            if let inputBar = glassInputBar,
+               inputBar.isNodeLoaded,
+               inputBar.view.superview === view,
+               !inputBar.isHidden {
+                let inputElements = inputBar.accessibilityElementsInOrder
+                if inputElements.isEmpty {
+                    elements.append(inputBar.view)
+                } else {
+                    elements.append(contentsOf: inputElements)
+                }
             }
             if let tap = scrollButtonTap, tap.superview === view, tap.alpha > 0 {
                 elements.append(tap)

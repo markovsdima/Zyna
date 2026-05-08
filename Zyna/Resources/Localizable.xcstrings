@@ -685,6 +685,26 @@
         }
       }
     },
+    "Cancel editing" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить редактирование"
+          }
+        }
+      }
+    },
+    "Cancel forwarding" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить пересылку"
+          }
+        }
+      }
+    },
     "Cancel Invite" : {
       "localizations" : {
         "ru" : {
@@ -701,6 +721,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Отменить приглашение?"
+          }
+        }
+      }
+    },
+    "Cancel reply" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить ответ"
           }
         }
       }
@@ -773,6 +803,16 @@
     },
     "Close" : {
 
+    },
+    "Close preview" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрыть плашку"
+          }
+        }
+      }
     },
     "Color" : {
       "localizations" : {
@@ -959,6 +999,16 @@
     },
     "Discard" : {
 
+    },
+    "Dismisses this preview" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убирает эту плашку"
+          }
+        }
+      }
     },
     "Done" : {
       "localizations" : {

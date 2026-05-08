@@ -82,6 +82,12 @@ struct GlassUniforms {
     // x = progress, y = opacity, z = activity.
     float4 glyphParams[6];
     float4 glyphSendColors[6];
+    // Reply/forward/edit preview card.
+    // previewMeta: x=progress, y=mode, z=text opacity, w=corner radius.
+    float4 previewRect;
+    float4 previewTextRect;
+    float4 previewMeta;
+    float4 previewAccentColor;
 };
 
 struct BackdropCompositeUniforms {
@@ -276,6 +282,102 @@ inline float4 glassSplashRawSample(texture2d<float> blobTex, float2 uv) {
 
 #include "GlassGlyphShader.h"
 
+inline float glassPreviewTextMask(texture2d<float> textTex, float2 local) {
+    if (local.x < 0.0 || local.y < 0.0 || local.x > 1.0 || local.y > 1.0) {
+        return 0.0;
+    }
+    float2 textureLocal = float2(local.x, 1.0 - local.y);
+    return textTex.sample(samp, textureLocal).r;
+}
+
+inline float glassPreviewTextReveal(float2 local, float progress, float mode) {
+    float q = smoothstep(0.28, 1.0, saturate(progress));
+    if (mode > 2.5) {
+        float centerWave = q * 1.38 - abs(local.x - 0.50) * 1.05 - local.y * 0.05;
+        return smoothstep(-0.10, 0.18, centerWave);
+    }
+    if (mode > 1.5) {
+        float diagonalWave = q * 1.34 - local.x + local.y * 0.22;
+        return smoothstep(-0.14, 0.20, diagonalWave);
+    }
+    float relayWave = q * 1.30 - local.x - local.y * 0.06;
+    return smoothstep(-0.12, 0.18, relayWave);
+}
+
+inline float3 glassCompositePreviewText(
+    float3 baseColor,
+    float2 uv,
+    constant GlassUniforms& u,
+    texture2d<float> previewTextTex,
+    texture2d<float> clearTex,
+    texture2d<float> blurTex
+) {
+    float progress = saturate(u.previewMeta.x);
+    float opacity = saturate(u.previewMeta.z);
+    float4 rect = u.previewTextRect;
+    if (progress <= 0.001 || opacity <= 0.001 || rect.z <= 0.0 || rect.w <= 0.0 ||
+        uv.x < rect.x || uv.y < rect.y || uv.x > rect.x + rect.z || uv.y > rect.y + rect.w) {
+        return baseColor;
+    }
+
+    float2 local = (uv - rect.xy) / rect.zw;
+    float reveal = glassPreviewTextReveal(local, progress, u.previewMeta.y);
+    float alpha = glassPreviewTextMask(previewTextTex, local) * opacity * reveal;
+    if (alpha <= 0.001) {
+        return baseColor;
+    }
+
+    float2 screenStep = float2(1.0) / max(rect.zw * u.resolution, float2(24.0));
+    float2 localStep = max(float2(1.0 / 640.0), screenStep * 1.15);
+    float maskL = glassPreviewTextMask(previewTextTex, local - float2(localStep.x, 0.0));
+    float maskR = glassPreviewTextMask(previewTextTex, local + float2(localStep.x, 0.0));
+    float maskU = glassPreviewTextMask(previewTextTex, local - float2(0.0, localStep.y));
+    float maskD = glassPreviewTextMask(previewTextTex, local + float2(0.0, localStep.y));
+    float2 grad = float2(maskR - maskL, maskD - maskU);
+    float edge = saturate(length(grad) * 2.15);
+    float2 normal = length(grad) > 1e-5 ? normalize(grad) : float2(0.0, -1.0);
+
+    float appearance = saturate(u.adaptiveAppearance);
+    float titleBand = 1.0 - smoothstep(0.46, 0.61, local.y);
+    float closeGlyph = smoothstep(0.82, 0.90, local.x);
+    float neutralInk = mix(0.975, 0.105, appearance);
+    float3 accent = clamp(u.previewAccentColor.rgb, 0.0, 1.0);
+    float3 textColor = mix(
+        float3(neutralInk + titleBand * mix(0.020, -0.016, appearance)),
+        accent,
+        (0.030 + closeGlyph * 0.035) * (1.0 - appearance * 0.72)
+    );
+
+    float2 lensOffset = normal * alpha * (0.0005 + edge * 0.0014);
+    float2 uvR = clamp(uv - lensOffset * 1.28, 0.0, 1.0);
+    float2 uvG = clamp(uv - lensOffset, 0.0, 1.0);
+    float2 uvB = clamp(uv - lensOffset * 0.72, 0.0, 1.0);
+    float3 lens = float3(
+        decodeHDR(blurTex.sample(samp, uvR).rgb, u.isHDR).r,
+        decodeHDR(blurTex.sample(samp, uvG).rgb, u.isHDR).g,
+        decodeHDR(blurTex.sample(samp, uvB).rgb, u.isHDR).b
+    );
+    float3 clearLens = decodeHDR(clearTex.sample(samp, clamp(uv - lensOffset * 1.7, 0.0, 1.0)).rgb, u.isHDR);
+    lens = mix(lens, clearLens, saturate(edge * 0.24 + alpha * 0.07));
+
+    float3 color = mix(baseColor, lens, alpha * (0.045 + edge * 0.070));
+    float2 lightDir = normalize(float2(-0.42, -0.82));
+    float edgeLight = pow(saturate(dot(normal, lightDir)), 1.45) * edge;
+    float edgeShadow = pow(saturate(dot(normal, -lightDir)), 1.20) * edge;
+
+    color *= 1.0 - alpha * mix(0.010, 0.026, appearance);
+    color *= 1.0 - edgeShadow * mix(0.040, 0.080, appearance);
+    color = mix(color, textColor, alpha * mix(0.76, 0.72, appearance));
+    float3 textGlint = mix(float3(1.0), accent, 0.10);
+    color += textGlint * edgeLight * (0.026 + alpha * 0.014) * (1.0 - appearance * 0.78);
+    color += accent * edge * alpha * 0.012 * (1.0 - appearance * 0.45);
+
+    float caustic = edge * alpha
+        * (0.55 + glassSplashNoise(local * 24.0 + float2(u.time * 0.40, u.time * 0.27)) * 0.45);
+    color += mix(float3(1.0), accent, 0.45) * caustic * 0.010;
+    return clamp(color, 0.0, 1.0);
+}
+
 inline float glassSplashHeightFromEnergy(float energy) {
     return 1.0 - exp(-max(energy, 0.0) * 0.64);
 }
@@ -459,7 +561,8 @@ fragment float4 glassFragment(
     texture2d<float> clearTex [[texture(0)]],
     texture2d<float> blurTex  [[texture(1)]],
     texture2d<float> splashBlobTex [[texture(2)]],
-    texture2d<float> glyphAtlasTex [[texture(3)]]
+    texture2d<float> glyphAtlasTex [[texture(3)]],
+    texture2d<float> previewTextTex [[texture(4)]]
 ) {
     float2 uv = in.uv;
     float aspect = u.aspect;
@@ -513,6 +616,13 @@ fragment float4 glassFragment(
         sdf3 = sdCircle(p3, s3radius);
     }
 
+    // Reply/forward/edit preview card. This is only an internal material zone:
+    // the input-field glass itself grows via shape0.
+    float previewProgress = saturate(u.previewMeta.x);
+    float previewMode = u.previewMeta.y;
+    float previewCornerR = u.previewMeta.w;
+    bool previewActive = previewProgress > 0.001 && u.previewRect.z > 0.0 && u.previewRect.w > 0.0;
+
     // Chrome
     float chromeSdf = chromeMetaballField(p, aspect, u);
 
@@ -530,7 +640,7 @@ fragment float4 glassFragment(
     //  Masks
     // ────────────────────────────────────────────────────────────────
 
-    float scaleY = s0size.y;
+    float scaleY = max(s0size.y, u.previewRect.w);
     float glassMask = 1.0 - smoothstep(-0.005 * scaleY, 0.003 * scaleY, sdf);
     float chromeMask = 1.0 - smoothstep(-0.002, 0.002, chromeSdf);
 
@@ -558,7 +668,6 @@ fragment float4 glassFragment(
 
         float2 edgeNormal;     // points outward from shape center
         float  localSdf;
-
         if (sdf3 < sdf0 && sdf3 < sdf1 && sdf3 < sdf2) {
             localSdf = sdf3;
             edgeNormal = length(p3) > 1e-5 ? normalize(p3) : float2(0.0);
@@ -745,6 +854,149 @@ fragment float4 glassFragment(
                                BORDER_COLOR_MIX);
         col += borderCol * borderMask * bBright;
 
+        // ── 10b. Internal preview material ──
+
+        if (previewActive) {
+            float2 previewLocal = (uv - u.previewRect.xy) / u.previewRect.zw;
+            float q = smoothstep(0.0, 1.0, previewProgress);
+            float3 accent = clamp(u.previewAccentColor.rgb, 0.0, 1.0);
+            float2 previewSize = float2(u.previewRect.z * aspect, u.previewRect.w);
+            float2 previewP = float2((previewLocal.x - 0.5) * previewSize.x,
+                                     (previewLocal.y - 0.5) * previewSize.y);
+            float2 previewHalf = max(previewSize * 0.5 - 0.001, float2(0.001));
+            float previewRadius = min(previewCornerR, previewSize.y * 0.5);
+            float previewSdf = sdRoundedRect(
+                previewP,
+                previewHalf,
+                previewRadius
+            );
+
+            float previewEps = max(min(previewSize.x, previewSize.y) * 0.006, 0.0007);
+            float sdfXR = sdRoundedRect(previewP + float2(previewEps, 0.0), previewHalf, previewRadius);
+            float sdfXL = sdRoundedRect(previewP - float2(previewEps, 0.0), previewHalf, previewRadius);
+            float sdfYD = sdRoundedRect(previewP + float2(0.0, previewEps), previewHalf, previewRadius);
+            float sdfYU = sdRoundedRect(previewP - float2(0.0, previewEps), previewHalf, previewRadius);
+            float2 previewGrad = float2(sdfXR - sdfXL, sdfYD - sdfYU);
+            float2 previewNormal = length(previewGrad) > 1e-5
+                ? normalize(previewGrad)
+                : float2(-1.0, 0.0);
+
+            float insideSoft = 1.0 - smoothstep(-0.0015, 0.0035, previewSdf);
+            float materialEnvelope = 1.0 - smoothstep(0.018, 0.070, previewSdf);
+            float edgeWidth = max(previewSize.y * 0.034, 0.0028);
+            float edgeBand = exp(-(previewSdf * previewSdf) / max(edgeWidth * edgeWidth, 1e-6))
+                           * materialEnvelope;
+            float innerDepth = max(-previewSdf, 0.0);
+            float recessWidth = max(previewSize.y * 0.20, 0.010);
+            float innerWall = insideSoft * (1.0 - smoothstep(0.0, recessWidth, innerDepth));
+            float innerFloor = insideSoft * smoothstep(recessWidth * 0.48, recessWidth * 1.30, innerDepth);
+            float floorCenter = smoothstep(0.16, 0.44, previewLocal.x)
+                              * (1.0 - smoothstep(0.76, 0.98, previewLocal.x))
+                              * smoothstep(0.10, 0.30, previewLocal.y)
+                              * (1.0 - smoothstep(0.72, 0.92, previewLocal.y));
+
+            float y = saturate(previewLocal.y);
+            float heatTexture = glassSplashNoise(float2(y * 11.0 + previewMode * 4.0, 2.3));
+            float fiberX = 0.043;
+            float fiberDist = abs((previewLocal.x - fiberX) * previewSize.x);
+            float rodGate = smoothstep(0.075, 0.16, previewLocal.y)
+                          * (1.0 - smoothstep(0.84, 0.94, previewLocal.y));
+            float glowGate = smoothstep(-0.03, 0.11, previewLocal.y)
+                           * (1.0 - smoothstep(0.89, 1.04, previewLocal.y));
+
+            float wave = q * 1.45 - previewLocal.x * 0.48 - abs(previewLocal.y - 0.5) * 0.10;
+            float sweepFront = smoothstep(-0.10, 0.12, wave) * (1.0 - smoothstep(0.12, 0.42, wave));
+            float neonReveal = smoothstep(0.05, 0.58, q);
+            float heatPulse = 0.96 + 0.04 * sin(y * 26.0 + heatTexture * 4.0 + q * 2.0);
+            float lampPower = neonReveal * heatPulse * (1.0 + sweepFront * 0.18);
+
+            float coreW = max(previewSize.y * 0.015, 0.0012);
+            float bodyW = max(previewSize.y * 0.046, 0.0036);
+            float nearBloomW = max(previewSize.y * 0.18, 0.015);
+            float fiberCore = exp(-(fiberDist * fiberDist) / max(coreW * coreW, 1e-6))
+                            * rodGate * insideSoft * lampPower;
+            float fiberBody = exp(-(fiberDist * fiberDist) / max(bodyW * bodyW, 1e-6))
+                            * rodGate * materialEnvelope * lampPower;
+            float fiberBloom = exp(-(fiberDist * fiberDist) / max(nearBloomW * nearBloomW, 1e-6))
+                             * glowGate * materialEnvelope * lampPower
+                             * (0.88 + heatTexture * 0.12);
+
+            float pathFromFiber = max(previewLocal.x - fiberX, 0.0);
+            float longThrow = exp(-pathFromFiber * 1.32);
+            float rimTravel = 0.18 + longThrow * 0.82;
+            float glassFill = insideSoft * glowGate * lampPower
+                            * rimTravel
+                            * (0.92 + heatTexture * 0.08);
+
+            float2 sourceP = float2((fiberX - 0.5) * previewSize.x,
+                                    (clamp(previewLocal.y, 0.12, 0.88) - 0.5) * previewSize.y);
+            float2 sourceVector = previewP - sourceP;
+            float sourceLen = max(length(sourceVector), previewSize.y * 0.08);
+            float2 sourceDir = sourceVector / sourceLen;
+            float sourceFacing = saturate(dot(previewNormal, sourceDir));
+            float distanceFalloff = 1.0 / (1.0 + pow(sourceLen / max(previewSize.y * 4.0, 0.001), 1.35));
+            float farEdgeFloor = smoothstep(0.70, 0.98, previewLocal.x) * 0.18;
+            float edgeTransport = max(distanceFalloff * rimTravel, farEdgeFloor);
+            float leftSide = 1.0 - smoothstep(0.12, 0.42, previewLocal.x);
+            float rightSide = smoothstep(0.64, 0.98, previewLocal.x);
+            float nearEdgeWidth = max(previewSize.y * 0.024, 0.0022);
+            float farEdgeWidth = max(previewSize.y * 0.072, 0.0060);
+            float nearEdgeBand = exp(-(previewSdf * previewSdf) / max(nearEdgeWidth * nearEdgeWidth, 1e-6))
+                               * materialEnvelope * (0.45 + leftSide * 0.55);
+            float farEdgeBand = exp(-(previewSdf * previewSdf) / max(farEdgeWidth * farEdgeWidth, 1e-6))
+                              * materialEnvelope * rightSide;
+            float nearEdgeCatch = nearEdgeBand * lampPower * edgeTransport
+                                * (0.58 + sourceFacing * 0.74);
+            float farEdgeCatch = farEdgeBand * lampPower * rimTravel
+                               * (0.18 + sourceFacing * 0.28);
+            float edgeCatch = edgeBand * lampPower * edgeTransport
+                            * (0.22 + sourceFacing * 0.34)
+                            + nearEdgeCatch
+                            + farEdgeCatch;
+            float edgeSpec = pow(sourceFacing, 2.4) * nearEdgeBand * lampPower
+                           * (0.42 + edgeTransport * 0.78)
+                           + farEdgeBand * lampPower * rimTravel * 0.16;
+            float rightEdgeCatch = farEdgeBand * lampPower
+                                 * smoothstep(0.76, 0.98, previewLocal.x)
+                                 * glowGate * rimTravel * 0.28;
+            float topBottomCatch = (nearEdgeBand * (0.50 + leftSide * 0.50) + farEdgeBand * 0.42) * lampPower
+                                 * (smoothstep(0.04, 0.14, previewLocal.y)
+                                    * (1.0 - smoothstep(0.18, 0.34, previewLocal.y))
+                                    + smoothstep(0.66, 0.82, previewLocal.y)
+                                    * (1.0 - smoothstep(0.86, 0.96, previewLocal.y)))
+                                 * (0.22 + longThrow * 0.86);
+            float perimeterGlow = innerWall * lampPower
+                                * (0.24 + edgeTransport * 0.60 + nearEdgeCatch * 0.18 + farEdgeCatch * 0.10)
+                                * (0.72 + sourceFacing * 0.34)
+                                * rimTravel;
+            float recessShade = (innerWall * 0.055 + innerFloor * (0.018 + floorCenter * 0.020))
+                              * (1.0 - glassFill * 0.35);
+
+            float2 previewNormalUV = float2(previewNormal.x / aspect, previewNormal.y);
+            float edgeLensAmount = (edgeCatch + rightEdgeCatch + perimeterGlow) * 0.0018 + fiberBloom * 0.0008;
+            float3 edgeLens = decodeHDR(
+                clearTex.sample(samp, clamp(uv - previewNormalUV * edgeLensAmount, 0.0, 1.0)).rgb,
+                u.isHDR);
+
+            float3 hotCore = mix(accent, float3(1.0, 0.96, 0.86), 0.88);
+            float3 rodBody = mix(accent, hotCore, 0.24);
+            float3 glassLight = mix(accent, hotCore, 0.34);
+            float3 farFillColor = mix(float3(dot(accent, float3(0.299, 0.587, 0.114))), accent, 0.56);
+            float3 edgeHeat = mix(hotCore, accent, 0.24);
+
+            col *= 1.0 - saturate(recessShade);
+            col = mix(col, edgeLens, saturate((edgeCatch + rightEdgeCatch + perimeterGlow) * 0.070 + fiberBloom * 0.020));
+            col += farFillColor * glassFill * (0.035 + q * 0.016);
+            col += accent * fiberBloom * (0.060 + q * 0.030);
+            col += rodBody * fiberBody * (0.20 + q * 0.075);
+            col += hotCore * fiberCore * (0.85 + q * 0.22);
+            col += glassLight * nearEdgeCatch * (0.16 + q * 0.060);
+            col += farFillColor * farEdgeCatch * (0.10 + q * 0.038);
+            col += farFillColor * rightEdgeCatch * (0.12 + q * 0.040);
+            col += glassLight * perimeterGlow * (0.16 + q * 0.070);
+            col += edgeHeat * (edgeSpec + topBottomCatch) * 0.095;
+        }
+
         // ── 11. Light bridge: mic ↔ scroll button ──
 
         if (u.scrollButtonVisible > 0.5) {
@@ -761,6 +1013,7 @@ fragment float4 glassFragment(
 
         col *= GLASS_TINT;
         col = glassCompositeGlyph(col, uv, u, glyphAtlasTex, clearTex, blurTex);
+        col = glassCompositePreviewText(col, uv, u, previewTextTex, clearTex, blurTex);
 
         return float4(clamp(col, 0.0, 1.0), glassMask);
     }

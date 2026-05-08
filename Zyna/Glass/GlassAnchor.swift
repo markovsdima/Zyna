@@ -75,6 +75,10 @@ final class GlassAnchor: UIView {
     /// Interactive controls should still live in UIKit/Texture above the anchor.
     var glyphProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.GlyphData?)?
 
+    /// Optional dynamic preview card rendered by Metal above the input field.
+    /// Used only while reply/forward/edit preview is visible or animating.
+    var previewProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.PreviewData?)?
+
     /// Quick flag: true when bars are active (avoids calling barProvider just to check).
     /// Used by GlassService to expand capture frame upward.
     var hasBars: Bool = false
@@ -82,6 +86,10 @@ final class GlassAnchor: UIView {
     /// True when scroll-to-live button is visible above the input bar.
     /// Used by GlassService to expand capture frame upward.
     var hasScrollButton: Bool = false
+
+    /// True while the input reply/forward/edit preview is visible or animating.
+    /// Used by GlassService to expand capture frame upward only on demand.
+    var hasPreview: Bool = false
 
     /// The view whose layer tree to capture as glass background.
     /// Only this view's content is rendered — glass UI is excluded automatically.

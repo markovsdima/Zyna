@@ -16,6 +16,25 @@ final class ChatInputNode: ASDisplayNode {
         var sendColor: UIColor
     }
 
+    enum PreviewRenderMode: Int {
+        case none = 0
+        case reply = 1
+        case forward = 2
+        case edit = 3
+    }
+
+    struct PreviewRenderState {
+        var mode: PreviewRenderMode
+        var title: String
+        var body: String
+        var progress: CGFloat
+        var isAnimating: Bool
+
+        var isActive: Bool {
+            mode != .none || progress > 0.001 || isAnimating
+        }
+    }
+
     let textInputNode = ASEditableTextNode()
     let sendButtonNode = AccessibleButtonNode()
     let micButtonNode = AccessibleButtonNode()
@@ -67,6 +86,7 @@ final class ChatInputNode: ASDisplayNode {
     var onEditCancelled: (() -> Void)?
     var onPastedImages: (([UIImage]) -> Void)?
     var onRightGlyphStateChanged: ((RightGlyphState) -> Void)?
+    var onPreviewRenderStateChanged: (() -> Void)?
 
     var rightGlyphState: RightGlyphState {
         RightGlyphState(
@@ -83,11 +103,7 @@ final class ChatInputNode: ASDisplayNode {
 
     // MARK: - Preview
 
-    private let replyBackgroundNode = ASDisplayNode()
-    private let replyBarNode = ASDisplayNode()
-    private let replyNameNode = ASTextNode()
-    private let replyBodyNode = ASTextNode()
-    private let replyCancelNode = ASButtonNode()
+    private let previewSpacerNode = ASDisplayNode()
 
     private enum PreviewMode {
         case none
@@ -97,9 +113,115 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private var previewMode: PreviewMode = .none
+    private var previewTitle = ""
+    private var previewBody = ""
+    private var lastPreviewRenderMode: PreviewRenderMode = .none
+    private var replyRevealProgress: CGFloat = 0
+    private var replyRevealDisplayLink: CADisplayLink?
+    private var replyRevealStartTime: CFTimeInterval = 0
+    private var replyRevealStartProgress: CGFloat = 0
+    private var replyRevealTargetProgress: CGFloat = 0
+
+    private enum ReplyPreviewLayout {
+        static let outerTopInset: CGFloat = 4
+        static let outerHorizontalInset: CGFloat = 4
+        static let bottomGap: CGFloat = 6
+        static let verticalInset: CGFloat = 6
+        static let closeButtonSize: CGFloat = 30
+        static let textLineSpacing: CGFloat = 1
+
+        static var cardHeight: CGFloat {
+            let nameHeight = ceil(UIFont.systemFont(ofSize: 13, weight: .semibold).lineHeight)
+            let bodyHeight = ceil(UIFont.systemFont(ofSize: 13).lineHeight)
+            let textHeight = nameHeight + textLineSpacing + bodyHeight
+            return verticalInset * 2 + max(closeButtonSize, textHeight)
+        }
+
+        static var revealHeight: CGFloat {
+            outerTopInset + cardHeight + bottomGap
+        }
+    }
+
+    private enum ReplyRevealAnimation {
+        static let duration: CFTimeInterval = 0.34
+    }
 
     private var isShowingPreview: Bool {
         previewMode != .none
+    }
+
+    private var keepsPreviewInLayout: Bool {
+        isShowingPreview || replyRevealProgress > 0.001 || replyRevealDisplayLink != nil
+    }
+
+    private var currentPreviewRenderMode: PreviewRenderMode {
+        switch previewMode {
+        case .none:
+            return .none
+        case .reply:
+            return .reply
+        case .forward:
+            return .forward
+        case .edit:
+            return .edit
+        }
+    }
+
+    var previewRenderState: PreviewRenderState {
+        let currentMode = currentPreviewRenderMode
+        let mode: PreviewRenderMode
+        if currentMode != .none {
+            mode = currentMode
+        } else if replyRevealProgress > 0.001 || replyRevealDisplayLink != nil {
+            mode = lastPreviewRenderMode
+        } else {
+            mode = .none
+        }
+
+        return PreviewRenderState(
+            mode: mode,
+            title: previewTitle,
+            body: previewBody,
+            progress: replyRevealProgress,
+            isAnimating: replyRevealDisplayLink != nil
+        )
+    }
+
+    var previewCloseAccessibilityLabel: String {
+        switch previewRenderState.mode {
+        case .reply:
+            return String(localized: "Cancel reply")
+        case .forward:
+            return String(localized: "Cancel forwarding")
+        case .edit:
+            return String(localized: "Cancel editing")
+        case .none:
+            return String(localized: "Close preview")
+        }
+    }
+
+    var previewAccessibilityValue: String? {
+        let state = previewRenderState
+        let parts = [state.title, state.body]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: ". ")
+    }
+
+    var previewRevealHeight: CGFloat {
+        ReplyPreviewLayout.revealHeight * replyRevealProgress
+    }
+
+    var previewCardHeight: CGFloat {
+        ReplyPreviewLayout.cardHeight
+    }
+
+    var previewOuterHorizontalInset: CGFloat {
+        ReplyPreviewLayout.outerHorizontalInset
+    }
+
+    var previewBottomGap: CGFloat {
+        ReplyPreviewLayout.bottomGap
     }
 
     private var isShowingForward: Bool {
@@ -120,9 +242,10 @@ final class ChatInputNode: ASDisplayNode {
 
     func setForwardPreview(senderName: String?, body: String?) {
         let showing = senderName != nil
+        let wasShowingPreview = isShowingPreview
         if showing {
             previewMode = .forward
-            updateReplyText(
+            updatePreviewText(
                 senderName: "↗ \(senderName ?? "")",
                 body: body
             )
@@ -131,31 +254,29 @@ final class ChatInputNode: ASDisplayNode {
         } else {
             return
         }
-        setNeedsLayout()
-        onSizeChanged?()
-        emitRightGlyphStateIfNeeded()
+        finishPreviewStateChange(animateAppearance: showing && !wasShowingPreview)
     }
 
     func setReplyPreview(senderName: String?, body: String?) {
         let showing = senderName != nil
+        let wasShowingPreview = isShowingPreview
         if showing {
             previewMode = .reply
-            updateReplyText(senderName: senderName, body: body)
+            updatePreviewText(senderName: senderName, body: body)
         } else if previewMode == .reply {
             previewMode = .none
         } else {
             return
         }
-        setNeedsLayout()
-        onSizeChanged?()
-        emitRightGlyphStateIfNeeded()
+        finishPreviewStateChange(animateAppearance: showing && !wasShowingPreview)
     }
 
     func setEditPreview(body: String?) {
         let showing = body != nil
+        let wasShowingPreview = isShowingPreview
         if showing {
             previewMode = .edit
-            updateReplyText(
+            updatePreviewText(
                 senderName: String(localized: "Editing message"),
                 body: body
             )
@@ -164,26 +285,35 @@ final class ChatInputNode: ASDisplayNode {
         } else {
             return
         }
-        setNeedsLayout()
-        onSizeChanged?()
+        finishPreviewStateChange(animateAppearance: showing && !wasShowingPreview)
+    }
+
+    private func finishPreviewStateChange(animateAppearance: Bool) {
+        if isShowingPreview {
+            lastPreviewRenderMode = currentPreviewRenderMode
+            if animateAppearance {
+                replyRevealProgress = 0
+                startReplyRevealAnimation(to: 1)
+            } else {
+                stopReplyRevealAnimation()
+                setReplyRevealProgress(1)
+            }
+        } else {
+            startReplyRevealAnimation(to: 0)
+        }
+
         emitRightGlyphStateIfNeeded()
     }
 
-    private func updateReplyText(senderName: String?, body: String?) {
-        replyNameNode.attributedText = NSAttributedString(
-            string: senderName ?? "",
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
-                .foregroundColor: AppColor.accent
-            ]
-        )
-        replyBodyNode.attributedText = NSAttributedString(
-            string: body ?? "",
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 13),
-                .foregroundColor: glassMaterial.secondaryForeground
-            ]
-        )
+    private func updatePreviewText(senderName: String?, body: String?) {
+        previewTitle = senderName ?? ""
+        previewBody = body ?? ""
+        onPreviewRenderStateChanged?()
+    }
+
+    func cancelActivePreview() {
+        guard isShowingPreview else { return }
+        replyCancelTapped()
     }
 
     override init() {
@@ -191,8 +321,10 @@ final class ChatInputNode: ASDisplayNode {
         automaticallyManagesSubnodes = true
         setupNodes()
         bindRecorder()
+    }
 
-        replyCancelNode.addTarget(self, action: #selector(replyCancelTapped), forControlEvents: .touchUpInside)
+    deinit {
+        replyRevealDisplayLink?.invalidate()
     }
 
     @objc private func replyCancelTapped() {
@@ -207,19 +339,8 @@ final class ChatInputNode: ASDisplayNode {
         separatorNode.style.height = ASDimension(unit: .points, value: 0)
         separatorNode.backgroundColor = .clear
 
-        replyBackgroundNode.backgroundColor = AppColor.inputReplyBackground
-        replyBackgroundNode.cornerRadius = 20
-        replyBackgroundNode.clipsToBounds = true
-
-        replyBarNode.backgroundColor = AppColor.accent
-        replyBarNode.cornerRadius = 1
-        replyBarNode.style.width = ASDimension(unit: .points, value: 2)
-        replyNameNode.maximumNumberOfLines = 1
-        replyBodyNode.maximumNumberOfLines = 1
-        replyBodyNode.truncationMode = .byTruncatingTail
-        replyCancelNode.setImage(AppIcon.xmark.template(size: 14, weight: .medium), for: .normal)
-        replyCancelNode.imageNode.tintColor = glassMaterial.secondaryForeground
-        replyCancelNode.style.preferredSize = CGSize(width: 30, height: 30)
+        previewSpacerNode.backgroundColor = .clear
+        previewSpacerNode.style.flexShrink = 0
 
         textInputNode.typingAttributes = [
             NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
@@ -263,6 +384,65 @@ final class ChatInputNode: ASDisplayNode {
 
         overlayNode.onStop = { [weak self] in self?.finishRecording() }
         overlayNode.onCancel = { [weak self] in self?.cancelRecording() }
+    }
+
+    private func startReplyRevealAnimation(to targetProgress: CGFloat) {
+        let target = min(1, max(0, targetProgress))
+        guard isNodeLoaded, !UIAccessibility.isReduceMotionEnabled else {
+            stopReplyRevealAnimation()
+            setReplyRevealProgress(target)
+            return
+        }
+
+        stopReplyRevealAnimation()
+        replyRevealStartProgress = replyRevealProgress
+        replyRevealTargetProgress = target
+        replyRevealStartTime = CACurrentMediaTime()
+
+        guard abs(replyRevealTargetProgress - replyRevealStartProgress) > 0.001 else {
+            setReplyRevealProgress(target)
+            return
+        }
+
+        let displayLink = CADisplayLink(target: self, selector: #selector(replyRevealTick))
+        displayLink.add(to: .main, forMode: .common)
+        replyRevealDisplayLink = displayLink
+        setReplyRevealProgress(replyRevealProgress)
+    }
+
+    private func stopReplyRevealAnimation() {
+        replyRevealDisplayLink?.invalidate()
+        replyRevealDisplayLink = nil
+    }
+
+    @objc private func replyRevealTick() {
+        let elapsed = CACurrentMediaTime() - replyRevealStartTime
+        let linearProgress = CGFloat(min(1, max(0, elapsed / ReplyRevealAnimation.duration)))
+        let easedProgress = easeInOutCubic(linearProgress)
+        let value = replyRevealStartProgress
+            + (replyRevealTargetProgress - replyRevealStartProgress) * easedProgress
+
+        setReplyRevealProgress(value)
+
+        if linearProgress >= 1 {
+            stopReplyRevealAnimation()
+            setReplyRevealProgress(replyRevealTargetProgress)
+        }
+    }
+
+    private func setReplyRevealProgress(_ progress: CGFloat) {
+        replyRevealProgress = min(1, max(0, progress))
+        invalidateCalculatedLayout()
+        setNeedsLayout()
+        onSizeChanged?()
+        onPreviewRenderStateChanged?()
+    }
+
+    private func easeInOutCubic(_ x: CGFloat) -> CGFloat {
+        if x < 0.5 {
+            return 4 * x * x * x
+        }
+        return 1 - CGFloat(pow(Double(-2 * x + 2), 3)) / 2
     }
 
     func setMetalActionGlyphsEnabled(_ enabled: Bool) {
@@ -352,27 +532,12 @@ final class ChatInputNode: ASDisplayNode {
         )
 
         var inputColumnChildren: [ASLayoutElement] = []
-        if isShowingPreview {
-            let textColumn = ASStackLayoutSpec(
-                direction: .vertical, spacing: 1, justifyContent: .start, alignItems: .start,
-                children: [replyNameNode, replyBodyNode]
+        if keepsPreviewInLayout {
+            previewSpacerNode.style.height = ASDimension(
+                unit: .points,
+                value: ReplyPreviewLayout.revealHeight * replyRevealProgress
             )
-            textColumn.style.flexShrink = 1
-            textColumn.style.flexGrow = 1
-            let replyRow = ASStackLayoutSpec(
-                direction: .horizontal, spacing: 6, justifyContent: .start, alignItems: .center,
-                children: [replyBarNode, textColumn, replyCancelNode]
-            )
-            let replyInset = ASInsetLayoutSpec(
-                insets: UIEdgeInsets(top: 8, left: 12, bottom: 4, right: 8),
-                child: replyRow
-            )
-            let replyWithBg = ASBackgroundLayoutSpec(child: replyInset, background: replyBackgroundNode)
-            let replyPadded = ASInsetLayoutSpec(
-                insets: UIEdgeInsets(top: 4, left: 4, bottom: 0, right: 4),
-                child: replyWithBg
-            )
-            inputColumnChildren.append(replyPadded)
+            inputColumnChildren.append(previewSpacerNode)
         }
         inputColumnChildren.append(textInputNode)
 
@@ -381,7 +546,7 @@ final class ChatInputNode: ASDisplayNode {
             inputChild = inputColumnChildren[0]
         } else {
             let inputColumn = ASStackLayoutSpec(
-                direction: .vertical, spacing: 6, justifyContent: .start, alignItems: .stretch,
+                direction: .vertical, spacing: 0, justifyContent: .start, alignItems: .stretch,
                 children: inputColumnChildren
             )
             inputColumn.style.flexGrow = 1
@@ -718,12 +883,17 @@ final class ChatInputNode: ASDisplayNode {
         guard !text.isEmpty || isShowingForward else { return }
         onSend?(text, color)
         textInputNode.textView.text = ""
+        let shouldCollapsePreview = isShowingForward || isShowingEdit
         if isShowingForward || isShowingEdit {
             previewMode = .none
         }
         updateTextEmptyState()
-        setNeedsLayout()
-        onSizeChanged?()
+        if shouldCollapsePreview {
+            startReplyRevealAnimation(to: 0)
+        } else {
+            setNeedsLayout()
+            onSizeChanged?()
+        }
         emitRightGlyphStateIfNeeded()
     }
 
@@ -903,7 +1073,6 @@ extension ChatInputNode {
         lastAppliedGlassContrast = material.contrast
 
         let primary = material.primaryForeground
-        let secondary = material.secondaryForeground
         let glyph = material.glyphForeground
 
         textInputNode.typingAttributes = [
@@ -916,8 +1085,6 @@ extension ChatInputNode {
             applyInputTextColor(primary)
         }
 
-        restyleReplyNodes(secondary: secondary)
-        replyCancelNode.imageNode.tintColor = secondary
         attachButtonNode.imageNode.tintColor = glyph
         micButtonNode.imageNode.tintColor = glyph
     }
@@ -934,18 +1101,6 @@ extension ChatInputNode {
             range: NSRange(location: 0, length: length)
         )
         textView.selectedRange = selectedRange
-    }
-
-    private func restyleReplyNodes(secondary: UIColor) {
-        if let text = replyBodyNode.attributedText?.string {
-            replyBodyNode.attributedText = NSAttributedString(
-                string: text,
-                attributes: [
-                    .font: UIFont.systemFont(ofSize: 13),
-                    .foregroundColor: secondary
-                ]
-            )
-        }
     }
 }
 

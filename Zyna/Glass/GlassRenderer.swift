@@ -87,6 +87,10 @@ final class GlassRenderer: UIView {
         var shape3: SIMD4<Float> = .zero
         var scrollButtonVisible: Float = 0
         var shapeCount: Float = 1
+        /// Reply/forward/edit preview card, normalized in capture coords.
+        var previewRect: SIMD4<Float> = .zero
+        var previewCornerR: Float = 0
+        var previewProgress: Float = 0
     }
 
     /// Liquid pool parameters.
@@ -165,6 +169,17 @@ final class GlassRenderer: UIView {
         }
     }
 
+    /// Optional dynamic alpha texture for reply/forward/edit preview text.
+    /// The preview glass shape itself is carried in ShapeParams so the
+    /// no-preview path stays a few zero uniforms and no dynamic texture.
+    struct PreviewData {
+        var textRect: SIMD4<Float>
+        var mode: Float
+        var opacity: Float
+        var accentColor: SIMD4<Float>
+        var texture: MTLTexture
+    }
+
     struct BackdropOverlay {
         let backdropTexture: MTLTexture
         let surfaceTexture: MTLTexture
@@ -185,6 +200,7 @@ final class GlassRenderer: UIView {
         let time: Float
         let barData: BarData?
         let glyphData: GlyphData?
+        let previewData: PreviewData?
         let backdropOverlay: BackdropOverlay?
         /// True when sourceTexture changed and the blurred backdrop must be refreshed.
         let refreshBlur: Bool
@@ -259,6 +275,10 @@ final class GlassRenderer: UIView {
         var glyphSource1s: GlyphVec4Slots = Self.emptyGlyphVec4Slots
         var glyphParams: GlyphVec4Slots = Self.emptyGlyphVec4Slots
         var glyphSendColors: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var previewRect: SIMD4<Float> = .zero
+        var previewTextRect: SIMD4<Float> = .zero
+        var previewMeta: SIMD4<Float> = .zero
+        var previewAccentColor: SIMD4<Float> = .zero
     }
 
     private struct BackdropCompositeUniforms {
@@ -361,6 +381,7 @@ final class GlassRenderer: UIView {
             encoder.setFragmentTexture(blurTex, index: 1)
             encoder.setFragmentTexture(item.backdropOverlay?.surfaceTexture ?? emptyOverlayFallbackTexture(), index: 2)
             encoder.setFragmentTexture(atlas?.texture ?? emptyGlyphFallbackTexture(), index: 3)
+            encoder.setFragmentTexture(item.previewData?.texture ?? emptyGlyphFallbackTexture(), index: 4)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             encoder.endEncoding()
 
@@ -666,6 +687,17 @@ final class GlassRenderer: UIView {
         uniforms.refractScale = tuning.refractScale
         uniforms.adaptiveAppearance = item.adaptiveAppearance
         uniforms.adaptiveContrast = item.adaptiveContrast
+        uniforms.previewRect = item.shapes.previewRect
+        uniforms.previewMeta = SIMD4<Float>(
+            item.shapes.previewProgress,
+            item.previewData?.mode ?? 0,
+            item.previewData?.opacity ?? 0,
+            item.shapes.previewCornerR
+        )
+        if let previewData = item.previewData {
+            uniforms.previewTextRect = previewData.textRect
+            uniforms.previewAccentColor = previewData.accentColor
+        }
 
         if let glyphData = item.glyphData, let glyphAtlas {
             var glyphCount = 0
