@@ -89,7 +89,7 @@ struct GlassUniforms {
     float4 previewMeta;
     float4 previewAccentColor;
     // Nav voice foreground.
-    // voiceMeta: x=playback progress, y=opacity, z=sample count.
+    // voiceMeta: x=playback progress, y=opacity, z=sample count, w=scrub progress (-1 inactive).
     float4 voiceTextRect;
     float4 voiceWaveformRect;
     float4 voiceMeta;
@@ -136,6 +136,23 @@ inline float sdRoundedRect(float2 p, float2 halfSize, float r) {
 
 inline float sdCircle(float2 p, float r) {
     return length(p) - r;
+}
+
+inline float sdSegment(float2 p, float2 a, float2 b) {
+    float2 pa = p - a;
+    float2 ba = b - a;
+    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+inline float sdVoiceZigzag(float2 p, float halfX, float2 offset, float strokeR) {
+    float2 p0 = float2(0.00, 0.98) + offset;
+    float2 p1 = float2(halfX * 0.92, 0.69) + offset;
+    float2 p2 = float2(-halfX * 0.88, 0.39) + offset;
+    float2 p3 = float2(halfX * 0.76, 0.10) + offset;
+    float d = min(sdSegment(p, p0, p1), sdSegment(p, p1, p2));
+    d = min(d, sdSegment(p, p2, p3));
+    return d - strokeR;
 }
 
 // Smooth minimum with sharpness control for metaball blending.
@@ -413,6 +430,130 @@ inline float3 glassCompositeVoiceForeground(
         return baseColor;
     }
 
+    float4 waveRect = u.voiceWaveformRect;
+    int count = min(int(u.voiceMeta.z), 36);
+    if (count > 0 && waveRect.z > 0.0 && waveRect.w > 0.0 &&
+        uv.x >= waveRect.x && uv.y >= waveRect.y &&
+        uv.x <= waveRect.x + waveRect.z && uv.y <= waveRect.y + waveRect.w) {
+        float2 local = (uv - waveRect.xy) / waveRect.zw;
+        float waveAspect = max(0.001, waveRect.z * u.aspect / max(waveRect.w, 1e-5));
+        float2 p = float2(local.x * waveAspect, local.y);
+        float edgeFade = smoothstep(0.00, 0.08, local.x)
+                       * (1.0 - smoothstep(0.92, 1.0, local.x));
+        float verticalFade = smoothstep(0.00, 0.12, local.y);
+        float displayedProgress = saturate(u.voiceMeta.w >= 0.0 ? u.voiceMeta.w : u.voiceMeta.x);
+        float3 accent = clamp(u.voiceAccentColor.rgb, 0.0, 1.0);
+        float materialLight = smoothstep(0.35, 1.0, saturate(u.adaptiveAppearance));
+        float3 restColor = glassVoiceGlyphColor(u.adaptiveAppearance);
+        float3 lightInk = mix(float3(0.075, 0.095, 0.125), accent, 0.035);
+        float3 ambientRest = mix(mix(restColor, float3(1.0), 0.12), lightInk, materialLight);
+        float3 lineRestColor = mix(restColor, mix(lightInk, float3(0.30, 0.34, 0.40), 0.28), materialLight * 0.90);
+        float shadowScale = mix(1.0, 0.07, materialLight);
+        float barVisibility = mix(1.0, 1.22, materialLight);
+        float3 ambientAccum = float3(0.0);
+        float ambientWeight = 0.0;
+        float ambientAlpha = 0.0;
+        float3 reliefAccum = float3(0.0);
+        float reliefWeight = 0.0;
+        float depthShade = 0.0;
+
+        float gap = 0.014;
+        float barW = max(0.004, (1.0 - gap * float(max(count - 1, 0))) / float(count));
+        for (int i = 0; i < 36; i++) {
+            if (i >= count) {
+                break;
+            }
+            float sample = pow(saturate(u.voiceSamples[i]), 0.72);
+            float x0 = float(i) * (barW + gap);
+            float cx = (x0 + barW * 0.5) * waveAspect;
+            float halfX = barW * waveAspect * 0.54;
+            float strokeR = max(0.010, halfX * 0.58);
+            float revealTop = mix(0.98, 0.10, sample);
+            float revealGate = smoothstep(revealTop - 0.018, revealTop + 0.018, local.y);
+            float2 zigP = float2(p.x - cx, local.y);
+            float sdf = sdVoiceZigzag(zigP, halfX, float2(0.0), strokeR);
+            float backSdf = sdVoiceZigzag(
+                zigP,
+                halfX,
+                float2(halfX * 0.30, 0.028),
+                strokeR * 1.38
+            );
+            float core = (1.0 - smoothstep(0.004, 0.020, sdf)) * revealGate;
+            float bloom = (1.0 - smoothstep(0.020, mix(0.105, 0.070, materialLight), sdf)) * revealGate;
+            float backBloom = (1.0 - smoothstep(0.038, mix(0.175, 0.105, materialLight), backSdf)) * revealGate;
+            float edgeRim = (1.0 - smoothstep(0.003, 0.027, abs(sdf))) * revealGate;
+            float topCatch = (1.0 - smoothstep(0.010, 0.150, abs(local.y - revealTop))) * revealGate;
+            float sideCatch = smoothstep(-halfX, halfX, p.x - cx);
+            float contact = exp(-pow((p.x - cx) / max(halfX * 2.7, 1e-5), 2.0))
+                          * smoothstep(0.74, 0.99, local.y)
+                          * sample;
+            float played = smoothstep(float(i) / float(count), float(i + 1) / float(count), displayedProgress);
+            float pulse = 0.96 + 0.04 * sin(u.time * 0.75 + float(i) * 0.63);
+            float3 color = mix(ambientRest, accent, played * mix(0.72, 0.82, materialLight));
+            float barFade = opacity * edgeFade * verticalFade * pulse;
+            float mask = saturate(core * mix(0.18, 0.28, materialLight)
+                       + bloom * mix(0.095, 0.022, materialLight)
+                       + backBloom * mix(0.060, 0.016, materialLight))
+                       * barFade
+                       * barVisibility
+                       * (0.72 + sample * 0.28);
+            float relief = saturate(edgeRim * (0.48 + topCatch * 0.52) + core * sideCatch * 0.16)
+                         * barFade
+                         * barVisibility
+                         * (0.42 + sample * 0.58);
+            depthShade = max(
+                depthShade,
+                (contact * mix(0.09, 0.025, materialLight)
+                       + backBloom * mix(0.020, 0.004, materialLight)
+                       + core * (1.0 - topCatch) * mix(0.018, 0.006, materialLight))
+                       * opacity
+                       * edgeFade
+                       * verticalFade
+                       * shadowScale
+            );
+            ambientAccum += color * mask;
+            ambientWeight += mask;
+            ambientAlpha = max(ambientAlpha, mask);
+            reliefAccum += mix(color, float3(1.0, 0.98, 0.92), mix(0.26, 0.30, materialLight)) * relief;
+            reliefWeight += relief;
+        }
+
+        baseColor *= 1.0 - saturate(depthShade);
+        if (ambientAlpha > 0.001) {
+            baseColor = mix(baseColor, ambientAccum / max(ambientWeight, 1e-5), saturate(ambientAlpha));
+        }
+        if (reliefWeight > 0.001) {
+            baseColor += reliefAccum / max(reliefWeight, 1e-5) * saturate(reliefWeight) * mix(0.045, 0.030, materialLight);
+        }
+
+        float lineY = 0.84;
+        float lineCore = 1.0 - smoothstep(0.010, 0.030, abs(local.y - lineY));
+        float playedLine = lineCore
+                         * (1.0 - smoothstep(displayedProgress, displayedProgress + 0.006, local.x))
+                         * edgeFade
+                         * opacity;
+        float restLine = lineCore * edgeFade * opacity;
+        baseColor = mix(baseColor, lineRestColor, restLine * mix(0.18, 0.28, materialLight));
+        baseColor = mix(baseColor, accent, playedLine * 0.78);
+
+        float scrubProgress = u.voiceMeta.w;
+        if (scrubProgress >= 0.0) {
+            float thumbX = saturate(scrubProgress) * waveAspect;
+            float2 thumbP = p - float2(thumbX, lineY);
+            float thumbDist = length(thumbP);
+            float thumbCore = 1.0 - smoothstep(0.125, 0.155, thumbDist);
+            float thumbRim = 1.0 - smoothstep(0.155, 0.205, thumbDist);
+            float thumbGlow = 1.0 - smoothstep(0.160, 0.310, thumbDist);
+            float3 hot = mix(accent, float3(1.0, 0.97, 0.90), 0.35);
+            baseColor = mix(baseColor, accent, thumbGlow * 0.16 * opacity);
+            baseColor = mix(baseColor, hot, thumbRim * 0.34 * opacity);
+            baseColor = mix(baseColor, hot, thumbCore * 0.78 * opacity);
+            float thumbSpec = (1.0 - smoothstep(0.020, 0.150, length(thumbP - float2(-0.035, -0.045))))
+                            * thumbCore;
+            baseColor += float3(1.0, 0.96, 0.86) * thumbSpec * 0.12 * opacity;
+        }
+    }
+
     float4 textRect = u.voiceTextRect;
     if (textRect.z > 0.0 && textRect.w > 0.0 &&
         uv.x >= textRect.x && uv.y >= textRect.y &&
@@ -423,45 +564,7 @@ inline float3 glassCompositeVoiceForeground(
         baseColor = baseColor * (1.0 - alpha) + tex.rgb * opacity;
     }
 
-    float4 waveRect = u.voiceWaveformRect;
-    int count = min(int(u.voiceMeta.z), 36);
-    if (count <= 0 || waveRect.z <= 0.0 || waveRect.w <= 0.0 ||
-        uv.x < waveRect.x || uv.y < waveRect.y ||
-        uv.x > waveRect.x + waveRect.z || uv.y > waveRect.y + waveRect.w) {
-        return baseColor;
-    }
-
-    float2 local = (uv - waveRect.xy) / waveRect.zw;
-    float waveAspect = max(0.001, waveRect.z * u.aspect / max(waveRect.w, 1e-5));
-    float2 p = float2(local.x * waveAspect, local.y);
-    float gap = 0.018;
-    float barW = max(0.004, (1.0 - gap * float(max(count - 1, 0))) / float(count));
-    float progress = saturate(u.voiceMeta.x);
-    float3 playedColor = clamp(u.voiceAccentColor.rgb, 0.0, 1.0);
-    float3 restColor = glassVoiceGlyphColor(u.adaptiveAppearance);
-
-    float alpha = 0.0;
-    float3 color = float3(0.0);
-    for (int i = 0; i < 36; i++) {
-        if (i >= count) {
-            break;
-        }
-        float sample = saturate(u.voiceSamples[i]);
-        float x0 = float(i) * (barW + gap);
-        float cx = (x0 + barW * 0.5) * waveAspect;
-        float h = max(0.16, mix(0.18, 1.0, sample));
-        float halfX = barW * waveAspect * 0.5;
-        float halfY = h * 0.5;
-        float r = min(halfX, halfY) * 0.95;
-        float sdf = sdRoundedRect(p - float2(cx, 0.98 - halfY), float2(halfX, halfY), r);
-        float mask = 1.0 - smoothstep(0.012, 0.028, sdf);
-        float played = smoothstep(float(i) / float(count), float(i + 1) / float(count), progress);
-        float3 barColor = mix(restColor, playedColor, played);
-        color += barColor * mask * opacity;
-        alpha = max(alpha, mask * opacity);
-    }
-
-    return mix(baseColor, color / max(alpha, 1e-5), saturate(alpha * 0.82));
+    return baseColor;
 }
 
 inline float glassSplashHeightFromEnergy(float energy) {
@@ -909,6 +1012,21 @@ fragment float4 glassFragment(
         col *= mix(0.92, 1.10, appearance);
         float boostLuma = dot(col, float3(0.299, 0.587, 0.114));
         col = mix(float3(boostLuma), col, 1.08);  // slight saturation push
+
+        // ── 7b. Voice player surface — clean opal material in light mode ──
+
+        float voicePlayerOpacity = saturate(u.voiceMeta.y);
+        float voiceLightMaterial = smoothstep(0.52, 1.0, appearance);
+        float voiceShapeBody = smoothstep(0.0, max(bw * 0.70, 0.001), -sdf0);
+        float voiceGlassStrength = voicePlayerOpacity * voiceLightMaterial * voiceShapeBody * 0.78;
+        if (voiceGlassStrength > 0.001) {
+            float voiceLuma = dot(col, float3(0.299, 0.587, 0.114));
+            float3 voiceChroma = col - voiceLuma;
+            float3 opalGlass = float3(mix(voiceLuma, 0.70, 0.46))
+                             + voiceChroma * 0.34;
+            opalGlass = mix(opalGlass, float3(0.78, 0.82, 0.88), 0.16);
+            col = mix(col, clamp(opalGlass, 0.0, 1.0), voiceGlassStrength);
+        }
 
         // ── 8. Fresnel rim — thin bright edge ──
 

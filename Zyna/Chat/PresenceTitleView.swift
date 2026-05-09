@@ -46,6 +46,7 @@ final class PresenceTitleNode: ASDisplayNode {
     var onVoiceCloseTapped: (() -> Void)?
     var onVoiceSpeedTapped: (() -> Void)?
     var onVoiceSeek: ((Float) -> Void)?
+    var onVoiceScrubChanged: ((Bool, Float) -> Void)?
     var onVoiceModeTapped: (() -> Void)?
 
     var voiceState: VoiceTitleState? {
@@ -229,6 +230,9 @@ final class PresenceTitleNode: ASDisplayNode {
         voiceSeekNode.isUserInteractionEnabled = true
         voiceSeekNode.onSeek = { [weak self] progress in
             self?.onVoiceSeek?(progress)
+        }
+        voiceSeekNode.onScrubChanged = { [weak self] isScrubbing, progress in
+            self?.onVoiceScrubChanged?(isScrubbing, progress)
         }
     }
 
@@ -684,6 +688,7 @@ extension PresenceTitleNode {
 private final class VoiceTitleSeekNode: ASDisplayNode {
 
     var onSeek: ((Float) -> Void)?
+    var onScrubChanged: ((Bool, Float) -> Void)?
 
     private var progress: Float = 0
 
@@ -729,13 +734,28 @@ private final class VoiceTitleSeekNode: ASDisplayNode {
 
     @objc private func handleSeekTap(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended else { return }
-        onSeek?(progress(at: gesture.location(in: view)))
+        let nextProgress = progress(at: gesture.location(in: view))
+        update(progress: nextProgress)
+        onSeek?(nextProgress)
     }
 
     @objc private func handleSeekPan(_ gesture: UIPanGestureRecognizer) {
+        let nextProgress = progress(at: gesture.location(in: view))
         switch gesture.state {
-        case .began, .changed, .ended:
-            onSeek?(progress(at: gesture.location(in: view)))
+        case .began:
+            update(progress: nextProgress)
+            onScrubChanged?(true, nextProgress)
+            onSeek?(nextProgress)
+        case .changed:
+            update(progress: nextProgress)
+            onScrubChanged?(true, nextProgress)
+            onSeek?(nextProgress)
+        case .ended:
+            update(progress: nextProgress)
+            onSeek?(nextProgress)
+            onScrubChanged?(false, nextProgress)
+        case .cancelled, .failed:
+            onScrubChanged?(false, progress)
         default:
             break
         }

@@ -109,6 +109,9 @@ final class GlassNavBar: ASDisplayNode {
     private var voiceShapeTargetTitleW: CGFloat = 0
     private var voiceShapeTransitionProgress: CGFloat = 1
     private var voiceIsDismissing = false
+    private var voiceIsScrubbing = false
+    private var voiceScrubProgress: Float = 0
+    private var voiceScrubProgressOverrideUntil: CFTimeInterval = 0
     private var voiceModeAnimationCompletion: (() -> Void)?
     private weak var layoutParentView: UIView?
     private let voiceTextRenderer = GlassNavVoiceTextRenderer()
@@ -212,6 +215,9 @@ final class GlassNavBar: ASDisplayNode {
         titleNode.onVoiceCloseTapped = { [weak self] in self?.onVoiceClose?() }
         titleNode.onVoiceSpeedTapped = { [weak self] in self?.onVoiceSpeed?() }
         titleNode.onVoiceSeek = { [weak self] progress in self?.onVoiceSeek?(progress) }
+        titleNode.onVoiceScrubChanged = { [weak self] isScrubbing, progress in
+            self?.setVoiceScrubbing(isScrubbing, progress: progress)
+        }
         titleNode.onVoiceModeTapped = { [weak self] in self?.toggleVoiceMode() }
 
         // Subnodes on top of renderer
@@ -350,6 +356,8 @@ final class GlassNavBar: ASDisplayNode {
             voiceCaptureUsesExpandedBounds = false
             titleNode.usesMetalVoiceForeground = false
             titleNode.voiceState = nil
+            voiceIsScrubbing = false
+            voiceScrubProgressOverrideUntil = 0
             GlassService.shared.setNeedsCapture()
             return
         }
@@ -367,6 +375,8 @@ final class GlassNavBar: ASDisplayNode {
         titleNode.voiceExpanded = false
         titleNode.usesMetalVoiceForeground = false
         titleNode.voiceState = nil
+        voiceIsScrubbing = false
+        voiceScrubProgressOverrideUntil = 0
         invalidateVoiceGeometry(oldHeight: oldHeight, animated: false, continuousCapture: false)
         voiceShapeTargetTitleW = cachedTitleW
 
@@ -392,6 +402,8 @@ final class GlassNavBar: ASDisplayNode {
         titleNode.voiceExpanded = false
         titleNode.usesMetalVoiceForeground = false
         titleNode.voiceState = nil
+        voiceIsScrubbing = false
+        voiceScrubProgressOverrideUntil = 0
         invalidateVoiceGeometry(oldHeight: oldHeight, animated: false, continuousCapture: false)
         GlassService.shared.setNeedsCapture()
     }
@@ -419,6 +431,19 @@ final class GlassNavBar: ASDisplayNode {
                 GlassService.shared.setNeedsCapture()
             }
         }
+    }
+
+    private func setVoiceScrubbing(_ isScrubbing: Bool, progress: Float) {
+        voiceIsScrubbing = isScrubbing
+        voiceScrubProgress = min(max(progress, 0), 1)
+        if isScrubbing {
+            voiceScrubProgressOverrideUntil = .greatestFiniteMagnitude
+            GlassService.shared.renderFor(duration: 0.12)
+        } else {
+            voiceScrubProgressOverrideUntil = CACurrentMediaTime() + 0.18
+            GlassService.shared.renderFor(duration: 0.18)
+        }
+        GlassService.shared.setNeedsRender()
     }
 
     private func invalidateVoiceGeometry(
@@ -625,9 +650,9 @@ final class GlassNavBar: ASDisplayNode {
         )
         let waveformFrame = CGRect(
             x: innerX,
-            y: glassFrame.origin.y + 62,
+            y: glassFrame.origin.y + 10,
             width: innerW,
-            height: 9
+            height: 61
         )
 
         guard let textTexture = voiceTextRenderer.texture(
@@ -640,16 +665,26 @@ final class GlassNavBar: ASDisplayNode {
         }
 
         let samples = Self.resampledWaveform(voiceState.waveform, count: 36)
+        let displayedProgress = voiceDisplayedProgress(for: voiceState)
         return GlassRenderer.VoiceData(
             textRect: normalizedRect(textFrame, in: captureFrame),
             waveformRect: normalizedRect(waveformFrame, in: captureFrame),
-            progress: voiceState.progress,
+            progress: displayedProgress,
+            scrubProgress: voiceIsScrubbing ? voiceScrubProgress : displayedProgress,
+            isScrubbing: voiceIsScrubbing,
             opacity: Float(contentOpacity),
             accentColor: resolvedRGBA(ChatBubbleThemeStore.shared.selectedTheme.actionAccentColor),
             samples: samples,
             sampleCount: samples.count,
             textTexture: textTexture
         )
+    }
+
+    private func voiceDisplayedProgress(for state: VoiceTitleState) -> Float {
+        guard voiceIsScrubbing || CACurrentMediaTime() < voiceScrubProgressOverrideUntil else {
+            return state.progress
+        }
+        return voiceScrubProgress
     }
 
     private func buildGlyphData(

@@ -186,6 +186,8 @@ final class GlassRenderer: UIView {
         var textRect: SIMD4<Float>
         var waveformRect: SIMD4<Float>
         var progress: Float
+        var scrubProgress: Float
+        var isScrubbing: Bool
         var opacity: Float
         var accentColor: SIMD4<Float>
         var samples: [Float]
@@ -748,7 +750,7 @@ final class GlassRenderer: UIView {
                 max(0, min(1, voiceData.progress)),
                 max(0, min(1, voiceData.opacity)),
                 Float(count),
-                0
+                voiceData.isScrubbing ? max(0, min(1, voiceData.scrubProgress)) : -1
             )
             uniforms.voiceAccentColor = voiceData.accentColor
             for index in 0..<count {
