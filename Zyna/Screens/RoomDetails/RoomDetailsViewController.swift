@@ -115,15 +115,15 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func rebuildGlassItems(editing: Bool) {
-        let backIcon = AppIcon.chevronBackward.rendered(size: 17, weight: .semibold, color: AppColor.accent)
+        let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
         let trailingIcon: UIImage
         let trailingLabel: String
 
         if editing {
-            trailingIcon = AppIcon.checkmark.rendered(size: 17, weight: .semibold, color: AppColor.accent)
+            trailingIcon = AppIcon.checkmark.template(size: 17, weight: .semibold)
             trailingLabel = String(localized: "Done")
         } else {
-            trailingIcon = AppIcon.pencil.rendered(size: 17, weight: .medium, color: AppColor.accent)
+            trailingIcon = AppIcon.pencil.template(size: 17, weight: .medium)
             trailingLabel = String(localized: "Edit")
         }
 

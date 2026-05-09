@@ -192,15 +192,13 @@ final class ProfileNameColorSettingsViewController: ASDKViewController<SettingsS
     }
 
     private func rebuildGlassTopBar() {
-        let backIcon = AppIcon.chevronBackward.rendered(
+        let backIcon = AppIcon.chevronBackward.template(
             size: 17,
-            weight: .semibold,
-            color: AppColor.accent
+            weight: .semibold
         )
-        let doneIcon = AppIcon.checkmark.rendered(
+        let doneIcon = AppIcon.checkmark.template(
             size: 17,
-            weight: .semibold,
-            color: isSaving ? .tertiaryLabel : AppColor.accent
+            weight: .semibold
         )
         glassTopBar.items = [
             .circleButton(

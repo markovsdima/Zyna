@@ -115,7 +115,7 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
 
         switch viewModel.mode {
         case .other:
-            let backIcon = AppIcon.chevronBackward.rendered(size: 17, weight: .semibold, color: AppColor.accent)
+            let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
             items.append(.circleButton(
                 icon: backIcon,
                 accessibilityLabel: String(localized: "Back"),
@@ -128,10 +128,10 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
             let icon: UIImage
             let label: String
             if editing {
-                icon = AppIcon.checkmark.rendered(size: 17, weight: .semibold, color: AppColor.accent)
+                icon = AppIcon.checkmark.template(size: 17, weight: .semibold)
                 label = String(localized: "Done")
             } else {
-                icon = AppIcon.pencil.rendered(size: 17, weight: .medium, color: AppColor.accent)
+                icon = AppIcon.pencil.template(size: 17, weight: .medium)
                 label = String(localized: "Edit")
             }
             items.append(.circleButton(

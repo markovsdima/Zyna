@@ -162,6 +162,7 @@ extension ChatBubbleTheme {
 
 final class ChatBubbleThemeStore {
     static let shared = ChatBubbleThemeStore()
+    static let didChangeNotification = Notification.Name("ChatBubbleThemeStore.didChange")
 
     private enum DefaultsKey {
         static let selectedThemeId = "chatBubbleTheme.selectedThemeId"
@@ -183,7 +184,11 @@ final class ChatBubbleThemeStore {
 
     func setSelectedTheme(id: String) {
         guard ChatBubbleTheme.theme(id: id) != nil else { return }
+        let oldId = selectedThemeId
         defaults.set(id, forKey: DefaultsKey.selectedThemeId)
+        if oldId != id {
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
     }
 }
 

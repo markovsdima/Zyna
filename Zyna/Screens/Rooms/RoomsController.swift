@@ -244,19 +244,22 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     private func setupHeaderBar() {
         glassTopBar.sourceView = tableNode.view
         glassTopBar.backdropClearColor = .systemBackground
-
-        let composeIcon = AppIcon.compose.rendered(size: 17, weight: .medium, color: AppColor.accent)
-
-        glassTopBar.items = [
-            .title(text: "Chats test", subtitle: nil),
-            .circleButton(icon: composeIcon, accessibilityLabel: "New chat", action: { [weak self] in
-                self?.onComposeTapped?()
-            })
-        ]
+        configureHeaderBarItems()
 
         node.addSubnode(glassTopBar)
         (node as? RoomsScreenNode)?.glassTopBar = glassTopBar
         (node as? RoomsScreenNode)?.tableNode = tableNode
+    }
+
+    private func configureHeaderBarItems() {
+        let composeIcon = AppIcon.compose.template(size: 17, weight: .medium)
+
+        glassTopBar.items = [
+            .title(text: "Chats test", subtitle: glassTopBar.subtitle),
+            .circleButton(icon: composeIcon, accessibilityLabel: "New chat", action: { [weak self] in
+                self?.onComposeTapped?()
+            })
+        ]
     }
 
     private func setupVoicePlayerHost() {

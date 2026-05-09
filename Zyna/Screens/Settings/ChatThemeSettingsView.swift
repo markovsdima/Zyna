@@ -116,10 +116,9 @@ final class ChatThemeSettingsViewController: ASDKViewController<SettingsScreenNo
         node.addSubnode(glassTopBar)
         node.glassTopBar = glassTopBar
 
-        let backIcon = AppIcon.chevronBackward.rendered(
+        let backIcon = AppIcon.chevronBackward.template(
             size: 17,
-            weight: .semibold,
-            color: AppColor.accent
+            weight: .semibold
         )
         glassTopBar.items = [
             .circleButton(

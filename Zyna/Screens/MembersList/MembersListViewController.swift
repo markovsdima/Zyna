@@ -99,7 +99,7 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
         node.addSubnode(glassTopBar)
         node.glassTopBar = glassTopBar
 
-        let backIcon = AppIcon.chevronBackward.rendered(size: 17, weight: .semibold, color: AppColor.accent)
+        let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
         // Items ordering matters: GlassTopBar uses the first .title or
         // .flexibleSpace as its divider, so .title must come right after
         // the left buttons — otherwise its shape/frame aren't drawn.

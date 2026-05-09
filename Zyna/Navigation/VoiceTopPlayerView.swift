@@ -52,6 +52,7 @@ final class VoiceTopPlayerView: UIView {
     private let progressFillView = UIView()
     private let progressTouchView = VoicePlayerProgressTouchView()
 
+    private var themeObserver: NSObjectProtocol?
     private var progress: CGFloat = 0 {
         didSet {
             guard abs(progress - oldValue) > 0.0001 else { return }
@@ -68,6 +69,12 @@ final class VoiceTopPlayerView: UIView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) not supported")
+    }
+
+    deinit {
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
+        }
     }
 
     override var accessibilityElements: [Any]? {
@@ -302,7 +309,6 @@ final class VoiceTopPlayerView: UIView {
         progressTrackView.clipsToBounds = true
         effectView.contentView.addSubview(progressTrackView)
 
-        progressFillView.backgroundColor = AppColor.accent
         progressTrackView.addSubview(progressFillView)
 
         progressTouchView.backgroundColor = .clear
@@ -326,14 +332,10 @@ final class VoiceTopPlayerView: UIView {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(progressPanned(_:)))
         progressTouchView.addGestureRecognizer(pan)
 
-        playPauseButton.tintColor = AppColor.accent
-        playPauseButton.backgroundColor = AppColor.accent.withAlphaComponent(0.12)
         playPauseButton.addTarget(self, action: #selector(playPauseTapped), for: .touchUpInside)
         playPauseButton.accessibilityTraits = .button
         effectView.contentView.addSubview(playPauseButton)
 
-        speedButton.tintColor = AppColor.accent
-        speedButton.backgroundColor = AppColor.accent.withAlphaComponent(0.1)
         speedButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
         speedButton.accessibilityLabel = String(localized: "Playback speed")
         speedButton.accessibilityTraits = .button
@@ -348,9 +350,27 @@ final class VoiceTopPlayerView: UIView {
         closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
         effectView.contentView.addSubview(closeButton)
 
-        spinner.color = AppColor.accent
         spinner.hidesWhenStopped = true
         effectView.contentView.addSubview(spinner)
+
+        applyThemeAccent()
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: ChatBubbleThemeStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyThemeAccent()
+        }
+    }
+
+    private func applyThemeAccent() {
+        let accent = ChatBubbleThemeStore.shared.selectedTheme.actionAccentColor
+        progressFillView.backgroundColor = accent
+        playPauseButton.tintColor = accent
+        playPauseButton.backgroundColor = accent.withAlphaComponent(0.12)
+        speedButton.tintColor = accent
+        speedButton.backgroundColor = accent.withAlphaComponent(0.1)
+        spinner.color = accent
     }
 
     @objc private func playPauseTapped() {
