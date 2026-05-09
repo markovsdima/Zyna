@@ -180,6 +180,19 @@ final class GlassRenderer: UIView {
         var texture: MTLTexture
     }
 
+    /// Optional nav voice foreground. Text is a pre-rendered RGBA texture;
+    /// waveform samples are drawn procedurally by the shader.
+    struct VoiceData {
+        var textRect: SIMD4<Float>
+        var waveformRect: SIMD4<Float>
+        var progress: Float
+        var opacity: Float
+        var accentColor: SIMD4<Float>
+        var samples: [Float]
+        var sampleCount: Int
+        var textTexture: MTLTexture
+    }
+
     struct BackdropOverlay {
         let backdropTexture: MTLTexture
         let surfaceTexture: MTLTexture
@@ -201,6 +214,7 @@ final class GlassRenderer: UIView {
         let barData: BarData?
         let glyphData: GlyphData?
         let previewData: PreviewData?
+        let voiceData: VoiceData?
         let backdropOverlay: BackdropOverlay?
         /// True when sourceTexture changed and the blurred backdrop must be refreshed.
         let refreshBlur: Bool
@@ -229,9 +243,23 @@ final class GlassRenderer: UIView {
         SIMD4<Float>, SIMD4<Float>, SIMD4<Float>
     )
 
+    private typealias VoiceSampleSlots = (
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float
+    )
+
     private struct Uniforms {
         static let emptyGlyphVec4Slots: GlyphVec4Slots = (
             .zero, .zero, .zero, .zero, .zero, .zero
+        )
+        static let emptyVoiceSamples: VoiceSampleSlots = (
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         )
 
         var resolution: SIMD2<Float>
@@ -279,6 +307,11 @@ final class GlassRenderer: UIView {
         var previewTextRect: SIMD4<Float> = .zero
         var previewMeta: SIMD4<Float> = .zero
         var previewAccentColor: SIMD4<Float> = .zero
+        var voiceTextRect: SIMD4<Float> = .zero
+        var voiceWaveformRect: SIMD4<Float> = .zero
+        var voiceMeta: SIMD4<Float> = .zero
+        var voiceAccentColor: SIMD4<Float> = .zero
+        var voiceSamples: VoiceSampleSlots = Self.emptyVoiceSamples
     }
 
     private struct BackdropCompositeUniforms {
@@ -382,6 +415,7 @@ final class GlassRenderer: UIView {
             encoder.setFragmentTexture(item.backdropOverlay?.surfaceTexture ?? emptyOverlayFallbackTexture(), index: 2)
             encoder.setFragmentTexture(atlas?.texture ?? emptyGlyphFallbackTexture(), index: 3)
             encoder.setFragmentTexture(item.previewData?.texture ?? emptyGlyphFallbackTexture(), index: 4)
+            encoder.setFragmentTexture(item.voiceData?.textTexture ?? emptyGlyphFallbackTexture(), index: 5)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             encoder.endEncoding()
 
@@ -645,10 +679,17 @@ final class GlassRenderer: UIView {
     }
 
     private static let maxGlyphSlots = 6
+    private static let maxVoiceSamples = 36
 
     private static func setGlyphVec4(_ value: SIMD4<Float>, in slots: inout GlyphVec4Slots, at index: Int) {
         withUnsafeMutableBytes(of: &slots) { rawBuffer in
             rawBuffer.bindMemory(to: SIMD4<Float>.self)[index] = value
+        }
+    }
+
+    private static func setVoiceSample(_ value: Float, in slots: inout VoiceSampleSlots, at index: Int) {
+        withUnsafeMutableBytes(of: &slots) { rawBuffer in
+            rawBuffer.bindMemory(to: Float.self)[index] = value
         }
     }
 
@@ -697,6 +738,22 @@ final class GlassRenderer: UIView {
         if let previewData = item.previewData {
             uniforms.previewTextRect = previewData.textRect
             uniforms.previewAccentColor = previewData.accentColor
+        }
+
+        if let voiceData = item.voiceData {
+            let count = min(voiceData.sampleCount, voiceData.samples.count, Self.maxVoiceSamples)
+            uniforms.voiceTextRect = voiceData.textRect
+            uniforms.voiceWaveformRect = voiceData.waveformRect
+            uniforms.voiceMeta = SIMD4<Float>(
+                max(0, min(1, voiceData.progress)),
+                max(0, min(1, voiceData.opacity)),
+                Float(count),
+                0
+            )
+            uniforms.voiceAccentColor = voiceData.accentColor
+            for index in 0..<count {
+                Self.setVoiceSample(max(0, min(1, voiceData.samples[index])), in: &uniforms.voiceSamples, at: index)
+            }
         }
 
         if let glyphData = item.glyphData, let glyphAtlas {

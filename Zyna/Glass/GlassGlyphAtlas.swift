@@ -13,6 +13,10 @@ enum GlassGlyphKind: Int, CaseIterable {
     case chevronDown
     case chevronLeft
     case phone
+    case chevronUp
+    case play
+    case pause
+    case xmark
 }
 
 struct GlassGlyphAtlas {
@@ -65,6 +69,10 @@ enum GlassGlyphAtlasBuilder {
             drawSoftChevronDownGlyph(.chevronDown, tileSize: tile)
             drawSoftChevronLeftGlyph(.chevronLeft, tileSize: tile)
             drawSymbolGlyph(.phone, systemName: "phone.fill", tileSize: tile, pointSize: 78, weight: .medium)
+            drawSoftChevronUpGlyph(.chevronUp, tileSize: tile)
+            drawSymbolGlyph(.play, systemName: "play.fill", tileSize: tile, pointSize: 72, weight: .semibold)
+            drawSymbolGlyph(.pause, systemName: "pause.fill", tileSize: tile, pointSize: 72, weight: .semibold)
+            drawSymbolGlyph(.xmark, systemName: "xmark", tileSize: tile, pointSize: 70, weight: .semibold)
             UIGraphicsPopContext()
             return true
         }
@@ -413,6 +421,35 @@ enum GlassGlyphAtlasBuilder {
             to: point(31, -9),
             controlPoint1: point(12, 14),
             controlPoint2: point(22, -2)
+        )
+        path.stroke()
+    }
+
+    private static func drawSoftChevronUpGlyph(_ kind: GlassGlyphKind, tileSize: Int) {
+        let originX = CGFloat(kind.rawValue * tileSize)
+        let tileRect = CGRect(x: originX, y: 0, width: CGFloat(tileSize), height: CGFloat(tileSize))
+        let center = CGPoint(x: tileRect.midX, y: tileRect.midY)
+
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: center.x + x, y: center.y + y)
+        }
+
+        UIColor.white.setStroke()
+
+        let path = UIBezierPath()
+        path.lineWidth = 13.5
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.move(to: point(-31, 9))
+        path.addCurve(
+            to: point(0, -20),
+            controlPoint1: point(-22, 2),
+            controlPoint2: point(-12, -14)
+        )
+        path.addCurve(
+            to: point(31, 9),
+            controlPoint1: point(12, -14),
+            controlPoint2: point(22, 2)
         )
         path.stroke()
     }

@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import Combine
 import UIKit
 
 /// Custom tab bar host. **Not** a `UITabBarController` subclass —
@@ -41,22 +40,6 @@ public class ZynaTabBarController: UIViewController {
     public private(set) var isTabBarHidden: Bool = false
 
     private let tabBar = ZynaTabBar(frame: .zero)
-    private let voicePlayerView = VoiceTopPlayerView(frame: .zero)
-    private weak var voicePlaybackService: AudioPlayerService?
-    private var voicePlaybackCancellables = Set<AnyCancellable>()
-    private var isVoicePlayerVisible = false
-
-    private enum VoicePlayerMetrics {
-        static let height: CGFloat = 52
-        static let topMargin: CGFloat = 6
-        static let sideInset: CGFloat = 8
-        static let maxWidth: CGFloat = 560
-        static let bottomGap: CGFloat = 4
-
-        static var reservedTopInset: CGFloat {
-            topMargin + height + bottomGap
-        }
-    }
 
     // MARK: - Init
 
@@ -72,14 +55,6 @@ public class ZynaTabBarController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .black
         view.addSubview(tabBar)
-        installVoicePlayerView()
-        if let service = voicePlaybackService {
-            applyVoicePlaybackState(
-                service.state,
-                item: service.nowPlaying,
-                snapshot: service.snapshot
-            )
-        }
 
         tabBar.onItemTapped = { [weak self] index in
             self?.handleTabTapped(index)
@@ -94,7 +69,6 @@ public class ZynaTabBarController: UIViewController {
     public override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
         layoutTabBar()
-        layoutVoicePlayerView()
         layoutSelectedControllerView()
     }
 
@@ -231,19 +205,6 @@ public class ZynaTabBarController: UIViewController {
         tabBar.setBadge(badge, at: index)
     }
 
-    func setVoicePlaybackService(_ service: AudioPlayerService) {
-        voicePlaybackService = service
-        voicePlaybackCancellables.removeAll()
-
-        service.$state
-            .combineLatest(service.$nowPlaying, service.$snapshot)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state, item, snapshot in
-                self?.applyVoicePlaybackState(state, item: item, snapshot: snapshot)
-            }
-            .store(in: &voicePlaybackCancellables)
-    }
-
     // MARK: - Tap handling
 
     private func handleTabTapped(_ index: Int) {
@@ -264,7 +225,6 @@ public class ZynaTabBarController: UIViewController {
         v.frame = view.bounds
         v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.insertSubview(v, belowSubview: tabBar)
-        view.bringSubviewToFront(voicePlayerView)
     }
 
     func reattachSelectedControllerViewIfNeeded() {
@@ -273,101 +233,6 @@ public class ZynaTabBarController: UIViewController {
             attachControllerView(current)
         } else {
             layoutSelectedControllerView()
-        }
-    }
-
-    private func installVoicePlayerView() {
-        voicePlayerView.isHidden = !isVoicePlayerVisible
-        voicePlayerView.alpha = isVoicePlayerVisible ? 1 : 0
-        voicePlayerView.onPlayPause = { [weak self] in
-            guard let service = self?.voicePlaybackService else { return }
-            if service.state.isPlaying {
-                service.pause()
-            } else {
-                service.resume()
-            }
-        }
-        voicePlayerView.onClose = { [weak self] in
-            self?.voicePlaybackService?.stop()
-        }
-        voicePlayerView.onSeek = { [weak self] progress in
-            self?.voicePlaybackService?.seek(to: progress)
-        }
-        voicePlayerView.onSpeed = { [weak self] in
-            self?.voicePlaybackService?.cyclePlaybackRate()
-        }
-        view.addSubview(voicePlayerView)
-    }
-
-    private func applyVoicePlaybackState(
-        _ state: AudioPlayerService.State,
-        item: AudioPlayerService.NowPlayingItem?,
-        snapshot: AudioPlayerService.PlaybackSnapshot
-    ) {
-        voicePlayerView.configure(state: state, item: item, snapshot: snapshot)
-
-        let shouldShow: Bool
-        if case .idle = state {
-            shouldShow = false
-        } else {
-            shouldShow = item != nil
-        }
-
-        setVoicePlayerVisible(shouldShow, animated: isViewLoaded)
-    }
-
-    private func setVoicePlayerVisible(_ visible: Bool, animated: Bool) {
-        guard isVoicePlayerVisible != visible else { return }
-        isVoicePlayerVisible = visible
-        propagateAdditionalSafeArea()
-        controllers.forEach {
-            guard $0.isViewLoaded else { return }
-            $0.view.setNeedsLayout()
-        }
-        recaptureGlassAfterVoicePlayerChromeChange(animated: animated)
-
-        guard isViewLoaded else { return }
-
-        let targetFrame = voicePlayerRestingFrame(visible: visible)
-
-        if visible {
-            voicePlayerView.isHidden = false
-            voicePlayerView.frame = voicePlayerRestingFrame(visible: false)
-            view.bringSubviewToFront(voicePlayerView)
-        }
-
-        let animations = {
-            self.voicePlayerView.alpha = visible ? 1 : 0
-            self.voicePlayerView.frame = targetFrame
-        }
-
-        if animated {
-            UIView.animate(
-                withDuration: IOS26Spring.duration,
-                delay: 0,
-                usingSpringWithDamping: 1,
-                initialSpringVelocity: 0,
-                options: [.curveEaseOut, .beginFromCurrentState],
-                animations: animations,
-                completion: { [weak self] _ in
-                    guard let self, !self.isVoicePlayerVisible else { return }
-                    self.voicePlayerView.isHidden = true
-                }
-            )
-        } else {
-            animations()
-            voicePlayerView.isHidden = !visible
-        }
-    }
-
-    private func recaptureGlassAfterVoicePlayerChromeChange(animated: Bool) {
-        let duration = animated ? IOS26Spring.duration + 0.15 : 0.15
-        GlassService.shared.captureFor(duration: duration)
-        GlassService.shared.setNeedsCapture()
-
-        DispatchQueue.main.async { [weak self] in
-            self?.view.layoutIfNeeded()
-            GlassService.shared.setNeedsCapture()
         }
     }
 
@@ -389,36 +254,15 @@ public class ZynaTabBarController: UIViewController {
         tabBar.frame = tabBarRestingFrame()
     }
 
-    private func voicePlayerRestingFrame(visible: Bool) -> CGRect {
-        let width = min(view.bounds.width - VoicePlayerMetrics.sideInset * 2, VoicePlayerMetrics.maxWidth)
-        let x = (view.bounds.width - width) / 2
-        let visibleY = view.safeAreaInsets.top + VoicePlayerMetrics.topMargin
-        let hiddenY = visibleY - VoicePlayerMetrics.height - VoicePlayerMetrics.topMargin - 4
-        return CGRect(
-            x: x,
-            y: visible ? visibleY : hiddenY,
-            width: width,
-            height: VoicePlayerMetrics.height
-        )
-    }
-
-    private func layoutVoicePlayerView() {
-        voicePlayerView.frame = voicePlayerRestingFrame(visible: isVoicePlayerVisible)
-        if !voicePlayerView.isHidden {
-            view.bringSubviewToFront(voicePlayerView)
-        }
-    }
-
     private func layoutSelectedControllerView() {
         selectedController?.view.frame = view.bounds
     }
 
     /// `additionalSafeAreaInsets` propagates through the view hierarchy,
-    /// so inner screens can respect persistent chrome reservations without
-    /// knowing which root overlay owns them.
+    /// so inner screens can respect persistent bottom chrome reservations.
     private func propagateAdditionalSafeArea() {
         let bottom: CGFloat = isTabBarHidden ? 0 : ZynaTabBar.barContentHeight
-        let top: CGFloat = isVoicePlayerVisible ? VoicePlayerMetrics.reservedTopInset : 0
+        let top: CGFloat = 0
         for vc in controllers where vc.additionalSafeAreaInsets.bottom != bottom || vc.additionalSafeAreaInsets.top != top {
             vc.additionalSafeAreaInsets.bottom = bottom
             vc.additionalSafeAreaInsets.top = top

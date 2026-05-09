@@ -6,10 +6,33 @@
 import AsyncDisplayKit
 import Combine
 
-final class CallsViewController: ASDKViewController<ASDisplayNode> {
+final class CallsScreenNode: ASDisplayNode {
+    weak var tableNode: ASTableNode?
+    weak var voicePlayerView: UIView?
+
+    override var accessibilityElements: [Any]? {
+        get {
+            var elements: [Any] = []
+            if let player = voicePlayerView,
+               player.superview === view,
+               !player.isHidden,
+               player.alpha > 0.01 {
+                elements.append(player)
+            }
+            if let tableView = tableNode?.view, tableView.superview === view {
+                elements.append(tableView)
+            }
+            return elements
+        }
+        set { }
+    }
+}
+
+final class CallsViewController: ASDKViewController<CallsScreenNode> {
 
     private let viewModel = CallsViewModel()
     private let tableNode = ASTableNode()
+    private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
     private var cancellables = Set<AnyCancellable>()
 
     var onCallTapped: ((String) -> Void)? {
@@ -17,8 +40,11 @@ final class CallsViewController: ASDKViewController<ASDisplayNode> {
         set { viewModel.onCallTapped = newValue }
     }
 
-    override init() {
-        super.init(node: ASDisplayNode())
+    init(audioPlayer: AudioPlayerService? = nil) {
+        super.init(node: CallsScreenNode())
+        self.voicePlayerHost = audioPlayer.map {
+            EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
+        }
         title = "Calls"
         setupTableNode()
         bindViewModel()
@@ -31,6 +57,8 @@ final class CallsViewController: ASDKViewController<ASDisplayNode> {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         viewModel.reload()
+        voicePlayerHost?.refresh()
+        GlassService.shared.setNeedsCapture()
     }
 
     private func setupTableNode() {
@@ -39,6 +67,7 @@ final class CallsViewController: ASDKViewController<ASDisplayNode> {
         tableNode.backgroundColor = .systemBackground
         node.backgroundColor = .systemBackground
         node.automaticallyManagesSubnodes = true
+        node.tableNode = tableNode
 
         node.layoutSpecBlock = { [weak self] _, _ in
             guard let self else { return ASLayoutSpec() }
@@ -49,6 +78,12 @@ final class CallsViewController: ASDKViewController<ASDisplayNode> {
     override func viewDidLoad() {
         super.viewDidLoad()
         tableNode.view.separatorStyle = .none
+        setupVoicePlayerHost()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        voicePlayerHost?.layout()
     }
 
     private func bindViewModel() {
@@ -59,6 +94,15 @@ final class CallsViewController: ASDKViewController<ASDisplayNode> {
                 self?.tableNode.reloadData()
             }
             .store(in: &cancellables)
+    }
+
+    private func setupVoicePlayerHost() {
+        voicePlayerHost?.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost?.install()
+        node.voicePlayerView = voicePlayerHost?.accessibilityView
     }
 }
 

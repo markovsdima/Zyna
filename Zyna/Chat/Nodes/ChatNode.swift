@@ -14,7 +14,7 @@ final class ChatNode: ASDisplayNode {
     /// Set by ChatViewController. Used to put glass bars first in the
     /// accessibility tree so VoiceOver hit-tests the bars before the
     /// table cells visually behind them (the bars are transparent glass).
-    weak var glassNavBar: ASDisplayNode?
+    weak var glassNavBar: GlassNavBar?
     weak var glassInputBar: GlassInputBar?
 
     /// Set by ChatViewController. The scroll-to-live floating button lives
@@ -75,8 +75,15 @@ final class ChatNode: ASDisplayNode {
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
-            if let nav = glassNavBar?.view, nav.superview === view {
-                elements.append(nav)
+            if let navBar = glassNavBar,
+               navBar.isNodeLoaded,
+               navBar.view.superview === view {
+                let navElements = navBar.accessibilityElementsInOrder
+                if navElements.isEmpty {
+                    elements.append(navBar.view)
+                } else {
+                    elements.append(contentsOf: navElements)
+                }
             }
             if let inputBar = glassInputBar,
                inputBar.isNodeLoaded,

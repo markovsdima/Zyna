@@ -713,12 +713,15 @@ final class GlassService {
                     topPadding = 20
                     bottomPadding = 24
                 }
-                let captureBaseFrame: CGRect
+                let defaultCaptureBaseFrame: CGRect
                 if wantsLiquid, let modelFrame = anchor.modelFrame() {
-                    captureBaseFrame = glassFrame.union(snappedFrame(modelFrame, scale: scale))
+                    defaultCaptureBaseFrame = glassFrame.union(snappedFrame(modelFrame, scale: scale))
                 } else {
-                    captureBaseFrame = glassFrame
+                    defaultCaptureBaseFrame = glassFrame
                 }
+                let overrideCaptureBaseFrame = anchor.captureBaseFrameProvider?(glassFrame, scale)
+                    .flatMap { $0.isEmpty ? nil : snappedFrame($0, scale: scale) }
+                let captureBaseFrame = overrideCaptureBaseFrame ?? defaultCaptureBaseFrame
                 let captureX = max(captureBaseFrame.origin.x - horizontalPadding, 0)
                 let captureY = max(captureBaseFrame.origin.y - topPadding, 0)
                 let rawCaptureFrame: CGRect
@@ -797,6 +800,7 @@ final class GlassService {
                 let barData = anchor.barProvider?(glassFrame, captureFrame, scale)
                 let glyphData = anchor.glyphProvider?(glassFrame, captureFrame, scale)
                 let previewData = anchor.previewProvider?(glassFrame, captureFrame, scale)
+                let voiceData = anchor.voiceProvider?(glassFrame, captureFrame, scale)
 
                 // Cache for render-only frames
                 registrations[id]?.lastTexture = texture
@@ -832,6 +836,7 @@ final class GlassService {
                             barData: barData,
                             glyphData: glyphData,
                             previewData: previewData,
+                            voiceData: voiceData,
                             backdropOverlay: backdropOverlay(
                                 for: captureFrame,
                                 in: activeBackdropOverlays
@@ -861,8 +866,17 @@ final class GlassService {
                     in: renderHostContainer,
                     sourceWindow: sourceWindow
                 )
+                let renderShapes: GlassRenderer.ShapeParams
+                if anchor.updatesShapesDuringRenderOnly,
+                   let provider = anchor.shapeProvider {
+                    renderShapes = provider(glassFrame, captureFrame, scale)
+                    registrations[id]?.lastShapes = renderShapes
+                } else {
+                    renderShapes = shapes
+                }
                 let glyphData = anchor.glyphProvider?(glassFrame, captureFrame, scale)
                 let previewData = anchor.previewProvider?(glassFrame, captureFrame, scale)
+                let voiceData = anchor.voiceProvider?(glassFrame, captureFrame, scale)
                 let key = ObjectIdentifier(renderHostContainer)
                 if renderItemsByContainer[key] == nil {
                     renderItemsByContainer[key] = (
@@ -878,13 +892,14 @@ final class GlassService {
                             frame: destinationFrame,
                             captureFrameInWindow: captureFrame,
                             sourceTexture: texture,
-                            shapes: shapes,
+                            shapes: renderShapes,
                             isHDR: reg.lastIsHDR,
                             liquidZone: lz,
                             time: waveTime,
                             barData: anchor.hasBars ? reg.lastBarData : nil,
                             glyphData: glyphData,
                             previewData: previewData,
+                            voiceData: voiceData,
                             backdropOverlay: backdropOverlay(
                                 for: captureFrame,
                                 in: activeBackdropOverlays

@@ -9,6 +9,7 @@ import MatrixRustSDK
 final class ContactsCoordinator {
 
     let navigationController = ZynaNavigationController()
+    private let audioPlayer: AudioPlayerService
 
     /// Opens a chat with the selected contact.
     var onOpenChat: ((Room) -> Void)?
@@ -16,8 +17,12 @@ final class ContactsCoordinator {
     /// Starts a call with the selected contact.
     var onStartCall: ((Room) -> Void)?
 
+    init(audioPlayer: AudioPlayerService) {
+        self.audioPlayer = audioPlayer
+    }
+
     func start() {
-        let vc = ContactsViewController()
+        let vc = ContactsViewController(audioPlayer: audioPlayer)
 
         vc.onContactSelected = { [weak self] contact in
             self?.showProfile(for: contact)
@@ -36,7 +41,7 @@ final class ContactsCoordinator {
         let hasDM = contact.roomId != nil
             || (try? MatrixClientService.shared.client?.getDmRoom(userId: contact.userId)) != nil
 
-        let vc = ProfileViewController(mode: .other(userId: contact.userId))
+        let vc = ProfileViewController(mode: .other(userId: contact.userId), audioPlayer: audioPlayer)
         vc.onSearchTapped = { [weak self] in
             self?.navigationController.pop()
         }

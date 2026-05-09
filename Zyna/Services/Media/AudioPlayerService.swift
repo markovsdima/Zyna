@@ -47,6 +47,20 @@ final class AudioPlayerService: NSObject {
             case .track: return []
             }
         }
+
+        var roomId: String? {
+            switch self {
+            case .voice(let voice): return voice.roomId
+            case .track: return nil
+            }
+        }
+
+        var eventId: String? {
+            switch self {
+            case .voice(let voice): return voice.eventId
+            case .track: return nil
+            }
+        }
     }
 
     struct NowPlayingVoice: Equatable {

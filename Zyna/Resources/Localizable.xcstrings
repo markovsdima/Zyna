@@ -815,7 +815,14 @@
       }
     },
     "Close voice player" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрыть плеер голосового сообщения"
+          }
+        }
+      }
     },
     "Color" : {
       "localizations" : {
@@ -1477,7 +1484,14 @@
       }
     },
     "Loading" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузка"
+          }
+        }
+      }
     },
     "Login" : {
       "extractionState" : "stale",
@@ -1721,10 +1735,14 @@
       }
     },
     "Pause voice message" : {
-
-    },
-    "Paused" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приостановить голосовое сообщение"
+          }
+        }
+      }
     },
     "Photos" : {
       "localizations" : {
@@ -1747,10 +1765,34 @@
       }
     },
     "Play voice message" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Воспроизвести голосовое сообщение"
+          }
+        }
+      }
     },
     "Playback speed" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скорость воспроизведения"
+          }
+        }
+      }
+    },
+    "Playing voice message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Воспроизводится голосовое сообщение"
+          }
+        }
+      }
     },
     "Previous Theme" : {
       "localizations" : {
@@ -1801,6 +1843,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Причина (необязательно)"
+          }
+        }
+      }
+    },
+    "Record voice message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать голосовое сообщение"
           }
         }
       }
@@ -2057,7 +2109,14 @@
       }
     },
     "Seek voice message" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Перемотать голосовое сообщение"
+          }
+        }
+      }
     },
     "Send" : {
 
@@ -2134,6 +2193,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Отправляем."
+          }
+        }
+      }
+    },
+    "Show chat title" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать заголовок чата"
+          }
+        }
+      }
+    },
+    "Show voice player" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать плеер голосового сообщения"
           }
         }
       }
@@ -2393,7 +2472,24 @@
       }
     },
     "Voice message" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовое сообщение"
+          }
+        }
+      }
+    },
+    "Voice Message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовое сообщение"
+          }
+        }
+      }
     },
     "Waiting for Approval" : {
       "localizations" : {

@@ -11,8 +11,13 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
     private let viewModel = RoomsViewModel()
     private let tableNode = ASTableNode()
+    private let audioPlayer: AudioPlayerService
     private var cancellables = Set<AnyCancellable>()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: tableNode.view)
+    private lazy var voicePlayerHost = EmbeddedVoiceTopPlayerHost(
+        viewController: self,
+        audioPlayer: audioPlayer
+    )
 
     var onChatSelected: ((Room) -> Void)? {
         get { viewModel.onChatSelected }
@@ -28,7 +33,8 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     private var previewResolutionGeneration = 0
     private var pendingPreviewResolutionGeneration: Int?
 
-    override init() {
+    init(audioPlayer: AudioPlayerService) {
+        self.audioPlayer = audioPlayer
         super.init(node: RoomsScreenNode())
 
         setupTableNode()
@@ -119,6 +125,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        voicePlayerHost.refresh()
         GlassService.shared.captureFor(duration: 0.5)
         viewModel.registerPresence()
         GlassService.shared.setNeedsCapture()
@@ -159,6 +166,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         previewPressRecognizer = previewPress
 
         setupHeaderBar()
+        setupVoicePlayerHost()
     }
 
     @objc private func dismissKeyboard() {
@@ -251,8 +259,18 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         (node as? RoomsScreenNode)?.tableNode = tableNode
     }
 
+    private func setupVoicePlayerHost() {
+        voicePlayerHost.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost.install()
+        (node as? RoomsScreenNode)?.voicePlayerView = voicePlayerHost.accessibilityView
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        voicePlayerHost.layout()
         tableNode.frame = node.bounds
         glassTopBar.updateLayout(in: view)
 
@@ -543,12 +561,19 @@ private final class RoomsPreviewPressInteraction {
 /// Glass top bar must be first in the accessibility tree so VoiceOver
 /// hit-tests it before the table cells visually behind it.
 final class RoomsScreenNode: ScreenNode {
+    weak var voicePlayerView: UIView?
     weak var glassTopBar: ASDisplayNode?
     weak var tableNode: ASDisplayNode?
 
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
+            if let player = voicePlayerView,
+               player.superview === view,
+               !player.isHidden,
+               player.alpha > 0.01 {
+                elements.append(player)
+            }
             if let bar = glassTopBar?.view, bar.superview === view {
                 elements.append(bar)
             }

@@ -107,7 +107,7 @@ enum ChatMessageContent: Equatable {
         case .image: return "Photo"
         case .video: return "Video"
         case .pendingOutgoingMediaBatch: return "Photo"
-        case .voice: return "Voice message"
+        case .voice: return String(localized: "Voice message")
         case .file(_, let filename, _, _, _): return filename
         case .callEvent(let type, _, let reason): return type.displayText(reason: reason)
         case .systemEvent(let text, _): return text

@@ -88,6 +88,13 @@ struct GlassUniforms {
     float4 previewTextRect;
     float4 previewMeta;
     float4 previewAccentColor;
+    // Nav voice foreground.
+    // voiceMeta: x=playback progress, y=opacity, z=sample count.
+    float4 voiceTextRect;
+    float4 voiceWaveformRect;
+    float4 voiceMeta;
+    float4 voiceAccentColor;
+    float  voiceSamples[36];
 };
 
 struct BackdropCompositeUniforms {
@@ -378,6 +385,85 @@ inline float3 glassCompositePreviewText(
     return clamp(color, 0.0, 1.0);
 }
 
+inline float4 glassVoiceTextSample(texture2d<float> textTex, float2 local) {
+    if (local.x < 0.0 || local.y < 0.0 || local.x > 1.0 || local.y > 1.0) {
+        return float4(0.0);
+    }
+    return textTex.sample(samp, float2(local.x, 1.0 - local.y));
+}
+
+inline float3 glassVoicePrimaryColor(float appearance) {
+    float t = smoothstep(0.0, 1.0, saturate(appearance));
+    return mix(float3(0.96), float3(0.08), t);
+}
+
+inline float3 glassVoiceGlyphColor(float appearance) {
+    float t = smoothstep(0.0, 1.0, saturate(appearance));
+    return mix(float3(0.86), float3(0.42), t);
+}
+
+inline float3 glassCompositeVoiceForeground(
+    float3 baseColor,
+    float2 uv,
+    constant GlassUniforms& u,
+    texture2d<float> voiceTextTex
+) {
+    float opacity = saturate(u.voiceMeta.y);
+    if (opacity <= 0.001) {
+        return baseColor;
+    }
+
+    float4 textRect = u.voiceTextRect;
+    if (textRect.z > 0.0 && textRect.w > 0.0 &&
+        uv.x >= textRect.x && uv.y >= textRect.y &&
+        uv.x <= textRect.x + textRect.z && uv.y <= textRect.y + textRect.w) {
+        float2 local = (uv - textRect.xy) / textRect.zw;
+        float4 tex = glassVoiceTextSample(voiceTextTex, local);
+        float alpha = saturate(tex.a * opacity);
+        baseColor = baseColor * (1.0 - alpha) + tex.rgb * opacity;
+    }
+
+    float4 waveRect = u.voiceWaveformRect;
+    int count = min(int(u.voiceMeta.z), 36);
+    if (count <= 0 || waveRect.z <= 0.0 || waveRect.w <= 0.0 ||
+        uv.x < waveRect.x || uv.y < waveRect.y ||
+        uv.x > waveRect.x + waveRect.z || uv.y > waveRect.y + waveRect.w) {
+        return baseColor;
+    }
+
+    float2 local = (uv - waveRect.xy) / waveRect.zw;
+    float waveAspect = max(0.001, waveRect.z * u.aspect / max(waveRect.w, 1e-5));
+    float2 p = float2(local.x * waveAspect, local.y);
+    float gap = 0.018;
+    float barW = max(0.004, (1.0 - gap * float(max(count - 1, 0))) / float(count));
+    float progress = saturate(u.voiceMeta.x);
+    float3 playedColor = clamp(u.voiceAccentColor.rgb, 0.0, 1.0);
+    float3 restColor = glassVoiceGlyphColor(u.adaptiveAppearance);
+
+    float alpha = 0.0;
+    float3 color = float3(0.0);
+    for (int i = 0; i < 36; i++) {
+        if (i >= count) {
+            break;
+        }
+        float sample = saturate(u.voiceSamples[i]);
+        float x0 = float(i) * (barW + gap);
+        float cx = (x0 + barW * 0.5) * waveAspect;
+        float h = max(0.16, mix(0.18, 1.0, sample));
+        float halfX = barW * waveAspect * 0.5;
+        float halfY = h * 0.5;
+        float r = min(halfX, halfY) * 0.95;
+        float sdf = sdRoundedRect(p - float2(cx, 0.98 - halfY), float2(halfX, halfY), r);
+        float mask = 1.0 - smoothstep(0.012, 0.028, sdf);
+        float played = smoothstep(float(i) / float(count), float(i + 1) / float(count), progress);
+        float3 barColor = mix(restColor, playedColor, played);
+        color += barColor * mask * opacity;
+        alpha = max(alpha, mask * opacity);
+    }
+
+    return mix(baseColor, color / max(alpha, 1e-5), saturate(alpha * 0.82));
+}
+
 inline float glassSplashHeightFromEnergy(float energy) {
     return 1.0 - exp(-max(energy, 0.0) * 0.64);
 }
@@ -562,7 +648,8 @@ fragment float4 glassFragment(
     texture2d<float> blurTex  [[texture(1)]],
     texture2d<float> splashBlobTex [[texture(2)]],
     texture2d<float> glyphAtlasTex [[texture(3)]],
-    texture2d<float> previewTextTex [[texture(4)]]
+    texture2d<float> previewTextTex [[texture(4)]],
+    texture2d<float> voiceTextTex [[texture(5)]]
 ) {
     float2 uv = in.uv;
     float aspect = u.aspect;
@@ -1014,6 +1101,7 @@ fragment float4 glassFragment(
         col *= GLASS_TINT;
         col = glassCompositeGlyph(col, uv, u, glyphAtlasTex, clearTex, blurTex);
         col = glassCompositePreviewText(col, uv, u, previewTextTex, clearTex, blurTex);
+        col = glassCompositeVoiceForeground(col, uv, u, voiceTextTex);
 
         return float4(clamp(col, 0.0, 1.0), glassMask);
     }

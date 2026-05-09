@@ -19,7 +19,7 @@ final class ChatsCoordinator {
     }
 
     func start() {
-        let vc = RoomsViewController()
+        let vc = RoomsViewController(audioPlayer: audioPlayer)
         vc.onChatSelected = { [weak self] room in
             self?.showChat(room)
         }
@@ -212,7 +212,7 @@ final class ChatsCoordinator {
     }
 
     private func showProfile(userId: String) {
-        let vc = ProfileViewController(mode: .other(userId: userId))
+        let vc = ProfileViewController(mode: .other(userId: userId), audioPlayer: audioPlayer)
         vc.onSearchTapped = { [weak self] in
             self?.popAndActivateSearch()
         }
@@ -223,7 +223,11 @@ final class ChatsCoordinator {
     }
 
     private func showRoomDetails(room: Room, memberCount: Int?) {
-        let vc = RoomDetailsViewController(room: room, memberCount: memberCount)
+        let vc = RoomDetailsViewController(
+            room: room,
+            memberCount: memberCount,
+            audioPlayer: audioPlayer
+        )
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -240,7 +244,7 @@ final class ChatsCoordinator {
     }
 
     private func showMembersList(room: Room) {
-        let vc = MembersListViewController(room: room)
+        let vc = MembersListViewController(room: room, audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -251,7 +255,11 @@ final class ChatsCoordinator {
     }
 
     private func showMemberDetail(room: Room, userId: String) {
-        let vc = MemberDetailViewController(room: room, userId: userId)
+        let vc = MemberDetailViewController(
+            room: room,
+            userId: userId,
+            audioPlayer: audioPlayer
+        )
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }

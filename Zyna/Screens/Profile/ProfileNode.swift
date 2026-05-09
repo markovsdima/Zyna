@@ -11,6 +11,7 @@ final class ProfileScreenNode: ScreenNode {
 
     let content: ProfileNode
     weak var glassTopBar: ASDisplayNode?
+    weak var voicePlayerView: UIView?
 
     init(mode: ProfileMode) {
         self.content = ProfileNode(mode: mode)
@@ -27,6 +28,12 @@ final class ProfileScreenNode: ScreenNode {
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
+            if let player = voicePlayerView,
+               player.superview === view,
+               !player.isHidden,
+               player.alpha > 0.01 {
+                elements.append(player)
+            }
             if let bar = glassTopBar?.view, bar.superview === view {
                 elements.append(bar)
             }

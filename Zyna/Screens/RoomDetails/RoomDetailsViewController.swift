@@ -23,6 +23,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private let room: Room
     private let memberCount: Int?
     private let glassTopBar = GlassTopBar()
+    private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
 
     private var isEditingDetails = false
     private var isSavingChanges = false
@@ -30,10 +31,13 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private var loadedHasAvatar = false
     private var pendingAvatarChange: PendingAvatarChange = .none
 
-    init(room: Room, memberCount: Int?) {
+    init(room: Room, memberCount: Int?, audioPlayer: AudioPlayerService? = nil) {
         self.room = room
         self.memberCount = memberCount
         super.init(node: RoomDetailsNode())
+        self.voicePlayerHost = audioPlayer.map {
+            EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
+        }
         hidesBottomBarWhenPushed = true
     }
 
@@ -43,6 +47,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         super.viewDidLoad()
 
         setupGlassTopBar()
+        setupVoicePlayerHost()
 
         node.onSearchTapped = { [weak self] in
             self?.onSearchTapped?()
@@ -71,6 +76,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        voicePlayerHost?.layout()
         glassTopBar.updateLayout(in: view)
         let target = glassTopBar.coveredHeight + 24
         if abs(target - node.topInset) > 0.5 {
@@ -81,6 +87,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        voicePlayerHost?.refresh()
         GlassService.shared.setNeedsCapture()
     }
 
@@ -96,6 +103,15 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         node.addSubnode(glassTopBar)
         node.glassTopBar = glassTopBar
         rebuildGlassItems(editing: false)
+    }
+
+    private func setupVoicePlayerHost() {
+        voicePlayerHost?.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost?.install()
+        node.voicePlayerView = voicePlayerHost?.accessibilityView
     }
 
     private func rebuildGlassItems(editing: Bool) {

@@ -21,13 +21,13 @@ final class MainCoordinator {
         let chats = ChatsCoordinator(audioPlayer: voicePlayback)
         chats.start()
 
-        let contacts = ContactsCoordinator()
+        let contacts = ContactsCoordinator(audioPlayer: voicePlayback)
         contacts.start()
 
-        let calls = CallsCoordinator()
+        let calls = CallsCoordinator(audioPlayer: voicePlayback)
         calls.start()
 
-        let profile = ProfileCoordinator()
+        let profile = ProfileCoordinator(audioPlayer: voicePlayback)
         profile.onLogout = { [weak self] in
             self?.onLogout?()
         }
@@ -50,7 +50,6 @@ final class MainCoordinator {
             items: items,
             selectedIndex: 2
         )
-        tabBarController.setVoicePlaybackService(voicePlayback)
 
         self.chatsCoordinator = chats
         self.contactsCoordinator = contacts

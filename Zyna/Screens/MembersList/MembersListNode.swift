@@ -8,6 +8,7 @@ import AsyncDisplayKit
 final class MembersListNode: ScreenNode {
 
     let tableNode = ASTableNode()
+    weak var voicePlayerView: UIView?
     weak var glassTopBar: GlassTopBar?
 
     override init() {
@@ -24,6 +25,12 @@ final class MembersListNode: ScreenNode {
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
+            if let player = voicePlayerView,
+               player.superview === view,
+               !player.isHidden,
+               player.alpha > 0.01 {
+                elements.append(player)
+            }
             if let bar = glassTopBar, bar.view.superview === view {
                 elements.append(contentsOf: bar.accessibilityElementsInOrder)
             }

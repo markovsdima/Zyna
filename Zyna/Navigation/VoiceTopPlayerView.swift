@@ -5,6 +5,33 @@
 
 import UIKit
 
+private final class VoicePlayerProgressTouchView: UIView {
+
+    var progressProvider: (() -> CGFloat)?
+    var onAdjust: ((CGFloat) -> Void)?
+
+    override var accessibilityValue: String? {
+        get {
+            let value = Int(((progressProvider?() ?? 0) * 100).rounded())
+            return "\(value)%"
+        }
+        set { }
+    }
+
+    override func accessibilityIncrement() {
+        adjust(by: 0.05)
+    }
+
+    override func accessibilityDecrement() {
+        adjust(by: -0.05)
+    }
+
+    private func adjust(by delta: CGFloat) {
+        let current = progressProvider?() ?? 0
+        onAdjust?(min(max(current + delta, 0), 1))
+    }
+}
+
 final class VoiceTopPlayerView: UIView {
 
     var onPlayPause: (() -> Void)?
@@ -23,9 +50,14 @@ final class VoiceTopPlayerView: UIView {
     private let timeLabel = UILabel()
     private let progressTrackView = UIView()
     private let progressFillView = UIView()
-    private let progressTouchView = UIView()
+    private let progressTouchView = VoicePlayerProgressTouchView()
 
-    private var progress: CGFloat = 0
+    private var progress: CGFloat = 0 {
+        didSet {
+            guard abs(progress - oldValue) > 0.0001 else { return }
+            updateProgressFillFrame()
+        }
+    }
     private var isScrubbing = false
     private var scrubProgress: CGFloat = 0
 
@@ -38,11 +70,44 @@ final class VoiceTopPlayerView: UIView {
         fatalError("init(coder:) not supported")
     }
 
+    override var accessibilityElements: [Any]? {
+        get {
+            var elements: [Any] = []
+            if !playPauseButton.isHidden {
+                elements.append(playPauseButton)
+            }
+            if !(titleLabel.text ?? "").isEmpty {
+                elements.append(titleLabel)
+            }
+            if !(subtitleLabel.text ?? "").isEmpty {
+                elements.append(subtitleLabel)
+            }
+            if !(timeLabel.text ?? "").isEmpty {
+                elements.append(timeLabel)
+            }
+            if progressTouchView.isUserInteractionEnabled {
+                elements.append(progressTouchView)
+            }
+            if !speedButton.isHidden {
+                elements.append(speedButton)
+            }
+            if !closeButton.isHidden {
+                elements.append(closeButton)
+            }
+            return elements
+        }
+        set { }
+    }
+
     func configure(
         state: AudioPlayerService.State,
         item: AudioPlayerService.NowPlayingItem?,
         snapshot: AudioPlayerService.PlaybackSnapshot
     ) {
+        let oldTitleText = titleLabel.text
+        let oldSubtitleText = subtitleLabel.text
+        let oldTimeText = timeLabel.text
+
         titleLabel.text = item?.title ?? String(localized: "Voice message")
 
         let stateText: String?
@@ -54,10 +119,11 @@ final class VoiceTopPlayerView: UIView {
         case .playing:
             stateText = item?.subtitle ?? String(localized: "Voice message")
         case .paused:
+            let voiceLabel = String(localized: "Voice Message")
             if let subtitle = item?.subtitle, !subtitle.isEmpty {
-                stateText = String(localized: "Paused") + " - " + subtitle
+                stateText = voiceLabel + " - " + subtitle
             } else {
-                stateText = String(localized: "Paused")
+                stateText = voiceLabel
             }
         }
         subtitleLabel.text = stateText
@@ -84,7 +150,9 @@ final class VoiceTopPlayerView: UIView {
             spinner.stopAnimating()
             spinner.isHidden = true
         }
-        speedButton.setTitle(Self.rateTitle(snapshot.playbackRate), for: .normal)
+        let playbackRateTitle = Self.rateTitle(snapshot.playbackRate)
+        speedButton.setTitle(playbackRateTitle, for: .normal)
+        speedButton.accessibilityValue = Self.rateAccessibilityValue(snapshot.playbackRate)
 
         let isPlaying = state.isPlaying
         playPauseButton.setImage(
@@ -95,7 +163,15 @@ final class VoiceTopPlayerView: UIView {
             ? String(localized: "Pause voice message")
             : String(localized: "Play voice message")
 
-        setNeedsLayout()
+        if oldTitleText != titleLabel.text
+            || oldSubtitleText != subtitleLabel.text
+            || oldTimeText != timeLabel.text
+            || bounds.isEmpty
+        {
+            setNeedsLayout()
+        } else {
+            updateProgressFillFrame()
+        }
     }
 
     override func layoutSubviews() {
@@ -173,6 +249,16 @@ final class VoiceTopPlayerView: UIView {
         progressTouchView.frame = progressTrackView.frame.insetBy(dx: 0, dy: -7)
     }
 
+    private func updateProgressFillFrame() {
+        guard !progressTrackView.bounds.isEmpty else { return }
+        let displayedProgress = max(0, min(isScrubbing ? scrubProgress : progress, 1))
+        var frame = progressFillView.frame
+        frame.origin = .zero
+        frame.size.width = progressTrackView.bounds.width * displayedProgress
+        frame.size.height = progressTrackView.bounds.height
+        progressFillView.frame = frame
+    }
+
     private func setup() {
         isOpaque = false
         clipsToBounds = false
@@ -195,11 +281,13 @@ final class VoiceTopPlayerView: UIView {
         titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         titleLabel.textColor = .label
         titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.isAccessibilityElement = true
         effectView.contentView.addSubview(titleLabel)
 
         subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.isAccessibilityElement = true
         effectView.contentView.addSubview(subtitleLabel)
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
@@ -207,6 +295,7 @@ final class VoiceTopPlayerView: UIView {
         timeLabel.textAlignment = .right
         timeLabel.adjustsFontSizeToFitWidth = true
         timeLabel.minimumScaleFactor = 0.75
+        timeLabel.isAccessibilityElement = true
         effectView.contentView.addSubview(timeLabel)
 
         progressTrackView.backgroundColor = UIColor.label.withAlphaComponent(0.14)
@@ -217,8 +306,20 @@ final class VoiceTopPlayerView: UIView {
         progressTrackView.addSubview(progressFillView)
 
         progressTouchView.backgroundColor = .clear
+        progressTouchView.isAccessibilityElement = true
         progressTouchView.accessibilityLabel = String(localized: "Seek voice message")
         progressTouchView.accessibilityTraits = .adjustable
+        progressTouchView.progressProvider = { [weak self] in
+            guard let self else { return 0 }
+            return self.isScrubbing ? self.scrubProgress : self.progress
+        }
+        progressTouchView.onAdjust = { [weak self] nextProgress in
+            guard let self else { return }
+            self.scrubProgress = nextProgress
+            self.progress = nextProgress
+            self.setNeedsLayout()
+            self.onSeek?(Float(nextProgress))
+        }
         effectView.contentView.addSubview(progressTouchView)
         let tap = UITapGestureRecognizer(target: self, action: #selector(progressTapped(_:)))
         progressTouchView.addGestureRecognizer(tap)
@@ -301,5 +402,12 @@ final class VoiceTopPlayerView: UIView {
             return String(format: "%.0fx", rate)
         }
         return String(format: "%.1fx", rate)
+    }
+
+    private static func rateAccessibilityValue(_ rate: Float) -> String {
+        if abs(rate.rounded() - rate) < 0.01 {
+            return String(format: "%.0f x", rate)
+        }
+        return rateTitle(rate)
     }
 }

@@ -376,7 +376,7 @@ final class ChatInputNode: ASDisplayNode {
         micButtonNode.imageNode.tintColor = glassMaterial.glyphForeground
         micButtonNode.style.preferredSize = CGSize(width: 48, height: 48)
         micButtonNode.isAccessibilityElement = true
-        micButtonNode.accessibilityLabel = "Record voice message"
+        micButtonNode.accessibilityLabel = String(localized: "Record voice message")
         micButtonNode.accessibilityTraits = .button
 
         overlayNode.alpha = 0

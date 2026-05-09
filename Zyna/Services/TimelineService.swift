@@ -457,7 +457,7 @@ final class TimelineService {
             case .text(let t): return t.body
             case .image: return "Photo"
             case .video: return "Video"
-            case .audio: return "Voice message"
+            case .audio: return String(localized: "Voice message")
             case .file: return "File"
             case .notice(let t): return t.body
             case .emote(let t): return t.body

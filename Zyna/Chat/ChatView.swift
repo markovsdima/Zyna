@@ -148,6 +148,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private lazy var glassTuning = GlassTuningView()
     private var previousInputCoveredHeight: CGFloat?
     private let audioPlayer: AudioPlayerService
+    private let initialVoiceIslandShouldAppearWithoutAnimation: Bool
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactionBatches: [ChatViewModel.DetectedRedactionBatch] = []
     private var isTeleporting = false
@@ -169,6 +170,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var pendingPostSendPinToLive = false
     private var isEditingInputActive = false
     private var isReplySwipeInteractionActive = false
+    private var isShowingVoiceIsland = false
+    private var didCompleteFirstAppearance = false
+    private var didConsumeInitialVoiceIslandAnimationSuppression = false
     private var redactionAnimationsArmed = false
     private var redactionAnimationArmWork: DispatchWorkItem?
     private var didCleanupViewModel = false
@@ -178,11 +182,22 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.mode.isPreview
     }
 
+    var roomIdentifier: String {
+        viewModel.roomIdentifier
+    }
+
+    var canPresentVoicePlaybackIsland: Bool {
+        !isPreviewMode
+    }
+
     // MARK: - Init
 
     init(viewModel: ChatViewModel, audioPlayer: AudioPlayerService) {
         self.viewModel = viewModel
         self.audioPlayer = audioPlayer
+        self.initialVoiceIslandShouldAppearWithoutAnimation = (
+            audioPlayer.state != .idle && audioPlayer.nowPlaying != nil
+        )
         super.init(node: ChatNode())
         hidesBottomBarWhenPushed = !viewModel.mode.isPreview
     }
@@ -240,8 +255,33 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     self.onRoomDetailsTapped?()
                 }
             }
+            glassNavBar.onVoicePlayPause = { [weak self] in
+                guard let self else { return }
+                if self.audioPlayer.state.isPlaying {
+                    self.audioPlayer.pause()
+                } else {
+                    self.audioPlayer.resume()
+                }
+            }
+            glassNavBar.onVoiceClose = { [weak self] in
+                self?.audioPlayer.stop()
+            }
+            glassNavBar.onVoiceSpeed = { [weak self] in
+                self?.audioPlayer.cyclePlaybackRate()
+            }
+            glassNavBar.onVoiceSeek = { [weak self] progress in
+                self?.audioPlayer.seek(to: progress)
+            }
+            glassNavBar.onHeightChanged = { [weak self] in
+                guard let self else { return }
+                self.view.setNeedsLayout()
+                self.view.layoutIfNeeded()
+                self.updateTableInsetsForInputBar()
+                self.updateDateHeaderOverlay()
+            }
             node.addSubnode(glassNavBar)
             node.glassNavBar = glassNavBar
+            bindVoiceIsland()
         }
 
         // Search bar (hidden by default)
@@ -381,6 +421,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         guard !isPreviewMode else { return }
+        applyVoiceIslandState(
+            state: audioPlayer.state,
+            item: audioPlayer.nowPlaying,
+            snapshot: audioPlayer.snapshot
+        )
         // Pre-warm glass before the navigation transition starts so the
         // shared render loop is already active on the first animated frame.
         GlassService.shared.captureFor(duration: 0.5)
@@ -390,6 +435,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         guard !isPreviewMode else { return }
+        didCompleteFirstAppearance = true
         // Force glass recapture after navigation push completes
         GlassService.shared.setNeedsCapture()
         if shouldPresentAttachmentPreviewAfterDismiss {
@@ -828,6 +874,87 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     // MARK: - Bindings
+
+    private func bindVoiceIsland() {
+        audioPlayer.$state
+            .combineLatest(audioPlayer.$nowPlaying, audioPlayer.$snapshot)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state, item, snapshot in
+                self?.applyVoiceIslandState(state: state, item: item, snapshot: snapshot)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func applyVoiceIslandState(
+        state: AudioPlayerService.State,
+        item: AudioPlayerService.NowPlayingItem?,
+        snapshot: AudioPlayerService.PlaybackSnapshot
+    ) {
+        guard !isPreviewMode else { return }
+        let shouldShow = state != .idle && item != nil
+
+        guard shouldShow, let item else {
+            glassNavBar.setVoiceState(
+                nil,
+                animated: shouldAnimateVoiceIslandStateChange(showing: false)
+            )
+            updateVoiceIslandVisibility(false)
+            return
+        }
+
+        let subtitle = state.isLoading
+            ? String(localized: "Loading")
+            : String(localized: "Voice Message")
+
+        let remaining = snapshot.duration > 0
+            ? snapshot.remainingTime
+            : item.duration
+        let voiceState = VoiceTitleState(
+            title: item.title,
+            subtitle: subtitle,
+            remainingText: MediaDurationFormatter.shortString(for: remaining),
+            rateText: Self.voiceRateTitle(snapshot.playbackRate),
+            waveform: item.waveform,
+            progress: snapshot.progress,
+            isPlaying: state.isPlaying,
+            isLoading: state.isLoading
+        )
+        glassNavBar.setVoiceState(
+            voiceState,
+            animated: shouldAnimateVoiceIslandStateChange(showing: true)
+        )
+        updateVoiceIslandVisibility(true)
+    }
+
+    private func shouldAnimateVoiceIslandStateChange(showing: Bool) -> Bool {
+        defer {
+            if initialVoiceIslandShouldAppearWithoutAnimation
+                && !didConsumeInitialVoiceIslandAnimationSuppression {
+                didConsumeInitialVoiceIslandAnimationSuppression = true
+            }
+        }
+
+        guard didCompleteFirstAppearance else { return false }
+        if showing,
+           initialVoiceIslandShouldAppearWithoutAnimation,
+           !didConsumeInitialVoiceIslandAnimationSuppression,
+           glassNavBar.voiceState == nil {
+            return false
+        }
+        return true
+    }
+
+    private func updateVoiceIslandVisibility(_ visible: Bool) {
+        guard isShowingVoiceIsland != visible else { return }
+        isShowingVoiceIsland = visible
+    }
+
+    private static func voiceRateTitle(_ rate: Float) -> String {
+        if abs(rate.rounded() - rate) < 0.01 {
+            return String(format: "%.0fx", rate)
+        }
+        return String(format: "%.1fx", rate)
+    }
 
     private func bindViewModel() {
         viewModel.onTableUpdate = { [weak self] update in
