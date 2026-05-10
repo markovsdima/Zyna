@@ -19,10 +19,11 @@ final class PushService {
     private var deviceToken: Data?
 
     #if DEBUG
-    private static let gatewayPath = "/_matrix/push/v1/notify-dev"
+    private static let gatewayHostPrefix = "push-dev"
     #else
-    private static let gatewayPath = "/_matrix/push/v1/notify"
+    private static let gatewayHostPrefix = "push"
     #endif
+    private static let gatewayPath = "/_matrix/push/v1/notify"
 
     private init() {}
 
@@ -40,6 +41,30 @@ final class PushService {
         }
 
         components.path = path
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
+
+    private static func buildGatewayURL(from homeserverUrl: String) -> URL? {
+        var raw = homeserverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.contains("://") {
+            raw = "https://\(raw)"
+        }
+
+        guard var components = URLComponents(string: raw),
+              let scheme = components.scheme,
+              let host = components.host,
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+
+        var labels = host.split(separator: ".", omittingEmptySubsequences: true).map(String.init)
+        guard labels.count >= 2 else { return nil }
+        labels[0] = gatewayHostPrefix
+
+        components.host = labels.joined(separator: ".")
+        components.path = gatewayPath
         components.query = nil
         components.fragment = nil
         return components.url
@@ -110,10 +135,7 @@ final class PushService {
                 return
             }
 
-            guard let gatewayURL = Self.buildURL(
-                from: session.homeserverUrl,
-                path: Self.gatewayPath
-            ) else {
+            guard let gatewayURL = Self.buildGatewayURL(from: session.homeserverUrl) else {
                 logPush("Invalid push gateway URL")
                 return
             }
