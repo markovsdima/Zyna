@@ -71,9 +71,6 @@ struct AuthView: View {
             UIApplication.shared.endEditing()
         }
         .preferredColorScheme(.light)
-        .onAppear {
-            viewModel.tryRestoreSession()
-        }
     }
 
     // MARK: - View Components
@@ -186,7 +183,7 @@ struct AuthView: View {
             viewModel.login(username: username, password: password, homeserver: homeserver)
         }) {
             Group {
-                if viewModel.isLoading {
+                if viewModel.isSigningIn {
                     ProgressView()
                         .tint(.white)
                 } else {

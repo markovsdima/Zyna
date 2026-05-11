@@ -1352,6 +1352,16 @@
         }
       }
     },
+    "Keep Waiting" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Продолжить ждать"
+          }
+        }
+      }
+    },
     "Lagoon Teal" : {
       "localizations" : {
         "ru" : {
@@ -2131,6 +2141,16 @@
         }
       }
     },
+    "Server Is Not Responding" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервер не отвечает"
+          }
+        }
+      }
+    },
     "Set %@ as %@?" : {
       "localizations" : {
         "en" : {
@@ -2247,6 +2267,36 @@
         }
       }
     },
+    "Sign Out on This Device" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выйти на этом устройстве"
+          }
+        }
+      }
+    },
+    "Signing Out" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выход"
+          }
+        }
+      }
+    },
+    "Signing out is taking longer than expected. You can keep waiting or remove this account from this device." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выход занимает больше времени, чем ожидалось. Можно продолжить ждать или удалить этот аккаунт с этого устройства."
+          }
+        }
+      }
+    },
     "Slide to cancel" : {
       "localizations" : {
         "ru" : {
@@ -2297,6 +2347,16 @@
         }
       }
     },
+    "Stop Waiting" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Перестать ждать"
+          }
+        }
+      }
+    },
     "Syncing encryption keys…" : {
       "localizations" : {
         "ru" : {
@@ -2324,6 +2384,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Бирюзовый"
+          }
+        }
+      }
+    },
+    "The server did not complete sign out. You can stay signed in here or remove this account from this device." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервер не завершил выход. Можно остаться в аккаунте здесь или удалить этот аккаунт с этого устройства."
           }
         }
       }

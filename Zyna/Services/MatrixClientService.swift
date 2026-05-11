@@ -158,9 +158,18 @@ final class MatrixClientService {
             throw AuthenticationError.sessionNotFound
         }
 
+        let session: MatrixRustSDK.Session
         do {
-            let session = try sessionDelegate.retrieveSessionFromKeychain(userId: userId)
+            session = try sessionDelegate.retrieveSessionFromKeychain(userId: userId)
+        } catch {
+            logAuth("Stored session unavailable for \(userId): \(error)")
+            clearLocalSession(userId: userId)
+            FileCacheService.shared.clearAll()
+            stateSubject.send(.loggedOut)
+            throw error
+        }
 
+        do {
             let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
                 .passphrase(passphrase: passphrase)
 
@@ -185,7 +194,12 @@ final class MatrixClientService {
             try await startSync()
         } catch {
             logAuth("Session restore failed: \(error)")
-            stateSubject.send(.error(error))
+            await stopSync()
+            detachEncryptionListeners()
+            client = nil
+            clearLocalSession(userId: userId)
+            FileCacheService.shared.clearAll()
+            stateSubject.send(.loggedOut)
             throw error
         }
     }
@@ -257,23 +271,40 @@ final class MatrixClientService {
 
     // MARK: - Logout
 
-    func logout() async {
+    func logoutFromServer() async throws {
+        guard let client else {
+            throw AuthenticationError.clientNotInitialized
+        }
+
+        do {
+            try await client.logout()
+            logAuth("Server logout completed")
+        } catch {
+            logAuth("Server logout failed: \(error)")
+            throw error
+        }
+    }
+
+    func logoutLocally() async {
+        let userId = currentOrStoredUserId(client: client)
+
         await stopSync()
         detachEncryptionListeners()
 
-        if let client {
-            let userId = (try? client.userId()) ?? ""
-            try? await client.logout()
-            sessionDelegate.clearSession(userId: userId)
-            SessionVerificationService.clearLocalSecretsFlag(userId: userId)
-            UserDefaults.standard.removeObject(forKey: userIdKey)
-            logAuth("Logged out")
-        }
-
+        client = nil
+        clearLocalSession(userId: userId)
         FileCacheService.shared.clearAll()
-
-        self.client = nil
         stateSubject.send(.loggedOut)
+        logAuth("Logged out locally")
+    }
+
+    func logout() async {
+        do {
+            try await logoutFromServer()
+        } catch {
+            logAuth("Continuing with local logout after server logout failure: \(error)")
+        }
+        await logoutLocally()
     }
 
     // MARK: - OIDC
@@ -346,6 +377,25 @@ final class MatrixClientService {
     var hasStoredSession: Bool {
         UserDefaults.standard.string(forKey: userIdKey) != nil
     }
+
+    private func currentOrStoredUserId(client: Client?) -> String? {
+        if let client, let userId = try? client.userId(), !userId.isEmpty {
+            return userId
+        }
+        return UserDefaults.standard.string(forKey: userIdKey)
+    }
+
+    private func clearLocalSession(userId: String?) {
+        if let userId, !userId.isEmpty {
+            sessionDelegate.clearSession(userId: userId)
+            SessionVerificationService.clearLocalSecretsFlag(userId: userId)
+        } else {
+            sessionDelegate.clearAllSessions()
+        }
+        UserDefaults.standard.removeObject(forKey: userIdKey)
+        clearSessionDirectories()
+    }
+
 }
 
 // MARK: - SDK Listener Adapters
