@@ -19,12 +19,38 @@ final class AppCoordinator {
     private let serverLogoutDeadline: Duration = .seconds(12)
 
     func start() {
+        observeClientState()
+
         if MatrixClientService.shared.hasStoredSession {
             showMain()
             restoreSessionInBackground()
         } else {
             showAuth()
         }
+    }
+
+    private func observeClientState() {
+        MatrixClientService.shared.stateSubject
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                guard let self else { return }
+                guard case .loggedOut = state else { return }
+                guard self.mainCoordinator != nil else { return }
+                guard !self.isPerformingLogout || self.serverLogoutTask != nil else { return }
+
+                self.serverLogoutCompletionObserver?.cancel()
+                self.serverLogoutCompletionObserver = nil
+                self.serverLogoutTask?.cancel()
+                self.serverLogoutTask = nil
+                self.logoutFallbackAlert = nil
+                PresenceTracker.shared.disconnect()
+                self.mainCoordinator?.stopVoicePlayback()
+                self.mainCoordinator = nil
+                self.showAuth()
+                self.isPerformingLogout = false
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Navigation
@@ -159,7 +185,12 @@ final class AppCoordinator {
 
     @MainActor
     private func performLogout() async {
-        guard !isPerformingLogout else { return }
+        guard !isPerformingLogout else {
+            if logoutFallbackAlert == nil {
+                presentLocalLogoutFallback()
+            }
+            return
+        }
         isPerformingLogout = true
 
         serverLogoutCompletionObserver?.cancel()
@@ -250,12 +281,7 @@ final class AppCoordinator {
                 }
             })
             alert.addAction(UIAlertAction(title: String(localized: "Stop Waiting"), style: .cancel) { [weak self] _ in
-                self?.serverLogoutCompletionObserver?.cancel()
-                self?.serverLogoutCompletionObserver = nil
-                self?.serverLogoutTask?.cancel()
-                self?.serverLogoutTask = nil
                 self?.logoutFallbackAlert = nil
-                self?.isPerformingLogout = false
             })
         } else {
             alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel) { [weak self] _ in
@@ -330,7 +356,7 @@ final class AppCoordinator {
 
     @MainActor
     private func completeLogoutAfterLateServerSuccess() async {
-        guard isPerformingLogout else { return }
+        guard mainCoordinator != nil else { return }
 
         serverLogoutCompletionObserver = nil
         if let logoutFallbackAlert {
@@ -342,6 +368,9 @@ final class AppCoordinator {
     @MainActor
     private func stopObservingServerLogoutCompletion() {
         serverLogoutCompletionObserver = nil
+        serverLogoutTask = nil
+        logoutFallbackAlert = nil
+        isPerformingLogout = false
     }
 }
 

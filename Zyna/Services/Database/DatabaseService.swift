@@ -369,6 +369,15 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v12_outgoingEnvelopeSession") { db in
+            let existingColumns = try db.columns(in: "pendingMediaGroup").map(\.name)
+            if !existingColumns.contains("matrixSessionId") {
+                try db.alter(table: "pendingMediaGroup") { t in
+                    t.add(column: "matrixSessionId", .text)
+                }
+            }
+        }
+
         return migrator
     }
 

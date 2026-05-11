@@ -64,6 +64,7 @@ struct OutgoingVideoPayload: Codable, Equatable {
 struct OutgoingVoicePayload: Codable, Equatable {
     let duration: TimeInterval
     let waveform: [UInt16]
+    let localFileName: String?
 }
 
 struct OutgoingFilePayload: Codable, Equatable {
@@ -103,6 +104,7 @@ enum OutgoingEnvelopePayload: Equatable {
         let size: UInt64?
         let duration: TimeInterval?
         let waveform: [UInt16]?
+        let localFileName: String?
     }
 
     func encodeJSON() -> String? {
@@ -123,7 +125,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 mimetype: nil,
                 size: nil,
                 duration: nil,
-                waveform: nil
+                waveform: nil,
+                localFileName: nil
             )
         case .image(let image):
             payload = CodablePayload(
@@ -140,7 +143,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 mimetype: nil,
                 size: nil,
                 duration: nil,
-                waveform: nil
+                waveform: nil,
+                localFileName: nil
             )
         case .video(let video):
             payload = CodablePayload(
@@ -157,7 +161,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 mimetype: video.mimetype,
                 size: video.size,
                 duration: video.duration,
-                waveform: nil
+                waveform: nil,
+                localFileName: nil
             )
         case .voice(let voice):
             payload = CodablePayload(
@@ -174,7 +179,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 mimetype: nil,
                 size: nil,
                 duration: voice.duration,
-                waveform: voice.waveform
+                waveform: voice.waveform,
+                localFileName: voice.localFileName
             )
         case .file(let file):
             payload = CodablePayload(
@@ -191,7 +197,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 mimetype: file.mimetype,
                 size: file.size,
                 duration: nil,
-                waveform: nil
+                waveform: nil,
+                localFileName: nil
             )
         case .mediaBatch(let batch):
             payload = CodablePayload(
@@ -208,7 +215,8 @@ enum OutgoingEnvelopePayload: Equatable {
                 mimetype: nil,
                 size: nil,
                 duration: nil,
-                waveform: nil
+                waveform: nil,
+                localFileName: nil
             )
         }
         guard let data = try? JSONEncoder().encode(payload) else { return nil }
@@ -255,7 +263,8 @@ enum OutgoingEnvelopePayload: Equatable {
             return .voice(
                 OutgoingVoicePayload(
                     duration: payload.duration ?? 0,
-                    waveform: payload.waveform ?? []
+                    waveform: payload.waveform ?? [],
+                    localFileName: payload.localFileName
                 )
             )
         case .file:
@@ -308,6 +317,7 @@ struct OutgoingEnvelopeRecord: Codable, FetchableRecord, PersistableRecord {
     var state: String?
     var payloadJSON: String?
     var zynaAttributesJSON: String?
+    var matrixSessionId: String?
 
     var decodedKind: OutgoingEnvelopeKind {
         OutgoingEnvelopeKind(rawValue: kind ?? "") ?? .mediaBatch
@@ -348,7 +358,8 @@ struct OutgoingEnvelopeRecord: Codable, FetchableRecord, PersistableRecord {
             return .voice(
                 OutgoingVoicePayload(
                     duration: 0,
-                    waveform: []
+                    waveform: [],
+                    localFileName: nil
                 )
             )
         case .file:
@@ -433,6 +444,7 @@ struct OutgoingEnvelopeSnapshot {
     let state: OutgoingTransportState
     let payload: OutgoingEnvelopePayload
     let zynaAttributes: ZynaMessageAttributes
+    let matrixSessionId: String?
     let createdAt: Date
     let replyInfo: ReplyInfo?
     let items: [OutgoingEnvelopeItemSnapshot]
@@ -444,6 +456,7 @@ struct OutgoingEnvelopeSnapshot {
         self.state = record.decodedState
         self.payload = record.payload
         self.zynaAttributes = record.zynaAttributes
+        self.matrixSessionId = record.matrixSessionId
         self.createdAt = Date(timeIntervalSince1970: record.createdAt)
         self.replyInfo = record.replyInfo
         self.items = items
@@ -495,6 +508,28 @@ struct OutgoingEnvelopeSnapshot {
 
     var primaryItem: OutgoingEnvelopeItemSnapshot? {
         items.first
+    }
+
+    func isStaleSession(currentSessionId: String?) -> Bool {
+        guard let matrixSessionId,
+              let currentSessionId,
+              !matrixSessionId.isEmpty,
+              !currentSessionId.isEmpty
+        else {
+            return false
+        }
+        return matrixSessionId != currentSessionId
+    }
+
+    var isRetryableAfterSessionChange: Bool {
+        switch payload {
+        case .text:
+            return true
+        case .voice(let payload):
+            return payload.localFileName != nil
+        default:
+            return false
+        }
     }
 }
 

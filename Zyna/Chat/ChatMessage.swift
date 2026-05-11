@@ -469,6 +469,8 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     /// Non-nil for synthetic sender-owned rows rendered from the
     /// outgoing envelope layer instead of raw Matrix timeline items.
     var outgoingEnvelopeId: String? = nil
+    var isStaleOutgoingEnvelope: Bool = false
+    var canRetryOutgoingEnvelope: Bool = false
     /// Non-nil for synthetic receiver-side rows rendered by the
     /// incoming assembly layer while grouped media is still incomplete.
     var incomingAssemblyId: String? = nil
@@ -506,6 +508,8 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.isLastInCluster == rhs.isLastInCluster
             && lhs.mediaGroupPresentation == rhs.mediaGroupPresentation
             && lhs.outgoingEnvelopeId == rhs.outgoingEnvelopeId
+            && lhs.isStaleOutgoingEnvelope == rhs.isStaleOutgoingEnvelope
+            && lhs.canRetryOutgoingEnvelope == rhs.canRetryOutgoingEnvelope
             && lhs.incomingAssemblyId == rhs.incomingAssemblyId
     }
 
@@ -543,6 +547,8 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
         copy.isLastInCluster = isLastInCluster
         copy.mediaGroupPresentation = mediaGroupPresentation
         copy.outgoingEnvelopeId = outgoingEnvelopeId
+        copy.isStaleOutgoingEnvelope = isStaleOutgoingEnvelope
+        copy.canRetryOutgoingEnvelope = canRetryOutgoingEnvelope
         copy.incomingAssemblyId = incomingAssemblyId
         return copy
     }

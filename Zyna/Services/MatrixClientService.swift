@@ -53,8 +53,10 @@ final class MatrixClientService {
     private var syncStateHandle: TaskHandle?
     private var verificationStateHandle: TaskHandle?
     private var recoveryStateHandle: TaskHandle?
+    private let invalidatingSession = Atomic(false)
 
     private let userIdKey = "com.zyna.matrix.lastUserId"
+    private let localSessionIdKey = "com.zyna.matrix.localSessionId"
     private static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
 
     private init() {
@@ -132,12 +134,13 @@ final class MatrixClientService {
 
             let userId = try client.userId()
             UserDefaults.standard.set(userId, forKey: userIdKey)
+            let localSessionId = startNewLocalSessionId()
 
             // Manually save session — SDK only auto-calls delegate on token refresh
             let session = try client.session()
             sessionDelegate.saveSessionInKeychain(session: session)
 
-            logAuth("Logged in as \(userId)")
+            logAuth("Logged in as \(userId) localSession=\(localSessionId)")
 
             self.client = client
             stateSubject.send(.loggedIn)
@@ -187,6 +190,7 @@ final class MatrixClientService {
 
             try await client.restoreSession(session: session)
             logAuth("Session restored for \(userId)")
+            ensureLocalSessionId()
 
             self.client = client
             stateSubject.send(.loggedIn)
@@ -307,6 +311,16 @@ final class MatrixClientService {
         await logoutLocally()
     }
 
+    @discardableResult
+    func handleInvalidAccessTokenIfNeeded(_ error: Error) async -> Bool {
+        guard Self.isInvalidAccessTokenError(error) else {
+            return false
+        }
+
+        await invalidateLocalSession(reason: String(describing: error))
+        return true
+    }
+
     // MARK: - OIDC
 
     // TODO: Replace with https://markovsdima.github.io/oidc/callback + Associated Domains once Apple Developer Account is active
@@ -360,11 +374,12 @@ final class MatrixClientService {
 
         let userId = try client.userId()
         UserDefaults.standard.set(userId, forKey: userIdKey)
+        let localSessionId = startNewLocalSessionId()
 
         let session = try client.session()
         sessionDelegate.saveSessionInKeychain(session: session)
 
-        logAuth("OIDC login successful as \(userId)")
+        logAuth("OIDC login successful as \(userId) localSession=\(localSessionId)")
 
         self.client = client
         stateSubject.send(.loggedIn)
@@ -376,6 +391,10 @@ final class MatrixClientService {
 
     var hasStoredSession: Bool {
         UserDefaults.standard.string(forKey: userIdKey) != nil
+    }
+
+    var currentLocalSessionId: String? {
+        UserDefaults.standard.string(forKey: localSessionIdKey)
     }
 
     private func currentOrStoredUserId(client: Client?) -> String? {
@@ -393,7 +412,38 @@ final class MatrixClientService {
             sessionDelegate.clearAllSessions()
         }
         UserDefaults.standard.removeObject(forKey: userIdKey)
+        UserDefaults.standard.removeObject(forKey: localSessionIdKey)
         clearSessionDirectories()
+    }
+
+    @discardableResult
+    private func startNewLocalSessionId() -> String {
+        let id = UUID().uuidString
+        UserDefaults.standard.set(id, forKey: localSessionIdKey)
+        return id
+    }
+
+    @discardableResult
+    private func ensureLocalSessionId() -> String {
+        if let existing = currentLocalSessionId {
+            return existing
+        }
+        return startNewLocalSessionId()
+    }
+
+    private func invalidateLocalSession(reason: String) async {
+        guard invalidatingSession.tryToSetFlag() else { return }
+        defer { invalidatingSession.tryToClearFlag() }
+
+        logAuth("Invalid access token; clearing local session: \(reason)")
+        await logoutLocally()
+    }
+
+    private static func isInvalidAccessTokenError(_ error: Error) -> Bool {
+        let description = String(describing: error)
+        return description.contains("M_UNKNOWN_TOKEN")
+            || description.contains("UnknownToken")
+            || description.contains("Invalid access token")
     }
 
 }

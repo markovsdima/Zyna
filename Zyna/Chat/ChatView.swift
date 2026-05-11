@@ -1616,6 +1616,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 return true
             })
         } else if canDiscardLocalOutgoingEnvelope(message) {
+            if canRetryLocalOutgoingEnvelope(message) {
+                actions.append(UIAccessibilityCustomAction(name: "Retry Send") { [weak self] _ in
+                    self?.retryLocalOutgoingEnvelope(message)
+                    return true
+                })
+            }
             actions.append(UIAccessibilityCustomAction(name: localOutgoingEnvelopeRemovalTitle(for: message)) { [weak self] _ in
                 self?.discardLocalOutgoingEnvelope(message)
                 return true
@@ -1839,6 +1845,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     frameInScreen: activeContextMenuBubbleFrameInScreen
                 )
             )
+            if canRetryLocalOutgoingEnvelope(message) {
+                actions.append(ContextMenuAction(
+                    title: "Retry Send",
+                    image: UIImage(systemName: "arrow.clockwise"),
+                    handler: { [weak self] in
+                        self?.retryLocalOutgoingEnvelope(message)
+                    }
+                ))
+            }
             actions.append(ContextMenuAction(
                 title: localOutgoingEnvelopeRemovalTitle(for: message),
                 image: UIImage(systemName: "trash"),
@@ -2672,6 +2687,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
         viewModel.discardOutgoingEnvelope(id: envelopeId)
+    }
+
+    private func retryLocalOutgoingEnvelope(_ message: ChatMessage) {
+        guard canRetryLocalOutgoingEnvelope(message),
+              let envelopeId = message.outgoingEnvelopeId
+        else {
+            return
+        }
+        viewModel.retryOutgoingEnvelope(id: envelopeId)
+    }
+
+    private func canRetryLocalOutgoingEnvelope(_ message: ChatMessage) -> Bool {
+        message.isSyntheticOutgoingEnvelope
+            && message.canRetryOutgoingEnvelope
+            && message.outgoingEnvelopeId != nil
     }
 
     private func canDiscardLocalOutgoingEnvelope(_ message: ChatMessage) -> Bool {

@@ -552,15 +552,18 @@ final class ChatViewModel {
             )
         }
         let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        let currentLocalSessionId = MatrixClientService.shared.currentLocalSessionId
         let mediaBatchPlan = Self.pendingRenderableMediaGroupPlan(
             from: envelopes.filter { $0.kind == .mediaBatch },
             rawMessages: rawMessages,
-            currentUserId: currentUserId
+            currentUserId: currentUserId,
+            currentLocalSessionId: currentLocalSessionId
         )
         let singleEnvelopePlan = Self.pendingRenderableSingleEnvelopePlan(
             from: envelopes.filter { $0.kind != .mediaBatch },
             rawMessages: rawMessages,
-            currentUserId: currentUserId
+            currentUserId: currentUserId,
+            currentLocalSessionId: currentLocalSessionId
         )
         let incomingAssemblyPlan = Self.incomingRenderableMediaGroupPlan(
             from: rawMessages,
@@ -743,7 +746,8 @@ final class ChatViewModel {
     private static func pendingRenderableMediaGroupPlan(
         from pendingGroups: [OutgoingEnvelopeSnapshot],
         rawMessages: [ChatMessage],
-        currentUserId: String
+        currentUserId: String,
+        currentLocalSessionId: String?
     ) -> PendingRenderableEnvelopePlan {
         guard !pendingGroups.isEmpty else {
             return PendingRenderableEnvelopePlan(activeEnvelopes: [], retireEnvelopeIds: [])
@@ -766,7 +770,8 @@ final class ChatViewModel {
                 group,
                 observedState: observedState,
                 rawMessages: rawMessages,
-                currentUserId: currentUserId
+                currentUserId: currentUserId,
+                currentLocalSessionId: currentLocalSessionId
             )
             activeEnvelopes.append(renderGroup)
         }
@@ -780,7 +785,8 @@ final class ChatViewModel {
     private static func pendingRenderableSingleEnvelopePlan(
         from envelopes: [OutgoingEnvelopeSnapshot],
         rawMessages: [ChatMessage],
-        currentUserId: String
+        currentUserId: String,
+        currentLocalSessionId: String?
     ) -> PendingRenderableEnvelopePlan {
         guard !envelopes.isEmpty else {
             return PendingRenderableEnvelopePlan(activeEnvelopes: [], retireEnvelopeIds: [])
@@ -801,7 +807,8 @@ final class ChatViewModel {
                 envelope,
                 observedState: observedState,
                 rawMessages: rawMessages,
-                currentUserId: currentUserId
+                currentUserId: currentUserId,
+                currentLocalSessionId: currentLocalSessionId
             )
             activeEnvelopes.append(renderableEnvelope)
         }
@@ -1095,8 +1102,10 @@ final class ChatViewModel {
         _ group: OutgoingEnvelopeSnapshot,
         observedState: PendingMediaGroupObservedState,
         rawMessages: [ChatMessage],
-        currentUserId: String
+        currentUserId: String,
+        currentLocalSessionId: String?
     ) -> PendingRenderableEnvelope {
+        let isStaleSessionEnvelope = group.isStaleSession(currentSessionId: currentLocalSessionId)
         var primaryMessagesByItemIndex: [Int: ChatMessage] = [:]
         primaryMessagesByItemIndex.reserveCapacity(observedState.primaryMessageIndexByItemIndex.count)
         for (itemIndex, messageIndex) in observedState.primaryMessageIndexByItemIndex {
@@ -1128,7 +1137,7 @@ final class ChatViewModel {
                 width: item.previewWidth ?? primaryImageContent?.width,
                 height: item.previewHeight ?? primaryImageContent?.height,
                 caption: group.caption ?? primaryImageContent?.caption,
-                sendStatus: item.transportState.messageSendStatus
+                sendStatus: isStaleSessionEnvelope ? "failed" : item.transportState.messageSendStatus
             )
         }
 
@@ -1139,7 +1148,9 @@ final class ChatViewModel {
         }()
 
         let anchorMessage = anchorIndex.flatMap { rawMessages.indices.contains($0) ? rawMessages[$0] : nil }
-        let sendStatus = aggregatePendingMediaGroupSendStatus(from: mediaItems)
+        let sendStatus = isStaleSessionEnvelope
+            ? "failed"
+            : aggregatePendingMediaGroupSendStatus(from: mediaItems)
         let layoutOverride = group.mediaBatchPayload?.layoutOverride
         let presentation = MediaGroupPresentation(
             id: group.id,
@@ -1176,6 +1187,7 @@ final class ChatViewModel {
         )
         message.mediaGroupPresentation = presentation
         message.outgoingEnvelopeId = group.id
+        message.isStaleOutgoingEnvelope = isStaleSessionEnvelope
 
         logMediaGroup(
             "pending synthetic group=\(describe(group)) anchor=\(anchorIndex.map(String.init) ?? "nil") hidden=\(observedState.hiddenMessageIndices.count) status=\(sendStatus)"
@@ -1339,18 +1351,22 @@ final class ChatViewModel {
         _ envelope: OutgoingEnvelopeSnapshot,
         observedState: PendingSingleEnvelopeObservedState,
         rawMessages: [ChatMessage],
-        currentUserId: String
+        currentUserId: String,
+        currentLocalSessionId: String?
     ) -> PendingRenderableEnvelope {
+        let isStaleSessionEnvelope = envelope.isStaleSession(currentSessionId: currentLocalSessionId)
         let primaryMessage = observedState.primaryMessageIndex.flatMap {
             rawMessages.indices.contains($0) ? rawMessages[$0] : nil
         }
         let primaryContent = primaryMessage?.content
         let primaryTimestamp = primaryMessage?.timestamp ?? envelope.createdAt
         let primarySenderId = primaryMessage?.senderId ?? currentUserId
-        let sendStatus = pendingSendStatus(
-            transportState: envelope.primaryItem?.transportState,
-            hydratedMessage: primaryMessage
-        )
+        let sendStatus = isStaleSessionEnvelope
+            ? "failed"
+            : pendingSendStatus(
+                transportState: envelope.primaryItem?.transportState,
+                hydratedMessage: primaryMessage
+            )
 
         let content: ChatMessageContent = {
             switch envelope.payload {
@@ -1473,6 +1489,9 @@ final class ChatViewModel {
             sendStatus: sendStatus
         )
         message.outgoingEnvelopeId = envelope.id
+        message.isStaleOutgoingEnvelope = isStaleSessionEnvelope
+        message.canRetryOutgoingEnvelope = isStaleSessionEnvelope
+            && envelope.isRetryableAfterSessionChange
 
         logMediaGroup(
             "pending synthetic envelope=\(describe(envelope)) anchor=\(observedState.primaryMessageIndex.map(String.init) ?? "nil") hidden=\(observedState.hiddenMessageIndices.count) status=\(sendStatus)"
@@ -2306,6 +2325,10 @@ final class ChatViewModel {
         waveform: [Float]
     ) async {
         let envelopeId = UUID().uuidString
+        let storedVoice = try? outgoingEnvelopes.storeOutgoingVoiceFile(
+            sourceURL: fileURL,
+            envelopeId: envelopeId
+        )
         let waveformPayload = waveform.map { sample -> UInt16 in
             let normalized = max(0, min(1, sample))
             return UInt16((normalized * 1024).rounded())
@@ -2315,19 +2338,20 @@ final class ChatViewModel {
             envelopeId: envelopeId,
             duration: duration,
             waveform: waveformPayload,
+            localFileName: storedVoice?.fileName,
             replyInfo: nil
         )
         await refreshWindow()
 
         let receipt = await timelineService.sendVoiceMessage(
-            url: fileURL,
+            url: storedVoice?.url ?? fileURL,
             duration: duration,
             waveform: waveform,
             bindingToken: bindingToken
         )
         await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
             try? FileManager.default.removeItem(at: fileURL)
         }
     }
@@ -2953,6 +2977,106 @@ final class ChatViewModel {
         Task { [weak self] in
             await self?.refreshWindow()
         }
+    }
+
+    func retryOutgoingEnvelope(id envelopeId: String) {
+        Task { [weak self] in
+            await self?.retryOutgoingEnvelopeNow(id: envelopeId)
+        }
+    }
+
+    private func retryOutgoingEnvelopeNow(id envelopeId: String) async {
+        guard let envelope = outgoingEnvelopes.envelope(id: envelopeId, roomId: roomId),
+              envelope.isStaleSession(currentSessionId: MatrixClientService.shared.currentLocalSessionId)
+        else {
+            return
+        }
+
+        switch envelope.payload {
+        case .text(let payload):
+            await retryTextEnvelope(envelope, body: payload.body)
+        case .voice(let payload):
+            await retryVoiceEnvelope(envelope, payload: payload)
+        default:
+            return
+        }
+    }
+
+    private func retryTextEnvelope(
+        _ envelope: OutgoingEnvelopeSnapshot,
+        body: String
+    ) async {
+        let retryEnvelopeId = UUID().uuidString
+        let bindingToken = outgoingEnvelopes.createOutgoingText(
+            roomId: roomId,
+            envelopeId: retryEnvelopeId,
+            body: body,
+            replyInfo: envelope.replyInfo,
+            zynaAttributes: envelope.zynaAttributes
+        )
+        outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
+        await refreshWindow()
+
+        let receipt: OutgoingDispatchReceipt
+        if let replyEventId = envelope.replyInfo?.eventId {
+            receipt = await timelineService.sendReply(
+                body,
+                to: replyEventId,
+                bindingToken: bindingToken
+            )
+        } else if envelope.zynaAttributes.isEmpty {
+            receipt = await timelineService.sendMessage(
+                body,
+                bindingToken: bindingToken
+            )
+        } else {
+            receipt = await timelineService.sendMessage(
+                body,
+                zynaAttributes: envelope.zynaAttributes,
+                bindingToken: bindingToken
+            )
+        }
+
+        await completeOutgoingDispatch(envelopeId: retryEnvelopeId, receipt: receipt)
+    }
+
+    private func retryVoiceEnvelope(
+        _ envelope: OutgoingEnvelopeSnapshot,
+        payload: OutgoingVoicePayload
+    ) async {
+        let retryEnvelopeId = UUID().uuidString
+        guard let localFileName = payload.localFileName,
+              let storedVoice = try? outgoingEnvelopes.copyOutgoingVoiceFile(
+                fileName: localFileName,
+                envelopeId: retryEnvelopeId
+              )
+        else {
+            return
+        }
+
+        let bindingToken = outgoingEnvelopes.createOutgoingVoice(
+            roomId: roomId,
+            envelopeId: retryEnvelopeId,
+            duration: payload.duration,
+            waveform: payload.waveform,
+            localFileName: storedVoice.fileName,
+            replyInfo: envelope.replyInfo,
+            zynaAttributes: envelope.zynaAttributes
+        )
+        outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
+        await refreshWindow()
+
+        let waveform = payload.waveform.map { sample in
+            Float(sample) / 1024
+        }
+        let receipt = await timelineService.sendVoiceMessage(
+            url: storedVoice.url,
+            duration: payload.duration,
+            waveform: waveform,
+            zynaAttributes: envelope.zynaAttributes,
+            bindingToken: bindingToken
+        )
+        await completeOutgoingDispatch(envelopeId: retryEnvelopeId, receipt: receipt)
     }
 
     func reactionSummaryEntries(for message: ChatMessage) async -> [ReactionSummaryEntry] {
