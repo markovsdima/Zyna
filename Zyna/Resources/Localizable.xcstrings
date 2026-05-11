@@ -974,6 +974,16 @@
         }
       }
     },
+    "Deep Ocean" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Глубокий океан"
+          }
+        }
+      }
+    },
     "Delete" : {
       "localizations" : {
         "ru" : {
@@ -1302,6 +1312,16 @@
         }
       }
     },
+    "Iris Mint" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ирис и мята"
+          }
+        }
+      }
+    },
     "Invite Members" : {
       "localizations" : {
         "ru" : {
@@ -1554,6 +1574,16 @@
         }
       }
     },
+    "Midnight" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Полночь"
+          }
+        }
+      }
+    },
     "Moderator" : {
       "localizations" : {
         "ru" : {
@@ -1651,6 +1681,16 @@
     },
     "No reactions yet." : {
 
+    },
+    "Northern Night" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Северная ночь"
+          }
+        }
+      }
     },
     "Offline" : {
 
