@@ -146,6 +146,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         super.viewDidLoad()
         tableNode.view.separatorStyle = .none
         tableNode.view.keyboardDismissMode = .onDrag
+        tableNode.view.contentInsetAdjustmentBehavior = .never
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
         tap.cancelsTouchesInView = false
@@ -276,11 +277,20 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         voicePlayerHost.layout()
         tableNode.frame = node.bounds
         glassTopBar.updateLayout(in: view)
+        updateTableInsets()
+    }
 
-        let covered = glassTopBar.coveredHeight
-        if tableNode.contentInset.top != covered {
-            tableNode.contentInset.top = covered
-            tableNode.view.verticalScrollIndicatorInsets.top = covered
+    private func updateTableInsets() {
+        let top = glassTopBar.coveredHeight
+        let bottom = view.safeAreaInsets.bottom
+
+        if abs(tableNode.contentInset.top - top) > 0.5 {
+            tableNode.contentInset.top = top
+            tableNode.view.verticalScrollIndicatorInsets.top = top
+        }
+        if abs(tableNode.contentInset.bottom - bottom) > 0.5 {
+            tableNode.contentInset.bottom = bottom
+            tableNode.view.verticalScrollIndicatorInsets.bottom = bottom
         }
     }
 }
