@@ -84,6 +84,13 @@ final class PresenceTitleNode: ASDisplayNode {
         }
     }
 
+    var collapsedTitleAlpha: CGFloat = 1 {
+        didSet {
+            guard abs(collapsedTitleAlpha - oldValue) > 0.001 else { return }
+            applyCollapsedTitleAlpha()
+        }
+    }
+
     /// Intrinsic width of the name/status stack (for glass shape sizing).
     var contentWidth: CGFloat {
         if let voiceState, voiceExpanded {
@@ -661,6 +668,12 @@ final class PresenceTitleNode: ASDisplayNode {
         voicePlayButtonNode.imageNode.alpha = hideExpandedForeground ? 0 : 1
         voiceCloseButtonNode.imageNode.alpha = hideExpandedForeground ? 0 : 1
         voiceSpeedButtonNode.titleNode.alpha = hideExpandedForeground ? 0 : 1
+    }
+
+    private func applyCollapsedTitleAlpha() {
+        let alpha = min(max(collapsedTitleAlpha, 0), 1)
+        nameNode.alpha = alpha
+        statusNode.alpha = alpha
     }
 }
 

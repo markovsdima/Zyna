@@ -60,7 +60,7 @@ final class GlassInputBar: ASDisplayNode {
     private var scrollButtonProgress: CGFloat = 0  // 0 = hidden at mic, 1 = fully deployed
     private var scrollButtonTarget: CGFloat = 0
     private var scrollButtonVelocity: CGFloat = 0
-    private var scrollButtonDisplayLink: CADisplayLink?
+    private var scrollButtonDisplayLink: DisplayLinkToken?
     private var scrollButtonLastTime: CFTimeInterval = 0
 
     // Metal-rendered right action glyph (mic ↔ send)
@@ -68,7 +68,7 @@ final class GlassInputBar: ASDisplayNode {
     private var rightGlyphProgress: CGFloat = 0  // 0 = mic, 1 = send
     private var rightGlyphTarget: CGFloat = 0
     private var rightGlyphVelocity: CGFloat = 0
-    private var rightGlyphDisplayLink: CADisplayLink?
+    private var rightGlyphDisplayLink: DisplayLinkToken?
     private var rightGlyphLastTime: CFTimeInterval = 0
     private var rightGlyphSendColor: UIColor = AppColor.accent
     private let previewCloseButton = UIButton(type: .custom)
@@ -522,12 +522,12 @@ final class GlassInputBar: ASDisplayNode {
     private func startRightGlyphDisplayLink() {
         guard rightGlyphDisplayLink == nil else { return }
         rightGlyphLastTime = CACurrentMediaTime()
-        let link = CADisplayLink(target: self, selector: #selector(rightGlyphTick))
-        link.add(to: .main, forMode: .common)
-        rightGlyphDisplayLink = link
+        rightGlyphDisplayLink = DisplayLinkDriver.shared.subscribe(rate: .max) { [weak self] _ in
+            self?.rightGlyphTick()
+        }
     }
 
-    @objc private func rightGlyphTick() {
+    private func rightGlyphTick() {
         let now = CACurrentMediaTime()
         let dt = CGFloat(now - rightGlyphLastTime) / rightGlyphAnimationTimeScale
         rightGlyphLastTime = now
@@ -805,13 +805,13 @@ final class GlassInputBar: ASDisplayNode {
 
         if scrollButtonDisplayLink == nil {
             scrollButtonLastTime = CACurrentMediaTime()
-            let link = CADisplayLink(target: self, selector: #selector(scrollButtonTick))
-            link.add(to: .main, forMode: .common)
-            scrollButtonDisplayLink = link
+            scrollButtonDisplayLink = DisplayLinkDriver.shared.subscribe(rate: .max) { [weak self] _ in
+                self?.scrollButtonTick()
+            }
         }
     }
 
-    @objc private func scrollButtonTick() {
+    private func scrollButtonTick() {
         let now = CACurrentMediaTime()
         let dt = CGFloat(now - scrollButtonLastTime)
         scrollButtonLastTime = now

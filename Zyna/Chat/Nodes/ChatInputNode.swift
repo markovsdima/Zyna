@@ -117,7 +117,7 @@ final class ChatInputNode: ASDisplayNode {
     private var previewBody = ""
     private var lastPreviewRenderMode: PreviewRenderMode = .none
     private var replyRevealProgress: CGFloat = 0
-    private var replyRevealDisplayLink: CADisplayLink?
+    private var replyRevealDisplayLink: DisplayLinkToken?
     private var replyRevealStartTime: CFTimeInterval = 0
     private var replyRevealStartProgress: CGFloat = 0
     private var replyRevealTargetProgress: CGFloat = 0
@@ -404,9 +404,9 @@ final class ChatInputNode: ASDisplayNode {
             return
         }
 
-        let displayLink = CADisplayLink(target: self, selector: #selector(replyRevealTick))
-        displayLink.add(to: .main, forMode: .common)
-        replyRevealDisplayLink = displayLink
+        replyRevealDisplayLink = DisplayLinkDriver.shared.subscribe(rate: .max) { [weak self] _ in
+            self?.replyRevealTick()
+        }
         setReplyRevealProgress(replyRevealProgress)
     }
 
@@ -415,7 +415,7 @@ final class ChatInputNode: ASDisplayNode {
         replyRevealDisplayLink = nil
     }
 
-    @objc private func replyRevealTick() {
+    private func replyRevealTick() {
         let elapsed = CACurrentMediaTime() - replyRevealStartTime
         let linearProgress = CGFloat(min(1, max(0, elapsed / ReplyRevealAnimation.duration)))
         let easedProgress = easeInOutCubic(linearProgress)

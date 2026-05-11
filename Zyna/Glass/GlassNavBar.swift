@@ -6,8 +6,116 @@
 import AsyncDisplayKit
 import Metal
 
+private enum VoiceMotionTiming {
+    private static let openingWidthCurvature: CGFloat = 1.35
+    private static let openingWidthTailPower: CGFloat = 1.42
+    private static let openingWidthLaunch: CGFloat = 0.09
+    private static let openingHeightCurvature: CGFloat = 0.72
+    private static let openingHeightTailPower: CGFloat = 1.50
+    private static let openingHeightLaunch: CGFloat = 0.07
+
+    static func openingWidth(_ value: CGFloat) -> CGFloat {
+        openingSettle(
+            0.0,
+            1.0,
+            value,
+            curvature: openingWidthCurvature,
+            tailPower: openingWidthTailPower,
+            launch: openingWidthLaunch
+        )
+    }
+
+    static func openingHeight(_ value: CGFloat) -> CGFloat {
+        openingSettle(
+            0.025,
+            1.0,
+            value,
+            curvature: openingHeightCurvature,
+            tailPower: openingHeightTailPower,
+            launch: openingHeightLaunch
+        )
+    }
+
+    static func openingContent(_ value: CGFloat) -> CGFloat {
+        let body = min(openingWidth(value), openingHeight(value))
+        return pow(body, 0.82)
+    }
+
+    private static func openingSettle(
+        _ edge0: CGFloat,
+        _ edge1: CGFloat,
+        _ value: CGFloat,
+        curvature: CGFloat,
+        tailPower: CGFloat,
+        launch: CGFloat
+    ) -> CGFloat {
+        guard edge1 > edge0 else { return value >= edge1 ? 1 : 0 }
+        let t = min(max((value - edge0) / (edge1 - edge0), 0), 1)
+        let launchedT = smoothLaunch(t, window: launch)
+        let curvedRemaining = (1 - launchedT) / (1 + max(0, curvature) * launchedT)
+        return 1 - pow(curvedRemaining, max(1.001, tailPower))
+    }
+
+    private static func smoothLaunch(_ value: CGFloat, window: CGFloat) -> CGFloat {
+        guard window > 0, value > 0, value < 1 else { return value }
+        let response = 1 - exp(-value / window)
+        let normalization = 1 - exp(-1 / window)
+        return value * response / normalization
+    }
+
+    static func smootherstep(_ edge0: CGFloat, _ edge1: CGFloat, _ value: CGFloat) -> CGFloat {
+        guard edge1 > edge0 else { return value >= edge1 ? 1 : 0 }
+        let t = min(max((value - edge0) / (edge1 - edge0), 0), 1)
+        return t * t * t * (t * (t * 6 - 15) + 10)
+    }
+
+    static func smoothstep(_ edge0: CGFloat, _ edge1: CGFloat, _ value: CGFloat) -> CGFloat {
+        guard edge1 > edge0 else { return value >= edge1 ? 1 : 0 }
+        let t = min(max((value - edge0) / (edge1 - edge0), 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+}
+
 /// Glass navigation bar with 3 island shapes: back (circle), title (rounded rect), call (circle).
 final class GlassNavBar: ASDisplayNode {
+
+    private struct VoiceShapeSample {
+        let width: CGFloat
+        let heightProgress: CGFloat
+    }
+
+    private struct VoiceContentGeometry {
+        let innerX: CGFloat
+        let innerW: CGFloat
+        let contentFrame: CGRect
+    }
+
+    private struct VoiceShapeAnimation {
+        let startTime: CFTimeInterval
+        let duration: CFTimeInterval
+        let opening: Bool
+        let startWidth: CGFloat
+        let targetWidth: CGFloat
+        let startHeightProgress: CGFloat
+        let targetHeightProgress: CGFloat
+
+        func sample(at now: CFTimeInterval) -> VoiceShapeSample {
+            let duration = max(duration, 0.001)
+            let linear = CGFloat(min(1, max(0, (now - startTime) / duration)))
+            let widthPhase = opening
+                ? VoiceMotionTiming.openingWidth(linear)
+                : VoiceMotionTiming.smootherstep(0.18, 1.0, linear)
+            let heightPhase = opening
+                ? VoiceMotionTiming.openingHeight(linear)
+                : VoiceMotionTiming.smootherstep(0.0, 0.68, linear)
+            return VoiceShapeSample(
+                width: startWidth + (targetWidth - startWidth) * widthPhase,
+                heightProgress: startHeightProgress
+                    + (targetHeightProgress - startHeightProgress) * heightPhase
+            )
+        }
+    }
 
     // MARK: - Public
 
@@ -97,17 +205,21 @@ final class GlassNavBar: ASDisplayNode {
     private var voiceExpanded = false
     private var voiceModeProgress: CGFloat = 0
     private var voiceLifecycleProgress: CGFloat = 0
+    private var voiceContentProgress: CGFloat = 0
+    private var voiceMaterialProgress: CGFloat = 0
     private var voiceCaptureUsesExpandedBounds = false
-    private var voiceModeDisplayLink: CADisplayLink?
+    private var voiceModeDisplayLink: DisplayLinkToken?
     private var voiceModeAnimationStartTime: CFTimeInterval = 0
     private var voiceModeAnimationDuration: CFTimeInterval = 0.28
     private var voiceModeAnimationStartProgress: CGFloat = 0
     private var voiceModeAnimationTargetProgress: CGFloat = 0
     private var voiceLifecycleAnimationStartProgress: CGFloat = 0
     private var voiceLifecycleAnimationTargetProgress: CGFloat = 0
-    private var voiceShapeStartTitleW: CGFloat = 0
-    private var voiceShapeTargetTitleW: CGFloat = 0
-    private var voiceShapeTransitionProgress: CGFloat = 1
+    private var voiceContentAnimationStartProgress: CGFloat = 0
+    private var voiceContentAnimationTargetProgress: CGFloat = 0
+    private var voiceMaterialAnimationStartProgress: CGFloat = 0
+    private var voiceMaterialAnimationTargetProgress: CGFloat = 0
+    private var voiceShapeAnimation: VoiceShapeAnimation?
     private var voiceIsDismissing = false
     private var voiceIsScrubbing = false
     private var voiceScrubProgress: Float = 0
@@ -310,19 +422,31 @@ final class GlassNavBar: ASDisplayNode {
         voiceCaptureUsesExpandedBounds = true
 
         if startsFromIdle {
-            voiceShapeStartTitleW = cachedTitleW
+            let shapeDuration: CFTimeInterval = 0.44
+            let shapeStartWidth = currentDisplayedTitleWidth()
+            let shapeStartHeightProgress = currentDisplayedHeightProgress()
+            let shapeTargetWidth = expandedVoiceTitleWidth(for: state, maxWidth: currentMaxTitleWidth())
+            configureVoiceShapeAnimation(
+                animated: animated,
+                opening: true,
+                duration: shapeDuration,
+                startWidth: shapeStartWidth,
+                targetWidth: shapeTargetWidth,
+                startHeightProgress: shapeStartHeightProgress,
+                targetHeightProgress: 1
+            )
             voiceExpanded = true
             voiceModeProgress = animated ? 0 : 1
             voiceLifecycleProgress = animated ? 0 : 1
-            voiceShapeTransitionProgress = animated ? 0 : 1
+            voiceContentProgress = animated ? 0 : 1
+            voiceMaterialProgress = animated ? 0 : 1
 
             titleNode.voiceExpanded = true
             titleNode.usesMetalVoiceForeground = true
             titleNode.voiceState = state
             invalidateVoiceGeometry(oldHeight: oldHeight, animated: false, continuousCapture: false)
-            voiceShapeTargetTitleW = expandedVoiceTitleWidth(for: state, maxWidth: currentMaxTitleWidth())
             if animated {
-                startVoiceModeAnimation(to: 1, lifecycleTarget: 1, duration: 0.34)
+                startVoiceModeAnimation(to: 1, lifecycleTarget: 1, duration: shapeDuration)
             } else {
                 GlassService.shared.setNeedsCapture()
                 GlassService.shared.setNeedsRender()
@@ -353,8 +477,12 @@ final class GlassNavBar: ASDisplayNode {
             voiceExpanded = false
             voiceModeProgress = 0
             voiceLifecycleProgress = 0
+            voiceContentProgress = 0
+            voiceMaterialProgress = 0
             voiceCaptureUsesExpandedBounds = false
+            voiceShapeAnimation = nil
             titleNode.usesMetalVoiceForeground = false
+            titleNode.collapsedTitleAlpha = 1
             titleNode.voiceState = nil
             voiceIsScrubbing = false
             voiceScrubProgressOverrideUntil = 0
@@ -365,27 +493,39 @@ final class GlassNavBar: ASDisplayNode {
         renderedVoiceState = state
         voiceIsDismissing = true
         voiceCaptureUsesExpandedBounds = true
-        voiceShapeStartTitleW = cachedTitleW
+        let shapeDuration: CFTimeInterval = 0.28
+        let shapeStartWidth = currentDisplayedTitleWidth()
+        let shapeStartHeightProgress = currentDisplayedHeightProgress()
         voiceExpanded = false
         if !animated {
             voiceModeProgress = 0
             voiceLifecycleProgress = 0
-            voiceShapeTransitionProgress = 1
+            voiceContentProgress = 0
+            voiceMaterialProgress = 0
         }
         titleNode.voiceExpanded = false
         titleNode.usesMetalVoiceForeground = false
+        titleNode.collapsedTitleAlpha = animated ? 0 : 1
         titleNode.voiceState = nil
         voiceIsScrubbing = false
         voiceScrubProgressOverrideUntil = 0
+        configureVoiceShapeAnimation(
+            animated: animated,
+            opening: false,
+            duration: shapeDuration,
+            startWidth: shapeStartWidth,
+            targetWidth: fittedTitleWidth(maxWidth: currentMaxTitleWidth()),
+            startHeightProgress: shapeStartHeightProgress,
+            targetHeightProgress: 0
+        )
         invalidateVoiceGeometry(oldHeight: oldHeight, animated: false, continuousCapture: false)
-        voiceShapeTargetTitleW = cachedTitleW
 
         guard animated else {
             finishVoiceDismissal()
             return
         }
 
-        startVoiceModeAnimation(to: 0, lifecycleTarget: 0, duration: 0.28) { [weak self] in
+        startVoiceModeAnimation(to: 0, lifecycleTarget: 0, duration: shapeDuration) { [weak self] in
             self?.finishVoiceDismissal()
         }
     }
@@ -397,10 +537,13 @@ final class GlassNavBar: ASDisplayNode {
         voiceExpanded = false
         voiceModeProgress = 0
         voiceLifecycleProgress = 0
+        voiceContentProgress = 0
+        voiceMaterialProgress = 0
         voiceCaptureUsesExpandedBounds = false
-        voiceShapeTransitionProgress = 1
+        voiceShapeAnimation = nil
         titleNode.voiceExpanded = false
         titleNode.usesMetalVoiceForeground = false
+        titleNode.collapsedTitleAlpha = 1
         titleNode.voiceState = nil
         voiceIsScrubbing = false
         voiceScrubProgressOverrideUntil = 0
@@ -411,20 +554,32 @@ final class GlassNavBar: ASDisplayNode {
     private func setVoiceExpanded(_ expanded: Bool) {
         guard voiceExpanded != expanded else { return }
         let oldHeight = currentBarHeight
-        voiceShapeStartTitleW = cachedTitleW
+        let shapeDuration: CFTimeInterval = expanded ? 0.38 : 0.28
+        let shapeStartWidth = currentDisplayedTitleWidth()
+        let shapeStartHeightProgress = currentDisplayedHeightProgress()
         voiceExpanded = expanded
         if expanded {
             voiceCaptureUsesExpandedBounds = true
         }
         titleNode.usesMetalVoiceForeground = true
         titleNode.voiceExpanded = expanded
-        invalidateVoiceGeometry(oldHeight: oldHeight, animated: false, continuousCapture: false)
+        let shapeTargetWidth: CGFloat
         if expanded, let state = renderedVoiceState ?? voiceState {
-            voiceShapeTargetTitleW = expandedVoiceTitleWidth(for: state, maxWidth: currentMaxTitleWidth())
+            shapeTargetWidth = expandedVoiceTitleWidth(for: state, maxWidth: currentMaxTitleWidth())
         } else {
-            voiceShapeTargetTitleW = cachedTitleW
+            shapeTargetWidth = fittedTitleWidth(maxWidth: currentMaxTitleWidth())
         }
-        startVoiceModeAnimation(to: expanded ? 1 : 0, lifecycleTarget: 1, duration: 0.28) { [weak self] in
+        configureVoiceShapeAnimation(
+            animated: true,
+            opening: expanded,
+            duration: shapeDuration,
+            startWidth: shapeStartWidth,
+            targetWidth: shapeTargetWidth,
+            startHeightProgress: shapeStartHeightProgress,
+            targetHeightProgress: expanded ? 1 : 0
+        )
+        invalidateVoiceGeometry(oldHeight: oldHeight, animated: false, continuousCapture: false)
+        startVoiceModeAnimation(to: expanded ? 1 : 0, lifecycleTarget: 1, duration: shapeDuration) { [weak self] in
             guard let self else { return }
             if !expanded {
                 self.voiceCaptureUsesExpandedBounds = false
@@ -493,32 +648,40 @@ final class GlassNavBar: ASDisplayNode {
     ) {
         let clampedTarget = min(max(target, 0), 1)
         let clampedLifecycleTarget = min(max(lifecycleTarget ?? voiceLifecycleProgress, 0), 1)
+        let activeExpandedTarget = min(clampedTarget, clampedLifecycleTarget)
         voiceModeAnimationCompletion = completion
         voiceModeAnimationStartProgress = voiceModeProgress
         voiceModeAnimationTargetProgress = clampedTarget
         voiceLifecycleAnimationStartProgress = voiceLifecycleProgress
         voiceLifecycleAnimationTargetProgress = clampedLifecycleTarget
+        voiceContentAnimationStartProgress = voiceContentProgress
+        voiceContentAnimationTargetProgress = activeExpandedTarget
+        voiceMaterialAnimationStartProgress = voiceMaterialProgress
+        voiceMaterialAnimationTargetProgress = activeExpandedTarget
         voiceModeAnimationStartTime = CACurrentMediaTime()
         voiceModeAnimationDuration = duration
-        voiceShapeTransitionProgress = 0
 
         guard view.window != nil,
               abs(voiceModeAnimationTargetProgress - voiceModeAnimationStartProgress) > 0.001
                 || abs(voiceLifecycleAnimationTargetProgress - voiceLifecycleAnimationStartProgress) > 0.001
+                || abs(voiceContentAnimationTargetProgress - voiceContentAnimationStartProgress) > 0.001
+                || abs(voiceMaterialAnimationTargetProgress - voiceMaterialAnimationStartProgress) > 0.001
         else {
             stopVoiceModeAnimation(runCompletion: false)
             voiceModeProgress = clampedTarget
             voiceLifecycleProgress = clampedLifecycleTarget
-            voiceShapeTransitionProgress = 1
+            voiceContentProgress = activeExpandedTarget
+            voiceMaterialProgress = activeExpandedTarget
+            voiceShapeAnimation = nil
             GlassService.shared.setNeedsRender()
             completion?()
             return
         }
 
         voiceModeDisplayLink?.invalidate()
-        let link = CADisplayLink(target: self, selector: #selector(voiceModeAnimationTick))
-        link.add(to: .main, forMode: .common)
-        voiceModeDisplayLink = link
+        voiceModeDisplayLink = DisplayLinkDriver.shared.subscribe(rate: .max) { [weak self] _ in
+            self?.voiceModeAnimationTick()
+        }
         GlassService.shared.renderFor(duration: duration + 0.04)
         GlassService.shared.setNeedsRender()
     }
@@ -533,22 +696,48 @@ final class GlassNavBar: ASDisplayNode {
         }
     }
 
-    @objc private func voiceModeAnimationTick() {
+    private func voiceModeAnimationTick() {
         let duration = max(voiceModeAnimationDuration, 0.001)
         let elapsed = CACurrentMediaTime() - voiceModeAnimationStartTime
         let linear = CGFloat(min(1, max(0, elapsed / duration)))
-        let eased = linear * linear * (3 - 2 * linear)
-        voiceShapeTransitionProgress = eased
+        let opening =
+            voiceModeAnimationTargetProgress > voiceModeAnimationStartProgress
+            || voiceLifecycleAnimationTargetProgress > voiceLifecycleAnimationStartProgress
+        let heightPhase = opening
+            ? VoiceMotionTiming.openingHeight(linear)
+            : VoiceMotionTiming.smootherstep(0.0, 0.68, linear)
+        let contentPhase = opening
+            ? VoiceMotionTiming.openingContent(linear)
+            : VoiceMotionTiming.smoothstep(0.0, 0.28, linear)
+        let materialPhase = opening
+            ? VoiceMotionTiming.smoothstep(0.0, 0.58, linear)
+            : VoiceMotionTiming.smoothstep(0.08, 0.62, linear)
+        let lifecyclePhase = opening
+            ? VoiceMotionTiming.smootherstep(0.0, 0.82, linear)
+            : VoiceMotionTiming.smoothstep(0.0, 0.90, linear)
+
         voiceModeProgress = voiceModeAnimationStartProgress
-            + (voiceModeAnimationTargetProgress - voiceModeAnimationStartProgress) * eased
+            + (voiceModeAnimationTargetProgress - voiceModeAnimationStartProgress) * heightPhase
         voiceLifecycleProgress = voiceLifecycleAnimationStartProgress
-            + (voiceLifecycleAnimationTargetProgress - voiceLifecycleAnimationStartProgress) * eased
+            + (voiceLifecycleAnimationTargetProgress - voiceLifecycleAnimationStartProgress) * lifecyclePhase
+        voiceContentProgress = voiceContentAnimationStartProgress
+            + (voiceContentAnimationTargetProgress - voiceContentAnimationStartProgress) * contentPhase
+        voiceMaterialProgress = voiceMaterialAnimationStartProgress
+            + (voiceMaterialAnimationTargetProgress - voiceMaterialAnimationStartProgress) * materialPhase
+        if voiceIsDismissing && !opening {
+            titleNode.collapsedTitleAlpha = VoiceMotionTiming.smootherstep(0.50, 1.0, linear)
+        } else {
+            titleNode.collapsedTitleAlpha = 1
+        }
         GlassService.shared.setNeedsRender()
 
         if linear >= 1 {
             voiceModeProgress = voiceModeAnimationTargetProgress
             voiceLifecycleProgress = voiceLifecycleAnimationTargetProgress
-            voiceShapeTransitionProgress = 1
+            voiceContentProgress = voiceContentAnimationTargetProgress
+            voiceMaterialProgress = voiceMaterialAnimationTargetProgress
+            titleNode.collapsedTitleAlpha = 1
+            voiceShapeAnimation = nil
             stopVoiceModeAnimation()
             GlassService.shared.setNeedsRender()
         }
@@ -574,13 +763,15 @@ final class GlassNavBar: ASDisplayNode {
         let callCY = cy
         let callR = btnSize / 2
 
-        // Title (rounded rect, center — use cached width from layout)
+        // Title (rounded rect, center). During morphs this is sampled from
+        // monotonic time instead of Texture layout/cache state.
         let maxTitleW = glassFrame.width - (btnPad + btnSize + btnPad) * 2
-        let titleW = visualTitleWidth(maxWidth: maxTitleW)
+        let visualShape = voiceVisualShape(maxWidth: maxTitleW, now: CACurrentMediaTime())
+        let titleW = visualShape.width
         let titleX = glassFrame.origin.x + (glassFrame.width - titleW) / 2
         let titleY = glassFrame.origin.y
-        let modeProgress = renderedVoiceState == nil ? 0 : min(max(voiceModeProgress, 0), 1)
-        let titleH = compactBarHeight + (expandedVoiceBarHeight - compactBarHeight) * modeProgress
+        let titleH = compactBarHeight
+            + (expandedVoiceBarHeight - compactBarHeight) * visualShape.heightProgress
 
         // Shape 0: title (rounded rect)
         p.shape0 = SIMD4<Float>(
@@ -628,30 +819,26 @@ final class GlassNavBar: ASDisplayNode {
         scale: CGFloat
     ) -> GlassRenderer.VoiceData? {
         guard let voiceState = renderedVoiceState,
-              voiceModeProgress > 0.001,
               voiceLifecycleProgress > 0.001
         else { return nil }
 
         guard captureFrame.width > 0, captureFrame.height > 0 else { return nil }
 
-        let maxTitleW = glassFrame.width - (btnPad + btnSize + btnPad) * 2
-        let titleW = voiceContentTitleWidth(maxWidth: maxTitleW)
-        let titleX = glassFrame.origin.x + (glassFrame.width - titleW) / 2
-        let innerX = titleX + 12
-        let innerW = max(1, titleW - 24)
+        let geometry = voiceContentGeometry(glassFrame: glassFrame)
         let contentOpacity = voiceExpandedForegroundOpacity()
-        guard contentOpacity > 0.001 else { return nil }
+        let materialOpacity = voiceExpandedMaterialOpacity()
+        guard max(contentOpacity, materialOpacity) > 0.001 else { return nil }
 
         let textFrame = CGRect(
-            x: innerX,
+            x: geometry.innerX,
             y: glassFrame.origin.y + 4,
-            width: innerW,
+            width: geometry.innerW,
             height: 53
         )
         let waveformFrame = CGRect(
-            x: innerX,
+            x: geometry.innerX,
             y: glassFrame.origin.y + 10,
-            width: innerW,
+            width: geometry.innerW,
             height: 61
         )
 
@@ -667,12 +854,16 @@ final class GlassNavBar: ASDisplayNode {
         let samples = Self.resampledWaveform(voiceState.waveform, count: 36)
         let displayedProgress = voiceDisplayedProgress(for: voiceState)
         return GlassRenderer.VoiceData(
+            contentRect: normalizedRect(geometry.contentFrame, in: captureFrame),
+            contentScale: Float(voiceContentScale()),
+            contentReveal: Float(contentOpacity),
             textRect: normalizedRect(textFrame, in: captureFrame),
             waveformRect: normalizedRect(waveformFrame, in: captureFrame),
             progress: displayedProgress,
             scrubProgress: voiceIsScrubbing ? voiceScrubProgress : displayedProgress,
             isScrubbing: voiceIsScrubbing,
             opacity: Float(contentOpacity),
+            materialOpacity: Float(materialOpacity),
             accentColor: resolvedRGBA(ChatBubbleThemeStore.shared.selectedTheme.actionAccentColor),
             samples: samples,
             sampleCount: samples.count,
@@ -725,12 +916,9 @@ final class GlassNavBar: ASDisplayNode {
 
         if let voiceState = renderedVoiceState {
             let maxTitleW = glassFrame.width - (btnPad + btnSize + btnPad) * 2
-            let visualTitleW = visualTitleWidth(maxWidth: maxTitleW)
+            let visualTitleW = voiceVisualShape(maxWidth: maxTitleW, now: CACurrentMediaTime()).width
             let visualTitleX = glassFrame.origin.x + (glassFrame.width - visualTitleW) / 2
-            let contentTitleW = voiceContentTitleWidth(maxWidth: maxTitleW)
-            let contentTitleX = glassFrame.origin.x + (glassFrame.width - contentTitleW) / 2
-            let innerX = contentTitleX + 12
-            let innerW = max(1, contentTitleW - 24)
+            let geometry = voiceContentGeometry(glassFrame: glassFrame)
             let rowCenterY = glassFrame.origin.y + 19
             let progress = min(max(voiceModeProgress, 0), 1)
             let modeW: CGFloat = 32
@@ -738,18 +926,20 @@ final class GlassNavBar: ASDisplayNode {
             let closeW: CGFloat = 32
             let spacing: CGFloat = 8
 
-            let modeExpandedX = innerX + modeW / 2
+            let modeExpandedX = geometry.innerX + modeW / 2
             let modeCollapsedX = visualTitleX + visualTitleW - titleHPad - modeW / 2
             let modeCollapsedCenter = CGPoint(x: modeCollapsedX, y: rowCenterY)
             let modeExpandedCenter = CGPoint(x: modeExpandedX, y: rowCenterY)
-            let playCenter = CGPoint(x: innerX + modeW + spacing + playW / 2, y: rowCenterY)
-            let closeCenter = CGPoint(x: innerX + innerW - closeW / 2, y: rowCenterY)
+            let playCenter = CGPoint(x: geometry.innerX + modeW + spacing + playW / 2, y: rowCenterY)
+            let closeCenter = CGPoint(x: geometry.innerX + geometry.innerW - closeW / 2, y: rowCenterY)
 
             let lifecycleOpacity = min(max(voiceLifecycleProgress, 0), 1)
+            let contentOpacity = voiceExpandedForegroundOpacity()
             let collapsedOpacity = voiceIsDismissing
                 ? 0
-                : Float((1 - smoothstep(0.0, 0.42, progress)) * lifecycleOpacity)
-            let expandedOpacity = Float(smoothstep(0.22, 1.0, progress) * lifecycleOpacity)
+                : Float((1 - VoiceMotionTiming.smoothstep(0.0, 0.42, progress)) * lifecycleOpacity)
+            let expandedOpacity = Float(VoiceMotionTiming.smoothstep(0.0, 1.0, contentOpacity))
+            let contentScale = voiceContentScale()
             if collapsedOpacity > 0.001 {
                 items.append(
                     staticGlyph(
@@ -764,33 +954,39 @@ final class GlassNavBar: ASDisplayNode {
             }
             if expandedOpacity > 0.001 {
                 items.append(
-                    staticGlyph(
+                    voiceContentGlyph(
                         source: .chevronUp,
                         center: modeExpandedCenter,
                         iconSize: 19,
                         effectSize: 34,
                         opacity: expandedOpacity,
-                        captureFrame: captureFrame
+                        captureFrame: captureFrame,
+                        contentFrame: geometry.contentFrame,
+                        contentScale: contentScale
                     )
                 )
                 items.append(
-                    staticGlyph(
+                    voiceContentGlyph(
                         source: voiceState.isPlaying ? .pause : .play,
                         center: playCenter,
                         iconSize: 22,
                         effectSize: 36,
                         opacity: expandedOpacity,
-                        captureFrame: captureFrame
+                        captureFrame: captureFrame,
+                        contentFrame: geometry.contentFrame,
+                        contentScale: contentScale
                     )
                 )
                 items.append(
-                    staticGlyph(
+                    voiceContentGlyph(
                         source: .xmark,
                         center: closeCenter,
                         iconSize: 19,
                         effectSize: 34,
                         opacity: expandedOpacity,
-                        captureFrame: captureFrame
+                        captureFrame: captureFrame,
+                        contentFrame: geometry.contentFrame,
+                        contentScale: contentScale
                     )
                 )
             }
@@ -799,25 +995,85 @@ final class GlassNavBar: ASDisplayNode {
         return GlassRenderer.GlyphData(items: items)
     }
 
-    private func visualTitleWidth(maxWidth: CGFloat) -> CGFloat {
-        let fallback = cachedTitleW > 0 ? cachedTitleW : fittedTitleWidth(maxWidth: maxWidth)
-        guard voiceModeDisplayLink != nil,
-              voiceShapeStartTitleW > 0,
-              voiceShapeTargetTitleW > 0
-        else {
-            return fallback
+    private func configureVoiceShapeAnimation(
+        animated: Bool,
+        opening: Bool,
+        duration: CFTimeInterval,
+        startWidth: CGFloat,
+        targetWidth: CGFloat,
+        startHeightProgress: CGFloat,
+        targetHeightProgress: CGFloat
+    ) {
+        guard animated, view.window != nil else {
+            voiceShapeAnimation = nil
+            return
         }
-        let t = min(max(voiceShapeTransitionProgress, 0), 1)
-        return min(maxWidth, voiceShapeStartTitleW + (voiceShapeTargetTitleW - voiceShapeStartTitleW) * t)
+
+        voiceShapeAnimation = VoiceShapeAnimation(
+            startTime: CACurrentMediaTime(),
+            duration: duration,
+            opening: opening,
+            startWidth: startWidth,
+            targetWidth: targetWidth,
+            startHeightProgress: startHeightProgress,
+            targetHeightProgress: targetHeightProgress
+        )
+    }
+
+    private func voiceVisualShape(maxWidth: CGFloat, now: CFTimeInterval) -> VoiceShapeSample {
+        if let animation = voiceShapeAnimation {
+            let sample = animation.sample(at: now)
+            return VoiceShapeSample(
+                width: min(maxWidth, max(1, sample.width)),
+                heightProgress: min(max(sample.heightProgress, 0), 1)
+            )
+        }
+
+        let settledWidth: CGFloat
+        if let state = renderedVoiceState, voiceExpanded {
+            settledWidth = expandedVoiceTitleWidth(for: state, maxWidth: maxWidth)
+        } else {
+            settledWidth = fittedTitleWidth(maxWidth: maxWidth)
+        }
+
+        return VoiceShapeSample(
+            width: min(maxWidth, settledWidth),
+            heightProgress: renderedVoiceState != nil && voiceExpanded ? 1 : 0
+        )
+    }
+
+    private func currentDisplayedTitleWidth() -> CGFloat {
+        let maxWidth = currentMaxTitleWidth()
+        return voiceVisualShape(maxWidth: maxWidth, now: CACurrentMediaTime()).width
+    }
+
+    private func currentDisplayedHeightProgress() -> CGFloat {
+        voiceVisualShape(maxWidth: currentMaxTitleWidth(), now: CACurrentMediaTime()).heightProgress
     }
 
     private func voiceContentTitleWidth(maxWidth: CGFloat) -> CGFloat {
         if let state = renderedVoiceState {
             return expandedVoiceTitleWidth(for: state, maxWidth: maxWidth)
         }
-        let fallback = cachedTitleW > 0 ? cachedTitleW : fittedTitleWidth(maxWidth: maxWidth)
-        let candidates = [fallback, voiceShapeStartTitleW, voiceShapeTargetTitleW].filter { $0 > 0 }
-        return min(maxWidth, candidates.max() ?? fallback)
+        return fittedTitleWidth(maxWidth: maxWidth)
+    }
+
+    private func voiceContentGeometry(glassFrame: CGRect) -> VoiceContentGeometry {
+        let maxTitleW = glassFrame.width - (btnPad + btnSize + btnPad) * 2
+        let titleW = voiceContentTitleWidth(maxWidth: maxTitleW)
+        let titleX = glassFrame.origin.x + (glassFrame.width - titleW) / 2
+        let innerX = titleX + 12
+        let innerW = max(1, titleW - 24)
+        return VoiceContentGeometry(
+            innerX: innerX,
+            innerW: innerW,
+            contentFrame: CGRect(
+                x: innerX,
+                y: glassFrame.origin.y + 4,
+                width: innerW,
+                height: 67
+            )
+        )
     }
 
     private func expandedVoiceTitleWidth(for state: VoiceTitleState, maxWidth: CGFloat) -> CGFloat {
@@ -837,14 +1093,26 @@ final class GlassNavBar: ASDisplayNode {
     }
 
     private func voiceExpandedForegroundOpacity() -> CGFloat {
-        smoothstep(0.42, 1.0, min(max(voiceModeProgress, 0), 1))
-            * min(max(voiceLifecycleProgress, 0), 1)
+        min(max(voiceContentProgress, 0), 1)
     }
 
-    private func smoothstep(_ edge0: CGFloat, _ edge1: CGFloat, _ value: CGFloat) -> CGFloat {
-        guard edge1 > edge0 else { return value >= edge1 ? 1 : 0 }
-        let t = min(max((value - edge0) / (edge1 - edge0), 0), 1)
-        return t * t * (3 - 2 * t)
+    private func voiceExpandedMaterialOpacity() -> CGFloat {
+        min(max(voiceMaterialProgress, 0), 1)
+    }
+
+    private func voiceContentScale() -> CGFloat {
+        let reveal = min(max(voiceContentProgress, 0), 1)
+        if voiceContentIsClosing() {
+            let retreat = pow(1 - reveal, 0.78)
+            return 1 - retreat * 0.016
+        }
+        let settle = pow(reveal, 1.55)
+        return 1 + (1 - settle) * 0.026
+    }
+
+    private func voiceContentIsClosing() -> Bool {
+        voiceModeDisplayLink != nil
+            && voiceContentAnimationTargetProgress < voiceContentAnimationStartProgress
     }
 
     private func staticGlyph(
@@ -860,6 +1128,31 @@ final class GlassNavBar: ASDisplayNode {
             effectRect: normalizedRect(centeredAt: center, size: effectSize, in: captureFrame),
             source: source,
             opacity: opacity
+        )
+    }
+
+    private func voiceContentGlyph(
+        source: GlassGlyphKind,
+        center: CGPoint,
+        iconSize: CGFloat,
+        effectSize: CGFloat,
+        opacity: Float,
+        captureFrame: CGRect,
+        contentFrame: CGRect,
+        contentScale: CGFloat
+    ) -> GlassRenderer.GlyphItem {
+        let contentCenter = CGPoint(x: contentFrame.midX, y: contentFrame.midY)
+        let transformedCenter = CGPoint(
+            x: contentCenter.x + (center.x - contentCenter.x) * contentScale,
+            y: contentCenter.y + (center.y - contentCenter.y) * contentScale
+        )
+        return staticGlyph(
+            source: source,
+            center: transformedCenter,
+            iconSize: iconSize * contentScale,
+            effectSize: effectSize * contentScale,
+            opacity: opacity,
+            captureFrame: captureFrame
         )
     }
 

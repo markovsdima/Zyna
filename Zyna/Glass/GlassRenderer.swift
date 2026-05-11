@@ -183,12 +183,16 @@ final class GlassRenderer: UIView {
     /// Optional nav voice foreground. Text is a pre-rendered RGBA texture;
     /// waveform samples are drawn procedurally by the shader.
     struct VoiceData {
+        var contentRect: SIMD4<Float>
+        var contentScale: Float
+        var contentReveal: Float
         var textRect: SIMD4<Float>
         var waveformRect: SIMD4<Float>
         var progress: Float
         var scrubProgress: Float
         var isScrubbing: Bool
         var opacity: Float
+        var materialOpacity: Float
         var accentColor: SIMD4<Float>
         var samples: [Float]
         var sampleCount: Int
@@ -309,6 +313,8 @@ final class GlassRenderer: UIView {
         var previewTextRect: SIMD4<Float> = .zero
         var previewMeta: SIMD4<Float> = .zero
         var previewAccentColor: SIMD4<Float> = .zero
+        var voiceContentRect: SIMD4<Float> = .zero
+        var voiceContentMeta: SIMD4<Float> = .zero
         var voiceTextRect: SIMD4<Float> = .zero
         var voiceWaveformRect: SIMD4<Float> = .zero
         var voiceMeta: SIMD4<Float> = .zero
@@ -744,6 +750,13 @@ final class GlassRenderer: UIView {
 
         if let voiceData = item.voiceData {
             let count = min(voiceData.sampleCount, voiceData.samples.count, Self.maxVoiceSamples)
+            uniforms.voiceContentRect = voiceData.contentRect
+            uniforms.voiceContentMeta = SIMD4<Float>(
+                max(0.001, min(1.12, voiceData.contentScale)),
+                max(0, min(1, voiceData.contentReveal)),
+                0,
+                0
+            )
             uniforms.voiceTextRect = voiceData.textRect
             uniforms.voiceWaveformRect = voiceData.waveformRect
             uniforms.voiceMeta = SIMD4<Float>(
@@ -752,7 +765,12 @@ final class GlassRenderer: UIView {
                 Float(count),
                 voiceData.isScrubbing ? max(0, min(1, voiceData.scrubProgress)) : -1
             )
-            uniforms.voiceAccentColor = voiceData.accentColor
+            uniforms.voiceAccentColor = SIMD4<Float>(
+                voiceData.accentColor.x,
+                voiceData.accentColor.y,
+                voiceData.accentColor.z,
+                max(0, min(1, voiceData.materialOpacity))
+            )
             for index in 0..<count {
                 Self.setVoiceSample(max(0, min(1, voiceData.samples[index])), in: &uniforms.voiceSamples, at: index)
             }
