@@ -107,4 +107,13 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
             logKeychain("Failed to clear session: \(error)")
         }
     }
+
+    func clearAllSessions() {
+        do {
+            try keychain.removeAll()
+            logKeychain("All sessions cleared")
+        } catch {
+            logKeychain("Failed to clear all sessions: \(error)")
+        }
+    }
 }

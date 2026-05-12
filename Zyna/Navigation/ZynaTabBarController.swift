@@ -17,9 +17,8 @@ import UIKit
 /// - A `ZynaTabBar` chrome we can style and animate freely:
 ///   custom items, badges, future hide-on-scroll, transition tints,
 ///   anything we'd need.
-/// - Predictable safe-area math: children get
-///   `additionalSafeAreaInsets.bottom` toggled between the bar
-///   height and 0, so inner UIs respect the reservation without
+/// - Predictable safe-area math: children get additional insets for
+///   persistent root chrome, so inner UIs respect reservations without
 ///   knowing about us.
 public class ZynaTabBarController: UIViewController {
 
@@ -259,14 +258,14 @@ public class ZynaTabBarController: UIViewController {
         selectedController?.view.frame = view.bounds
     }
 
-    /// `additionalSafeAreaInsets.bottom` propagates through the view
-    /// hierarchy, so a chat list table or glass input bar inside a
-    /// child controller respects the tab bar reservation without
-    /// knowing about us.
+    /// `additionalSafeAreaInsets` propagates through the view hierarchy,
+    /// so inner screens can respect persistent bottom chrome reservations.
     private func propagateAdditionalSafeArea() {
         let bottom: CGFloat = isTabBarHidden ? 0 : ZynaTabBar.barContentHeight
-        for vc in controllers where vc.additionalSafeAreaInsets.bottom != bottom {
+        let top: CGFloat = 0
+        for vc in controllers where vc.additionalSafeAreaInsets.bottom != bottom || vc.additionalSafeAreaInsets.top != top {
             vc.additionalSafeAreaInsets.bottom = bottom
+            vc.additionalSafeAreaInsets.top = top
         }
     }
 }

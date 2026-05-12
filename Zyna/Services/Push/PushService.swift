@@ -19,12 +19,56 @@ final class PushService {
     private var deviceToken: Data?
 
     #if DEBUG
-    private static let gatewayURL = "http://127.0.0.1:8091/_matrix/push/v1/notify"
+    private static let gatewayHostPrefix = "push-dev"
     #else
-    private static let gatewayURL = "http://127.0.0.1:8090/_matrix/push/v1/notify"
+    private static let gatewayHostPrefix = "push"
     #endif
+    private static let gatewayPath = "/_matrix/push/v1/notify"
 
     private init() {}
+
+    private static func buildURL(from homeserverUrl: String, path: String) -> URL? {
+        var raw = homeserverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.contains("://") {
+            raw = "https://\(raw)"
+        }
+
+        guard var components = URLComponents(string: raw),
+              let scheme = components.scheme,
+              components.host != nil,
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+
+        components.path = path
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
+
+    private static func buildGatewayURL(from homeserverUrl: String) -> URL? {
+        var raw = homeserverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.contains("://") {
+            raw = "https://\(raw)"
+        }
+
+        guard var components = URLComponents(string: raw),
+              let scheme = components.scheme,
+              let host = components.host,
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+
+        var labels = host.split(separator: ".", omittingEmptySubsequences: true).map(String.init)
+        guard labels.count >= 2 else { return nil }
+        labels[0] = gatewayHostPrefix
+
+        components.host = labels.joined(separator: ".")
+        components.path = gatewayPath
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
 
     // MARK: - Request Permission & Register
 
@@ -82,12 +126,17 @@ final class PushService {
 
         do {
             let session = try client.session()
-            var baseURL = session.homeserverUrl
-            while baseURL.hasSuffix("/") { baseURL.removeLast() }
-            let urlString = "\(baseURL)/_matrix/client/v3/pushers/set"
 
-            guard let url = URL(string: urlString) else {
+            guard let url = Self.buildURL(
+                from: session.homeserverUrl,
+                path: "/_matrix/client/v3/pushers/set"
+            ) else {
                 logPush("Invalid pushers URL")
+                return
+            }
+
+            guard let gatewayURL = Self.buildGatewayURL(from: session.homeserverUrl) else {
+                logPush("Invalid push gateway URL")
                 return
             }
 
@@ -102,7 +151,7 @@ final class PushService {
                 "device_display_name": deviceName,
                 "lang": "en",
                 "data": [
-                    "url": Self.gatewayURL,
+                    "url": gatewayURL.absoluteString,
                     "format": "event_id_only"
                 ]
             ]

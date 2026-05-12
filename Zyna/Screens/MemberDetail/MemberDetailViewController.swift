@@ -17,11 +17,15 @@ final class MemberDetailViewController: ASDKViewController<MemberDetailNode> {
     private var cancellables = Set<AnyCancellable>()
     private var activePopup: AnchoredPopupNode?
     private let glassTopBar = GlassTopBar()
+    private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
     private var lastAppliedTopInset: CGFloat = -1
 
-    init(room: Room, userId: String) {
+    init(room: Room, userId: String, audioPlayer: AudioPlayerService? = nil) {
         self.viewModel = MemberDetailViewModel(room: room, userId: userId)
         super.init(node: MemberDetailNode())
+        self.voicePlayerHost = audioPlayer.map {
+            EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
+        }
         hidesBottomBarWhenPushed = true
     }
 
@@ -30,6 +34,7 @@ final class MemberDetailViewController: ASDKViewController<MemberDetailNode> {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupGlassTopBar()
+        setupVoicePlayerHost()
 
         node.onRoleTapped = { [weak self] in self?.showRolePicker() }
         node.onSendMessageTapped = { [weak self] in self?.sendMessageTapped() }
@@ -53,6 +58,7 @@ final class MemberDetailViewController: ASDKViewController<MemberDetailNode> {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        voicePlayerHost?.layout()
         glassTopBar.updateLayout(in: view)
         let target = glassTopBar.coveredHeight + 8
         if abs(target - lastAppliedTopInset) > 0.5 {
@@ -63,6 +69,7 @@ final class MemberDetailViewController: ASDKViewController<MemberDetailNode> {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        voicePlayerHost?.refresh()
         GlassService.shared.setNeedsCapture()
     }
 
@@ -81,7 +88,7 @@ final class MemberDetailViewController: ASDKViewController<MemberDetailNode> {
         node.addSubnode(glassTopBar)
         node.glassTopBar = glassTopBar
 
-        let backIcon = AppIcon.chevronBackward.rendered(size: 17, weight: .semibold, color: AppColor.accent)
+        let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
         glassTopBar.items = [
             .circleButton(
                 icon: backIcon,
@@ -90,6 +97,15 @@ final class MemberDetailViewController: ASDKViewController<MemberDetailNode> {
             ),
             .flexibleSpace
         ]
+    }
+
+    private func setupVoicePlayerHost() {
+        voicePlayerHost?.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost?.install()
+        node.voicePlayerView = voicePlayerHost?.accessibilityView
     }
 
     // MARK: - Role picker
@@ -228,4 +244,3 @@ extension MemberDetailViewController: AccessibilityFocusProviding {
         glassTopBar.accessibilityElementsInOrder.first
     }
 }
-

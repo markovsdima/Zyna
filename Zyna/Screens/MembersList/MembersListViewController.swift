@@ -15,10 +15,14 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
     private let viewModel: MembersListViewModel
     private var cancellables = Set<AnyCancellable>()
     private let glassTopBar = GlassTopBar()
+    private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
 
-    init(room: Room) {
+    init(room: Room, audioPlayer: AudioPlayerService? = nil) {
         self.viewModel = MembersListViewModel(room: room)
         super.init(node: MembersListNode())
+        self.voicePlayerHost = audioPlayer.map {
+            EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
+        }
         hidesBottomBarWhenPushed = true
     }
 
@@ -33,6 +37,7 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
         node.tableNode.view.contentInsetAdjustmentBehavior = .never
 
         setupGlassTopBar()
+        setupVoicePlayerHost()
 
         viewModel.$rows
             .receive(on: DispatchQueue.main)
@@ -64,6 +69,7 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        voicePlayerHost?.layout()
         glassTopBar.updateLayout(in: view)
         let top = glassTopBar.coveredHeight
         if node.tableNode.contentInset.top != top {
@@ -74,6 +80,7 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        voicePlayerHost?.refresh()
         GlassService.shared.setNeedsCapture()
     }
 
@@ -92,7 +99,7 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
         node.addSubnode(glassTopBar)
         node.glassTopBar = glassTopBar
 
-        let backIcon = AppIcon.chevronBackward.rendered(size: 17, weight: .semibold, color: AppColor.accent)
+        let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
         // Items ordering matters: GlassTopBar uses the first .title or
         // .flexibleSpace as its divider, so .title must come right after
         // the left buttons — otherwise its shape/frame aren't drawn.
@@ -104,6 +111,15 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
             ),
             .title(text: String(localized: "Members"), subtitle: nil)
         ]
+    }
+
+    private func setupVoicePlayerHost() {
+        voicePlayerHost?.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost?.install()
+        node.voicePlayerView = voicePlayerHost?.accessibilityView
     }
 
     // MARK: - Data source

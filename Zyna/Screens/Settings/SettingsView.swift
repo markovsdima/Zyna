@@ -8,6 +8,7 @@ import AsyncDisplayKit
 final class SettingsScreenNode: ASDisplayNode {
     weak var glassTopBar: GlassTopBar?
     weak var tableView: UITableView?
+    weak var voicePlayerView: UIView?
 
     override init() {
         super.init()
@@ -17,6 +18,12 @@ final class SettingsScreenNode: ASDisplayNode {
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
+            if let player = voicePlayerView,
+               player.superview === view,
+               !player.isHidden,
+               player.alpha > 0.01 {
+                elements.append(player)
+            }
             if let glassTopBar, glassTopBar.view.superview === view {
                 elements.append(contentsOf: glassTopBar.accessibilityElementsInOrder)
             }
@@ -64,11 +71,15 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
         case repairLocalMessageCache
     }
 
+    private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let glassTopBar = GlassTopBar()
 
-    override init() {
+    init(audioPlayer: AudioPlayerService? = nil) {
         super.init(node: SettingsScreenNode())
+        self.voicePlayerHost = audioPlayer.map {
+            EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
+        }
         hidesBottomBarWhenPushed = true
     }
 
@@ -80,10 +91,12 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
         super.viewDidLoad()
         setupTableView()
         setupGlassTopBar()
+        setupVoicePlayerHost()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        voicePlayerHost?.refresh()
         tableView.reloadData()
         refreshOwnAppearance()
         GlassService.shared.setNeedsCapture()
@@ -92,6 +105,7 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         tableView.frame = view.bounds
+        voicePlayerHost?.layout()
         glassTopBar.updateLayout(in: view)
         updateTableInsets()
     }
@@ -112,10 +126,9 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
         node.addSubnode(glassTopBar)
         node.glassTopBar = glassTopBar
 
-        let backIcon = AppIcon.chevronBackward.rendered(
+        let backIcon = AppIcon.chevronBackward.template(
             size: 17,
-            weight: .semibold,
-            color: AppColor.accent
+            weight: .semibold
         )
         glassTopBar.items = [
             .circleButton(
@@ -125,6 +138,15 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
             ),
             .title(text: String(localized: "Settings"), subtitle: nil)
         ]
+    }
+
+    private func setupVoicePlayerHost() {
+        voicePlayerHost?.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost?.install()
+        node.voicePlayerView = voicePlayerHost?.accessibilityView
     }
 
     private func updateTableInsets() {

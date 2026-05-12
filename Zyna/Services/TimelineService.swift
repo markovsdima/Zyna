@@ -457,7 +457,7 @@ final class TimelineService {
             case .text(let t): return t.body
             case .image: return "Photo"
             case .video: return "Video"
-            case .audio: return "Voice message"
+            case .audio: return String(localized: "Voice message")
             case .file: return "File"
             case .notice(let t): return t.body
             case .emote(let t): return t.body
@@ -844,6 +844,7 @@ final class TimelineService {
             logTimeline("Paginated backwards successfully")
         } catch {
             logTimeline("Pagination failed: \(error)")
+            await handleMatrixTransportError(error)
         }
 
         await MainActor.run { isPaginatingSubject.send(false) }
@@ -1017,8 +1018,13 @@ final class TimelineService {
                     "sendWithTransaction failed label=\(debugLabel) errorType=\(String(describing: type(of: error))) error=\(error)"
                 )
             }
+            await handleMatrixTransportError(error)
             throw error
         }
+    }
+
+    private func handleMatrixTransportError(_ error: Error) async {
+        await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
     }
 
     // MARK: - Send

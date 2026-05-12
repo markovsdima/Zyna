@@ -22,7 +22,6 @@ final class PresenceService {
 
     static let shared = PresenceService()
 
-    private let presencePort = 8080
     private let devPassword: String? = nil // nil = production (Bearer token), non-nil = dev mode
     private let pingInterval: TimeInterval = 10
     private let connectionTimeout: TimeInterval = 15
@@ -56,12 +55,25 @@ final class PresenceService {
 
     private init() {}
 
-    /// Derives presence server base URL from homeserver URL by replacing the port.
-    /// e.g. "https://example.com:443/" → "https://example.com:8080"
+    /// Derives presence server base URL from the homeserver origin.
+    /// Presence is exposed by the same reverse proxy under `/presence`.
+    /// e.g. "https://example.com/" → "https://example.com"
     private func buildBaseURL(from homeserverUrl: String) -> String? {
-        guard var components = URLComponents(string: homeserverUrl) else { return nil }
-        components.port = presencePort
+        var raw = homeserverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.contains("://") {
+            raw = "https://\(raw)"
+        }
+
+        guard var components = URLComponents(string: raw),
+              let scheme = components.scheme,
+              components.host != nil,
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+
         components.path = ""
+        components.query = nil
+        components.fragment = nil
         return components.string
     }
 
@@ -103,9 +115,12 @@ final class PresenceService {
 
     private func fetchJWT(accessToken: String, userId: String) async throws -> String {
         guard let baseURL = currentBaseURL,
-              let url = URL(string: "\(baseURL)/presence/auth") else {
+              var components = URLComponents(string: baseURL) else {
             throw PresenceError.invalidURL
         }
+        components.path = "/presence/auth"
+        guard let url = components.url else { throw PresenceError.invalidURL }
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         if let devPassword {
@@ -128,15 +143,21 @@ final class PresenceService {
     // MARK: - WebSocket Connection
 
     private func establishWebSocket() async throws {
-        guard let baseURL = currentBaseURL else { throw PresenceError.invalidURL }
-        let wsURL = baseURL
-            .replacingOccurrences(of: "https://", with: "wss://")
-            .replacingOccurrences(of: "http://", with: "ws://")
-            + "/presence/ws"
-
-        guard let url = URL(string: wsURL) else {
+        guard let baseURL = currentBaseURL,
+              var components = URLComponents(string: baseURL) else {
             throw PresenceError.invalidURL
         }
+        switch components.scheme {
+        case "https":
+            components.scheme = "wss"
+        case "http":
+            components.scheme = "ws"
+        default:
+            throw PresenceError.invalidURL
+        }
+        components.path = "/presence/ws"
+
+        guard let url = components.url else { throw PresenceError.invalidURL }
 
         let useTLS = url.scheme == "wss"
 

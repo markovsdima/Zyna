@@ -29,6 +29,7 @@ final class ZynaTabBar: UIView {
     private let blurView: UIVisualEffectView
     private let separator = UIView()
     private var itemViews: [ItemView] = []
+    private var themeObserver: NSObjectProtocol?
 
     // MARK: - Init
 
@@ -42,9 +43,22 @@ final class ZynaTabBar: UIView {
         addSubview(blurView)
         addSubview(separator)
         separator.backgroundColor = UIColor.separator.withAlphaComponent(0.6)
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: ChatBubbleThemeStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshItemTints()
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    deinit {
+        if let themeObserver {
+            NotificationCenter.default.removeObserver(themeObserver)
+        }
+    }
 
     // MARK: - API
 
@@ -84,6 +98,10 @@ final class ZynaTabBar: UIView {
             return v
         }
         setNeedsLayout()
+    }
+
+    private func refreshItemTints() {
+        itemViews.forEach { $0.refreshTint() }
     }
 
     override func layoutSubviews() {
@@ -161,8 +179,14 @@ private final class ItemView: UIView {
 
     @objc private func handleTap() { onTap?() }
 
+    func refreshTint() {
+        applyTint()
+    }
+
     private func applyTint() {
-        let color: UIColor = isSelected ? AppColor.accent : .secondaryLabel
+        let color: UIColor = isSelected
+            ? ChatBubbleThemeStore.shared.selectedTheme.actionAccentColor
+            : .secondaryLabel
         iconView.tintColor = color
         titleLabel.textColor = color
         if isSelected, let selected = item.selectedIcon {

@@ -5,6 +5,7 @@
 
 import UIKit
 import AsyncDisplayKit
+import Metal
 
 /// Glass input bar with 3 shapes: attach (circle), text field (rounded rect), mic (circle).
 /// Optional 4th shape: scroll-to-live button (metaball with mic).
@@ -59,8 +60,23 @@ final class GlassInputBar: ASDisplayNode {
     private var scrollButtonProgress: CGFloat = 0  // 0 = hidden at mic, 1 = fully deployed
     private var scrollButtonTarget: CGFloat = 0
     private var scrollButtonVelocity: CGFloat = 0
-    private var scrollButtonDisplayLink: CADisplayLink?
+    private var scrollButtonDisplayLink: DisplayLinkToken?
     private var scrollButtonLastTime: CFTimeInterval = 0
+
+    // Metal-rendered right action glyph (mic ↔ send)
+    private var rightGlyphVisible: Bool = true
+    private var rightGlyphProgress: CGFloat = 0  // 0 = mic, 1 = send
+    private var rightGlyphTarget: CGFloat = 0
+    private var rightGlyphVelocity: CGFloat = 0
+    private var rightGlyphDisplayLink: DisplayLinkToken?
+    private var rightGlyphLastTime: CFTimeInterval = 0
+    private var rightGlyphSendColor: UIColor = AppColor.accent
+    private let previewCloseButton = UIButton(type: .custom)
+    // 1 = normal speed. Raise to 8 when inspecting the mic/send morph.
+    private let rightGlyphAnimationSlowdown: CGFloat = 1
+    private var rightGlyphAnimationTimeScale: CGFloat {
+        max(1, rightGlyphAnimationSlowdown)
+    }
 
     // MARK: - Init
 
@@ -68,6 +84,11 @@ final class GlassInputBar: ASDisplayNode {
         super.init()
         anchor.debugName = "input"
         inputNode.backgroundColor = .clear
+    }
+
+    deinit {
+        scrollButtonDisplayLink?.invalidate()
+        rightGlyphDisplayLink?.invalidate()
     }
 
     // MARK: - didLoad
@@ -87,6 +108,12 @@ final class GlassInputBar: ASDisplayNode {
         anchor.barProvider = { [weak self] glassFrame, captureFrame, scale in
             self?.buildBarData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
         }
+        anchor.glyphProvider = { [weak self] glassFrame, captureFrame, scale in
+            self?.buildGlyphData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
+        }
+        anchor.previewProvider = { [weak self] glassFrame, captureFrame, scale in
+            self?.buildPreviewData(glassFrame: glassFrame, captureFrame: captureFrame, scale: scale)
+        }
         anchor.onAdaptiveMaterialChanged = { [weak self] material in
             self?.inputNode.applyGlassAdaptiveMaterial(material)
             self?.onAdaptiveMaterialChanged?(material)
@@ -98,6 +125,27 @@ final class GlassInputBar: ASDisplayNode {
         // Input node as subnode (already ASDisplayNode)
         addSubnode(inputNode)
         inputNode.view.backgroundColor = .clear
+        inputNode.setMetalActionGlyphsEnabled(true)
+        inputNode.onRightGlyphStateChanged = { [weak self] state in
+            self?.applyRightGlyphState(state)
+        }
+        inputNode.onPreviewRenderStateChanged = { [weak self] in
+            self?.handlePreviewRenderStateChanged()
+        }
+        applyRightGlyphState(inputNode.rightGlyphState, animated: false)
+        handlePreviewRenderStateChanged()
+
+        previewCloseButton.backgroundColor = .clear
+        previewCloseButton.isHidden = true
+        previewCloseButton.isAccessibilityElement = true
+        previewCloseButton.accessibilityElementsHidden = true
+        previewCloseButton.accessibilityLabel = inputNode.previewCloseAccessibilityLabel
+        previewCloseButton.accessibilityHint = String(localized: "Dismisses this preview")
+        previewCloseButton.accessibilityIdentifier = "chat.input.preview.close"
+        previewCloseButton.accessibilityTraits = .button
+        previewCloseButton.addTarget(self, action: #selector(previewCloseTapped), for: .touchUpInside)
+        view.addSubview(previewCloseButton)
+        view.bringSubviewToFront(previewCloseButton)
 
         view.sendSubviewToBack(anchor)
 
@@ -109,13 +157,47 @@ final class GlassInputBar: ASDisplayNode {
         observeInputSize()
     }
 
+    var accessibilityElementsInOrder: [UIView] {
+        guard isNodeLoaded, !isHidden else { return [] }
+
+        var elements: [UIView] = []
+        let previewState = inputNode.previewRenderState
+        if previewState.mode != .none,
+           previewState.progress > 0.001,
+           !previewCloseButton.isHidden {
+            elements.append(previewCloseButton)
+        }
+
+        if inputNode.attachButtonNode.isNodeLoaded {
+            elements.append(inputNode.attachButtonNode.view)
+        }
+        if inputNode.textInputNode.isNodeLoaded {
+            elements.append(inputNode.textInputNode.view)
+        }
+
+        let rightButton = inputNode.rightGlyphState.showsSend
+            ? inputNode.sendButtonNode
+            : inputNode.micButtonNode
+        if rightButton.isNodeLoaded {
+            elements.append(rightButton.view)
+        }
+        return elements
+    }
+
+    override var accessibilityElements: [Any]? {
+        get { accessibilityElementsInOrder }
+        set { }
+    }
+
     // MARK: - Layout
 
     private let barInsetClosed: CGFloat = 6
     private let barInsetOpen: CGFloat = 0
+    private let previewTextRenderer = GlassInputPreviewTextRenderer()
 
     func updateLayout(in parentView: UIView) {
         let safeBottom = parentView.safeAreaInsets.bottom
+        anchor.hasPreview = inputNode.previewRenderState.isActive
 
         let insetH = keyboardHeight > 0 ? barInsetOpen : barInsetClosed
         let fullWidth = parentView.bounds.width
@@ -141,6 +223,7 @@ final class GlassInputBar: ASDisplayNode {
 
         // Bar position changed — scroll button position must follow
         emitScrollButtonLayout()
+        updatePreviewCloseHitTarget()
     }
 
     /// Returns how much space the input bar + keyboard covers at the bottom.
@@ -211,6 +294,8 @@ final class GlassInputBar: ASDisplayNode {
 
         let contentY = glassFrame.origin.y + vPad
         let contentH = glassFrame.height - vPad * 2
+        let previewState = inputNode.previewRenderState
+        let previewProgress = min(1, max(0, previewState.progress))
 
         // Attach button (circle, bottom-aligned)
         let attachCX = glassFrame.origin.x + hPad + btnSize / 2
@@ -222,11 +307,13 @@ final class GlassInputBar: ASDisplayNode {
         let micCY = attachCY
         let micR = btnSize / 2
 
-        // Text field (rounded rect, between buttons)
+        // Text field glass. When the reply/forward/edit preview is active,
+        // ChatInputNode reserves space above the field; the glass follows the
+        // full column instead of adding a second island above it.
         let textX = glassFrame.origin.x + hPad + btnSize + spacing
         let textW = glassFrame.width - hPad * 2 - btnSize * 2 - spacing * 2
         let textY = contentY
-        let textH = contentH
+        let textH = max(btnSize, contentH)
 
         // Shape 0: text field (rounded rect)
         p.shape0 = SIMD4<Float>(
@@ -295,7 +382,72 @@ final class GlassInputBar: ASDisplayNode {
 
         p.shapeCount = 3
 
+        if previewState.isActive, previewProgress > 0.001 {
+            let cardFrame = previewCardFrame(
+                glassFrame: glassFrame,
+                contentY: contentY,
+                textX: textX,
+                textW: textW
+            )
+            p.previewRect = normalizedRect(cardFrame, in: captureFrame)
+            p.previewCornerR = Float(20 * scale) / Float(ch * scale)
+            p.previewProgress = Float(previewProgress)
+        }
+
         return p
+    }
+
+    private func handlePreviewRenderStateChanged() {
+        anchor.hasPreview = inputNode.previewRenderState.isActive
+        updatePreviewCloseHitTarget()
+        GlassService.shared.setNeedsCapture()
+    }
+
+    @objc private func previewCloseTapped() {
+        inputNode.cancelActivePreview()
+    }
+
+    private func updatePreviewCloseHitTarget() {
+        let state = inputNode.previewRenderState
+        guard state.isActive, state.progress > 0.001, bounds.width > 0, bounds.height > 0 else {
+            previewCloseButton.isHidden = true
+            previewCloseButton.isUserInteractionEnabled = false
+            previewCloseButton.accessibilityElementsHidden = true
+            previewCloseButton.accessibilityValue = nil
+            previewCloseButton.frame = .zero
+            return
+        }
+
+        let hPad: CGFloat = 14
+        let vPad: CGFloat = 6
+        let btnSize: CGFloat = 48
+        let spacing: CGFloat = 8
+        let contentY = bounds.origin.y + vPad
+        let textX = bounds.origin.x + hPad + btnSize + spacing
+        let textW = bounds.width - hPad * 2 - btnSize * 2 - spacing * 2
+        let cardFrame = previewCardFrame(
+            glassFrame: bounds,
+            contentY: contentY,
+            textX: textX,
+            textW: textW
+        )
+        let visualSize: CGFloat = 30
+        let visualFrame = CGRect(
+            x: cardFrame.maxX - 8 - visualSize,
+            y: cardFrame.minY + floor((cardFrame.height - visualSize) * 0.5),
+            width: visualSize,
+            height: visualSize
+        )
+
+        previewCloseButton.frame = visualFrame.insetBy(dx: -10, dy: -10).integral
+        let acceptsTouches = state.mode != .none && state.progress > 0.001
+        previewCloseButton.isHidden = false
+        previewCloseButton.isUserInteractionEnabled = acceptsTouches
+        previewCloseButton.accessibilityElementsHidden = !acceptsTouches
+        previewCloseButton.accessibilityLabel = inputNode.previewCloseAccessibilityLabel
+        previewCloseButton.accessibilityValue = inputNode.previewAccessibilityValue
+        previewCloseButton.accessibilityHint = String(localized: "Dismisses this preview")
+        view.bringSubviewToFront(previewCloseButton)
     }
 
     // MARK: - Input size changes
@@ -303,10 +455,18 @@ final class GlassInputBar: ASDisplayNode {
     private func observeInputSize() {
         inputNode.onSizeChanged = { [weak self] in
             guard let self, let parentView = self.view.superview else { return }
+            let oldFrame = self.frame
             self.updateLayout(in: parentView)
             parentView.setNeedsLayout()
-            // Sustain capture while layout settles (reply show/hide, text grow/shrink)
-            GlassService.shared.captureFor(duration: 0.5)
+            let frameChanged = abs(self.frame.height - oldFrame.height) > 0.5
+                || abs(self.frame.origin.y - oldFrame.origin.y) > 0.5
+                || abs(self.frame.width - oldFrame.width) > 0.5
+            if frameChanged {
+                // Sustain capture while layout settles (reply show/hide, text grow/shrink).
+                GlassService.shared.captureFor(duration: 0.5)
+            } else {
+                GlassService.shared.setNeedsRender()
+            }
         }
     }
 
@@ -331,6 +491,264 @@ final class GlassInputBar: ASDisplayNode {
         currentBarHeights = heights
 
         GlassService.shared.setNeedsCapture()
+    }
+
+    // MARK: - Right Glyph Morph
+
+    private func applyRightGlyphState(
+        _ state: ChatInputNode.RightGlyphState,
+        animated: Bool = true
+    ) {
+        rightGlyphVisible = state.visible
+        rightGlyphSendColor = state.sendColor
+
+        let target: CGFloat = state.showsSend ? 1 : 0
+        guard animated else {
+            rightGlyphDisplayLink?.invalidate()
+            rightGlyphDisplayLink = nil
+            rightGlyphTarget = target
+            rightGlyphProgress = target
+            rightGlyphVelocity = 0
+            GlassService.shared.setNeedsRender()
+            return
+        }
+
+        rightGlyphTarget = target
+        startRightGlyphDisplayLink()
+        GlassService.shared.renderFor(duration: 0.55 * TimeInterval(rightGlyphAnimationTimeScale))
+        GlassService.shared.setNeedsRender()
+    }
+
+    private func startRightGlyphDisplayLink() {
+        guard rightGlyphDisplayLink == nil else { return }
+        rightGlyphLastTime = CACurrentMediaTime()
+        rightGlyphDisplayLink = DisplayLinkDriver.shared.subscribe(rate: .max) { [weak self] _ in
+            self?.rightGlyphTick()
+        }
+    }
+
+    private func rightGlyphTick() {
+        let now = CACurrentMediaTime()
+        let dt = CGFloat(now - rightGlyphLastTime) / rightGlyphAnimationTimeScale
+        rightGlyphLastTime = now
+
+        let stiffness: CGFloat = 135
+        let damping: CGFloat = 20
+        let displacement = rightGlyphProgress - rightGlyphTarget
+        let springForce = -stiffness * displacement
+        let dampingForce = -damping * rightGlyphVelocity
+        rightGlyphVelocity += (springForce + dampingForce) * dt
+        rightGlyphProgress += rightGlyphVelocity * dt
+        rightGlyphProgress = max(0, min(1, rightGlyphProgress))
+
+        let settled = abs(rightGlyphProgress - rightGlyphTarget) < 0.001
+                   && abs(rightGlyphVelocity) < 0.01
+        if settled {
+            rightGlyphProgress = rightGlyphTarget
+            rightGlyphVelocity = 0
+            rightGlyphDisplayLink?.invalidate()
+            rightGlyphDisplayLink = nil
+        }
+
+        GlassService.shared.setNeedsRender()
+    }
+
+    private func buildGlyphData(
+        glassFrame: CGRect, captureFrame: CGRect, scale: CGFloat
+    ) -> GlassRenderer.GlyphData? {
+        let cw = captureFrame.width
+        let ch = captureFrame.height
+        guard cw > 0, ch > 0 else { return nil }
+
+        let hPad: CGFloat = 14
+        let vPad: CGFloat = 6
+        let btnSize: CGFloat = 48
+
+        let contentY = glassFrame.origin.y + vPad
+        let contentH = glassFrame.height - vPad * 2
+        let centerY = contentY + contentH - btnSize / 2
+        let attachCenterX = glassFrame.origin.x + hPad + btnSize / 2
+        let rightCenterX = glassFrame.maxX - hPad - btnSize / 2
+
+        let sendColor = resolvedRGBA(rightGlyphSendColor)
+        let activity = min(1, Float(abs(rightGlyphVelocity) * 0.035)
+            + Float(abs(rightGlyphTarget - rightGlyphProgress) * 1.4))
+
+        var items: [GlassRenderer.GlyphItem] = []
+        if rightGlyphVisible {
+            items.append(
+                staticGlyph(
+                    source: .attach,
+                    center: CGPoint(x: attachCenterX, y: centerY),
+                    iconSize: 25,
+                    effectSize: 33,
+                    captureFrame: captureFrame
+                )
+            )
+            items.append(
+                GlassRenderer.GlyphItem(
+                    rect: normalizedRect(centeredAt: CGPoint(x: rightCenterX, y: centerY), size: 27, in: captureFrame),
+                    effectRect: normalizedRect(centeredAt: CGPoint(x: rightCenterX, y: centerY), size: 35, in: captureFrame),
+                    source0: .mic,
+                    source1: .send,
+                    progress: Float(rightGlyphProgress),
+                    opacity: 1,
+                    activity: activity,
+                    sendColor: sendColor
+                )
+            )
+        }
+
+        if scrollButtonProgress > 0.001 {
+            let scrollRadius = btnSize / 2
+            let scrollTargetY = glassFrame.origin.y - 12 - scrollRadius
+            let t = scrollButtonProgress
+            let radiusFactor = min(1, t * 4)
+            let scrollCenter = CGPoint(
+                x: rightCenterX,
+                y: centerY + (scrollTargetY - centerY) * t
+            )
+            let iconSize = max(1, 27 * radiusFactor)
+            let effectSize = max(1, 35 * radiusFactor)
+            items.append(
+                staticGlyph(
+                    source: .chevronDown,
+                    center: scrollCenter,
+                    iconSize: iconSize,
+                    effectSize: effectSize,
+                    opacity: Float(radiusFactor),
+                    captureFrame: captureFrame
+                )
+            )
+        }
+
+        guard !items.isEmpty else { return nil }
+        return GlassRenderer.GlyphData(items: items)
+    }
+
+    private func buildPreviewData(
+        glassFrame: CGRect,
+        captureFrame: CGRect,
+        scale: CGFloat
+    ) -> GlassRenderer.PreviewData? {
+        let state = inputNode.previewRenderState
+        guard state.isActive, state.progress > 0.001 else { return nil }
+
+        let hPad: CGFloat = 14
+        let vPad: CGFloat = 6
+        let btnSize: CGFloat = 48
+        let spacing: CGFloat = 8
+        let contentY = glassFrame.origin.y + vPad
+        let textX = glassFrame.origin.x + hPad + btnSize + spacing
+        let textW = glassFrame.width - hPad * 2 - btnSize * 2 - spacing * 2
+        let cardFrame = previewCardFrame(
+            glassFrame: glassFrame,
+            contentY: contentY,
+            textX: textX,
+            textW: textW
+        )
+
+        guard cardFrame.width > 1,
+              cardFrame.height > 1,
+              let texture = previewTextRenderer.texture(
+                for: state,
+                size: cardFrame.size,
+                scale: scale
+              )
+        else {
+            return nil
+        }
+
+        return GlassRenderer.PreviewData(
+            textRect: normalizedRect(cardFrame, in: captureFrame),
+            mode: Float(state.mode.rawValue),
+            opacity: Float(min(1, max(0, state.progress))),
+            accentColor: previewAccentColor(for: state.mode),
+            texture: texture
+        )
+    }
+
+    private func previewCardFrame(
+        glassFrame: CGRect,
+        contentY: CGFloat,
+        textX: CGFloat,
+        textW: CGFloat
+    ) -> CGRect {
+        let cardHeight = inputNode.previewCardHeight
+        let cardBottom = contentY + inputNode.previewRevealHeight - inputNode.previewBottomGap
+        return CGRect(
+            x: textX + inputNode.previewOuterHorizontalInset,
+            y: cardBottom - cardHeight,
+            width: max(1, textW - inputNode.previewOuterHorizontalInset * 2),
+            height: cardHeight
+        )
+    }
+
+    private func previewAccentColor(for mode: ChatInputNode.PreviewRenderMode) -> SIMD4<Float> {
+        switch mode {
+        case .none, .reply:
+            return resolvedRGBA(AppColor.accent)
+        case .forward:
+            return resolvedRGBA(UIColor.dynamic(
+                light: UIColor(hex: 0x0EA5E9),
+                dark: UIColor(hex: 0x38BDF8)
+            ))
+        case .edit:
+            return resolvedRGBA(UIColor.dynamic(
+                light: UIColor(hex: 0xF59E0B),
+                dark: UIColor(hex: 0xFBBF24)
+            ))
+        }
+    }
+
+    private func staticGlyph(
+        source: GlassGlyphKind,
+        center: CGPoint,
+        iconSize: CGFloat,
+        effectSize: CGFloat,
+        opacity: Float = 1,
+        captureFrame: CGRect
+    ) -> GlassRenderer.GlyphItem {
+        GlassRenderer.GlyphItem(
+            rect: normalizedRect(centeredAt: center, size: iconSize, in: captureFrame),
+            effectRect: normalizedRect(centeredAt: center, size: effectSize, in: captureFrame),
+            source: source,
+            opacity: opacity
+        )
+    }
+
+    private func normalizedRect(centeredAt center: CGPoint, size: CGFloat, in captureFrame: CGRect) -> SIMD4<Float> {
+        let frame = CGRect(
+            x: center.x - size / 2,
+            y: center.y - size / 2,
+            width: size,
+            height: size
+        )
+        return normalizedRect(frame, in: captureFrame)
+    }
+
+    private func normalizedRect(_ frame: CGRect, in captureFrame: CGRect) -> SIMD4<Float> {
+        return SIMD4<Float>(
+            Float((frame.origin.x - captureFrame.origin.x) / captureFrame.width),
+            Float((frame.origin.y - captureFrame.origin.y) / captureFrame.height),
+            Float(frame.width / captureFrame.width),
+            Float(frame.height / captureFrame.height)
+        )
+    }
+
+    private func resolvedRGBA(_ color: UIColor) -> SIMD4<Float> {
+        let resolved = color.resolvedColor(with: view.traitCollection)
+        var r: CGFloat = 0
+        var g: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 1
+        resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return SIMD4<Float>(
+            Float(max(0, min(1, r))),
+            Float(max(0, min(1, g))),
+            Float(max(0, min(1, b))),
+            Float(max(0, min(1, a)))
+        )
     }
 
     // MARK: - Scroll Button
@@ -387,13 +805,13 @@ final class GlassInputBar: ASDisplayNode {
 
         if scrollButtonDisplayLink == nil {
             scrollButtonLastTime = CACurrentMediaTime()
-            let link = CADisplayLink(target: self, selector: #selector(scrollButtonTick))
-            link.add(to: .main, forMode: .common)
-            scrollButtonDisplayLink = link
+            scrollButtonDisplayLink = DisplayLinkDriver.shared.subscribe(rate: .max) { [weak self] _ in
+                self?.scrollButtonTick()
+            }
         }
     }
 
-    @objc private func scrollButtonTick() {
+    private func scrollButtonTick() {
         let now = CACurrentMediaTime()
         let dt = CGFloat(now - scrollButtonLastTime)
         scrollButtonLastTime = now
@@ -463,5 +881,180 @@ final class GlassInputBar: ASDisplayNode {
                 Float(maxBarHeight / ch)
             )
         )
+    }
+}
+
+private final class GlassInputPreviewTextRenderer {
+
+    private struct CacheKey: Hashable {
+        let width: Int
+        let height: Int
+        let mode: Int
+        let title: String
+        let body: String
+    }
+
+    private var cachedKey: CacheKey?
+    private var cachedTexture: MTLTexture?
+
+    func texture(
+        for state: ChatInputNode.PreviewRenderState,
+        size: CGSize,
+        scale: CGFloat
+    ) -> MTLTexture? {
+        guard Thread.isMainThread else { return nil }
+        let width = max(2, Int((size.width * scale).rounded(.toNearestOrAwayFromZero)))
+        let height = max(2, Int((size.height * scale).rounded(.toNearestOrAwayFromZero)))
+        let key = CacheKey(
+            width: width,
+            height: height,
+            mode: state.mode.rawValue,
+            title: state.title,
+            body: state.body
+        )
+        if key == cachedKey, let cachedTexture {
+            return cachedTexture
+        }
+
+        guard let alpha = makeAlphaMask(
+            state: state,
+            size: size,
+            scale: scale,
+            width: width,
+            height: height
+        ) else {
+            return nil
+        }
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        desc.usage = .shaderRead
+        desc.storageMode = .shared
+        guard let texture = MetalContext.shared.device.makeTexture(descriptor: desc) else {
+            return nil
+        }
+        texture.label = "Glass input preview text \(width)x\(height)"
+
+        alpha.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: baseAddress,
+                bytesPerRow: width
+            )
+        }
+
+        cachedKey = key
+        cachedTexture = texture
+        return texture
+    }
+
+    private func makeAlphaMask(
+        state: ChatInputNode.PreviewRenderState,
+        size: CGSize,
+        scale: CGFloat,
+        width: Int,
+        height: Int
+    ) -> [UInt8]? {
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var rgba = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+        let didRender = rgba.withUnsafeMutableBytes { rawBuffer -> Bool in
+            guard let context = CGContext(
+                data: rawBuffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                return false
+            }
+
+            UIGraphicsPushContext(context)
+            context.saveGState()
+            context.scaleBy(x: scale, y: scale)
+            drawPreviewText(state: state, size: size)
+            context.restoreGState()
+            UIGraphicsPopContext()
+            return true
+        }
+        guard didRender else { return nil }
+
+        var alpha = [UInt8](repeating: 0, count: width * height)
+        for index in 0..<(width * height) {
+            alpha[index] = rgba[index * bytesPerPixel + 3]
+        }
+        return alpha
+    }
+
+    private func drawPreviewText(
+        state: ChatInputNode.PreviewRenderState,
+        size: CGSize
+    ) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: UIColor.white.withAlphaComponent(0.95),
+            .paragraphStyle: paragraph
+        ]
+        let bodyAttributes: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 13),
+            .foregroundColor: UIColor.white.withAlphaComponent(0.62),
+            .paragraphStyle: paragraph
+        ]
+
+        let leftInset: CGFloat = 22
+        let rightButtonWidth: CGFloat = 38
+        let textWidth = max(1, size.width - leftInset - rightButtonWidth - 8)
+        let titleFont = titleAttributes[.font] as? UIFont ?? UIFont.systemFont(ofSize: 13, weight: .semibold)
+        let bodyFont = bodyAttributes[.font] as? UIFont ?? UIFont.systemFont(ofSize: 13)
+        let titleHeight = ceil(titleFont.lineHeight)
+        let bodyHeight = ceil(bodyFont.lineHeight)
+        let titleY: CGFloat = 6
+        let bodyY = titleY + titleHeight + 1
+
+        (state.title as NSString).draw(
+            with: CGRect(x: leftInset, y: titleY, width: textWidth, height: titleHeight),
+            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+            attributes: titleAttributes,
+            context: nil
+        )
+        (state.body as NSString).draw(
+            with: CGRect(x: leftInset, y: bodyY, width: textWidth, height: bodyHeight),
+            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+            attributes: bodyAttributes,
+            context: nil
+        )
+
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        if let image = UIImage(systemName: "xmark", withConfiguration: iconConfig) {
+            let iconSize = image.size
+            let buttonFrame = CGRect(
+                x: size.width - 8 - 30,
+                y: floor((size.height - 30) * 0.5),
+                width: 30,
+                height: 30
+            )
+            let iconFrame = CGRect(
+                x: buttonFrame.midX - iconSize.width * 0.5,
+                y: buttonFrame.midY - iconSize.height * 0.5,
+                width: iconSize.width,
+                height: iconSize.height
+            )
+            image.withTintColor(
+                UIColor.white.withAlphaComponent(0.86),
+                renderingMode: .alwaysOriginal
+            ).draw(in: iconFrame)
+        }
     }
 }

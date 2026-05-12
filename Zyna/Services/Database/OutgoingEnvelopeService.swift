@@ -30,6 +30,11 @@ final class OutgoingEnvelopeService {
         self.dbQueue = dbQueue
     }
 
+    struct StoredOutgoingVoiceFile {
+        let fileName: String
+        let url: URL
+    }
+
     @discardableResult
     func createOutgoingText(
         roomId: String,
@@ -160,6 +165,7 @@ final class OutgoingEnvelopeService {
         envelopeId: String,
         duration: TimeInterval,
         waveform: [UInt16],
+        localFileName: String? = nil,
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
     ) -> String {
@@ -171,7 +177,8 @@ final class OutgoingEnvelopeService {
             payload: .voice(
                 OutgoingVoicePayload(
                     duration: duration,
-                    waveform: waveform
+                    waveform: waveform,
+                    localFileName: localFileName
                 )
             ),
             caption: nil,
@@ -427,14 +434,51 @@ final class OutgoingEnvelopeService {
         }) ?? []
     }
 
+    func envelope(id: String, roomId: String) -> OutgoingEnvelopeSnapshot? {
+        try? dbQueue.read { db in
+            guard let envelope = try OutgoingEnvelopeRecord
+                .filter(Column("id") == id && Column("roomId") == roomId)
+                .fetchOne(db) else { return nil }
+            let items = try OutgoingEnvelopeItemRecord
+                .filter(Column("groupId") == id)
+                .order(Column("itemIndex").asc)
+                .fetchAll(db)
+            return OutgoingEnvelopeSnapshot(record: envelope, items: items)
+        }
+    }
+
     func deleteEnvelopes(ids: Set<String>) {
         guard !ids.isEmpty else { return }
-        try? dbQueue.write { db in
+        let voiceFileNames: Set<String> = (try? dbQueue.write { db -> Set<String> in
+            let envelopes = try OutgoingEnvelopeRecord
+                .filter(ids.contains(Column("id")))
+                .fetchAll(db)
+            let voiceFileNames = Set<String>(envelopes.compactMap { envelope -> String? in
+                guard case .voice(let payload) = envelope.payload else { return nil }
+                return payload.localFileName
+            })
             _ = try OutgoingEnvelopeRecord
                 .filter(ids.contains(Column("id")))
                 .deleteAll(db)
-        }
+            return voiceFileNames
+        }) ?? []
+        deleteOutgoingVoiceFiles(fileNames: voiceFileNames)
         logMediaGroup("outgoing retire ids=\(ids.sorted().joined(separator: ","))")
+    }
+
+    func storeOutgoingVoiceFile(sourceURL: URL, envelopeId: String) throws -> StoredOutgoingVoiceFile {
+        try copyOutgoingVoiceFile(sourceURL: sourceURL, envelopeId: envelopeId)
+    }
+
+    func copyOutgoingVoiceFile(fileName: String, envelopeId: String) throws -> StoredOutgoingVoiceFile {
+        try copyOutgoingVoiceFile(
+            sourceURL: outgoingVoiceFileURL(fileName: fileName),
+            envelopeId: envelopeId
+        )
+    }
+
+    func outgoingVoiceFileURL(fileName: String) -> URL {
+        outgoingVoiceDirectoryURL().appendingPathComponent(fileName)
     }
 
     private func createEnvelope(
@@ -463,7 +507,8 @@ final class OutgoingEnvelopeService {
             kind: kind.rawValue,
             state: OutgoingTransportState.queued.rawValue,
             payloadJSON: payload.encodeJSON(),
-            zynaAttributesJSON: StoredMessage.encodeZynaAttributes(zynaAttributes)
+            zynaAttributesJSON: StoredMessage.encodeZynaAttributes(zynaAttributes),
+            matrixSessionId: MatrixClientService.shared.currentLocalSessionId
         )
 
         try? dbQueue.write { db in
@@ -501,6 +546,33 @@ final class OutgoingEnvelopeService {
         guard let caption else { return nil }
         let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func outgoingVoiceDirectoryURL() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let directory = base
+            .appendingPathComponent("zyna", isDirectory: true)
+            .appendingPathComponent("outgoing-voice", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func copyOutgoingVoiceFile(sourceURL: URL, envelopeId: String) throws -> StoredOutgoingVoiceFile {
+        let fileExtension = sourceURL.pathExtension.isEmpty ? "m4a" : sourceURL.pathExtension
+        let fileName = "\(envelopeId).\(fileExtension)"
+        let destinationURL = outgoingVoiceFileURL(fileName: fileName)
+        let fileManager = FileManager.default
+        try? fileManager.removeItem(at: destinationURL)
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        return StoredOutgoingVoiceFile(fileName: fileName, url: destinationURL)
+    }
+
+    private func deleteOutgoingVoiceFiles(fileNames: Set<String>) {
+        guard !fileNames.isEmpty else { return }
+        let fileManager = FileManager.default
+        for fileName in fileNames {
+            try? fileManager.removeItem(at: outgoingVoiceFileURL(fileName: fileName))
+        }
     }
 
     private func bindEvent(transactionId: String, eventId: String) -> Bool {

@@ -185,7 +185,7 @@ final class GlassTopBar: ASDisplayNode {
             case .circleButton(let icon, let label, let action):
                 let btn = AccessibleButtonNode()
                 btn.setImage(icon.withRenderingMode(.alwaysTemplate), for: .normal)
-                btn.imageNode.tintColor = glassMaterial.glyphForeground
+                applyCircleTint(glassMaterial.glyphForeground, to: btn)
                 btn.isAccessibilityElement = true
                 btn.accessibilityLabel = label
                 btn.accessibilityTraits = .button
@@ -334,12 +334,21 @@ final class GlassTopBar: ASDisplayNode {
             switch entry.kind {
             case .circle:
                 guard let button = entry.node as? ASButtonNode else { continue }
-                button.imageNode.tintColor = glyph
+                applyCircleTint(glyph, to: button)
             case .title:
                 entry.titleView?.applyGlassAdaptiveMaterial(material)
             case .flexibleSpace:
                 break
             }
+        }
+    }
+
+    private func applyCircleTint(_ color: UIColor, to button: ASButtonNode) {
+        button.imageNode.tintColor = color
+        guard button.isNodeLoaded else { return }
+        button.view.tintColor = color
+        if button.imageNode.isNodeLoaded {
+            button.imageNode.view.tintColor = color
         }
     }
 }

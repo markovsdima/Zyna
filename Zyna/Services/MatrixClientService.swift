@@ -53,8 +53,10 @@ final class MatrixClientService {
     private var syncStateHandle: TaskHandle?
     private var verificationStateHandle: TaskHandle?
     private var recoveryStateHandle: TaskHandle?
+    private let invalidatingSession = Atomic(false)
 
     private let userIdKey = "com.zyna.matrix.lastUserId"
+    private let localSessionIdKey = "com.zyna.matrix.localSessionId"
     private static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
 
     private init() {
@@ -132,12 +134,13 @@ final class MatrixClientService {
 
             let userId = try client.userId()
             UserDefaults.standard.set(userId, forKey: userIdKey)
+            let localSessionId = startNewLocalSessionId()
 
             // Manually save session — SDK only auto-calls delegate on token refresh
             let session = try client.session()
             sessionDelegate.saveSessionInKeychain(session: session)
 
-            logAuth("Logged in as \(userId)")
+            logAuth("Logged in as \(userId) localSession=\(localSessionId)")
 
             self.client = client
             stateSubject.send(.loggedIn)
@@ -158,9 +161,18 @@ final class MatrixClientService {
             throw AuthenticationError.sessionNotFound
         }
 
+        let session: MatrixRustSDK.Session
         do {
-            let session = try sessionDelegate.retrieveSessionFromKeychain(userId: userId)
+            session = try sessionDelegate.retrieveSessionFromKeychain(userId: userId)
+        } catch {
+            logAuth("Stored session unavailable for \(userId): \(error)")
+            clearLocalSession(userId: userId)
+            FileCacheService.shared.clearAll()
+            stateSubject.send(.loggedOut)
+            throw error
+        }
 
+        do {
             let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
                 .passphrase(passphrase: passphrase)
 
@@ -178,6 +190,7 @@ final class MatrixClientService {
 
             try await client.restoreSession(session: session)
             logAuth("Session restored for \(userId)")
+            ensureLocalSessionId()
 
             self.client = client
             stateSubject.send(.loggedIn)
@@ -185,7 +198,12 @@ final class MatrixClientService {
             try await startSync()
         } catch {
             logAuth("Session restore failed: \(error)")
-            stateSubject.send(.error(error))
+            await stopSync()
+            detachEncryptionListeners()
+            client = nil
+            clearLocalSession(userId: userId)
+            FileCacheService.shared.clearAll()
+            stateSubject.send(.loggedOut)
             throw error
         }
     }
@@ -257,23 +275,50 @@ final class MatrixClientService {
 
     // MARK: - Logout
 
-    func logout() async {
+    func logoutFromServer() async throws {
+        guard let client else {
+            throw AuthenticationError.clientNotInitialized
+        }
+
+        do {
+            try await client.logout()
+            logAuth("Server logout completed")
+        } catch {
+            logAuth("Server logout failed: \(error)")
+            throw error
+        }
+    }
+
+    func logoutLocally() async {
+        let userId = currentOrStoredUserId(client: client)
+
         await stopSync()
         detachEncryptionListeners()
 
-        if let client {
-            let userId = (try? client.userId()) ?? ""
-            try? await client.logout()
-            sessionDelegate.clearSession(userId: userId)
-            SessionVerificationService.clearLocalSecretsFlag(userId: userId)
-            UserDefaults.standard.removeObject(forKey: userIdKey)
-            logAuth("Logged out")
+        client = nil
+        clearLocalSession(userId: userId)
+        FileCacheService.shared.clearAll()
+        stateSubject.send(.loggedOut)
+        logAuth("Logged out locally")
+    }
+
+    func logout() async {
+        do {
+            try await logoutFromServer()
+        } catch {
+            logAuth("Continuing with local logout after server logout failure: \(error)")
+        }
+        await logoutLocally()
+    }
+
+    @discardableResult
+    func handleInvalidAccessTokenIfNeeded(_ error: Error) async -> Bool {
+        guard Self.isInvalidAccessTokenError(error) else {
+            return false
         }
 
-        FileCacheService.shared.clearAll()
-
-        self.client = nil
-        stateSubject.send(.loggedOut)
+        await invalidateLocalSession(reason: String(describing: error))
+        return true
     }
 
     // MARK: - OIDC
@@ -329,11 +374,12 @@ final class MatrixClientService {
 
         let userId = try client.userId()
         UserDefaults.standard.set(userId, forKey: userIdKey)
+        let localSessionId = startNewLocalSessionId()
 
         let session = try client.session()
         sessionDelegate.saveSessionInKeychain(session: session)
 
-        logAuth("OIDC login successful as \(userId)")
+        logAuth("OIDC login successful as \(userId) localSession=\(localSessionId)")
 
         self.client = client
         stateSubject.send(.loggedIn)
@@ -346,6 +392,60 @@ final class MatrixClientService {
     var hasStoredSession: Bool {
         UserDefaults.standard.string(forKey: userIdKey) != nil
     }
+
+    var currentLocalSessionId: String? {
+        UserDefaults.standard.string(forKey: localSessionIdKey)
+    }
+
+    private func currentOrStoredUserId(client: Client?) -> String? {
+        if let client, let userId = try? client.userId(), !userId.isEmpty {
+            return userId
+        }
+        return UserDefaults.standard.string(forKey: userIdKey)
+    }
+
+    private func clearLocalSession(userId: String?) {
+        if let userId, !userId.isEmpty {
+            sessionDelegate.clearSession(userId: userId)
+            SessionVerificationService.clearLocalSecretsFlag(userId: userId)
+        } else {
+            sessionDelegate.clearAllSessions()
+        }
+        UserDefaults.standard.removeObject(forKey: userIdKey)
+        UserDefaults.standard.removeObject(forKey: localSessionIdKey)
+        clearSessionDirectories()
+    }
+
+    @discardableResult
+    private func startNewLocalSessionId() -> String {
+        let id = UUID().uuidString
+        UserDefaults.standard.set(id, forKey: localSessionIdKey)
+        return id
+    }
+
+    @discardableResult
+    private func ensureLocalSessionId() -> String {
+        if let existing = currentLocalSessionId {
+            return existing
+        }
+        return startNewLocalSessionId()
+    }
+
+    private func invalidateLocalSession(reason: String) async {
+        guard invalidatingSession.tryToSetFlag() else { return }
+        defer { invalidatingSession.tryToClearFlag() }
+
+        logAuth("Invalid access token; clearing local session: \(reason)")
+        await logoutLocally()
+    }
+
+    private static func isInvalidAccessTokenError(_ error: Error) -> Bool {
+        let description = String(describing: error)
+        return description.contains("M_UNKNOWN_TOKEN")
+            || description.contains("UnknownToken")
+            || description.contains("Invalid access token")
+    }
+
 }
 
 // MARK: - SDK Listener Adapters

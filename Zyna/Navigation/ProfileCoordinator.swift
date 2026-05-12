@@ -8,10 +8,15 @@ import UIKit
 final class ProfileCoordinator {
 
     let navigationController = ZynaNavigationController()
+    private let audioPlayer: AudioPlayerService
     var onLogout: (() -> Void)?
 
+    init(audioPlayer: AudioPlayerService) {
+        self.audioPlayer = audioPlayer
+    }
+
     func start() {
-        let vc = ProfileViewController(mode: .own)
+        let vc = ProfileViewController(mode: .own, audioPlayer: audioPlayer)
         vc.onLogout = { [weak self] in
             self?.onLogout?()
         }
@@ -22,7 +27,7 @@ final class ProfileCoordinator {
     }
 
     private func showSettings() {
-        let vc = SettingsViewController()
+        let vc = SettingsViewController(audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             _ = self?.navigationController.pop()
         }
@@ -36,7 +41,7 @@ final class ProfileCoordinator {
     }
 
     private func showChatThemeSettings() {
-        let vc = ChatThemeSettingsViewController()
+        let vc = ChatThemeSettingsViewController(audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             _ = self?.navigationController.pop()
         }
@@ -44,7 +49,7 @@ final class ProfileCoordinator {
     }
 
     private func showNameColorSettings() {
-        let vc = ProfileNameColorSettingsViewController()
+        let vc = ProfileNameColorSettingsViewController(audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             _ = self?.navigationController.pop()
         }

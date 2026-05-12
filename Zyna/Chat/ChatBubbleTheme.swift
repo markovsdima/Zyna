@@ -126,6 +126,52 @@ struct ChatBubbleTheme: Equatable {
         ]
     )
 
+    static let deepOcean = ChatBubbleTheme(
+        id: "deepOcean",
+        title: String(localized: "Deep Ocean"),
+        outgoingGradientColors: [
+            UIColor(hex: 0x7DD3FC),
+            UIColor(hex: 0x0EA5A4),
+            UIColor(hex: 0x1E3A8A)
+        ],
+        startPoint: CGPoint(x: 0.0, y: 0.0),
+        endPoint: CGPoint(x: 1.0, y: 1.0)
+    )
+
+    static let northernNight = ChatBubbleTheme(
+        id: "northernNight",
+        title: String(localized: "Northern Night"),
+        outgoingGradientColors: [
+            UIColor(hex: 0x22D3EE),
+            UIColor(hex: 0x6366F1),
+            UIColor(hex: 0x312E81)
+        ],
+        startPoint: CGPoint(x: 0.0, y: 0.0),
+        endPoint: CGPoint(x: 1.0, y: 1.0)
+    )
+
+    static let irisMint = ChatBubbleTheme(
+        id: "irisMint",
+        title: String(localized: "Iris Mint"),
+        outgoingGradientColors: [
+            UIColor(hex: 0xA78BFA),
+            UIColor(hex: 0x2DD4BF),
+            UIColor(hex: 0x0F766E)
+        ],
+        startPoint: CGPoint(x: 1.0, y: 0.0),
+        endPoint: CGPoint(x: 0.0, y: 1.0)
+    )
+
+    static let midnight = ChatBubbleTheme(
+        id: "midnight",
+        title: String(localized: "Midnight"),
+        outgoingGradientColors: [
+            UIColor(hex: 0x94A3B8),
+            UIColor(hex: 0x475569),
+            UIColor(hex: 0x0F172A)
+        ]
+    )
+
     static let all: [ChatBubbleTheme] = [
         .zynaBlue,
         .auroraLime,
@@ -136,7 +182,11 @@ struct ChatBubbleTheme: Equatable {
         .solarCoral,
         .mango,
         .graphiteCyan,
-        .rubyPlum
+        .rubyPlum,
+        .deepOcean,
+        .northernNight,
+        .irisMint,
+        .midnight
     ]
 
     static let fallback = zynaBlue
@@ -150,8 +200,19 @@ struct ChatBubbleTheme: Equatable {
     }
 }
 
+extension ChatBubbleTheme {
+    var actionAccentColor: UIColor {
+        guard !outgoingGradientColors.isEmpty else { return AppColor.accent }
+        if outgoingGradientColors.count >= 3 {
+            return outgoingGradientColors[1]
+        }
+        return outgoingGradientColors[outgoingGradientColors.count - 1]
+    }
+}
+
 final class ChatBubbleThemeStore {
     static let shared = ChatBubbleThemeStore()
+    static let didChangeNotification = Notification.Name("ChatBubbleThemeStore.didChange")
 
     private enum DefaultsKey {
         static let selectedThemeId = "chatBubbleTheme.selectedThemeId"
@@ -173,7 +234,11 @@ final class ChatBubbleThemeStore {
 
     func setSelectedTheme(id: String) {
         guard ChatBubbleTheme.theme(id: id) != nil else { return }
+        let oldId = selectedThemeId
         defaults.set(id, forKey: DefaultsKey.selectedThemeId)
+        if oldId != id {
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        }
     }
 }
 

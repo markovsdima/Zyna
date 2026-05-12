@@ -44,6 +44,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let maxCount = 99
     }
 
+    private enum ReplySwipeIndicator {
+        static let size: CGFloat = 30
+        static let hiddenTrailingOverflow: CGFloat = 16
+        static let visibleTrailingInset: CGFloat = 30
+        static let minScale: CGFloat = 0.62
+        static let maxScale: CGFloat = 1
+        static let verticalMargin: CGFloat = 14
+    }
+
     private enum ReadReceipts {
         static let visibilityThreshold: CGFloat = 0.6
         static let baselineLiveTolerance: CGFloat = 24
@@ -109,12 +118,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     /// Scroll-to-live button lives at node.view level (not inside input bar)
     /// so its tap target works even when positioned above the bar's bounds.
-    /// The glass circle itself is rendered by GlassInputBar's shader
-    /// (shape3, metaball with mic). These are just the chevron + tap area.
+    /// The glass circle and chevron are rendered by GlassInputBar's shader
+    /// (shape3, metaball with mic). These are just geometry + tap area.
     private let scrollButtonIcon = UIImageView()
+    private var scrollButtonGlyphAlpha: CGFloat = 0
     private let scrollButtonTap = UIButton(type: .custom)
     private let scrollButtonBadgeBackground = UIView()
     private let scrollButtonBadgeLabel = UILabel()
+    private let replySwipeIndicatorView = UIImageView()
     private let dateHeaderOverlayManager = DateHeaderOverlayManager()
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
@@ -136,7 +147,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private lazy var glassComparison = GlassComparisonView()
     private lazy var glassTuning = GlassTuningView()
     private var previousInputCoveredHeight: CGFloat?
-    private let audioPlayer = AudioPlayerService()
+    private let audioPlayer: AudioPlayerService
+    private let initialVoiceIslandShouldAppearWithoutAnimation: Bool
     private var activeContextMenu: ContextMenuController?
     private var pendingRedactionBatches: [ChatViewModel.DetectedRedactionBatch] = []
     private var isTeleporting = false
@@ -157,6 +169,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var unseenIncomingMessageCount = 0
     private var pendingPostSendPinToLive = false
     private var isEditingInputActive = false
+    private var isReplySwipeInteractionActive = false
+    private var isShowingVoiceIsland = false
+    private var didCompleteFirstAppearance = false
+    private var didConsumeInitialVoiceIslandAnimationSuppression = false
     private var redactionAnimationsArmed = false
     private var redactionAnimationArmWork: DispatchWorkItem?
     private var didCleanupViewModel = false
@@ -166,10 +182,22 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.mode.isPreview
     }
 
+    var roomIdentifier: String {
+        viewModel.roomIdentifier
+    }
+
+    var canPresentVoicePlaybackIsland: Bool {
+        !isPreviewMode
+    }
+
     // MARK: - Init
 
-    init(viewModel: ChatViewModel) {
+    init(viewModel: ChatViewModel, audioPlayer: AudioPlayerService) {
         self.viewModel = viewModel
+        self.audioPlayer = audioPlayer
+        self.initialVoiceIslandShouldAppearWithoutAnimation = (
+            audioPlayer.state != .idle && audioPlayer.nowPlaying != nil
+        )
         super.init(node: ChatNode())
         hidesBottomBarWhenPushed = !viewModel.mode.isPreview
     }
@@ -227,8 +255,33 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     self.onRoomDetailsTapped?()
                 }
             }
+            glassNavBar.onVoicePlayPause = { [weak self] in
+                guard let self else { return }
+                if self.audioPlayer.state.isPlaying {
+                    self.audioPlayer.pause()
+                } else {
+                    self.audioPlayer.resume()
+                }
+            }
+            glassNavBar.onVoiceClose = { [weak self] in
+                self?.audioPlayer.stop()
+            }
+            glassNavBar.onVoiceSpeed = { [weak self] in
+                self?.audioPlayer.cyclePlaybackRate()
+            }
+            glassNavBar.onVoiceSeek = { [weak self] progress in
+                self?.audioPlayer.seek(to: progress)
+            }
+            glassNavBar.onHeightChanged = { [weak self] in
+                guard let self else { return }
+                self.view.setNeedsLayout()
+                self.view.layoutIfNeeded()
+                self.updateTableInsetsForInputBar()
+                self.updateDateHeaderOverlay()
+            }
             node.addSubnode(glassNavBar)
             node.glassNavBar = glassNavBar
+            bindVoiceIsland()
         }
 
         // Search bar (hidden by default)
@@ -309,6 +362,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         if !isPreviewMode {
             node.view.addSubview(dateHeaderOverlayManager.containerView)
+            setupReplySwipeIndicator()
         }
 
         if Self.showGlassComparison && !isPreviewMode {
@@ -367,6 +421,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         guard !isPreviewMode else { return }
+        applyVoiceIslandState(
+            state: audioPlayer.state,
+            item: audioPlayer.nowPlaying,
+            snapshot: audioPlayer.snapshot
+        )
         // Pre-warm glass before the navigation transition starts so the
         // shared render loop is already active on the first animated frame.
         GlassService.shared.captureFor(duration: 0.5)
@@ -376,6 +435,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         guard !isPreviewMode else { return }
+        didCompleteFirstAppearance = true
         // Force glass recapture after navigation push completes
         GlassService.shared.setNeedsCapture()
         if shouldPresentAttachmentPreviewAfterDismiss {
@@ -405,7 +465,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func cleanupViewModelIfNeeded() {
         guard !didCleanupViewModel else { return }
         didCleanupViewModel = true
-        audioPlayer.stop()
         viewModel.cleanup()
     }
 
@@ -679,7 +738,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         updateScrollButtonAccessibilityLabel()
         updateScrollButtonBadgeLayout(
             relativeTo: scrollButtonIcon.frame,
-            iconAlpha: scrollButtonIcon.alpha,
+            iconAlpha: scrollButtonGlyphAlpha,
             tapAlpha: scrollButtonTap.alpha
         )
     }
@@ -717,7 +776,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassInputBar.scrollButtonVisible = shouldShow
         updateScrollButtonBadgeLayout(
             relativeTo: scrollButtonIcon.frame,
-            iconAlpha: scrollButtonIcon.alpha,
+            iconAlpha: scrollButtonGlyphAlpha,
             tapAlpha: scrollButtonTap.alpha
         )
     }
@@ -815,6 +874,87 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     // MARK: - Bindings
+
+    private func bindVoiceIsland() {
+        audioPlayer.$state
+            .combineLatest(audioPlayer.$nowPlaying, audioPlayer.$snapshot)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state, item, snapshot in
+                self?.applyVoiceIslandState(state: state, item: item, snapshot: snapshot)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func applyVoiceIslandState(
+        state: AudioPlayerService.State,
+        item: AudioPlayerService.NowPlayingItem?,
+        snapshot: AudioPlayerService.PlaybackSnapshot
+    ) {
+        guard !isPreviewMode else { return }
+        let shouldShow = state != .idle && item != nil
+
+        guard shouldShow, let item else {
+            glassNavBar.setVoiceState(
+                nil,
+                animated: shouldAnimateVoiceIslandStateChange(showing: false)
+            )
+            updateVoiceIslandVisibility(false)
+            return
+        }
+
+        let subtitle = state.isLoading
+            ? String(localized: "Loading")
+            : String(localized: "Voice Message")
+
+        let remaining = snapshot.duration > 0
+            ? snapshot.remainingTime
+            : item.duration
+        let voiceState = VoiceTitleState(
+            title: item.title,
+            subtitle: subtitle,
+            remainingText: MediaDurationFormatter.shortString(for: remaining),
+            rateText: Self.voiceRateTitle(snapshot.playbackRate),
+            waveform: item.waveform,
+            progress: snapshot.progress,
+            isPlaying: state.isPlaying,
+            isLoading: state.isLoading
+        )
+        glassNavBar.setVoiceState(
+            voiceState,
+            animated: shouldAnimateVoiceIslandStateChange(showing: true)
+        )
+        updateVoiceIslandVisibility(true)
+    }
+
+    private func shouldAnimateVoiceIslandStateChange(showing: Bool) -> Bool {
+        defer {
+            if initialVoiceIslandShouldAppearWithoutAnimation
+                && !didConsumeInitialVoiceIslandAnimationSuppression {
+                didConsumeInitialVoiceIslandAnimationSuppression = true
+            }
+        }
+
+        guard didCompleteFirstAppearance else { return false }
+        if showing,
+           initialVoiceIslandShouldAppearWithoutAnimation,
+           !didConsumeInitialVoiceIslandAnimationSuppression,
+           glassNavBar.voiceState == nil {
+            return false
+        }
+        return true
+    }
+
+    private func updateVoiceIslandVisibility(_ visible: Bool) {
+        guard isShowingVoiceIsland != visible else { return }
+        isShowingVoiceIsland = visible
+    }
+
+    private static func voiceRateTitle(_ rate: Float) -> String {
+        if abs(rate.rounded() - rate) < 0.01 {
+            return String(format: "%.0fx", rate)
+        }
+        return String(format: "%.1fx", rate)
+    }
 
     private func bindViewModel() {
         viewModel.onTableUpdate = { [weak self] update in
@@ -1029,7 +1169,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassInputBar.onScrollButtonLayoutChanged = { [weak self] iconFrame, iconAlpha, tapFrame, tapAlpha in
             guard let self else { return }
             self.scrollButtonIcon.frame = iconFrame
-            self.scrollButtonIcon.alpha = iconAlpha
+            self.scrollButtonGlyphAlpha = iconAlpha
+            self.scrollButtonIcon.alpha = 0
             self.scrollButtonTap.frame = tapFrame
             self.scrollButtonTap.alpha = tapAlpha
             self.updateScrollButtonBadgeLayout(
@@ -1099,12 +1240,42 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             renderedMessage = message
         }
 
-        // Ask ChatNode for the source view here on the main thread.
-        // Texture may build the cell inside the returned block on a background thread,
-        // and that block should use the already-resolved view instead of touching
-        // `self.node` / the live node hierarchy again.
+        // Resolve controller/view state and callbacks before returning the Texture
+        // node block. Texture may build the cell on a background thread, so the
+        // block should only create nodes and assign already-prepared values.
+        // This avoids thread-sensitive bugs during fast scroll/preload if these
+        // handlers later grow to touch UIKit, live nodes, or view-model state.
         let gradientSource = self.node.bubbleGradientSource(for: renderedMessage)
-        return { [weak self] in
+        let roomId = viewModel.roomIdentifier
+        let roomName = viewModel.roomName
+        let configureMessageInteractions = makeMessageInteractionConfigurator(for: message)
+        let openGroupedPhoto: (PhotoGroupMessageCellNode, Int) -> Void = { [weak self] groupCell, index in
+            self?.presentImageViewer(for: groupCell, itemIndex: index)
+        }
+        let openImage: (ImageMessageCellNode) -> Void = { [weak self] imageCell in
+            self?.presentImageViewer(for: message, from: imageCell)
+        }
+        let openVideo: (VideoMessageCellNode) -> Void = { [weak self] videoCell in
+            self?.handleVideoTap(message: message, cellNode: videoCell)
+        }
+        let openFile: (FileCellNode) -> Void = { [weak self] fileCell in
+            self?.handleFileTap(message: message, cellNode: fileCell)
+        }
+        let openSender: (String) -> Void = { [weak self] userId in
+            self?.onTitleTapped?(userId)
+        }
+        let updateInteractionLock: (Bool) -> Void = { [weak self] locked in
+            if locked {
+                self?.lockInteraction("contextMenu")
+            } else {
+                self?.unlockInteraction("contextMenu")
+            }
+        }
+        let openReplyHeader: (String) -> Void = { [weak self] eventId in
+            self?.navigateToMessage(eventId: eventId)
+        }
+
+        return {
 
             // Call events use a standalone centered cell, not a MessageCellNode
             if case .callEvent = renderedMessage.content {
@@ -1121,60 +1292,57 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             if renderedMessage.mediaGroupPresentation?.rendersCompositeBubble == true {
                 let groupCell = PhotoGroupMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
-                    groupCell.onPhotoTapped = { [weak self, weak groupCell] index in
-                        guard let self, let groupCell else { return }
-                        self.presentImageViewer(for: groupCell, itemIndex: index)
+                    groupCell.onPhotoTapped = { [weak groupCell] index in
+                        guard let groupCell else { return }
+                        openGroupedPhoto(groupCell, index)
                     }
                 }
                 let cellNode = groupCell
                 cellNode.bubbleGradientSource = gradientSource
 
                 if !isPreview {
-                    cellNode.onSenderTapped = { [weak self] userId in
-                        self?.onTitleTapped?(userId)
-                    }
-
-                    cellNode.onInteractionLockChanged = { [weak self] locked in
-                        if locked {
-                            self?.lockInteraction("contextMenu")
-                        } else {
-                            self?.unlockInteraction("contextMenu")
-                        }
-                    }
+                    cellNode.onSenderTapped = openSender
+                    cellNode.onInteractionLockChanged = updateInteractionLock
                 }
 
-                self?.configureMessageDrivenInteractions(for: cellNode, message: message)
+                configureMessageInteractions(cellNode)
                 return cellNode
             }
 
             let cellNode: MessageCellNode
             switch renderedMessage.content {
             case .voice:
-                cellNode = VoiceMessageCellNode(message: renderedMessage, audioPlayer: audioPlayer, isGroupChat: isGroup)
+                cellNode = VoiceMessageCellNode(
+                    message: renderedMessage,
+                    audioPlayer: audioPlayer,
+                    roomId: roomId,
+                    roomName: roomName,
+                    isGroupChat: isGroup
+                )
             case .image:
                 let imageCell = ImageMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
-                    imageCell.onImageTapped = { [weak self, weak imageCell] in
-                        guard let self, let imageCell else { return }
-                        self.presentImageViewer(for: message, from: imageCell)
+                    imageCell.onImageTapped = { [weak imageCell] in
+                        guard let imageCell else { return }
+                        openImage(imageCell)
                     }
                 }
                 cellNode = imageCell
             case .video:
                 let videoCell = VideoMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
-                    videoCell.onVideoTapped = { [weak self, weak videoCell] in
-                        guard let self, let videoCell else { return }
-                        self.handleVideoTap(message: message, cellNode: videoCell)
+                    videoCell.onVideoTapped = { [weak videoCell] in
+                        guard let videoCell else { return }
+                        openVideo(videoCell)
                     }
                 }
                 cellNode = videoCell
             case .file:
                 let fileCell = FileCellNode(message: renderedMessage, isGroupChat: isGroup)
                 if !isPreview {
-                    fileCell.onFileTapped = { [weak self] in
-                        guard let self else { return }
-                        self.handleFileTap(message: message, cellNode: fileCell)
+                    fileCell.onFileTapped = { [weak fileCell] in
+                        guard let fileCell else { return }
+                        openFile(fileCell)
                     }
                 }
                 cellNode = fileCell
@@ -1187,25 +1355,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             cellNode.bubbleGradientSource = gradientSource
 
             if !isPreview {
-                cellNode.onSenderTapped = { [weak self] userId in
-                    self?.onTitleTapped?(userId)
-                }
-
-                cellNode.onInteractionLockChanged = { [weak self] locked in
-                    if locked {
-                        self?.lockInteraction("contextMenu")
-                    } else {
-                        self?.unlockInteraction("contextMenu")
-                    }
-                }
+                cellNode.onSenderTapped = openSender
+                cellNode.onInteractionLockChanged = updateInteractionLock
             }
 
-            self?.configureMessageDrivenInteractions(for: cellNode, message: message)
+            configureMessageInteractions(cellNode)
 
             if !isPreview {
-                cellNode.onReplyHeaderTapped = { [weak self] eventId in
-                    self?.navigateToMessage(eventId: eventId)
-                }
+                cellNode.onReplyHeaderTapped = openReplyHeader
             }
 
             return cellNode
@@ -1217,27 +1374,64 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         ProfileAppearanceService.shared.prefetchAppearance(userId: userId)
     }
 
-    private func configureMessageDrivenInteractions(for cellNode: MessageCellNode, message: ChatMessage) {
-        guard !isPreviewMode else {
-            configurePreviewInteractions(for: cellNode)
-            return
+    private func makeMessageInteractionConfigurator(for message: ChatMessage) -> (MessageCellNode) -> Void {
+        let isPreview = isPreviewMode
+        let suppressSyntheticActions = message.isSyntheticOutgoingEnvelope || message.isSyntheticIncomingAssembly
+        let suppressContextMenu = message.isSyntheticIncomingAssembly
+        let setReplyTarget: () -> Void = { [weak self] in
+            self?.viewModel.setReplyTarget(message)
         }
-
-        if message.isSyntheticIncomingAssembly {
-            cellNode.onContextMenuActivated = nil
-            cellNode.accessibilityActionsProvider = { [] }
-        } else {
-            cellNode.onContextMenuActivated = { [weak self, weak cellNode] point in
-                guard let self, let cellNode else { return }
-                self.presentContextMenu(for: message, from: cellNode, activationPoint: point)
-            }
-            cellNode.accessibilityActionsProvider = { [weak self] in
-                self?.buildAccessibilityActions(for: message) ?? []
-            }
+        let updateReplySwipe: (CGFloat, CGPoint) -> Void = { [weak self] progress, anchorPointInWindow in
+            self?.updateReplySwipeIndicator(
+                progress: progress,
+                anchorPointInWindow: anchorPointInWindow
+            )
         }
-        cellNode.onReactionTapped = { [weak self] key in
+        let hideReplySwipe: () -> Void = { [weak self] in
+            self?.hideReplySwipeIndicator()
+        }
+        let presentContextMenu: (MessageCellNode, CGPoint) -> Void = { [weak self] cellNode, point in
+            self?.presentContextMenu(for: message, from: cellNode, activationPoint: point)
+        }
+        let buildActions: () -> [UIAccessibilityCustomAction] = { [weak self] in
+            self?.buildAccessibilityActions(for: message) ?? []
+        }
+        let toggleReaction: (String) -> Void = { [weak self] key in
             self?.viewModel.toggleReaction(key, for: message)
         }
+
+        return { cellNode in
+            guard !isPreview else {
+                Self.configurePreviewInteractions(for: cellNode)
+                return
+            }
+
+            if suppressSyntheticActions {
+                cellNode.onReplySwipeActivated = nil
+                cellNode.onReplySwipeChanged = nil
+                cellNode.onReplySwipeEnded = nil
+            } else {
+                cellNode.onReplySwipeActivated = setReplyTarget
+                cellNode.onReplySwipeChanged = updateReplySwipe
+                cellNode.onReplySwipeEnded = hideReplySwipe
+            }
+
+            if suppressContextMenu {
+                cellNode.onContextMenuActivated = nil
+                cellNode.accessibilityActionsProvider = { [] }
+            } else {
+                cellNode.onContextMenuActivated = { [weak cellNode] point in
+                    guard let cellNode else { return }
+                    presentContextMenu(cellNode, point)
+                }
+                cellNode.accessibilityActionsProvider = buildActions
+            }
+            cellNode.onReactionTapped = toggleReaction
+        }
+    }
+
+    private func configureMessageDrivenInteractions(for cellNode: MessageCellNode, message: ChatMessage) {
+        makeMessageInteractionConfigurator(for: message)(cellNode)
     }
 
     private func configureAttachmentTapHandler(for cellNode: MessageCellNode, message: ChatMessage) {
@@ -1261,7 +1455,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
     }
 
-    private func configurePreviewInteractions(for cellNode: MessageCellNode) {
+    private static func configurePreviewInteractions(for cellNode: MessageCellNode) {
         cellNode.allowsInteractiveActions = false
         cellNode.contextSourceNode.isGestureEnabled = false
         cellNode.contextSourceNode.onQuickTap = nil
@@ -1272,6 +1466,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         cellNode.onReactionTapped = nil
         cellNode.onSenderTapped = nil
         cellNode.onReplyHeaderTapped = nil
+        cellNode.onReplySwipeActivated = nil
+        cellNode.onReplySwipeChanged = nil
+        cellNode.onReplySwipeEnded = nil
         cellNode.accessibilityActionsProvider = { [] }
 
         (cellNode as? PhotoGroupMessageCellNode)?.onPhotoTapped = nil
@@ -1281,6 +1478,89 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         if Thread.isMainThread {
             cellNode.refreshAccessibilityForwarding()
+        }
+    }
+
+    private func setupReplySwipeIndicator() {
+        let config = UIImage.SymbolConfiguration(pointSize: 21, weight: .semibold)
+        replySwipeIndicatorView.image = UIImage(
+            systemName: "arrowshape.turn.up.left",
+            withConfiguration: config
+        )?.withRenderingMode(.alwaysTemplate)
+        replySwipeIndicatorView.tintColor = ChatBubbleThemeStore.shared.selectedTheme.actionAccentColor
+        replySwipeIndicatorView.contentMode = .center
+        replySwipeIndicatorView.isUserInteractionEnabled = false
+        replySwipeIndicatorView.alpha = 0
+        replySwipeIndicatorView.bounds = CGRect(
+            x: 0,
+            y: 0,
+            width: ReplySwipeIndicator.size,
+            height: ReplySwipeIndicator.size
+        )
+        replySwipeIndicatorView.center = CGPoint(
+            x: node.view.bounds.width + ReplySwipeIndicator.hiddenTrailingOverflow,
+            y: node.view.bounds.midY
+        )
+        replySwipeIndicatorView.transform = CGAffineTransform(
+            scaleX: ReplySwipeIndicator.minScale,
+            y: ReplySwipeIndicator.minScale
+        )
+        node.view.addSubview(replySwipeIndicatorView)
+    }
+
+    private func updateReplySwipeIndicator(progress: CGFloat, anchorPointInWindow: CGPoint) {
+        guard !isPreviewMode else { return }
+        if !isReplySwipeInteractionActive {
+            isReplySwipeInteractionActive = true
+            lockInteraction("replySwipe")
+        }
+
+        let clampedProgress = max(0, min(1, progress))
+        let easedProgress = clampedProgress * (2 - clampedProgress)
+        let localAnchor = node.view.convert(anchorPointInWindow, from: nil)
+
+        let topY = glassNavBar.coveredHeight + ReplySwipeIndicator.verticalMargin
+        let bottomY = node.view.bounds.height
+            - glassInputBar.coveredHeight
+            - ReplySwipeIndicator.verticalMargin
+        let clampedY = min(max(localAnchor.y, topY), max(topY, bottomY))
+        let hiddenCenterX = node.view.bounds.width + ReplySwipeIndicator.hiddenTrailingOverflow
+        let visibleCenterX = node.view.bounds.width - ReplySwipeIndicator.visibleTrailingInset
+        let centerX = hiddenCenterX + (visibleCenterX - hiddenCenterX) * easedProgress
+        let scale = ReplySwipeIndicator.minScale
+            + (ReplySwipeIndicator.maxScale - ReplySwipeIndicator.minScale) * easedProgress
+
+        replySwipeIndicatorView.layer.removeAllAnimations()
+        UIView.performWithoutAnimation {
+            self.replySwipeIndicatorView.alpha = clampedProgress
+            self.replySwipeIndicatorView.center = CGPoint(x: centerX, y: clampedY)
+            self.replySwipeIndicatorView.transform = CGAffineTransform(scaleX: scale, y: scale)
+        }
+    }
+
+    private func hideReplySwipeIndicator() {
+        guard !isPreviewMode else { return }
+        if isReplySwipeInteractionActive {
+            isReplySwipeInteractionActive = false
+            unlockInteraction("replySwipe")
+        }
+
+        let currentY = replySwipeIndicatorView.center.y
+        let hiddenCenterX = node.view.bounds.width + ReplySwipeIndicator.hiddenTrailingOverflow
+        UIView.animate(
+            withDuration: 0.16,
+            delay: 0,
+            options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseOut]
+        ) {
+            self.replySwipeIndicatorView.alpha = 0
+            self.replySwipeIndicatorView.center = CGPoint(
+                x: hiddenCenterX,
+                y: currentY
+            )
+            self.replySwipeIndicatorView.transform = CGAffineTransform(
+                scaleX: ReplySwipeIndicator.minScale,
+                y: ReplySwipeIndicator.minScale
+            )
         }
     }
 
@@ -1336,6 +1616,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 return true
             })
         } else if canDiscardLocalOutgoingEnvelope(message) {
+            if canRetryLocalOutgoingEnvelope(message) {
+                actions.append(UIAccessibilityCustomAction(name: "Retry Send") { [weak self] _ in
+                    self?.retryLocalOutgoingEnvelope(message)
+                    return true
+                })
+            }
             actions.append(UIAccessibilityCustomAction(name: localOutgoingEnvelopeRemovalTitle(for: message)) { [weak self] _ in
                 self?.discardLocalOutgoingEnvelope(message)
                 return true
@@ -1559,6 +1845,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     frameInScreen: activeContextMenuBubbleFrameInScreen
                 )
             )
+            if canRetryLocalOutgoingEnvelope(message) {
+                actions.append(ContextMenuAction(
+                    title: "Retry Send",
+                    image: UIImage(systemName: "arrow.clockwise"),
+                    handler: { [weak self] in
+                        self?.retryLocalOutgoingEnvelope(message)
+                    }
+                ))
+            }
             actions.append(ContextMenuAction(
                 title: localOutgoingEnvelopeRemovalTitle(for: message),
                 image: UIImage(systemName: "trash"),
@@ -2392,6 +2687,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
         viewModel.discardOutgoingEnvelope(id: envelopeId)
+    }
+
+    private func retryLocalOutgoingEnvelope(_ message: ChatMessage) {
+        guard canRetryLocalOutgoingEnvelope(message),
+              let envelopeId = message.outgoingEnvelopeId
+        else {
+            return
+        }
+        viewModel.retryOutgoingEnvelope(id: envelopeId)
+    }
+
+    private func canRetryLocalOutgoingEnvelope(_ message: ChatMessage) -> Bool {
+        message.isSyntheticOutgoingEnvelope
+            && message.canRetryOutgoingEnvelope
+            && message.outgoingEnvelopeId != nil
     }
 
     private func canDiscardLocalOutgoingEnvelope(_ message: ChatMessage) -> Bool {

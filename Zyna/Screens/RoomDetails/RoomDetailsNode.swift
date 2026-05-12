@@ -18,6 +18,7 @@ final class RoomDetailsNode: ScreenNode {
     /// first in the a11y tree — otherwise VO walks subview order and
     /// reaches the bar last (it's added on top, so it's last subview).
     weak var glassTopBar: GlassTopBar?
+    weak var voicePlayerView: UIView?
 
     // MARK: - Nodes
 
@@ -389,10 +390,16 @@ final class RoomDetailsNode: ScreenNode {
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
+            if let player = voicePlayerView,
+               player.superview === view,
+               !player.isHidden,
+               player.alpha > 0.01 {
+                elements.append(player)
+            }
             if let bar = glassTopBar, bar.view.superview === view {
                 elements.append(contentsOf: bar.accessibilityElementsInOrder)
             }
-            for sv in view.subviews where sv !== glassTopBar?.view {
+            for sv in view.subviews where sv !== glassTopBar?.view && sv !== voicePlayerView {
                 elements.append(sv)
             }
             return elements

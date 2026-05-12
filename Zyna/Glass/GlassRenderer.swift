@@ -24,6 +24,8 @@ final class GlassRenderer: UIView {
     private var blurTextures: [ReusableTextureKey: CachedTexture] = [:]
     private var compositedSourceTextures: [ReusableTextureKey: CachedTexture] = [:]
     private var emptyOverlayTexture: MTLTexture?
+    private var emptyGlyphTexture: MTLTexture?
+    private lazy var glyphAtlas = GlassGlyphAtlasBuilder.makeAtlas(device: MetalContext.shared.device)
     private var textureCacheFrame = 0
     private var frameInFlight = false
 
@@ -85,6 +87,10 @@ final class GlassRenderer: UIView {
         var shape3: SIMD4<Float> = .zero
         var scrollButtonVisible: Float = 0
         var shapeCount: Float = 1
+        /// Reply/forward/edit preview card, normalized in capture coords.
+        var previewRect: SIMD4<Float> = .zero
+        var previewCornerR: Float = 0
+        var previewProgress: Float = 0
     }
 
     /// Liquid pool parameters.
@@ -108,6 +114,91 @@ final class GlassRenderer: UIView {
         var zone: SIMD4<Float>
     }
 
+    /// Optional foreground glyph composited inside the glass pass.
+    /// Rect is normalized in capture UV, matching ShapeParams.
+    struct GlyphData {
+        var items: [GlyphItem]
+    }
+
+    struct GlyphItem {
+        var rect: SIMD4<Float>
+        var effectRect: SIMD4<Float>
+        var source0: GlassGlyphKind
+        var source1: GlassGlyphKind
+        var progress: Float
+        var opacity: Float
+        var activity: Float
+        var sendColor: SIMD4<Float>
+
+        init(
+            rect: SIMD4<Float>,
+            effectRect: SIMD4<Float>,
+            source: GlassGlyphKind,
+            opacity: Float = 1,
+            activity: Float = 0,
+            sendColor: SIMD4<Float> = SIMD4<Float>(0, 0.478, 1, 1)
+        ) {
+            self.rect = rect
+            self.effectRect = effectRect
+            self.source0 = source
+            self.source1 = source
+            self.progress = 0
+            self.opacity = opacity
+            self.activity = activity
+            self.sendColor = sendColor
+        }
+
+        init(
+            rect: SIMD4<Float>,
+            effectRect: SIMD4<Float>,
+            source0: GlassGlyphKind,
+            source1: GlassGlyphKind,
+            progress: Float,
+            opacity: Float = 1,
+            activity: Float = 0,
+            sendColor: SIMD4<Float>
+        ) {
+            self.rect = rect
+            self.effectRect = effectRect
+            self.source0 = source0
+            self.source1 = source1
+            self.progress = progress
+            self.opacity = opacity
+            self.activity = activity
+            self.sendColor = sendColor
+        }
+    }
+
+    /// Optional dynamic alpha texture for reply/forward/edit preview text.
+    /// The preview glass shape itself is carried in ShapeParams so the
+    /// no-preview path stays a few zero uniforms and no dynamic texture.
+    struct PreviewData {
+        var textRect: SIMD4<Float>
+        var mode: Float
+        var opacity: Float
+        var accentColor: SIMD4<Float>
+        var texture: MTLTexture
+    }
+
+    /// Optional nav voice foreground. Text is a pre-rendered RGBA texture;
+    /// waveform samples are drawn procedurally by the shader.
+    struct VoiceData {
+        var contentRect: SIMD4<Float>
+        var contentScale: Float
+        var contentReveal: Float
+        var textRect: SIMD4<Float>
+        var waveformRect: SIMD4<Float>
+        var progress: Float
+        var scrubProgress: Float
+        var isScrubbing: Bool
+        var opacity: Float
+        var materialOpacity: Float
+        var accentColor: SIMD4<Float>
+        var samples: [Float]
+        var sampleCount: Int
+        var textTexture: MTLTexture
+    }
+
     struct BackdropOverlay {
         let backdropTexture: MTLTexture
         let surfaceTexture: MTLTexture
@@ -127,7 +218,12 @@ final class GlassRenderer: UIView {
         let liquidZone: LiquidZone?
         let time: Float
         let barData: BarData?
+        let glyphData: GlyphData?
+        let previewData: PreviewData?
+        let voiceData: VoiceData?
         let backdropOverlay: BackdropOverlay?
+        /// True when sourceTexture changed and the blurred backdrop must be refreshed.
+        let refreshBlur: Bool
         /// 0 = dark material, 1 = light material. Smoothed by GlassService.
         let adaptiveAppearance: Float
         /// 0 = clear/low intervention, 1 = stronger range compression.
@@ -148,7 +244,30 @@ final class GlassRenderer: UIView {
         var skippedReason: String?
     }
 
+    private typealias GlyphVec4Slots = (
+        SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
+        SIMD4<Float>, SIMD4<Float>, SIMD4<Float>
+    )
+
+    private typealias VoiceSampleSlots = (
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float,
+        Float, Float, Float, Float, Float, Float
+    )
+
     private struct Uniforms {
+        static let emptyGlyphVec4Slots: GlyphVec4Slots = (
+            .zero, .zero, .zero, .zero, .zero, .zero
+        )
+        static let emptyVoiceSamples: VoiceSampleSlots = (
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        )
+
         var resolution: SIMD2<Float>
         var isHDR: Float
         var aspect: Float
@@ -183,6 +302,24 @@ final class GlassRenderer: UIView {
         var splashActive: Float = 0
         var splashSurfaceIntensity: Float = 0
         var splashSurfaceAge: Float = 0
+        var glyphMeta: SIMD4<Float> = .zero
+        var glyphRects: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphEffectRects: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphSource0s: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphSource1s: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphParams: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var glyphSendColors: GlyphVec4Slots = Self.emptyGlyphVec4Slots
+        var previewRect: SIMD4<Float> = .zero
+        var previewTextRect: SIMD4<Float> = .zero
+        var previewMeta: SIMD4<Float> = .zero
+        var previewAccentColor: SIMD4<Float> = .zero
+        var voiceContentRect: SIMD4<Float> = .zero
+        var voiceContentMeta: SIMD4<Float> = .zero
+        var voiceTextRect: SIMD4<Float> = .zero
+        var voiceWaveformRect: SIMD4<Float> = .zero
+        var voiceMeta: SIMD4<Float> = .zero
+        var voiceAccentColor: SIMD4<Float> = .zero
+        var voiceSamples: VoiceSampleSlots = Self.emptyVoiceSamples
     }
 
     private struct BackdropCompositeUniforms {
@@ -209,6 +346,7 @@ final class GlassRenderer: UIView {
         let texture: MTLTexture
         let estimatedBytes: Int
         var lastUsedFrame: Int
+        var lastSourceTexture: ObjectIdentifier?
     }
 
     // MARK: - Render
@@ -244,11 +382,22 @@ final class GlassRenderer: UIView {
         for item in validItems {
             let backdropTexture = makeBackdropTexture(for: item, commandBuffer: cmdBuf)
 
-            guard let blurTex = ensureBlurTexture(matching: backdropTexture) else { continue }
+            guard let blurSlot = ensureBlurTexture(matching: backdropTexture) else { continue }
+            let blurTex = blurSlot.texture
 
-            let blurStart = CACurrentMediaTime()
-            gaussianBlur.encode(commandBuffer: cmdBuf, sourceTexture: backdropTexture, destinationTexture: blurTex)
-            let blurMs = (CACurrentMediaTime() - blurStart) * 1000
+            let shouldRefreshBlur = item.refreshBlur
+                || blurSlot.isNew
+                || !blurSlot.containsSource
+                || item.backdropOverlay != nil
+            let blurMs: Double
+            if shouldRefreshBlur {
+                let blurStart = CACurrentMediaTime()
+                gaussianBlur.encode(commandBuffer: cmdBuf, sourceTexture: backdropTexture, destinationTexture: blurTex)
+                recordBlurTextureSource(backdropTexture)
+                blurMs = (CACurrentMediaTime() - blurStart) * 1000
+            } else {
+                blurMs = 0
+            }
 
             let passStart = CACurrentMediaTime()
             let rpd = MTLRenderPassDescriptor()
@@ -260,7 +409,8 @@ final class GlassRenderer: UIView {
             guard let encoder = cmdBuf.makeRenderCommandEncoder(descriptor: rpd) else { continue }
             encoder.label = "GlassRenderer.glassPass.\(item.name)"
 
-            var uniforms = makeUniforms(for: item)
+            let atlas = glyphAtlas
+            var uniforms = makeUniforms(for: item, glyphAtlas: atlas)
             var vertices = makeVertices(for: item.frame)
 
             encoder.setRenderPipelineState(GlassPipeline.shared.pipelineState)
@@ -271,6 +421,9 @@ final class GlassRenderer: UIView {
             encoder.setFragmentTexture(backdropTexture, index: 0)
             encoder.setFragmentTexture(blurTex, index: 1)
             encoder.setFragmentTexture(item.backdropOverlay?.surfaceTexture ?? emptyOverlayFallbackTexture(), index: 2)
+            encoder.setFragmentTexture(atlas?.texture ?? emptyGlyphFallbackTexture(), index: 3)
+            encoder.setFragmentTexture(item.previewData?.texture ?? emptyGlyphFallbackTexture(), index: 4)
+            encoder.setFragmentTexture(item.voiceData?.textTexture ?? emptyGlyphFallbackTexture(), index: 5)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             encoder.endEncoding()
 
@@ -386,14 +539,47 @@ final class GlassRenderer: UIView {
         return texture
     }
 
+    private func emptyGlyphFallbackTexture() -> MTLTexture? {
+        if let emptyGlyphTexture {
+            return emptyGlyphTexture
+        }
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .r8Unorm,
+            width: 1,
+            height: 1,
+            mipmapped: false
+        )
+        desc.usage = .shaderRead
+        desc.storageMode = .shared
+        guard let texture = MetalContext.shared.device.makeTexture(descriptor: desc) else { return nil }
+        texture.label = "Glass empty glyph atlas 1x1"
+
+        var zero: UInt8 = 0
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, 1, 1),
+            mipmapLevel: 0,
+            withBytes: &zero,
+            bytesPerRow: MemoryLayout<UInt8>.stride
+        )
+        emptyGlyphTexture = texture
+        return texture
+    }
+
     // MARK: - Blur Texture
 
-    private func ensureBlurTexture(matching source: MTLTexture) -> MTLTexture? {
+    private func ensureBlurTexture(matching source: MTLTexture) -> (
+        texture: MTLTexture,
+        isNew: Bool,
+        containsSource: Bool
+    )? {
         let key = ReusableTextureKey(source)
+        let sourceIdentity = ObjectIdentifier(source as AnyObject)
         if var cached = blurTextures[key] {
+            let containsSource = cached.lastSourceTexture == sourceIdentity
             cached.lastUsedFrame = textureCacheFrame
             blurTextures[key] = cached
-            return cached.texture
+            return (cached.texture, false, containsSource)
         }
 
         let desc = MTLTextureDescriptor.texture2DDescriptor(
@@ -410,14 +596,23 @@ final class GlassRenderer: UIView {
         blurTextures[key] = CachedTexture(
             texture: texture,
             estimatedBytes: Self.estimatedTextureBytes(source),
-            lastUsedFrame: textureCacheFrame
+            lastUsedFrame: textureCacheFrame,
+            lastSourceTexture: nil
         )
         Self.pruneReusableTextures(
             &blurTextures,
             maxBytes: Self.maxReusableTextureCacheBytes,
             currentFrame: textureCacheFrame
         )
-        return texture
+        return (texture, true, false)
+    }
+
+    private func recordBlurTextureSource(_ source: MTLTexture) {
+        let key = ReusableTextureKey(source)
+        guard var cached = blurTextures[key] else { return }
+        cached.lastUsedFrame = textureCacheFrame
+        cached.lastSourceTexture = ObjectIdentifier(source as AnyObject)
+        blurTextures[key] = cached
     }
 
     private func ensureCompositedSourceTexture(matching source: MTLTexture) -> MTLTexture? {
@@ -442,7 +637,8 @@ final class GlassRenderer: UIView {
         compositedSourceTextures[key] = CachedTexture(
             texture: texture,
             estimatedBytes: Self.estimatedTextureBytes(source),
-            lastUsedFrame: textureCacheFrame
+            lastUsedFrame: textureCacheFrame,
+            lastSourceTexture: nil
         )
         Self.pruneReusableTextures(
             &compositedSourceTextures,
@@ -490,7 +686,22 @@ final class GlassRenderer: UIView {
         }
     }
 
-    private func makeUniforms(for item: RenderItem) -> Uniforms {
+    private static let maxGlyphSlots = 6
+    private static let maxVoiceSamples = 36
+
+    private static func setGlyphVec4(_ value: SIMD4<Float>, in slots: inout GlyphVec4Slots, at index: Int) {
+        withUnsafeMutableBytes(of: &slots) { rawBuffer in
+            rawBuffer.bindMemory(to: SIMD4<Float>.self)[index] = value
+        }
+    }
+
+    private static func setVoiceSample(_ value: Float, in slots: inout VoiceSampleSlots, at index: Int) {
+        withUnsafeMutableBytes(of: &slots) { rawBuffer in
+            rawBuffer.bindMemory(to: Float.self)[index] = value
+        }
+    }
+
+    private func makeUniforms(for item: RenderItem, glyphAtlas: GlassGlyphAtlas?) -> Uniforms {
         let itemScale = window?.screen.scale ?? UIScreen.main.scale
         let res = SIMD2<Float>(Float(item.frame.width * itemScale), Float(item.frame.height * itemScale))
         let aspect = Float(item.frame.width / max(item.frame.height, 1))
@@ -525,6 +736,64 @@ final class GlassRenderer: UIView {
         uniforms.refractScale = tuning.refractScale
         uniforms.adaptiveAppearance = item.adaptiveAppearance
         uniforms.adaptiveContrast = item.adaptiveContrast
+        uniforms.previewRect = item.shapes.previewRect
+        uniforms.previewMeta = SIMD4<Float>(
+            item.shapes.previewProgress,
+            item.previewData?.mode ?? 0,
+            item.previewData?.opacity ?? 0,
+            item.shapes.previewCornerR
+        )
+        if let previewData = item.previewData {
+            uniforms.previewTextRect = previewData.textRect
+            uniforms.previewAccentColor = previewData.accentColor
+        }
+
+        if let voiceData = item.voiceData {
+            let count = min(voiceData.sampleCount, voiceData.samples.count, Self.maxVoiceSamples)
+            uniforms.voiceContentRect = voiceData.contentRect
+            uniforms.voiceContentMeta = SIMD4<Float>(
+                max(0.001, min(1.12, voiceData.contentScale)),
+                max(0, min(1, voiceData.contentReveal)),
+                0,
+                0
+            )
+            uniforms.voiceTextRect = voiceData.textRect
+            uniforms.voiceWaveformRect = voiceData.waveformRect
+            uniforms.voiceMeta = SIMD4<Float>(
+                max(0, min(1, voiceData.progress)),
+                max(0, min(1, voiceData.opacity)),
+                Float(count),
+                voiceData.isScrubbing ? max(0, min(1, voiceData.scrubProgress)) : -1
+            )
+            uniforms.voiceAccentColor = SIMD4<Float>(
+                voiceData.accentColor.x,
+                voiceData.accentColor.y,
+                voiceData.accentColor.z,
+                max(0, min(1, voiceData.materialOpacity))
+            )
+            for index in 0..<count {
+                Self.setVoiceSample(max(0, min(1, voiceData.samples[index])), in: &uniforms.voiceSamples, at: index)
+            }
+        }
+
+        if let glyphData = item.glyphData, let glyphAtlas {
+            var glyphCount = 0
+            for glyph in glyphData.items where glyph.opacity > 0.001 {
+                guard glyphCount < Self.maxGlyphSlots else { break }
+                Self.setGlyphVec4(glyph.rect, in: &uniforms.glyphRects, at: glyphCount)
+                Self.setGlyphVec4(glyph.effectRect, in: &uniforms.glyphEffectRects, at: glyphCount)
+                Self.setGlyphVec4(glyphAtlas.uv(for: glyph.source0), in: &uniforms.glyphSource0s, at: glyphCount)
+                Self.setGlyphVec4(glyphAtlas.uv(for: glyph.source1), in: &uniforms.glyphSource1s, at: glyphCount)
+                Self.setGlyphVec4(
+                    SIMD4<Float>(glyph.progress, glyph.opacity, glyph.activity, 0),
+                    in: &uniforms.glyphParams,
+                    at: glyphCount
+                )
+                Self.setGlyphVec4(glyph.sendColor, in: &uniforms.glyphSendColors, at: glyphCount)
+                glyphCount += 1
+            }
+            uniforms.glyphMeta.x = Float(glyphCount)
+        }
 
         if let overlay = item.backdropOverlay {
             uniforms.splashActive = 1

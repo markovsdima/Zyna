@@ -8,11 +8,16 @@ import UIKit
 final class CallsCoordinator {
 
     let navigationController = ZynaNavigationController()
+    private let audioPlayer: AudioPlayerService
 
     var onRoomSelected: ((String) -> Void)?
 
+    init(audioPlayer: AudioPlayerService) {
+        self.audioPlayer = audioPlayer
+    }
+
     func start() {
-        let vc = CallsViewController()
+        let vc = CallsViewController(audioPlayer: audioPlayer)
         vc.onCallTapped = { [weak self] roomId in
             self?.onRoomSelected?(roomId)
         }
