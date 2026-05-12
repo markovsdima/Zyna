@@ -68,8 +68,28 @@ final class GlassAnchor: UIView {
     /// Custom multi-shape provider. Return nil for default single rounded rect.
     var shapeProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.ShapeParams)?
 
+    /// When true, render-only ticks refresh `shapeProvider` against the cached
+    /// capture frame instead of reusing the last captured shapes.
+    var updatesShapesDuringRenderOnly = false
+
+    /// Optional base frame, in window coordinates, used to derive the backdrop
+    /// capture rect. This lets a surface capture its final bounds before a
+    /// shader-driven visual morph starts.
+    var captureBaseFrameProvider: ((_ glassFrame: CGRect, _ scale: CGFloat) -> CGRect?)?
+
     /// Chrome bar data provider. Return nil when bars are inactive.
     var barProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.BarData?)?
+
+    /// Optional foreground glyphs drawn by Metal inside the glass pass.
+    /// Interactive controls should still live in UIKit/Texture above the anchor.
+    var glyphProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.GlyphData?)?
+
+    /// Optional dynamic preview card rendered by Metal above the input field.
+    /// Used only while reply/forward/edit preview is visible or animating.
+    var previewProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.PreviewData?)?
+
+    /// Optional nav voice foreground rendered by Metal.
+    var voiceProvider: ((_ glassFrame: CGRect, _ captureFrame: CGRect, _ scale: CGFloat) -> GlassRenderer.VoiceData?)?
 
     /// Quick flag: true when bars are active (avoids calling barProvider just to check).
     /// Used by GlassService to expand capture frame upward.
@@ -78,6 +98,10 @@ final class GlassAnchor: UIView {
     /// True when scroll-to-live button is visible above the input bar.
     /// Used by GlassService to expand capture frame upward.
     var hasScrollButton: Bool = false
+
+    /// True while the input reply/forward/edit preview is visible or animating.
+    /// Used by GlassService to expand capture frame upward only on demand.
+    var hasPreview: Bool = false
 
     /// The view whose layer tree to capture as glass background.
     /// Only this view's content is rendered — glass UI is excluded automatically.

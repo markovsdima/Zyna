@@ -93,13 +93,17 @@ final class ProfileNameColorSettingsViewController: ASDKViewController<SettingsS
     private var savedCustomColors: [ProfileNameColorCustomOption] = []
     private var generatedCustomColors: [ProfileNameColorCustomOption] = []
     private var isEditingCustomColors = false
+    private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
 
     private var sections: [Section] {
         savedCustomColors.isEmpty ? [.standard] : [.custom, .standard]
     }
 
-    override init() {
+    init(audioPlayer: AudioPlayerService? = nil) {
         super.init(node: SettingsScreenNode())
+        self.voicePlayerHost = audioPlayer.map {
+            EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
+        }
         hidesBottomBarWhenPushed = true
     }
 
@@ -111,11 +115,13 @@ final class ProfileNameColorSettingsViewController: ASDKViewController<SettingsS
         super.viewDidLoad()
         setupTableView()
         setupGlassTopBar()
+        setupVoicePlayerHost()
         loadOwnAppearance()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        voicePlayerHost?.refresh()
         setInitialPreviewStyleIfNeeded()
         GlassService.shared.setNeedsCapture()
     }
@@ -123,6 +129,7 @@ final class ProfileNameColorSettingsViewController: ASDKViewController<SettingsS
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         tableView.frame = view.bounds
+        voicePlayerHost?.layout()
         glassTopBar.updateLayout(in: view)
         updateTableInsets()
         updatePreviewHeaderLayout()
@@ -185,15 +192,13 @@ final class ProfileNameColorSettingsViewController: ASDKViewController<SettingsS
     }
 
     private func rebuildGlassTopBar() {
-        let backIcon = AppIcon.chevronBackward.rendered(
+        let backIcon = AppIcon.chevronBackward.template(
             size: 17,
-            weight: .semibold,
-            color: AppColor.accent
+            weight: .semibold
         )
-        let doneIcon = AppIcon.checkmark.rendered(
+        let doneIcon = AppIcon.checkmark.template(
             size: 17,
-            weight: .semibold,
-            color: isSaving ? .tertiaryLabel : AppColor.accent
+            weight: .semibold
         )
         glassTopBar.items = [
             .circleButton(
@@ -208,6 +213,15 @@ final class ProfileNameColorSettingsViewController: ASDKViewController<SettingsS
                 action: { [weak self] in self?.saveAndClose() }
             )
         ]
+    }
+
+    private func setupVoicePlayerHost() {
+        voicePlayerHost?.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost?.install()
+        node.voicePlayerView = voicePlayerHost?.accessibilityView
     }
 
     private func updateTableInsets() {

@@ -23,11 +23,15 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
 
     private let viewModel: ProfileViewModel
     private let glassTopBar = GlassTopBar()
+    private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
     private var cancellables = Set<AnyCancellable>()
 
-    init(mode: ProfileMode) {
+    init(mode: ProfileMode, audioPlayer: AudioPlayerService? = nil) {
         self.viewModel = ProfileViewModel(mode: mode)
         super.init(node: ProfileScreenNode(mode: mode))
+        self.voicePlayerHost = audioPlayer.map {
+            EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
+        }
         // .other = pushed sub-screen (from Contacts or Chat title) →
         // hide tab bar. .own = the Profile tab root → keep tab bar.
         if case .other = mode {
@@ -46,12 +50,14 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupGlassTopBar()
+        setupVoicePlayerHost()
         bindViewModel()
         viewModel.load()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        voicePlayerHost?.refresh()
         GlassService.shared.setNeedsCapture()
     }
 
@@ -70,6 +76,7 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        voicePlayerHost?.layout()
         glassTopBar.updateLayout(in: view)
     }
 
@@ -93,12 +100,22 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
         rebuildGlassItems(editing: false)
     }
 
+    private func setupVoicePlayerHost() {
+        voicePlayerHost?.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            self?.node.content.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost?.install()
+        node.voicePlayerView = voicePlayerHost?.accessibilityView
+    }
+
     private func rebuildGlassItems(editing: Bool) {
         var items: [GlassTopBar.Item] = []
 
         switch viewModel.mode {
         case .other:
-            let backIcon = AppIcon.chevronBackward.rendered(size: 17, weight: .semibold, color: AppColor.accent)
+            let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
             items.append(.circleButton(
                 icon: backIcon,
                 accessibilityLabel: String(localized: "Back"),
@@ -111,10 +128,10 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
             let icon: UIImage
             let label: String
             if editing {
-                icon = AppIcon.checkmark.rendered(size: 17, weight: .semibold, color: AppColor.accent)
+                icon = AppIcon.checkmark.template(size: 17, weight: .semibold)
                 label = String(localized: "Done")
             } else {
-                icon = AppIcon.pencil.rendered(size: 17, weight: .medium, color: AppColor.accent)
+                icon = AppIcon.pencil.template(size: 17, weight: .medium)
                 label = String(localized: "Edit")
             }
             items.append(.circleButton(

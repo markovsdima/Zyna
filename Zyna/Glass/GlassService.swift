@@ -193,7 +193,9 @@ final class GlassService {
 
     // Trigger system
     private var needsCapture = true // true on first frame
+    private var needsRender = false
     private var continuousCaptureUntil: CFTimeInterval = 0
+    private var continuousRenderUntil: CFTimeInterval = 0
     private var captureSources: [WeakSource] = []
     private var backdropOverlaySources: [WeakBackdropOverlaySource] = []
     private var idleTicks = 0
@@ -248,10 +250,23 @@ final class GlassService {
         ensureRunning()
     }
 
+    /// Redraw cached glass without re-capturing the backdrop.
+    /// Use for uniform-only effects such as foreground glyph morphs.
+    func setNeedsRender() {
+        needsRender = true
+        ensureRunning()
+    }
+
     /// Capture continuously for the given duration (e.g. during a UIView animation).
     /// Useful when content under glass animates but the anchor itself doesn't move.
     func captureFor(duration: CFTimeInterval) {
         continuousCaptureUntil = max(continuousCaptureUntil, CACurrentMediaTime() + duration)
+        ensureRunning()
+    }
+
+    /// Render continuously for the given duration without forcing backdrop capture.
+    func renderFor(duration: CFTimeInterval) {
+        continuousRenderUntil = max(continuousRenderUntil, CACurrentMediaTime() + duration)
         ensureRunning()
     }
 
@@ -534,12 +549,16 @@ final class GlassService {
 
     private func watchdogCheck() {
         let anyAnimating = registrations.values.contains { $0.anchor?.isAnimating == true }
-        let inBurst = CACurrentMediaTime() < continuousCaptureUntil
+        let now = CACurrentMediaTime()
+        let inBurst = now < continuousCaptureUntil
+        let inRenderBurst = now < continuousRenderUntil
         let hasActiveSources = hasActiveSourceUnderGlass()
         if anyAnimating || inBurst || needsCapture || hasActiveSources {
             // Sustain: keep display link alive for at least 0.5s after detection.
             // Avoids rapid start/stop cycles during interactive gestures.
             continuousCaptureUntil = max(continuousCaptureUntil, CACurrentMediaTime() + 0.5)
+            ensureRunning()
+        } else if inRenderBurst || needsRender {
             ensureRunning()
         }
     }
@@ -547,8 +566,10 @@ final class GlassService {
     private func tick() {
         guard let sourceWindow else { return }
         let hadPendingCaptureRequest = needsCapture
+        let hadPendingRenderRequest = needsRender
         var renderItemsByContainer: [ObjectIdentifier: (container: UIView, renderer: GlassRenderer, items: [GlassRenderer.RenderItem])] = [:]
         var deferredCaptureRequest = false
+        var deferredRenderRequest = false
 
         // Check capture drivers:
         // 1. Explicit trigger (scroll, layout)
@@ -557,13 +578,14 @@ final class GlassService {
         // 4. Animated content under glass (Lottie, GIF)
         let anyAnimating = registrations.values.contains { $0.anchor?.isAnimating == true }
         let hasLiquidPool = registrations.values.contains { $0.anchor?.extendsCaptureToScreenBottom == true }
-        let inBurst = CACurrentMediaTime() < continuousCaptureUntil
+        let now = CACurrentMediaTime()
+        let inBurst = now < continuousCaptureUntil
+        let inRenderBurst = now < continuousRenderUntil
         let activeBackdropOverlays = currentBackdropOverlays()
         let hasBackdropOverlay = !activeBackdropOverlays.isEmpty
         let hasActiveSources = hasActiveSourceUnderGlass()
 
         // Wave energy: ramps up during keyboard movement, decays when idle.
-        let now = CACurrentMediaTime()
         let dt = lastTickTime > 0 ? Float(now - lastTickTime) : 0
         lastTickTime = now
 
@@ -601,9 +623,11 @@ final class GlassService {
 
         // Render when capturing OR waves still decaying OR bars active
         // OR adaptive material is still easing toward a threshold-selected state.
+        // Preview presence only expands the capture frame; it must not keep an
+        // idle bar on the display link after the reveal animation settles.
         let hasActiveBars = registrations.values.contains { $0.anchor?.hasBars == true }
         let hasAdaptiveTransition = registrations.values.contains { $0.adaptiveState.isAnimating }
-        let shouldRender = shouldCapture || (hasLiquidPool && waveEnergy > 0.001)
+        let shouldRender = shouldCapture || needsRender || inRenderBurst || (hasLiquidPool && waveEnergy > 0.001)
             || hasActiveBars || hasAdaptiveTransition || hasBackdropOverlay
 
         let scale = sourceWindow.screen.scale
@@ -639,6 +663,9 @@ final class GlassService {
                 if hadPendingCaptureRequest {
                     deferredCaptureRequest = true
                 }
+                if hadPendingRenderRequest {
+                    deferredRenderRequest = true
+                }
                 continue
             }
 
@@ -659,6 +686,7 @@ final class GlassService {
                 // Bars mode: extend upward to capture environment for chrome reflections
                 let anchorHasBars = anchor.hasBars
                 let anchorHasScrollButton = anchor.hasScrollButton
+                let anchorHasPreview = anchor.hasPreview
                 let isInputCapture = anchor.debugName == "input"
                 let isNavCapture = anchor.debugName == "nav"
                 let topPadding: CGFloat
@@ -672,6 +700,9 @@ final class GlassService {
                 } else if anchorHasScrollButton {
                     topPadding = 72
                     bottomPadding = 12
+                } else if anchorHasPreview {
+                    topPadding = 72
+                    bottomPadding = 12
                 } else if isNavCapture {
                     topPadding = 8
                     bottomPadding = 12
@@ -682,12 +713,15 @@ final class GlassService {
                     topPadding = 20
                     bottomPadding = 24
                 }
-                let captureBaseFrame: CGRect
+                let defaultCaptureBaseFrame: CGRect
                 if wantsLiquid, let modelFrame = anchor.modelFrame() {
-                    captureBaseFrame = glassFrame.union(snappedFrame(modelFrame, scale: scale))
+                    defaultCaptureBaseFrame = glassFrame.union(snappedFrame(modelFrame, scale: scale))
                 } else {
-                    captureBaseFrame = glassFrame
+                    defaultCaptureBaseFrame = glassFrame
                 }
+                let overrideCaptureBaseFrame = anchor.captureBaseFrameProvider?(glassFrame, scale)
+                    .flatMap { $0.isEmpty ? nil : snappedFrame($0, scale: scale) }
+                let captureBaseFrame = overrideCaptureBaseFrame ?? defaultCaptureBaseFrame
                 let captureX = max(captureBaseFrame.origin.x - horizontalPadding, 0)
                 let captureY = max(captureBaseFrame.origin.y - topPadding, 0)
                 let rawCaptureFrame: CGRect
@@ -764,6 +798,9 @@ final class GlassService {
 
                 // Chrome bars
                 let barData = anchor.barProvider?(glassFrame, captureFrame, scale)
+                let glyphData = anchor.glyphProvider?(glassFrame, captureFrame, scale)
+                let previewData = anchor.previewProvider?(glassFrame, captureFrame, scale)
+                let voiceData = anchor.voiceProvider?(glassFrame, captureFrame, scale)
 
                 // Cache for render-only frames
                 registrations[id]?.lastTexture = texture
@@ -797,10 +834,14 @@ final class GlassService {
                             liquidZone: liquidZone,
                             time: waveTime,
                             barData: barData,
+                            glyphData: glyphData,
+                            previewData: previewData,
+                            voiceData: voiceData,
                             backdropOverlay: backdropOverlay(
                                 for: captureFrame,
                                 in: activeBackdropOverlays
                             ),
+                            refreshBlur: true,
                             adaptiveAppearance: adaptiveMaterial.appearance,
                             adaptiveContrast: adaptiveMaterial.contrast
                         )
@@ -825,6 +866,17 @@ final class GlassService {
                     in: renderHostContainer,
                     sourceWindow: sourceWindow
                 )
+                let renderShapes: GlassRenderer.ShapeParams
+                if anchor.updatesShapesDuringRenderOnly,
+                   let provider = anchor.shapeProvider {
+                    renderShapes = provider(glassFrame, captureFrame, scale)
+                    registrations[id]?.lastShapes = renderShapes
+                } else {
+                    renderShapes = shapes
+                }
+                let glyphData = anchor.glyphProvider?(glassFrame, captureFrame, scale)
+                let previewData = anchor.previewProvider?(glassFrame, captureFrame, scale)
+                let voiceData = anchor.voiceProvider?(glassFrame, captureFrame, scale)
                 let key = ObjectIdentifier(renderHostContainer)
                 if renderItemsByContainer[key] == nil {
                     renderItemsByContainer[key] = (
@@ -840,15 +892,19 @@ final class GlassService {
                             frame: destinationFrame,
                             captureFrameInWindow: captureFrame,
                             sourceTexture: texture,
-                            shapes: shapes,
+                            shapes: renderShapes,
                             isHDR: reg.lastIsHDR,
                             liquidZone: lz,
                             time: waveTime,
                             barData: anchor.hasBars ? reg.lastBarData : nil,
+                            glyphData: glyphData,
+                            previewData: previewData,
+                            voiceData: voiceData,
                             backdropOverlay: backdropOverlay(
                                 for: captureFrame,
                                 in: activeBackdropOverlays
                             ),
+                            refreshBlur: false,
                             adaptiveAppearance: adaptiveMaterial.appearance,
                             adaptiveContrast: adaptiveMaterial.contrast
                         )
@@ -864,6 +920,9 @@ final class GlassService {
 
         if hadPendingCaptureRequest {
             needsCapture = deferredCaptureRequest
+        }
+        if hadPendingRenderRequest {
+            needsRender = deferredRenderRequest
         }
 
         tickCount &+= 1

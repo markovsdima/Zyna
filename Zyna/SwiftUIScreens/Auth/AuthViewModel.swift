@@ -13,6 +13,7 @@ final class AuthViewModel: ObservableObject {
     var onAuthenticated: (() -> Void)?
 
     @Published var isLoading = false
+    @Published var isSigningIn = false
     @Published var errorMessage: String?
     @Published var serverSupportsPassword = true
     @Published var serverSupportsOIDC = false
@@ -24,12 +25,15 @@ final class AuthViewModel: ObservableObject {
     // MARK: - Password Login
 
     func login(username: String, password: String, homeserver: String = Brand.current.defaultHomeserver) {
+        guard !isLoading else { return }
+
         guard !username.isEmpty, !password.isEmpty else {
             errorMessage = "Enter username and password"
             return
         }
 
         isLoading = true
+        isSigningIn = true
         errorMessage = nil
 
         Task {
@@ -41,11 +45,13 @@ final class AuthViewModel: ObservableObject {
                 )
                 await MainActor.run {
                     isLoading = false
+                    isSigningIn = false
                     onAuthenticated?()
                 }
             } catch {
                 await MainActor.run {
                     isLoading = false
+                    isSigningIn = false
                     errorMessage = error.localizedDescription
                 }
             }
@@ -55,6 +61,8 @@ final class AuthViewModel: ObservableObject {
     // MARK: - Registration (OIDC)
 
     func register(homeserver: String) {
+        guard !isLoading else { return }
+
         isLoading = true
         errorMessage = nil
 
@@ -91,6 +99,8 @@ final class AuthViewModel: ObservableObject {
     // MARK: - OIDC Login (for servers that only support OIDC)
 
     func loginWithOIDC(homeserver: String) {
+        guard !isLoading else { return }
+
         isLoading = true
         errorMessage = nil
 
@@ -133,27 +143,6 @@ final class AuthViewModel: ObservableObject {
                 await MainActor.run {
                     serverSupportsPassword = true
                     serverSupportsOIDC = false
-                }
-            }
-        }
-    }
-
-    // MARK: - Session Restore
-
-    func tryRestoreSession() {
-        guard matrixService.hasStoredSession else { return }
-
-        isLoading = true
-        Task {
-            do {
-                try await matrixService.restoreSession()
-                await MainActor.run {
-                    isLoading = false
-                    onAuthenticated?()
-                }
-            } catch {
-                await MainActor.run {
-                    isLoading = false
                 }
             }
         }

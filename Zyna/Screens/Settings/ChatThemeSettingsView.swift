@@ -18,13 +18,17 @@ final class ChatThemeSettingsViewController: ASDKViewController<SettingsScreenNo
     private let previewView: ChatThemePreviewView
     private var selectedTheme: ChatBubbleTheme
     private var selectedThemeIndex: Int
+    private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
 
-    override init() {
+    init(audioPlayer: AudioPlayerService? = nil) {
         let theme = ChatBubbleThemeStore.shared.selectedTheme
         self.selectedTheme = theme
         self.selectedThemeIndex = ChatBubbleTheme.all.firstIndex(of: theme) ?? 0
         self.previewView = ChatThemePreviewView(theme: theme)
         super.init(node: SettingsScreenNode())
+        self.voicePlayerHost = audioPlayer.map {
+            EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
+        }
         hidesBottomBarWhenPushed = true
     }
 
@@ -36,16 +40,19 @@ final class ChatThemeSettingsViewController: ASDKViewController<SettingsScreenNo
         super.viewDidLoad()
         setupTableView()
         setupGlassTopBar()
+        setupVoicePlayerHost()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        voicePlayerHost?.refresh()
         GlassService.shared.setNeedsCapture()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         tableView.frame = view.bounds
+        voicePlayerHost?.layout()
         glassTopBar.updateLayout(in: view)
         updateTableInsets()
         updatePreviewHeaderLayout()
@@ -109,10 +116,9 @@ final class ChatThemeSettingsViewController: ASDKViewController<SettingsScreenNo
         node.addSubnode(glassTopBar)
         node.glassTopBar = glassTopBar
 
-        let backIcon = AppIcon.chevronBackward.rendered(
+        let backIcon = AppIcon.chevronBackward.template(
             size: 17,
-            weight: .semibold,
-            color: AppColor.accent
+            weight: .semibold
         )
         glassTopBar.items = [
             .circleButton(
@@ -122,6 +128,15 @@ final class ChatThemeSettingsViewController: ASDKViewController<SettingsScreenNo
             ),
             .title(text: String(localized: "Chat Theme"), subtitle: nil)
         ]
+    }
+
+    private func setupVoicePlayerHost() {
+        voicePlayerHost?.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost?.install()
+        node.voicePlayerView = voicePlayerHost?.accessibilityView
     }
 
     private func updateTableInsets() {

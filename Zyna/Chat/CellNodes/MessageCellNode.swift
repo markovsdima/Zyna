@@ -15,6 +15,14 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     fileprivate static let avatarDiameter: CGFloat = 32
     fileprivate static let avatarThumbSize: Int = Int(avatarDiameter * ScreenConstants.scale)
 
+    private enum ReplySwipe {
+        static let maxTranslation: CGFloat = 64
+        static let triggerTranslation: CGFloat = 42
+        static let triggerVelocity: CGFloat = 650
+        static let horizontalBias: CGFloat = 1.2
+        static let hitVerticalPadding: CGFloat = 6
+    }
+
     // MARK: - Context Menu
 
     var onContextMenuActivated: ((CGPoint) -> Void)?
@@ -30,8 +38,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     }
 
     var onInteractionLockChanged: ((Bool) -> Void)? {
-        get { contextSourceNode.onInteractionLockChanged }
-        set { contextSourceNode.onInteractionLockChanged = newValue }
+        get { externalInteractionLockChanged }
+        set { externalInteractionLockChanged = newValue }
     }
 
     // MARK: - Reactions
@@ -46,6 +54,13 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     // MARK: - Reply
 
     var onReplyHeaderTapped: ((String) -> Void)?
+    var onReplySwipeActivated: (() -> Void)? {
+        didSet {
+            updateReplySwipeGestureState()
+        }
+    }
+    var onReplySwipeChanged: ((CGFloat, CGPoint) -> Void)?
+    var onReplySwipeEnded: (() -> Void)?
     private(set) var replyHeaderNode: ReplyHeaderNode?
     private(set) var forwardedHeaderNode: ASTextNode?
 
@@ -92,6 +107,10 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     let mediaGroupPosition: MediaGroupPosition?
     private let rendersCompositeMediaBubble: Bool
     let usesAccentBubbleStyle: Bool
+    private weak var replySwipePanGesture: UIPanGestureRecognizer?
+    private var isReplySwipePrimed = false
+    private var isContextMenuInteractionActive = false
+    private var externalInteractionLockChanged: ((Bool) -> Void)?
     var allowsInteractiveActions = true {
         didSet {
             applyInteractiveActionsState()
@@ -142,6 +161,9 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         contextSourceNode.activated = { [weak self] point in
             self?.onContextMenuActivated?(point)
+        }
+        contextSourceNode.onInteractionLockChanged = { [weak self] locked in
+            self?.handleContextInteractionLockChanged(locked)
         }
 
         automaticallyManagesSubnodes = true
@@ -344,6 +366,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     override func didLoad() {
         super.didLoad()
         assignProbeLayerNames()
+        installReplySwipeGestureIfNeeded()
     }
 
     @objc private func handleSenderTap() {
@@ -369,6 +392,108 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         senderNameNode.isUserInteractionEnabled = allowsInteractiveActions
         avatarBackgroundNode.isUserInteractionEnabled = allowsInteractiveActions
         reactionsNode?.isUserInteractionEnabled = allowsInteractiveActions
+        updateReplySwipeGestureState()
+    }
+
+    private func handleContextInteractionLockChanged(_ locked: Bool) {
+        isContextMenuInteractionActive = locked
+        if locked {
+            resetReplySwipe(animated: true)
+        }
+        externalInteractionLockChanged?(locked)
+    }
+
+    private func installReplySwipeGestureIfNeeded() {
+        guard replySwipePanGesture == nil else { return }
+        let pan = UIPanGestureRecognizer(
+            target: self,
+            action: #selector(handleReplySwipe(_:))
+        )
+        pan.maximumNumberOfTouches = 1
+        pan.cancelsTouchesInView = false
+        pan.delaysTouchesBegan = false
+        pan.delegate = self
+        view.addGestureRecognizer(pan)
+        replySwipePanGesture = pan
+        updateReplySwipeGestureState()
+    }
+
+    private func updateReplySwipeGestureState() {
+        let isEnabled = allowsInteractiveActions && onReplySwipeActivated != nil
+        replySwipePanGesture?.isEnabled = isEnabled
+        if !isEnabled {
+            resetReplySwipe(animated: false)
+        }
+    }
+
+    @objc private func handleReplySwipe(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            isReplySwipePrimed = false
+            emitReplySwipeProgress(0)
+
+        case .changed:
+            let translationX = gesture.translation(in: view).x
+            let offsetX = max(-ReplySwipe.maxTranslation, min(0, translationX))
+            bubbleWrapperNode.view.transform = CGAffineTransform(translationX: offsetX, y: 0)
+            emitReplySwipeProgress(abs(offsetX) / ReplySwipe.triggerTranslation)
+
+            let isPrimed = abs(offsetX) >= ReplySwipe.triggerTranslation
+            if isPrimed, !isReplySwipePrimed {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            }
+            isReplySwipePrimed = isPrimed
+
+        case .ended:
+            let translationX = gesture.translation(in: view).x
+            let velocityX = gesture.velocity(in: view).x
+            let shouldActivate =
+                translationX <= -ReplySwipe.triggerTranslation ||
+                velocityX <= -ReplySwipe.triggerVelocity
+            if shouldActivate {
+                onReplySwipeActivated?()
+            }
+            onReplySwipeEnded?()
+            resetReplySwipe(animated: true, initialVelocity: velocityX)
+
+        case .cancelled, .failed:
+            onReplySwipeEnded?()
+            resetReplySwipe(animated: true)
+
+        default:
+            break
+        }
+    }
+
+    private func emitReplySwipeProgress(_ progress: CGFloat) {
+        let clampedProgress = max(0, min(1, progress))
+        let anchor = bubbleWrapperNode.view.convert(
+            CGPoint(x: bubbleWrapperNode.view.bounds.minX, y: bubbleWrapperNode.view.bounds.midY),
+            to: nil
+        )
+        onReplySwipeChanged?(clampedProgress, anchor)
+    }
+
+    private func resetReplySwipe(animated: Bool, initialVelocity: CGFloat = 0) {
+        isReplySwipePrimed = false
+        guard isNodeLoaded else { return }
+
+        let reset = {
+            self.bubbleWrapperNode.view.transform = .identity
+        }
+        guard animated else {
+            reset()
+            return
+        }
+
+        UIView.animate(
+            withDuration: 0.28,
+            delay: 0,
+            usingSpringWithDamping: 0.82,
+            initialSpringVelocity: abs(initialVelocity) / 1000,
+            options: [.allowUserInteraction, .beginFromCurrentState],
+            animations: reset
+        )
     }
 
     private var usesFallbackBubbleBackground: Bool {
@@ -771,6 +896,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     }
 
     func restoreBubbleFromMenu() {
+        isContextMenuInteractionActive = false
         contextSourceNode.restoreContentFromMenu()
     }
 
@@ -805,5 +931,56 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         if let forwardedHeaderNode {
             assignProbeName("message.forwardedHeader", to: forwardedHeaderNode)
         }
+    }
+}
+
+// MARK: - Reply Swipe Gesture
+
+extension MessageCellNode: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === replySwipePanGesture else { return true }
+        guard allowsInteractiveActions,
+              onReplySwipeActivated != nil,
+              !isContextMenuInteractionActive,
+              !UIAccessibility.isVoiceOverRunning,
+              isNodeLoaded
+        else {
+            return false
+        }
+
+        let point = touch.location(in: view)
+        let bubbleFrame = contextSourceNode.view.convert(contextSourceNode.view.bounds, to: view)
+        guard bubbleFrame.height > 0 else { return false }
+        return point.y >= bubbleFrame.minY - ReplySwipe.hitVerticalPadding &&
+            point.y <= bubbleFrame.maxY + ReplySwipe.hitVerticalPadding
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === replySwipePanGesture else { return true }
+        guard allowsInteractiveActions,
+              onReplySwipeActivated != nil,
+              !isContextMenuInteractionActive,
+              !UIAccessibility.isVoiceOverRunning
+        else {
+            return false
+        }
+
+        let pan = gestureRecognizer as? UIPanGestureRecognizer
+        let velocity = pan?.velocity(in: view) ?? .zero
+        let translation = pan?.translation(in: view) ?? .zero
+        let horizontal = max(abs(velocity.x), abs(translation.x))
+        let vertical = max(abs(velocity.y), abs(translation.y))
+        let isMovingLeft = velocity.x < 0 || translation.x < 0
+
+        return isMovingLeft &&
+            horizontal > vertical * ReplySwipe.horizontalBias
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        guard gestureRecognizer === replySwipePanGesture else { return false }
+        return other is UILongPressGestureRecognizer
     }
 }

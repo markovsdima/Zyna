@@ -11,10 +11,15 @@ final class ChatsCoordinator {
 
     let navigationController = ZynaNavigationController()
     private let roomListService = ZynaRoomListService()
+    private let audioPlayer: AudioPlayerService
     private var cancellables = Set<AnyCancellable>()
 
+    init(audioPlayer: AudioPlayerService) {
+        self.audioPlayer = audioPlayer
+    }
+
     func start() {
-        let vc = RoomsViewController()
+        let vc = RoomsViewController(audioPlayer: audioPlayer)
         vc.onChatSelected = { [weak self] room in
             self?.showChat(room)
         }
@@ -107,7 +112,7 @@ final class ChatsCoordinator {
         guard navigationController.presentedViewController == nil else { return }
 
         let viewModel = ChatViewModel(room: room, mode: .preview)
-        let chatController = ChatViewController(viewModel: viewModel)
+        let chatController = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
         let resolvedBackgroundSourceView = navigationController.parent?.view
             ?? backgroundSourceView
             ?? navigationController.view
@@ -152,7 +157,7 @@ final class ChatsCoordinator {
 
     private func makeChatScreen(room: Room) -> (controller: ChatViewController, viewModel: ChatViewModel) {
         let viewModel = ChatViewModel(room: room)
-        let vc = ChatViewController(viewModel: viewModel)
+        let vc = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -184,7 +189,7 @@ final class ChatsCoordinator {
         else { return }
 
         let viewModel = ChatViewModel(room: room)
-        let vc = ChatViewController(viewModel: viewModel)
+        let vc = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -207,7 +212,7 @@ final class ChatsCoordinator {
     }
 
     private func showProfile(userId: String) {
-        let vc = ProfileViewController(mode: .other(userId: userId))
+        let vc = ProfileViewController(mode: .other(userId: userId), audioPlayer: audioPlayer)
         vc.onSearchTapped = { [weak self] in
             self?.popAndActivateSearch()
         }
@@ -218,7 +223,11 @@ final class ChatsCoordinator {
     }
 
     private func showRoomDetails(room: Room, memberCount: Int?) {
-        let vc = RoomDetailsViewController(room: room, memberCount: memberCount)
+        let vc = RoomDetailsViewController(
+            room: room,
+            memberCount: memberCount,
+            audioPlayer: audioPlayer
+        )
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -235,7 +244,7 @@ final class ChatsCoordinator {
     }
 
     private func showMembersList(room: Room) {
-        let vc = MembersListViewController(room: room)
+        let vc = MembersListViewController(room: room, audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -246,7 +255,11 @@ final class ChatsCoordinator {
     }
 
     private func showMemberDetail(room: Room, userId: String) {
-        let vc = MemberDetailViewController(room: room, userId: userId)
+        let vc = MemberDetailViewController(
+            room: room,
+            userId: userId,
+            audioPlayer: audioPlayer
+        )
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }

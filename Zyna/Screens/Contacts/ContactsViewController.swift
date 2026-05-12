@@ -6,11 +6,34 @@
 import AsyncDisplayKit
 import Combine
 
-final class ContactsViewController: ASDKViewController<ASDisplayNode> {
+final class ContactsScreenNode: ASDisplayNode {
+    weak var tableNode: ASTableNode?
+    weak var voicePlayerView: UIView?
+
+    override var accessibilityElements: [Any]? {
+        get {
+            var elements: [Any] = []
+            if let player = voicePlayerView,
+               player.superview === view,
+               !player.isHidden,
+               player.alpha > 0.01 {
+                elements.append(player)
+            }
+            if let tableView = tableNode?.view, tableView.superview === view {
+                elements.append(tableView)
+            }
+            return elements
+        }
+        set { }
+    }
+}
+
+final class ContactsViewController: ASDKViewController<ContactsScreenNode> {
 
     private let viewModel = ContactsViewModel()
     private let tableNode = ASTableNode()
     private let searchController = UISearchController(searchResultsController: nil)
+    private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
     private var cancellables = Set<AnyCancellable>()
 
     var onContactSelected: ((ContactModel) -> Void)? {
@@ -20,8 +43,11 @@ final class ContactsViewController: ASDKViewController<ASDisplayNode> {
 
     var onCallTapped: ((ContactModel) -> Void)?
 
-    override init() {
-        super.init(node: ASDisplayNode())
+    init(audioPlayer: AudioPlayerService? = nil) {
+        super.init(node: ContactsScreenNode())
+        self.voicePlayerHost = audioPlayer.map {
+            EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
+        }
         title = "Contacts"
         setupTableNode()
         setupSearch()
@@ -38,6 +64,7 @@ final class ContactsViewController: ASDKViewController<ASDisplayNode> {
         tableNode.backgroundColor = .systemBackground
         node.backgroundColor = .systemBackground
         node.automaticallyManagesSubnodes = true
+        node.tableNode = tableNode
 
         node.layoutSpecBlock = { [weak self] _, _ in
             guard let self else { return ASLayoutSpec() }
@@ -57,6 +84,18 @@ final class ContactsViewController: ASDKViewController<ASDisplayNode> {
         tableNode.view.separatorStyle = .none
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
+        setupVoicePlayerHost()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        voicePlayerHost?.refresh()
+        GlassService.shared.setNeedsCapture()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        voicePlayerHost?.layout()
     }
 
     private func bindViewModel() {
@@ -67,6 +106,15 @@ final class ContactsViewController: ASDKViewController<ASDisplayNode> {
                 self?.tableNode.reloadData()
             }
             .store(in: &cancellables)
+    }
+
+    private func setupVoicePlayerHost() {
+        voicePlayerHost?.onVisibilityChanged = { [weak self] in
+            self?.view.setNeedsLayout()
+            GlassService.shared.setNeedsCapture()
+        }
+        voicePlayerHost?.install()
+        node.voicePlayerView = voicePlayerHost?.accessibilityView
     }
 }
 

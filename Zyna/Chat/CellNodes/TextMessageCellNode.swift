@@ -42,7 +42,7 @@ final class TextMessageCellNode: MessageCellNode {
         case .pendingOutgoingMediaBatch:
             bodyText = "📷 Photo"
         case .voice:
-            bodyText = "🎤 Voice message"
+            bodyText = "🎤 \(String(localized: "Voice message"))"
         case .file(_, let filename, _, _, _):
             bodyText = "📎 \(filename)"
         case .callEvent(let type, _, let reason):

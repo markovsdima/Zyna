@@ -685,6 +685,26 @@
         }
       }
     },
+    "Cancel editing" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить редактирование"
+          }
+        }
+      }
+    },
+    "Cancel forwarding" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить пересылку"
+          }
+        }
+      }
+    },
     "Cancel Invite" : {
       "localizations" : {
         "ru" : {
@@ -701,6 +721,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Отменить приглашение?"
+          }
+        }
+      }
+    },
+    "Cancel reply" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить ответ"
           }
         }
       }
@@ -773,6 +803,26 @@
     },
     "Close" : {
 
+    },
+    "Close preview" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрыть плашку"
+          }
+        }
+      }
+    },
+    "Close voice player" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрыть плеер голосового сообщения"
+          }
+        }
+      }
     },
     "Color" : {
       "localizations" : {
@@ -924,6 +974,16 @@
         }
       }
     },
+    "Deep Ocean" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Глубокий океан"
+          }
+        }
+      }
+    },
     "Delete" : {
       "localizations" : {
         "ru" : {
@@ -959,6 +1019,16 @@
     },
     "Discard" : {
 
+    },
+    "Dismisses this preview" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убирает эту плашку"
+          }
+        }
+      }
     },
     "Done" : {
       "localizations" : {
@@ -1242,6 +1312,16 @@
         }
       }
     },
+    "Iris Mint" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ирис и мята"
+          }
+        }
+      }
+    },
     "Invite Members" : {
       "localizations" : {
         "ru" : {
@@ -1288,6 +1368,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Исключить из группы?"
+          }
+        }
+      }
+    },
+    "Keep Waiting" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Продолжить ждать"
           }
         }
       }
@@ -1423,6 +1513,16 @@
         }
       }
     },
+    "Loading" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузка"
+          }
+        }
+      }
+    },
     "Login" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1470,6 +1570,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Сообщение"
+          }
+        }
+      }
+    },
+    "Midnight" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Полночь"
           }
         }
       }
@@ -1572,6 +1682,16 @@
     "No reactions yet." : {
 
     },
+    "Northern Night" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Северная ночь"
+          }
+        }
+      }
+    },
     "Offline" : {
 
     },
@@ -1664,6 +1784,16 @@
         }
       }
     },
+    "Pause voice message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приостановить голосовое сообщение"
+          }
+        }
+      }
+    },
     "Photos" : {
       "localizations" : {
         "ru" : {
@@ -1680,6 +1810,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Розовый"
+          }
+        }
+      }
+    },
+    "Play voice message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Воспроизвести голосовое сообщение"
+          }
+        }
+      }
+    },
+    "Playback speed" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скорость воспроизведения"
+          }
+        }
+      }
+    },
+    "Playing voice message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Воспроизводится голосовое сообщение"
           }
         }
       }
@@ -1733,6 +1893,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Причина (необязательно)"
+          }
+        }
+      }
+    },
+    "Record voice message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Записать голосовое сообщение"
           }
         }
       }
@@ -1988,6 +2158,16 @@
         }
       }
     },
+    "Seek voice message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Перемотать голосовое сообщение"
+          }
+        }
+      }
+    },
     "Send" : {
 
     },
@@ -1997,6 +2177,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Написать"
+          }
+        }
+      }
+    },
+    "Server Is Not Responding" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервер не отвечает"
           }
         }
       }
@@ -2067,6 +2257,26 @@
         }
       }
     },
+    "Show chat title" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать заголовок чата"
+          }
+        }
+      }
+    },
+    "Show voice player" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показать плеер голосового сообщения"
+          }
+        }
+      }
+    },
     "Sign In" : {
       "localizations" : {
         "ru" : {
@@ -2093,6 +2303,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Выйти"
+          }
+        }
+      }
+    },
+    "Sign Out on This Device" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выйти на этом устройстве"
+          }
+        }
+      }
+    },
+    "Signing Out" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выход"
+          }
+        }
+      }
+    },
+    "Signing out is taking longer than expected. You can keep waiting or remove this account from this device." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выход занимает больше времени, чем ожидалось. Можно продолжить ждать или удалить этот аккаунт с этого устройства."
           }
         }
       }
@@ -2147,6 +2387,16 @@
         }
       }
     },
+    "Stop Waiting" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Перестать ждать"
+          }
+        }
+      }
+    },
     "Syncing encryption keys…" : {
       "localizations" : {
         "ru" : {
@@ -2174,6 +2424,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Бирюзовый"
+          }
+        }
+      }
+    },
+    "The server did not complete sign out. You can stay signed in here or remove this account from this device." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервер не завершил выход. Можно остаться в аккаунте здесь или удалить этот аккаунт с этого устройства."
           }
         }
       }
@@ -2317,6 +2577,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Сине-фиолетовый"
+          }
+        }
+      }
+    },
+    "Voice message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовое сообщение"
+          }
+        }
+      }
+    },
+    "Voice Message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Голосовое сообщение"
           }
         }
       }
