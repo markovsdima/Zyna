@@ -37,6 +37,9 @@ final class ProfileCoordinator {
         vc.onNameColorTapped = { [weak self] in
             self?.showNameColorSettings()
         }
+        vc.onDevicesTapped = { [weak self] in
+            self?.showDeviceSessions()
+        }
         navigationController.push(vc)
     }
 
@@ -50,6 +53,14 @@ final class ProfileCoordinator {
 
     private func showNameColorSettings() {
         let vc = ProfileNameColorSettingsViewController(audioPlayer: audioPlayer)
+        vc.onBack = { [weak self] in
+            _ = self?.navigationController.pop()
+        }
+        navigationController.push(vc)
+    }
+
+    private func showDeviceSessions() {
+        let vc = DeviceSessionsViewController(audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             _ = self?.navigationController.pop()
         }

@@ -741,9 +741,9 @@ final class TimelineService {
                 return .unsupported(typeName: "poll")
             case .redacted:
                 return .redacted
-            case .unableToDecrypt:
-                logTimeline("UTD: eventId=\(event.eventOrTransactionId) sender=\(event.sender)")
-                return .text(body: "Encrypted message")
+            case .unableToDecrypt(let message):
+                logTimeline("UTD: eventId=\(event.eventOrTransactionId) sender=\(event.sender) \(describeEncryptedMessage(message))")
+                return .text(body: String(localized: "Encrypted message"))
             case .other:
                 return nil
             case .liveLocation(content: _):
@@ -829,6 +829,17 @@ final class TimelineService {
             )
         default:
             return .unsupported(typeName: "message")
+        }
+    }
+
+    private static func describeEncryptedMessage(_ message: EncryptedMessage) -> String {
+        switch message {
+        case .olmV1Curve25519AesSha2(let senderKey):
+            return "algorithm=olmV1Curve25519AesSha2 senderKey=\(senderKey)"
+        case .megolmV1AesSha2(let sessionId, let cause):
+            return "algorithm=megolmV1AesSha2 sessionId=\(sessionId) cause=\(cause)"
+        case .unknown:
+            return "algorithm=unknown"
         }
     }
 

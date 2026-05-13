@@ -17,6 +17,7 @@ final class AppCoordinator {
     private var serverLogoutCompletionObserver: Task<Void, Never>?
     private weak var logoutFallbackAlert: UIAlertController?
     private let serverLogoutDeadline: Duration = .seconds(12)
+    private var isShowingSoftLogout = false
 
     func start() {
         observeClientState()
@@ -35,6 +36,12 @@ final class AppCoordinator {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
                 guard let self else { return }
+                if case .softLoggedOut = state {
+                    Task { @MainActor in
+                        self.showSoftLogout()
+                    }
+                    return
+                }
                 guard case .loggedOut = state else { return }
                 guard self.mainCoordinator != nil else { return }
                 guard !self.isPerformingLogout || self.serverLogoutTask != nil else { return }
@@ -56,6 +63,7 @@ final class AppCoordinator {
     // MARK: - Navigation
 
     private func showAuth() {
+        isShowingSoftLogout = false
         let viewModel = AuthViewModel()
         viewModel.onAuthenticated = { [weak self] in
             PushService.shared.registerIfNeeded()
@@ -81,6 +89,9 @@ final class AppCoordinator {
                 await self.setupVerificationRequestListener()
             } catch {
                 await MainActor.run { [weak self] in
+                    if case .softLoggedOut = MatrixClientService.shared.state {
+                        return
+                    }
                     self?.showAuth()
                 }
             }
@@ -165,6 +176,7 @@ final class AppCoordinator {
     }
 
     private func showMain() {
+        isShowingSoftLogout = false
         let coordinator = MainCoordinator()
         coordinator.onLogout = { [weak self] in
             Task { @MainActor in
@@ -177,6 +189,40 @@ final class AppCoordinator {
         PresenceTracker.shared.connect()
 
         window?.rootViewController = coordinator.tabBarController
+    }
+
+    @MainActor
+    private func showSoftLogout() {
+        guard !isShowingSoftLogout else { return }
+        isShowingSoftLogout = true
+
+        serverLogoutCompletionObserver?.cancel()
+        serverLogoutCompletionObserver = nil
+        serverLogoutTask?.cancel()
+        serverLogoutTask = nil
+        logoutFallbackAlert = nil
+        isPerformingLogout = false
+
+        PresenceTracker.shared.disconnect()
+        mainCoordinator?.stopVoicePlayback()
+        mainCoordinator = nil
+
+        let viewModel = SoftLogoutViewModel(credentials: MatrixClientService.shared.softLogoutCredentials)
+        viewModel.onAuthenticated = { [weak self] in
+            PushService.shared.registerIfNeeded()
+            Task {
+                await self?.showVerificationIfNeeded()
+                await self?.setupVerificationRequestListener()
+            }
+        }
+        viewModel.onClearData = { [weak self] in
+            Task { @MainActor in
+                await MatrixClientService.shared.logoutLocally()
+                self?.showAuth()
+            }
+        }
+
+        window?.rootViewController = SoftLogoutView(viewModel: viewModel).wrapped()
     }
 
     func resumeHeartbeatIfNeeded() {

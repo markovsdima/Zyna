@@ -15,7 +15,14 @@ enum MatrixClientState {
     case loggingIn
     case loggedIn
     case syncing
+    case softLoggedOut
     case error(Error)
+}
+
+struct SoftLogoutCredentials {
+    let userId: String
+    let deviceId: String
+    let homeserverUrl: String
 }
 
 private let logAuth = ScopedLog(.auth)
@@ -53,7 +60,12 @@ final class MatrixClientService {
     private var syncStateHandle: TaskHandle?
     private var verificationStateHandle: TaskHandle?
     private var recoveryStateHandle: TaskHandle?
+    private var clientDelegateHandle: TaskHandle?
+    private var clientDelegate: ZynaClientDelegate?
+    private var utdDelegate: ZynaUnableToDecryptDelegate?
+    private var softLogoutSession: MatrixRustSDK.Session?
     private let invalidatingSession = Atomic(false)
+    private let softLogoutActive = Atomic(false)
 
     private let userIdKey = "com.zyna.matrix.lastUserId"
     private let localSessionIdKey = "com.zyna.matrix.localSessionId"
@@ -142,6 +154,8 @@ final class MatrixClientService {
 
             logAuth("Logged in as \(userId) localSession=\(localSessionId)")
 
+            softLogoutSession = nil
+            softLogoutActive.tryToClearFlag()
             self.client = client
             stateSubject.send(.loggedIn)
 
@@ -198,8 +212,13 @@ final class MatrixClientService {
             try await startSync()
         } catch {
             logAuth("Session restore failed: \(error)")
+            if Self.isSoftLogoutError(error) {
+                await enterSoftLogout(session: session, reason: String(describing: error))
+                throw error
+            }
             await stopSync()
             detachEncryptionListeners()
+            detachClientDelegates()
             client = nil
             clearLocalSession(userId: userId)
             FileCacheService.shared.clearAll()
@@ -212,6 +231,8 @@ final class MatrixClientService {
 
     private func startSync() async throws {
         guard let client else { return }
+
+        await attachClientDelegates(to: client)
 
         // Attach encryption state listeners *before* sync starts so
         // we don't miss the first state delivery from the SDK.
@@ -273,6 +294,37 @@ final class MatrixClientService {
         recoveryStateSubject.send(.unknown)
     }
 
+    // MARK: - Client Delegates
+
+    private func attachClientDelegates(to client: Client) async {
+        detachClientDelegates()
+
+        let clientDelegate = ZynaClientDelegate { [weak self] isSoftLogout in
+            Task { await self?.handleAuthError(isSoftLogout: isSoftLogout) }
+        }
+
+        do {
+            clientDelegateHandle = try client.setDelegate(delegate: clientDelegate)
+            self.clientDelegate = clientDelegate
+        } catch {
+            logAuth("Failed to attach client delegate: \(error)")
+        }
+
+        let utdDelegate = ZynaUnableToDecryptDelegate()
+        do {
+            try await client.setUtdDelegate(utdDelegate: utdDelegate)
+            self.utdDelegate = utdDelegate
+        } catch {
+            logSync("Failed to attach UTD delegate: \(error)")
+        }
+    }
+
+    private func detachClientDelegates() {
+        clientDelegateHandle = nil
+        clientDelegate = nil
+        utdDelegate = nil
+    }
+
     // MARK: - Logout
 
     func logoutFromServer() async throws {
@@ -294,8 +346,11 @@ final class MatrixClientService {
 
         await stopSync()
         detachEncryptionListeners()
+        detachClientDelegates()
 
         client = nil
+        softLogoutSession = nil
+        softLogoutActive.tryToClearFlag()
         clearLocalSession(userId: userId)
         FileCacheService.shared.clearAll()
         stateSubject.send(.loggedOut)
@@ -317,8 +372,108 @@ final class MatrixClientService {
             return false
         }
 
-        await invalidateLocalSession(reason: String(describing: error))
+        let reason = String(describing: error)
+        if Self.isSoftLogoutError(error) {
+            await enterSoftLogout(reason: reason)
+        } else {
+            await invalidateLocalSession(reason: reason)
+        }
         return true
+    }
+
+    private func handleAuthError(isSoftLogout: Bool) async {
+        if isSoftLogout {
+            await enterSoftLogout(reason: "SDK auth error softLogout=true")
+        } else {
+            await invalidateLocalSession(reason: "SDK auth error softLogout=false")
+        }
+    }
+
+    private func enterSoftLogout(reason: String) async {
+        guard let session = currentOrStoredSession() else {
+            logAuth("Soft logout requested but no session was available; clearing local session")
+            await invalidateLocalSession(reason: reason)
+            return
+        }
+        await enterSoftLogout(session: session, reason: reason)
+    }
+
+    private func enterSoftLogout(session: MatrixRustSDK.Session, reason: String) async {
+        softLogoutSession = session
+        guard softLogoutActive.tryToSetFlag() else { return }
+
+        logAuth("Soft logout; preserving local crypto store for \(session.userId). reason=\(reason)")
+        await stopSync()
+        detachEncryptionListeners()
+        detachClientDelegates()
+        client = nil
+        stateSubject.send(.softLoggedOut)
+    }
+
+    func loginAfterSoftLogout(password: String) async throws {
+        guard let session = currentOrStoredSession() else {
+            throw AuthenticationError.sessionNotFound
+        }
+
+        stateSubject.send(.loggingIn)
+
+        do {
+            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+                .passphrase(passphrase: passphrase)
+
+            let client = try await ClientBuilder()
+                .homeserverUrl(url: session.homeserverUrl)
+                .sqliteStore(config: storeConfig)
+                .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
+                .setSessionDelegate(sessionDelegate: sessionDelegate)
+                .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
+                .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+                .autoEnableCrossSigning(autoEnableCrossSigning: true)
+                .autoEnableBackups(autoEnableBackups: true)
+                .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+                .build()
+
+            try await client.login(
+                username: session.userId,
+                password: password,
+                initialDeviceName: "Zyna iOS",
+                deviceId: session.deviceId
+            )
+
+            let refreshedSession = try client.session()
+            UserDefaults.standard.set(refreshedSession.userId, forKey: userIdKey)
+            ensureLocalSessionId()
+            sessionDelegate.saveSessionInKeychain(session: refreshedSession)
+
+            softLogoutSession = refreshedSession
+            softLogoutActive.tryToClearFlag()
+            self.client = client
+            do {
+                try await startSync()
+            } catch {
+                await stopSync()
+                detachEncryptionListeners()
+                detachClientDelegates()
+                self.client = nil
+                softLogoutSession = refreshedSession
+                _ = softLogoutActive.tryToSetFlag()
+                throw error
+            }
+
+            softLogoutSession = nil
+            logAuth("Soft logout re-login succeeded for \(refreshedSession.userId) device=\(refreshedSession.deviceId)")
+        } catch {
+            logAuth("Soft logout re-login failed: \(error)")
+            stateSubject.send(.softLoggedOut)
+            throw error
+        }
+    }
+
+    func simulateSoftLogoutForDiagnostics() async throws {
+        guard let session = currentOrStoredSession() else {
+            throw AuthenticationError.sessionNotFound
+        }
+        await enterSoftLogout(session: session, reason: "Debug simulation")
     }
 
     // MARK: - OIDC
@@ -387,14 +542,34 @@ final class MatrixClientService {
         try await startSync()
     }
 
-    // MARK: - Helpers
-
     var hasStoredSession: Bool {
         UserDefaults.standard.string(forKey: userIdKey) != nil
     }
 
     var currentLocalSessionId: String? {
         UserDefaults.standard.string(forKey: localSessionIdKey)
+    }
+
+    var softLogoutCredentials: SoftLogoutCredentials? {
+        guard let session = currentOrStoredSession() else { return nil }
+        return SoftLogoutCredentials(
+            userId: session.userId,
+            deviceId: session.deviceId,
+            homeserverUrl: session.homeserverUrl
+        )
+    }
+
+    private func currentOrStoredSession() -> MatrixRustSDK.Session? {
+        if let session = softLogoutSession {
+            return session
+        }
+        if let client, let session = try? client.session() {
+            return session
+        }
+        guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
+            return nil
+        }
+        return try? sessionDelegate.retrieveSessionFromKeychain(userId: userId)
     }
 
     private func currentOrStoredUserId(client: Client?) -> String? {
@@ -446,6 +621,17 @@ final class MatrixClientService {
             || description.contains("Invalid access token")
     }
 
+    private static func isSoftLogoutError(_ error: Error) -> Bool {
+        let compactDescription = String(describing: error)
+            .replacingOccurrences(of: " ", with: "")
+            .lowercased()
+        return compactDescription.contains("soft_logout:true")
+            || compactDescription.contains("soft_logout\":true")
+            || compactDescription.contains("soft_logout=true")
+            || compactDescription.contains("softlogout:true")
+            || compactDescription.contains("softlogout=true")
+    }
+
 }
 
 // MARK: - SDK Listener Adapters
@@ -460,4 +646,32 @@ private final class ZynaRecoveryStateListener: RecoveryStateListener {
     private let handler: (RecoveryState) -> Void
     init(handler: @escaping (RecoveryState) -> Void) { self.handler = handler }
     func onUpdate(status: RecoveryState) { handler(status) }
+}
+
+private final class ZynaClientDelegate: ClientDelegate {
+    private let authErrorHandler: @Sendable (Bool) -> Void
+
+    init(authErrorHandler: @escaping @Sendable (Bool) -> Void) {
+        self.authErrorHandler = authErrorHandler
+    }
+
+    func didReceiveAuthError(isSoftLogout: Bool) {
+        logAuth("SDK auth error received; softLogout=\(isSoftLogout)")
+        authErrorHandler(isSoftLogout)
+    }
+
+    func onBackgroundTaskErrorReport(taskName: String, error: BackgroundTaskFailureReason) {
+        logSync("SDK background task failed task=\(taskName) error=\(error)")
+    }
+}
+
+private final class ZynaUnableToDecryptDelegate: UnableToDecryptDelegate {
+    func onUtd(info: UnableToDecryptInfo) {
+        let timeToDecrypt = info.timeToDecryptMs.map(String.init) ?? "nil"
+        logSync(
+            "UTD report eventId=\(info.eventId) cause=\(info.cause) timeToDecryptMs=\(timeToDecrypt) " +
+            "eventLocalAgeMs=\(info.eventLocalAgeMillis) trustsOwnIdentity=\(info.userTrustsOwnIdentity) " +
+            "senderHs=\(info.senderHomeserver) ownHs=\(info.ownHomeserver ?? "nil")"
+        )
+    }
 }

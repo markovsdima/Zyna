@@ -665,6 +665,16 @@
         }
       }
     },
+    "Client is not initialized" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Клиент не инициализирован"
+          }
+        }
+      }
+    },
     "Can you check this?" : {
       "localizations" : {
         "ru" : {
@@ -924,6 +934,29 @@
         }
       }
     },
+    "Could Not Load Devices" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить устройства"
+          }
+        }
+      }
+    },
+    "Could Not Sign Out Device" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось завершить сессию устройства"
+          }
+        }
+      }
+    },
+    "Could Not Simulate Soft Logout" : {
+
+    },
     "Create Account" : {
       "localizations" : {
         "ru" : {
@@ -940,6 +973,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Создать группу"
+          }
+        }
+      }
+    },
+    "Current Password" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Текущий пароль"
+          }
+        }
+      }
+    },
+    "Current account" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Текущий аккаунт"
+          }
+        }
+      }
+    },
+    "Current password was not accepted." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Текущий пароль не принят."
           }
         }
       }
@@ -964,22 +1027,22 @@
         }
       }
     },
-    "Default" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "По умолчанию"
-          }
-        }
-      }
-    },
     "Deep Ocean" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Глубокий океан"
+          }
+        }
+      }
+    },
+    "Default" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "По умолчанию"
           }
         }
       }
@@ -1010,6 +1073,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Устройство верифицировано"
+          }
+        }
+      }
+    },
+    "Devices" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Устройства"
           }
         }
       }
@@ -1149,6 +1222,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Введите ключ восстановления"
+          }
+        }
+      }
+    },
+    "Enter your current password to sign out this device." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите текущий пароль, чтобы завершить сессию этого устройства."
+          }
+        }
+      }
+    },
+    "Enter your current password." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите текущий пароль."
+          }
+        }
+      }
+    },
+    "Encrypted message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Зашифрованное сообщение"
+          }
+        }
+      }
+    },
+    "Enter your password" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите пароль"
           }
         }
       }
@@ -1312,12 +1425,22 @@
         }
       }
     },
-    "Iris Mint" : {
+    "Invalid homeserver URL" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ирис и мята"
+            "value" : "Неверный URL homeserver"
+          }
+        }
+      }
+    },
+    "Invalid server response" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Неверный ответ сервера"
           }
         }
       }
@@ -1338,6 +1461,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Приглашённые"
+          }
+        }
+      }
+    },
+    "Iris Mint" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ирис и мята"
+          }
+        }
+      }
+    },
+    "Keep Waiting" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Продолжить ждать"
           }
         }
       }
@@ -1372,16 +1515,6 @@
         }
       }
     },
-    "Keep Waiting" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Продолжить ждать"
-          }
-        }
-      }
-    },
     "Lagoon Teal" : {
       "localizations" : {
         "ru" : {
@@ -1403,7 +1536,14 @@
       }
     },
     "Last seen %@" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Последняя активность: %@"
+          }
+        }
+      }
     },
     "last seen %lld hours ago" : {
       "localizations" : {
@@ -1523,6 +1663,26 @@
         }
       }
     },
+    "Loading Devices" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузка устройств"
+          }
+        }
+      }
+    },
+    "Local session data and encrypted message keys stored on this device will be removed." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Локальные данные сессии и ключи зашифрованных сообщений на этом устройстве будут удалены."
+          }
+        }
+      }
+    },
     "Login" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1530,6 +1690,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Войти"
+          }
+        }
+      }
+    },
+    "Manage sessions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Управление сессиями"
           }
         }
       }
@@ -1669,6 +1839,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Следующая тема"
+          }
+        }
+      }
+    },
+    "No Devices" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет устройств"
           }
         }
       }
@@ -1844,6 +2024,9 @@
         }
       }
     },
+    "Preserve keys and show re-login" : {
+
+    },
     "Previous Theme" : {
       "localizations" : {
         "ru" : {
@@ -1923,6 +2106,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Красный"
+          }
+        }
+      }
+    },
+    "Remove" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить"
+          }
+        }
+      }
+    },
+    "Remove account from this device" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить аккаунт с этого устройства"
+          }
+        }
+      }
+    },
+    "Remove account from this device?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить аккаунт с этого устройства?"
           }
         }
       }
@@ -2158,6 +2371,16 @@
         }
       }
     },
+    "Security" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Безопасность"
+          }
+        }
+      }
+    },
     "Seek voice message" : {
       "localizations" : {
         "ru" : {
@@ -2187,6 +2410,32 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Сервер не отвечает"
+          }
+        }
+      }
+    },
+    "Server returned HTTP %lld." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Server returned HTTP %1$lld."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервер вернул HTTP %1$lld."
+          }
+        }
+      }
+    },
+    "Session expired" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сессия истекла"
           }
         }
       }
@@ -2287,6 +2536,16 @@
         }
       }
     },
+    "Sign in again to keep your encrypted message keys on this device." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Войдите снова, чтобы сохранить ключи зашифрованных сообщений на этом устройстве."
+          }
+        }
+      }
+    },
     "Sign In with Browser" : {
       "localizations" : {
         "ru" : {
@@ -2303,6 +2562,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Выйти"
+          }
+        }
+      }
+    },
+    "Sign Out Device" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Завершить сессию устройства"
           }
         }
       }
@@ -2327,6 +2596,16 @@
         }
       }
     },
+    "Signing out another device invalidates the access token associated with that device." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выход с другого устройства отзывает связанный с ним токен доступа."
+          }
+        }
+      }
+    },
     "Signing out is taking longer than expected. You can keep waiting or remove this account from this device." : {
       "localizations" : {
         "ru" : {
@@ -2336,6 +2615,12 @@
           }
         }
       }
+    },
+    "Simulate" : {
+
+    },
+    "Simulate Soft Logout" : {
+
     },
     "Slide to cancel" : {
       "localizations" : {
@@ -2458,6 +2743,26 @@
         }
       }
     },
+    "This device" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Это устройство"
+          }
+        }
+      }
+    },
+    "This Device" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Это устройство"
+          }
+        }
+      }
+    },
     "This fixes local duplicate or stuck timeline rows. It does not delete messages from Matrix." : {
 
     },
@@ -2467,6 +2772,39 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Так это выглядит в группах."
+          }
+        }
+      }
+    },
+    "This is the device you are using now." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Это устройство, которым вы сейчас пользуетесь."
+          }
+        }
+      }
+    },
+    "The server did not return an authentication session." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервер не вернул сессию аутентификации."
+          }
+        }
+      }
+    },
+    "This stops sync and shows the soft logout re-login screen without clearing encrypted message keys." : {
+
+    },
+    "This server requires an authentication method Zyna does not support yet." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервер требует способ аутентификации, который Zyna пока не поддерживает."
           }
         }
       }
@@ -2507,6 +2845,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось сохранить"
+          }
+        }
+      }
+    },
+    "Unnamed Device" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Безымянное устройство"
           }
         }
       }
