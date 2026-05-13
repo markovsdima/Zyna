@@ -770,7 +770,7 @@ final class MatrixClientService {
     private func clearLocalSession(userId: String?) {
         if let userId, !userId.isEmpty {
             sessionDelegate.clearSession(userId: userId)
-            SessionVerificationService.clearLocalSecretsFlag(userId: userId)
+            SessionVerificationService.clearLocalEncryptionFlags(userId: userId)
         } else {
             sessionDelegate.clearAllSessions()
         }

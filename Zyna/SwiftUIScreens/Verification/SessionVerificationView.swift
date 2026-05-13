@@ -86,6 +86,8 @@ struct SessionVerificationView: View {
             recoveryIntroView()
         case .generatingRecoveryKey:
             generatingKeyView()
+        case .finishingRecoverySetup:
+            finishingRecoverySetupView()
         case .showingRecoveryKey(let key):
             recoveryKeyView(key)
         case .enteringRecoveryKey:
@@ -130,6 +132,17 @@ struct SessionVerificationView: View {
         }
     }
 
+    private func finishingRecoverySetupView() -> some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.5)
+                .tint(.white)
+            Text("Saving message keys…")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundColor(.white.opacity(0.7))
+        }
+    }
+
     private func recoveryKeyView(_ key: String) -> some View {
         VStack(spacing: 20) {
             Text("Your Recovery Key")
@@ -141,6 +154,14 @@ struct SessionVerificationView: View {
                 .foregroundColor(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
+
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(.subheadline)
+                    .foregroundColor(.yellow.opacity(0.9))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
 
             Text(key)
                 .font(.system(.body, design: .monospaced))
@@ -190,6 +211,8 @@ struct SessionVerificationView: View {
             needsRecoveryKeyView()
         case .generatingRecoveryKey:
             generatingKeyView()
+        case .finishingRecoverySetup:
+            finishingRecoverySetupView()
         case .showingRecoveryKey(let key):
             recoveryKeyView(key)
         case .verified:
@@ -512,7 +535,7 @@ struct SessionVerificationView: View {
                 textButton("I have a recovery key") { viewModel.useRecoveryKey() }
                 textButton("Skip for now") { viewModel.skip() }
             }
-        case .generatingRecoveryKey:
+        case .generatingRecoveryKey, .finishingRecoverySetup:
             EmptyView()
         case .showingRecoveryKey:
             primaryButton("Done") { showSavedConfirmation = true }
@@ -570,7 +593,7 @@ struct SessionVerificationView: View {
             }
         case .restoringFromRecoveryKey:
             EmptyView()
-        case .generatingRecoveryKey:
+        case .generatingRecoveryKey, .finishingRecoverySetup:
             EmptyView()
         case .showingRecoveryKey:
             primaryButton("Done") { showSavedConfirmation = true }

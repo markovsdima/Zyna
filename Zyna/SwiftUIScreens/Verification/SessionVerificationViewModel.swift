@@ -34,6 +34,7 @@ final class SessionVerificationViewModel: ObservableObject {
 
     private let service = SessionVerificationService.shared
     private var cancellables = Set<AnyCancellable>()
+    private var recoveryBackupUploadConfirmed = false
 
     init() {
         observeSteps()
@@ -63,9 +64,13 @@ final class SessionVerificationViewModel: ObservableObject {
                 // Wait for secret gossiping to deliver backup keys.
                 // If it doesn't arrive in time, prompt for recovery key.
                 if case .verified = step {
-                    if self.mode == .otherDevice {
+                    switch self.mode {
+                    case .otherDevice:
                         self.waitForSecretGossiping()
-                    } else {
+                    case .firstDevice:
+                        self.service.markLocalSecretsPresent()
+                        self.service.markRecoverySetupComplete()
+                    case .checking, .responder:
                         self.service.markLocalSecretsPresent()
                     }
                 }
@@ -171,15 +176,22 @@ final class SessionVerificationViewModel: ObservableObject {
 
     func setupRecovery() {
         errorMessage = nil
+        recoveryBackupUploadConfirmed = false
         step = .generatingRecoveryKey
         Task {
             do {
-                let key = try await service.enableRecovery()
-                // We just created the cross-signing secrets locally.
+                let result = try await service.enableRecovery()
+                // The cross-signing secrets now exist locally, but the
+                // first-device recovery flow isn't complete until the
+                // user confirms they saved the recovery key.
                 service.markLocalSecretsPresent()
                 await MainActor.run {
-                    self.recoveryKey = key
-                    self.step = .showingRecoveryKey(key)
+                    self.recoveryBackupUploadConfirmed = result.backupUploadConfirmed
+                    self.recoveryKey = result.recoveryKey
+                    if !result.backupUploadConfirmed {
+                        self.errorMessage = Self.backupUploadPendingMessage
+                    }
+                    self.step = .showingRecoveryKey(result.recoveryKey)
                 }
             } catch {
                 await MainActor.run {
@@ -198,6 +210,35 @@ final class SessionVerificationViewModel: ObservableObject {
     }
 
     func confirmRecoveryKeySaved() {
+        errorMessage = nil
+
+        guard recoveryBackupUploadConfirmed else {
+            step = .finishingRecoverySetup
+            Task {
+                do {
+                    try await service.confirmRecoveryBackupUpload()
+                    service.markLocalSecretsPresent()
+                    service.markRecoverySetupComplete()
+                    await MainActor.run {
+                        self.recoveryBackupUploadConfirmed = true
+                        self.step = .verified
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.errorMessage = error.localizedDescription
+                        if let key = self.recoveryKey {
+                            self.step = .showingRecoveryKey(key)
+                        } else {
+                            self.step = .failed
+                        }
+                    }
+                }
+            }
+            return
+        }
+
+        service.markLocalSecretsPresent()
+        service.markRecoverySetupComplete()
         step = .verified
     }
 
@@ -205,14 +246,19 @@ final class SessionVerificationViewModel: ObservableObject {
     /// then generates a new one. Old encrypted messages will be lost.
     func resetAndGenerateNewKey() {
         errorMessage = nil
+        recoveryBackupUploadConfirmed = false
         step = .generatingRecoveryKey
         Task {
             do {
-                let key = try await service.forceResetRecovery()
+                let result = try await service.forceResetRecovery()
                 service.markLocalSecretsPresent()
                 await MainActor.run {
-                    self.recoveryKey = key
-                    self.step = .showingRecoveryKey(key)
+                    self.recoveryBackupUploadConfirmed = result.backupUploadConfirmed
+                    self.recoveryKey = result.recoveryKey
+                    if !result.backupUploadConfirmed {
+                        self.errorMessage = Self.backupUploadPendingMessage
+                    }
+                    self.step = .showingRecoveryKey(result.recoveryKey)
                 }
             } catch {
                 await MainActor.run {
@@ -227,6 +273,7 @@ final class SessionVerificationViewModel: ObservableObject {
 
     func useRecoveryKey() {
         errorMessage = nil
+        recoveryBackupUploadConfirmed = false
         recoveryKeyInput = ""
         step = .enteringRecoveryKey
     }
@@ -241,7 +288,9 @@ final class SessionVerificationViewModel: ObservableObject {
                 try await service.recover(key: key)
                 // Secrets just downloaded onto this device.
                 service.markLocalSecretsPresent()
+                service.markRecoverySetupComplete()
                 await MainActor.run {
+                    self.recoveryBackupUploadConfirmed = true
                     self.step = .verified
                 }
             } catch {
@@ -297,6 +346,8 @@ final class SessionVerificationViewModel: ObservableObject {
             await MainActor.run {
                 if received {
                     self.service.markLocalSecretsPresent()
+                    self.service.markRecoverySetupComplete()
+                    self.recoveryBackupUploadConfirmed = true
                     self.step = .verified
                 } else {
                     self.recoveryKeyInput = ""
@@ -314,5 +365,9 @@ final class SessionVerificationViewModel: ObservableObject {
 
     func continueToApp() {
         onVerified?()
+    }
+
+    private static var backupUploadPendingMessage: String {
+        String(localized: "Recovery key was created, but Zyna still needs to confirm that message keys are saved to encrypted backup. Save this key now; after that, Zyna will retry the backup check before continuing.")
     }
 }

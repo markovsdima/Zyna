@@ -16,6 +16,7 @@ enum VerificationStep: Equatable {
     case acceptingRequest // responder: user tapped Accept, calling SDK
     case showingEmojis([SessionVerificationEmoji])
     case generatingRecoveryKey
+    case finishingRecoverySetup
     case showingRecoveryKey(String)
     case enteringRecoveryKey
     case restoringFromRecoveryKey
@@ -32,6 +33,7 @@ enum VerificationStep: Equatable {
              (.waitingForAcceptance, .waitingForAcceptance),
              (.acceptingRequest, .acceptingRequest),
              (.generatingRecoveryKey, .generatingRecoveryKey),
+             (.finishingRecoverySetup, .finishingRecoverySetup),
              (.enteringRecoveryKey, .enteringRecoveryKey),
              (.restoringFromRecoveryKey, .restoringFromRecoveryKey),
              (.waitingForSecrets, .waitingForSecrets),
@@ -57,6 +59,11 @@ struct IncomingVerificationRequest {
     let flowId: String
     let deviceId: String
     let deviceDisplayName: String?
+}
+
+struct RecoverySetupResult {
+    let recoveryKey: String
+    let backupUploadConfirmed: Bool
 }
 
 private let logVerify = ScopedLog(.auth)
@@ -96,22 +103,50 @@ final class SessionVerificationService {
     //   "re-installed device, secrets need to be fetched" (local
     //   has nothing).
     //
-    // We track this ourselves: set the flag after `enableRecovery`
-    // (we just created the keys locally) or after `recover` (we
-    // just downloaded them). Cleared on logout. Naturally absent
-    // after an app uninstall, because UserDefaults is wiped with
-    // the app — that's exactly the re-install case where we want
-    // the verification screen to come back up.
+    // We track this ourselves: set the local-secrets flag after
+    // `enableRecovery` (we just created the keys locally) or after
+    // `recover` (we just downloaded them). Cleared on logout.
+    // Naturally absent after an app uninstall, because UserDefaults
+    // is wiped with the app — that's exactly the re-install case
+    // where we want the verification screen to come back up.
+    //
+    // Recovery setup has its own persisted state. A device can have
+    // local secrets while the first-device recovery flow is still
+    // incomplete, e.g. the room-key upload failed or the user hasn't
+    // confirmed saving the recovery key. In that state the local
+    // secrets flag must not make us skip this screen.
 
     private static let localSecretsKeyPrefix = "com.zyna.encryption.localSecrets."
+    private static let recoverySetupPendingKeyPrefix = "com.zyna.encryption.recoverySetupPending."
+    private static let recoverySetupCompleteKeyPrefix = "com.zyna.encryption.recoverySetupComplete."
 
     private var localSecretsKey: String? {
         guard let userId = try? matrixService.client?.userId() else { return nil }
         return Self.localSecretsKeyPrefix + userId
     }
 
+    private var recoverySetupPendingKey: String? {
+        guard let userId = try? matrixService.client?.userId() else { return nil }
+        return Self.recoverySetupPendingKeyPrefix + userId
+    }
+
+    private var recoverySetupCompleteKey: String? {
+        guard let userId = try? matrixService.client?.userId() else { return nil }
+        return Self.recoverySetupCompleteKeyPrefix + userId
+    }
+
     var hasLocalSecrets: Bool {
         guard let key = localSecretsKey else { return false }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
+    var hasPendingRecoverySetup: Bool {
+        guard let key = recoverySetupPendingKey else { return false }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
+    var hasCompletedRecoverySetup: Bool {
+        guard let key = recoverySetupCompleteKey else { return false }
         return UserDefaults.standard.bool(forKey: key)
     }
 
@@ -121,8 +156,26 @@ final class SessionVerificationService {
         logVerify("Local secrets flag set: \(key)")
     }
 
-    static func clearLocalSecretsFlag(userId: String) {
+    func markRecoverySetupPending() {
+        guard let pendingKey = recoverySetupPendingKey,
+              let completeKey = recoverySetupCompleteKey else { return }
+        UserDefaults.standard.set(true, forKey: pendingKey)
+        UserDefaults.standard.removeObject(forKey: completeKey)
+        logVerify("Recovery setup marked pending: \(pendingKey)")
+    }
+
+    func markRecoverySetupComplete() {
+        guard let pendingKey = recoverySetupPendingKey,
+              let completeKey = recoverySetupCompleteKey else { return }
+        UserDefaults.standard.removeObject(forKey: pendingKey)
+        UserDefaults.standard.set(true, forKey: completeKey)
+        logVerify("Recovery setup marked complete: \(completeKey)")
+    }
+
+    static func clearLocalEncryptionFlags(userId: String) {
         UserDefaults.standard.removeObject(forKey: localSecretsKeyPrefix + userId)
+        UserDefaults.standard.removeObject(forKey: recoverySetupPendingKeyPrefix + userId)
+        UserDefaults.standard.removeObject(forKey: recoverySetupCompleteKeyPrefix + userId)
     }
 
     // MARK: - State Check
@@ -134,8 +187,13 @@ final class SessionVerificationService {
     /// trust the `hasLocalSecrets` flag. The flag is cleared on
     /// login, so a fresh login always shows the verification screen.
     func awaitVerificationState(timeout: TimeInterval = 3.0) async -> Bool {
+        if hasPendingRecoverySetup {
+            logVerify("awaitVerificationState: negative (recovery setup still pending)")
+            return false
+        }
+
         if hasLocalSecrets {
-            logVerify("awaitVerificationState: positive (local secrets flag)")
+            logVerify("awaitVerificationState: positive (local secrets flag; recoverySetupComplete=\(hasCompletedRecoverySetup))")
             return true
         }
 
@@ -187,7 +245,7 @@ final class SessionVerificationService {
     /// Only safe when there is no existing server-side key backup. If a
     /// backup/recovery setup already exists, the user must restore it with
     /// their recovery key instead of creating a new one.
-    func enableRecovery() async throws -> String {
+    func enableRecovery() async throws -> RecoverySetupResult {
         guard let client = matrixService.client else {
             throw VerificationError.clientNotAvailable
         }
@@ -220,16 +278,33 @@ final class SessionVerificationService {
             }
 
             logVerify("enableRecovery: bootstrapping recovery from scratch")
+            markRecoverySetupPending()
+            let roomKeyUploadFailed = Atomic(false)
             let progress = RecoveryProgressListener { state in
                 logVerify("Recovery progress: \(state)")
+                if state == .roomKeyUploadError {
+                    roomKeyUploadFailed.wrappedValue = true
+                }
             }
             let key = try await encryption.enableRecovery(
                 waitForBackupsToUpload: false,
                 passphrase: nil,
                 progressListener: progress
             )
+            if roomKeyUploadFailed.wrappedValue {
+                logVerify("enableRecovery: room key upload failed")
+                return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: false)
+            }
+
+            do {
+                try await waitForBackupUploadSteadyState(timeout: .seconds(30))
+            } catch {
+                logVerify("enableRecovery: backup upload steady-state check failed: \(error)")
+                return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: false)
+            }
+
             logVerify("enableRecovery: done; key length=\(key.count) recoveryState=\(encryption.recoveryState())")
-            return key
+            return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: true)
         } catch {
             logVerify("enableRecovery FAILED: \(error)")
             throw error
@@ -239,15 +314,22 @@ final class SessionVerificationService {
     /// Destructive reset: wipes existing recovery key and backup,
     /// then bootstraps new ones from scratch. Only use when the user
     /// has explicitly confirmed they accept losing old messages.
-    func forceResetRecovery() async throws -> String {
+    func forceResetRecovery() async throws -> RecoverySetupResult {
         guard let client = matrixService.client else {
             throw VerificationError.clientNotAvailable
         }
         let encryption = client.encryption()
         logVerify("forceResetRecovery: resetting recovery key (destructive)")
         let key = try await encryption.resetRecoveryKey()
+        markRecoverySetupPending()
+        do {
+            try await waitForBackupUploadSteadyState(timeout: .seconds(30))
+        } catch {
+            logVerify("forceResetRecovery: backup upload steady-state check failed: \(error)")
+            return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: false)
+        }
         logVerify("forceResetRecovery: done; key length=\(key.count) recoveryState=\(encryption.recoveryState())")
-        return key
+        return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: true)
     }
 
     // MARK: - Setup (controller + delegate)
@@ -465,6 +547,35 @@ final class SessionVerificationService {
         }
     }
 
+    private func waitForBackupUploadSteadyState(timeout: Duration) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [matrixService] in
+                try await matrixService.waitForBackupUploadSteadyState()
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw VerificationError.recoveryBackupUploadIncomplete
+            }
+
+            do {
+                _ = try await group.next()
+                group.cancelAll()
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+        }
+    }
+
+    func confirmRecoveryBackupUpload() async throws {
+        do {
+            try await waitForBackupUploadSteadyState(timeout: .seconds(30))
+        } catch {
+            logVerify("confirmRecoveryBackupUpload: backup upload steady-state check failed: \(error)")
+            throw VerificationError.recoveryBackupUploadIncomplete
+        }
+    }
+
     func cancelVerification() async throws {
         guard let controller else { throw VerificationError.controllerNotReady }
         try await controller.cancelVerification()
@@ -485,6 +596,7 @@ enum VerificationError: LocalizedError {
     case recoveryAlreadyExists
     case recoveryKeyRequired
     case recoveryStateUnavailable
+    case recoveryBackupUploadIncomplete
 
     var errorDescription: String? {
         switch self {
@@ -493,6 +605,7 @@ enum VerificationError: LocalizedError {
         case .recoveryAlreadyExists: return "Recovery key already exists. Use your existing recovery key to restore access."
         case .recoveryKeyRequired: return "An encrypted key backup already exists. Enter your recovery key to restore access."
         case .recoveryStateUnavailable: return "Recovery state is still loading. Try again in a moment."
+        case .recoveryBackupUploadIncomplete: return String(localized: "Zyna couldn't confirm that message keys were saved to encrypted backup. Check your connection and try again.")
         }
     }
 
@@ -500,7 +613,10 @@ enum VerificationError: LocalizedError {
         switch self {
         case .recoveryAlreadyExists, .recoveryKeyRequired:
             return true
-        case .clientNotAvailable, .controllerNotReady, .recoveryStateUnavailable:
+        case .clientNotAvailable,
+             .controllerNotReady,
+             .recoveryStateUnavailable,
+             .recoveryBackupUploadIncomplete:
             return false
         }
     }
