@@ -128,7 +128,7 @@ struct SoftLogoutView: View {
                 viewModel.clearData()
             }
         } message: {
-            Text("Local session data and encrypted message keys stored on this device will be removed.")
+            Text("Local data for this session, including message encryption keys stored on this device, will be removed.\n\nIf any message keys are only on this device, some recent encrypted messages that depend on them may be lost permanently after the data is removed. Entering your recovery key later only restores keys that were already saved to the encrypted backup on your homeserver.\n\nRemove this data only if server key backup has finished, another verified session already has the needed message keys, or you accept losing access to some recent encrypted messages.")
         }
         .preferredColorScheme(.light)
     }

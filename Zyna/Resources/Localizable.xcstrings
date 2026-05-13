@@ -104,17 +104,6 @@
         }
       }
     },
-    "%@ changed their avatar" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ изменил(а) аватар"
-          }
-        }
-      }
-    },
     "%@ changed their display name from %@ to %@" : {
       "localizations" : {
         "ru" : {
@@ -665,16 +654,6 @@
         }
       }
     },
-    "Client is not initialized" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Клиент не инициализирован"
-          }
-        }
-      }
-    },
     "Can you check this?" : {
       "localizations" : {
         "ru" : {
@@ -801,12 +780,32 @@
         }
       }
     },
+    "Checking that message keys are saved to the encrypted backup on your homeserver." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Проверяем, что ключи сообщений сохранены в зашифрованной резервной копии на вашем сервере."
+          }
+        }
+      }
+    },
     "Clean. Keep it." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Чисто. Оставляем."
+          }
+        }
+      }
+    },
+    "Client is not initialized" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Клиент не инициализирован"
           }
         }
       }
@@ -914,6 +913,16 @@
         }
       }
     },
+    "Sign Out Anyway" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Всё равно выйти"
+          }
+        }
+      }
+    },
     "Copy" : {
       "localizations" : {
         "ru" : {
@@ -977,22 +986,22 @@
         }
       }
     },
-    "Current Password" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Текущий пароль"
-          }
-        }
-      }
-    },
     "Current account" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Текущий аккаунт"
+          }
+        }
+      }
+    },
+    "Current Password" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Текущий пароль"
           }
         }
       }
@@ -1176,6 +1185,16 @@
     "emoji" : {
 
     },
+    "Encrypted message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Зашифрованное сообщение"
+          }
+        }
+      }
+    },
     "Encryption enabled" : {
       "localizations" : {
         "ru" : {
@@ -1192,6 +1211,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ключи шифрования не удалось передать автоматически. Введите ключ восстановления, сохранённый при настройке аккаунта, чтобы восстановить доступ к истории сообщений."
+          }
+        }
+      }
+    },
+    "Message Keys Are Not Fully Saved" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ключи сообщений сохранены не полностью"
           }
         }
       }
@@ -1246,16 +1275,6 @@
         }
       }
     },
-    "Encrypted message" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Зашифрованное сообщение"
-          }
-        }
-      }
-    },
     "Enter your password" : {
       "localizations" : {
         "ru" : {
@@ -1285,6 +1304,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Лес"
+          }
+        }
+      }
+    },
+    "Remove Local Data" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить данные с устройства"
           }
         }
       }
@@ -1673,23 +1702,12 @@
         }
       }
     },
-    "Local session data and encrypted message keys stored on this device will be removed." : {
+    "Local data for this session, including message encryption keys stored on this device, will be removed.\n\nIf any message keys are only on this device, some recent encrypted messages that depend on them may be lost permanently after the data is removed. Entering your recovery key later only restores keys that were already saved to the encrypted backup on your homeserver.\n\nRemove this data only if server key backup has finished, another verified session already has the needed message keys, or you accept losing access to some recent encrypted messages." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Локальные данные сессии и ключи зашифрованных сообщений на этом устройстве будут удалены."
-          }
-        }
-      }
-    },
-    "Login" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Войти"
+            "value" : "С этого устройства будут удалены локальные данные этой сессии, включая ключи шифрования сообщений.\n\nЕсли какие-то ключи сообщений есть только на этом устройстве, часть недавних зашифрованных сообщений, которым нужны эти ключи, может быть потеряна безвозвратно после удаления данных. Ключ восстановления позже вернёт только те ключи сообщений, которые уже были сохранены в зашифрованной резервной копии на вашем сервере.\n\nУдаляйте эти данные только если резервное копирование ключей на сервер завершилось, нужные ключи сообщений уже есть в другой верифицированной сессии или вы принимаете потерю доступа к части недавних зашифрованных сообщений."
           }
         }
       }
@@ -2288,6 +2306,16 @@
         }
       }
     },
+    "Saving Message Keys" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохраняем ключи сообщений"
+          }
+        }
+      }
+    },
     "Scan" : {
       "localizations" : {
         "ru" : {
@@ -2400,16 +2428,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Написать"
-          }
-        }
-      }
-    },
-    "Server Is Not Responding" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сервер не отвечает"
           }
         }
       }
@@ -2576,12 +2594,12 @@
         }
       }
     },
-    "Sign Out on This Device" : {
+    "Sign Out Is Taking Too Long" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Выйти на этом устройстве"
+            "value" : "Выход затянулся"
           }
         }
       }
@@ -2606,12 +2624,12 @@
         }
       }
     },
-    "Signing out is taking longer than expected. You can keep waiting or remove this account from this device." : {
+    "Signing out is taking longer than expected. You can keep waiting.\n\nZyna already checked that message keys were saved to the encrypted backup on your homeserver before starting server sign-out. Remove Local Data skips server sign-out and deletes this device's local session data, including local copies of message keys. Backed-up keys can be restored later with your recovery key or another verified session, but the server-side session may remain active." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Выход занимает больше времени, чем ожидалось. Можно продолжить ждать или удалить этот аккаунт с этого устройства."
+            "value" : "Выход занимает больше времени, чем ожидалось. Можно подождать ещё.\n\nПеред выходом на сервере Zyna уже проверила, что ключи сообщений сохранены в зашифрованной резервной копии на вашем сервере. «Удалить данные с устройства» пропускает выход на сервере и удаляет локальные данные этой сессии с устройства, включая локальные копии ключей сообщений. Сохранённые в резервной копии ключи можно будет восстановить позже с помощью ключа восстановления или другой верифицированной сессии, но сессия на сервере может остаться активной."
           }
         }
       }
@@ -2692,17 +2710,6 @@
         }
       }
     },
-    "Tap to change" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Нажмите, чтобы изменить"
-          }
-        }
-      }
-    },
     "Teal" : {
       "localizations" : {
         "ru" : {
@@ -2713,12 +2720,22 @@
         }
       }
     },
-    "The server did not complete sign out. You can stay signed in here or remove this account from this device." : {
+    "The server did not complete sign-out. You can stay signed in here.\n\nZyna already checked that message keys were saved to the encrypted backup on your homeserver before starting server sign-out. Remove Local Data skips server sign-out and deletes this device's local session data, including local copies of message keys. Backed-up keys can be restored later with your recovery key or another verified session, but the server-side session may remain active." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Сервер не завершил выход. Можно остаться в аккаунте здесь или удалить этот аккаунт с этого устройства."
+            "value" : "Сервер не завершил выход из аккаунта. Можно остаться в аккаунте на этом устройстве.\n\nПеред выходом на сервере Zyna уже проверила, что ключи сообщений сохранены в зашифрованной резервной копии на вашем сервере. «Удалить данные с устройства» пропускает выход на сервере и удаляет локальные данные этой сессии с устройства, включая локальные копии ключей сообщений. Сохранённые в резервной копии ключи можно будет восстановить позже с помощью ключа восстановления или другой верифицированной сессии, но сессия на сервере может остаться активной."
+          }
+        }
+      }
+    },
+    "The server did not return an authentication session." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сервер не вернул сессию аутентификации."
           }
         }
       }
@@ -2786,19 +2803,6 @@
         }
       }
     },
-    "The server did not return an authentication session." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сервер не вернул сессию аутентификации."
-          }
-        }
-      }
-    },
-    "This stops sync and shows the soft logout re-login screen without clearing encrypted message keys." : {
-
-    },
     "This server requires an authentication method Zyna does not support yet." : {
       "localizations" : {
         "ru" : {
@@ -2808,6 +2812,9 @@
           }
         }
       }
+    },
+    "This stops sync and shows the soft logout re-login screen without clearing encrypted message keys." : {
+
     },
     "This will permanently destroy your current key backup. All previously encrypted messages that haven't been decrypted on this device will become unreadable forever.\n\nOnly do this if you've lost your recovery key and have no other verified devices." : {
       "localizations" : {
@@ -2835,6 +2842,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Тема (необязательно)"
+          }
+        }
+      }
+    },
+    "Try Again" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Повторить"
           }
         }
       }
@@ -3065,17 +3082,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Вы изменили тему комнаты на %@"
-          }
-        }
-      }
-    },
-    "You changed your avatar" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Вы изменили аватар"
           }
         }
       }
@@ -3329,6 +3335,96 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zyna Blue"
+          }
+        }
+      }
+    },
+    "Backup check failed." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Проверка резервной копии не удалась."
+          }
+        }
+      }
+    },
+    "Backup check timed out." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Время проверки резервной копии истекло."
+          }
+        }
+      }
+    },
+    "Backup upload is still catching up." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Резервная копия ещё догружает ключи."
+          }
+        }
+      }
+    },
+    "Network connection failed while checking backup." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "При проверке резервной копии произошла ошибка сети."
+          }
+        }
+      }
+    },
+    "Reason:" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Причина:"
+          }
+        }
+      }
+    },
+    "Encrypted server key backup is disabled." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Зашифрованная резервная копия ключей на сервере отключена."
+          }
+        }
+      }
+    },
+    "Encrypted key backup on your homeserver is off, so message keys that exist only on this device are not saved there. The homeserver stores these keys encrypted; it cannot read your messages.\n\nIf this is your only session with those keys, some recent encrypted messages that depend on them will not be recoverable after local data is removed. Entering your recovery key later only restores keys that were already saved to the server backup.\n\nCancel, set up recovery, and try again, or continue only if another verified session already has the needed message keys or you accept losing access to some recent encrypted messages.\n\nSign Out Anyway asks the server to sign out first, then removes local data from this device. Remove Local Data skips server sign-out and deletes local data from this device." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Зашифрованная резервная копия ключей на вашем сервере отключена, поэтому ключи сообщений, которые есть только на этом устройстве, туда не сохраняются. Сервер хранит эти ключи в зашифрованном виде и не может читать ваши сообщения.\n\nЕсли это единственная ваша сессия с такими ключами, часть недавних зашифрованных сообщений, которым нужны эти ключи, нельзя будет восстановить после удаления локальных данных. Ключ восстановления позже вернёт только те ключи сообщений, которые уже были сохранены в резервной копии на сервере.\n\nОтмените действие, настройте восстановление и попробуйте снова либо продолжайте только если нужные ключи сообщений уже есть в другой верифицированной сессии или вы принимаете потерю доступа к части недавних зашифрованных сообщений.\n\n«Всё равно выйти» сначала попросит сервер завершить сессию, а затем удалит локальные данные с этого устройства. «Удалить данные с устройства» пропустит выход на сервере и удалит локальные данные с этого устройства."
+          }
+        }
+      }
+    },
+    "Encrypted Key Backup Is Off" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Зашифрованная копия ключей отключена"
+          }
+        }
+      }
+    },
+    "Zyna could not confirm that this device finished uploading its message keys to the encrypted backup on your homeserver. The homeserver stores these keys encrypted; it cannot read your messages.\n\nIf any unuploaded keys exist only on this device, some recent encrypted messages that depend on them will not be recoverable after local data is removed. Entering your recovery key later only restores keys that were already saved to the server backup.\n\nWait and try again unless you know those keys are backed up on the server, another verified session already has the needed message keys, or you accept losing access to some recent encrypted messages.\n\nSign Out Anyway asks the server to sign out first, then removes local data from this device. Remove Local Data skips server sign-out and deletes local data from this device." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zyna не смогла убедиться, что это устройство полностью загрузило свои ключи сообщений в зашифрованную резервную копию на вашем сервере. Сервер хранит эти ключи в зашифрованном виде и не может читать ваши сообщения.\n\nЕсли какие-то незагруженные ключи есть только на этом устройстве, часть недавних зашифрованных сообщений, которым нужны эти ключи, нельзя будет восстановить после удаления локальных данных. Ключ восстановления позже вернёт только те ключи сообщений, которые уже были сохранены в резервной копии на сервере.\n\nПодождите и попробуйте снова, если вы не уверены, что эти ключи сохранены в резервной копии на сервере, нужные ключи сообщений уже есть в другой верифицированной сессии или вы принимаете потерю доступа к части недавних зашифрованных сообщений.\n\n«Всё равно выйти» сначала попросит сервер завершить сессию, а затем удалит локальные данные с этого устройства. «Удалить данные с устройства» пропустит выход на сервере и удалит локальные данные с этого устройства."
           }
         }
       }

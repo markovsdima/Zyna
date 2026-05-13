@@ -19,6 +19,23 @@ enum MatrixClientState {
     case error(Error)
 }
 
+enum BackupUploadWaitFailure: Error {
+    case timedOut
+    case backupDisabled
+    case connection
+    case lagged
+    case unknown
+}
+
+extension BackupUploadWaitFailure {
+    var isBackupDisabled: Bool {
+        if case .backupDisabled = self {
+            return true
+        }
+        return false
+    }
+}
+
 struct SoftLogoutCredentials {
     let userId: String
     let deviceId: String
@@ -70,6 +87,9 @@ final class MatrixClientService {
     private let userIdKey = "com.zyna.matrix.lastUserId"
     private let localSessionIdKey = "com.zyna.matrix.localSessionId"
     private static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
+    // MSC4268 encrypted history sharing is experimental and affects privacy expectations:
+    // invited users may receive keys for earlier room history. Keep disabled until the app has explicit UX for that behavior.
+    private static let enableEncryptedHistorySharingOnInvite = false
 
     private init() {
         let keychain = Keychain(service: "com.zyna.matrix.crypto")
@@ -135,6 +155,7 @@ final class MatrixClientService {
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .autoEnableBackups(autoEnableBackups: true)
                 .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+                .enableShareHistoryOnInvite(enableShareHistoryOnInvite: Self.enableEncryptedHistorySharingOnInvite)
                 .build()
 
             try await client.login(
@@ -200,6 +221,7 @@ final class MatrixClientService {
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .autoEnableBackups(autoEnableBackups: true)
                 .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+                .enableShareHistoryOnInvite(enableShareHistoryOnInvite: Self.enableEncryptedHistorySharingOnInvite)
                 .build()
 
             try await client.restoreSession(session: session)
@@ -327,6 +349,34 @@ final class MatrixClientService {
 
     // MARK: - Logout
 
+    func waitForBackupUploadSteadyState() async throws {
+        guard let client else {
+            throw AuthenticationError.clientNotInitialized
+        }
+
+        logAuth("Waiting for encryption key backup upload steady state")
+        let listener = ZynaBackupSteadyStateListener { state in
+            logAuth("Backup upload state: \(Self.describeBackupUploadState(state))")
+        }
+        do {
+            try await client.encryption().waitForBackupUploadSteadyState(progressListener: listener)
+            logAuth("Encryption key backup upload reached steady state")
+        } catch let error as SteadyStateError {
+            logAuth("Encryption key backup upload wait failed: \(error)")
+            switch error {
+            case .BackupDisabled:
+                throw BackupUploadWaitFailure.backupDisabled
+            case .Connection:
+                throw BackupUploadWaitFailure.connection
+            case .Lagged:
+                throw BackupUploadWaitFailure.lagged
+            }
+        } catch {
+            logAuth("Encryption key backup upload wait failed: \(error)")
+            throw BackupUploadWaitFailure.unknown
+        }
+    }
+
     func logoutFromServer() async throws {
         guard let client else {
             throw AuthenticationError.clientNotInitialized
@@ -358,6 +408,13 @@ final class MatrixClientService {
     }
 
     func logout() async {
+        do {
+            try await waitForBackupUploadSteadyState()
+        } catch {
+            logAuth("Logout aborted because encryption key backup steady state was not confirmed: \(error)")
+            return
+        }
+
         do {
             try await logoutFromServer()
         } catch {
@@ -431,6 +488,7 @@ final class MatrixClientService {
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .autoEnableBackups(autoEnableBackups: true)
                 .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+                .enableShareHistoryOnInvite(enableShareHistoryOnInvite: Self.enableEncryptedHistorySharingOnInvite)
                 .build()
 
             try await client.login(
@@ -505,6 +563,10 @@ final class MatrixClientService {
             .setSessionDelegate(sessionDelegate: sessionDelegate)
             .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
             .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+            .autoEnableCrossSigning(autoEnableCrossSigning: true)
+            .autoEnableBackups(autoEnableBackups: true)
+            .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+            .enableShareHistoryOnInvite(enableShareHistoryOnInvite: Self.enableEncryptedHistorySharingOnInvite)
             .build()
     }
 
@@ -632,20 +694,45 @@ final class MatrixClientService {
             || compactDescription.contains("softlogout=true")
     }
 
+    private static func describeBackupUploadState(_ state: BackupUploadState) -> String {
+        switch state {
+        case .waiting:
+            return "waiting"
+        case .uploading(let backedUpCount, let totalCount):
+            return "uploading \(backedUpCount)/\(totalCount)"
+        case .error:
+            return "error"
+        case .done:
+            return "done"
+        }
+    }
+
 }
 
 // MARK: - SDK Listener Adapters
 
 private final class ZynaVerificationStateListener: VerificationStateListener {
-    private let handler: (VerificationState) -> Void
-    init(handler: @escaping (VerificationState) -> Void) { self.handler = handler }
+    private let handler: @Sendable (VerificationState) -> Void
+    init(handler: @escaping @Sendable (VerificationState) -> Void) { self.handler = handler }
     func onUpdate(status: VerificationState) { handler(status) }
 }
 
 private final class ZynaRecoveryStateListener: RecoveryStateListener {
-    private let handler: (RecoveryState) -> Void
-    init(handler: @escaping (RecoveryState) -> Void) { self.handler = handler }
+    private let handler: @Sendable (RecoveryState) -> Void
+    init(handler: @escaping @Sendable (RecoveryState) -> Void) { self.handler = handler }
     func onUpdate(status: RecoveryState) { handler(status) }
+}
+
+private final class ZynaBackupSteadyStateListener: BackupSteadyStateListener {
+    private let handler: @Sendable (BackupUploadState) -> Void
+
+    init(handler: @escaping @Sendable (BackupUploadState) -> Void) {
+        self.handler = handler
+    }
+
+    func onUpdate(status: BackupUploadState) {
+        handler(status)
+    }
 }
 
 private final class ZynaClientDelegate: ClientDelegate {
