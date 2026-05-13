@@ -183,55 +183,43 @@ final class SessionVerificationService {
         return try await client.encryption().isLastDevice()
     }
 
-    /// Bootstraps cross-signing and key backup from scratch.
-    /// Only safe when recovery is not fully set up yet (first device,
-    /// or incomplete/broken state). If recovery is `.enabled`, the
-    /// user must restore via `recover(key:)` instead — calling
-    /// resetRecoveryKey() would destroy the existing backup.
+    /// Bootstraps recovery from scratch.
+    /// Only safe when there is no existing server-side key backup. If a
+    /// backup/recovery setup already exists, the user must restore it with
+    /// their recovery key instead of creating a new one.
     func enableRecovery() async throws -> String {
         guard let client = matrixService.client else {
             throw VerificationError.clientNotAvailable
         }
         let encryption = client.encryption()
-        let initialRecoveryState = encryption.recoveryState()
-        logVerify("enableRecovery: starting; verificationState=\(encryption.verificationState()) recoveryState=\(initialRecoveryState)")
+        await waitForAccountDataReady(timeout: 5)
 
         do {
-            let userId = try client.userId()
-            let identity = try? await encryption.userIdentity(userId: userId, fallbackToServer: true)
-            let hasCrossSigning = identity != nil
-            logVerify("enableRecovery: cross-signing identity = \(hasCrossSigning)")
+            let initialRecoveryState = encryption.recoveryState()
+            logVerify("enableRecovery: starting; verificationState=\(encryption.verificationState()) recoveryState=\(initialRecoveryState)")
 
-            // Recovery fully set up with active backup — don't destroy it.
-            // The user should enter their existing recovery key instead.
-            // `.incomplete` means partial/broken state with nothing to protect,
-            // so we allow bootstrapping over it.
-            if hasCrossSigning && initialRecoveryState == .enabled {
-                logVerify("enableRecovery: recovery already enabled, refusing to reset")
+            switch initialRecoveryState {
+            case .enabled:
+                logVerify("enableRecovery: recovery already enabled, refusing to overwrite")
                 throw VerificationError.recoveryAlreadyExists
+            case .incomplete:
+                logVerify("enableRecovery: recovery is incomplete, requiring existing recovery key")
+                throw VerificationError.recoveryKeyRequired
+            case .unknown:
+                logVerify("enableRecovery: recovery state is still unknown, refusing to bootstrap")
+                throw VerificationError.recoveryStateUnavailable
+            case .disabled:
+                break
             }
 
-            // Clean up orphaned recovery state before bootstrapping.
-            // This handles both: no cross-signing at all, or cross-signing
-            // with incomplete/broken recovery (e.g. after a failed setup).
-            if initialRecoveryState != .disabled {
-                logVerify("enableRecovery: clearing orphaned recovery state")
-                do {
-                    try await encryption.disableRecovery()
-                    logVerify("enableRecovery: disableRecovery succeeded, recoveryState=\(encryption.recoveryState())")
-                } catch {
-                    logVerify("enableRecovery: disableRecovery failed: \(error)")
-                }
-
-                let backupExists = try? await encryption.backupExistsOnServer()
-                logVerify("enableRecovery: backupExistsOnServer = \(String(describing: backupExists))")
-                if backupExists == true {
-                    logVerify("enableRecovery: deleting orphaned backup via API")
-                    await deleteBackupFromServer()
-                }
+            let backupExists = try await encryption.backupExistsOnServer()
+            logVerify("enableRecovery: backupExistsOnServer = \(backupExists)")
+            if backupExists {
+                logVerify("enableRecovery: server backup exists, requiring existing recovery key")
+                throw VerificationError.recoveryKeyRequired
             }
 
-            logVerify("enableRecovery: bootstrapping cross-signing from scratch")
+            logVerify("enableRecovery: bootstrapping recovery from scratch")
             let progress = RecoveryProgressListener { state in
                 logVerify("Recovery progress: \(state)")
             }
@@ -487,46 +475,6 @@ final class SessionVerificationService {
     func resetStep() {
         stepSubject.send(.initial)
     }
-
-    // MARK: - Private — Orphaned Backup Cleanup
-
-    /// Deletes the key backup from the server via Matrix API.
-    /// Used when a previous broken enableRecovery() left a backup
-    /// without cross-signing keys, blocking a fresh bootstrap.
-    private func deleteBackupFromServer() async {
-        guard let client = matrixService.client,
-              let session = try? client.session() else { return }
-
-        var baseURL = session.homeserverUrl
-        while baseURL.hasSuffix("/") { baseURL.removeLast() }
-
-        // First get the current backup version
-        guard let versionURL = URL(string: "\(baseURL)/_matrix/client/v3/room_keys/version") else { return }
-
-        var versionReq = URLRequest(url: versionURL)
-        versionReq.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-
-        do {
-            let (data, _) = try await URLSession.shared.data(for: versionReq)
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let version = json["version"] as? String else {
-                logVerify("deleteBackupFromServer: no backup version found")
-                return
-            }
-
-            // Delete that version
-            guard let deleteURL = URL(string: "\(baseURL)/_matrix/client/v3/room_keys/version/\(version)") else { return }
-            var deleteReq = URLRequest(url: deleteURL)
-            deleteReq.httpMethod = "DELETE"
-            deleteReq.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-
-            let (_, resp) = try await URLSession.shared.data(for: deleteReq)
-            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            logVerify("deleteBackupFromServer: deleted version \(version), HTTP \(code)")
-        } catch {
-            logVerify("deleteBackupFromServer: failed: \(error)")
-        }
-    }
 }
 
 // MARK: - Errors
@@ -535,12 +483,25 @@ enum VerificationError: LocalizedError {
     case clientNotAvailable
     case controllerNotReady
     case recoveryAlreadyExists
+    case recoveryKeyRequired
+    case recoveryStateUnavailable
 
     var errorDescription: String? {
         switch self {
         case .clientNotAvailable: return "Matrix client is not available"
         case .controllerNotReady: return "Verification controller is not ready"
         case .recoveryAlreadyExists: return "Recovery key already exists. Use your existing recovery key to restore access."
+        case .recoveryKeyRequired: return "An encrypted key backup already exists. Enter your recovery key to restore access."
+        case .recoveryStateUnavailable: return "Recovery state is still loading. Try again in a moment."
+        }
+    }
+
+    var shouldPromptForRecoveryKey: Bool {
+        switch self {
+        case .recoveryAlreadyExists, .recoveryKeyRequired:
+            return true
+        case .clientNotAvailable, .controllerNotReady, .recoveryStateUnavailable:
+            return false
         }
     }
 }

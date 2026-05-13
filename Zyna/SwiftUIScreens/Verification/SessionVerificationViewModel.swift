@@ -183,8 +183,15 @@ final class SessionVerificationViewModel: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
-                    errorMessage = error.localizedDescription
-                    step = .failed
+                    if let verificationError = error as? VerificationError,
+                       verificationError.shouldPromptForRecoveryKey {
+                        self.errorMessage = verificationError.localizedDescription
+                        self.recoveryKeyInput = ""
+                        self.step = .enteringRecoveryKey
+                    } else {
+                        self.errorMessage = error.localizedDescription
+                        self.step = .failed
+                    }
                 }
             }
         }

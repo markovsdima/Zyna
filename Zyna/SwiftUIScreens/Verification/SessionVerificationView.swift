@@ -270,6 +270,14 @@ struct SessionVerificationView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
 
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(.subheadline)
+                    .foregroundColor(.yellow.opacity(0.9))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
+
             TextField("", text: $viewModel.recoveryKeyInput, axis: .vertical)
                 .font(.system(.body, design: .monospaced))
                 .foregroundColor(.white)
@@ -511,6 +519,7 @@ struct SessionVerificationView: View {
         case .enteringRecoveryKey:
             VStack(spacing: 12) {
                 primaryButton("Restore") { viewModel.restoreFromRecoveryKey() }
+                textButton("Reset recovery key") { showResetWarning = true }
                 textButton("Cancel") { viewModel.skip() }
             }
         case .restoringFromRecoveryKey:
@@ -521,6 +530,7 @@ struct SessionVerificationView: View {
             VStack(spacing: 12) {
                 primaryButton("Try Again") { viewModel.setupRecovery() }
                 textButton("I have a recovery key") { viewModel.useRecoveryKey() }
+                textButton("Reset recovery key") { showResetWarning = true }
                 textButton("Skip for now") { viewModel.skip() }
             }
         default:
