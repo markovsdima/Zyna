@@ -18,7 +18,7 @@ final class AppCoordinator {
     private weak var logoutFallbackAlert: UIAlertController?
     private let backupUploadDeadline: Duration = .seconds(30)
     private let serverLogoutDeadline: Duration = .seconds(12)
-    private var isShowingSoftLogout = false
+    private var isShowingSessionRecovery = false
 
     func start() {
         observeClientState()
@@ -37,11 +37,17 @@ final class AppCoordinator {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
                 guard let self else { return }
-                if case .softLoggedOut = state {
-                    Task { @MainActor in
-                        self.showSoftLogout()
-                    }
+                switch state {
+                case .softLoggedOut:
+                    guard !self.isPerformingLogout else { return }
+                    Task { @MainActor in self.showSessionRecovery(mode: .softLogout) }
                     return
+                case .sessionRecoveryRequired:
+                    guard !self.isPerformingLogout else { return }
+                    Task { @MainActor in self.showSessionRecovery(mode: .restoreFailure) }
+                    return
+                default:
+                    break
                 }
                 guard case .loggedOut = state else { return }
                 guard self.mainCoordinator != nil else { return }
@@ -64,7 +70,7 @@ final class AppCoordinator {
     // MARK: - Navigation
 
     private func showAuth() {
-        isShowingSoftLogout = false
+        isShowingSessionRecovery = false
         let viewModel = AuthViewModel()
         viewModel.onAuthenticated = { [weak self] in
             PushService.shared.registerIfNeeded()
@@ -90,8 +96,11 @@ final class AppCoordinator {
                 await self.setupVerificationRequestListener()
             } catch {
                 await MainActor.run { [weak self] in
-                    if case .softLoggedOut = MatrixClientService.shared.state {
+                    switch MatrixClientService.shared.state {
+                    case .softLoggedOut, .sessionRecoveryRequired:
                         return
+                    default:
+                        break
                     }
                     self?.showAuth()
                 }
@@ -177,7 +186,7 @@ final class AppCoordinator {
     }
 
     private func showMain() {
-        isShowingSoftLogout = false
+        isShowingSessionRecovery = false
         let coordinator = MainCoordinator()
         coordinator.onLogout = { [weak self] in
             Task { @MainActor in
@@ -193,9 +202,10 @@ final class AppCoordinator {
     }
 
     @MainActor
-    private func showSoftLogout() {
-        guard !isShowingSoftLogout else { return }
-        isShowingSoftLogout = true
+    private func showSessionRecovery(mode: SessionRecoveryMode) {
+        guard !isPerformingLogout else { return }
+        guard !isShowingSessionRecovery else { return }
+        isShowingSessionRecovery = true
 
         serverLogoutCompletionObserver?.cancel()
         serverLogoutCompletionObserver = nil
@@ -208,7 +218,10 @@ final class AppCoordinator {
         mainCoordinator?.stopVoicePlayback()
         mainCoordinator = nil
 
-        let viewModel = SoftLogoutViewModel(credentials: MatrixClientService.shared.softLogoutCredentials)
+        let viewModel = SessionRecoveryViewModel(
+            credentials: MatrixClientService.shared.sessionRecoveryCredentials,
+            mode: mode
+        )
         viewModel.onAuthenticated = { [weak self] in
             PushService.shared.registerIfNeeded()
             Task {
@@ -223,7 +236,7 @@ final class AppCoordinator {
             }
         }
 
-        window?.rootViewController = SoftLogoutView(viewModel: viewModel).wrapped()
+        window?.rootViewController = SessionRecoveryView(viewModel: viewModel).wrapped()
     }
 
     func resumeHeartbeatIfNeeded() {

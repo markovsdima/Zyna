@@ -5,17 +5,50 @@
 
 import SwiftUI
 
-final class SoftLogoutViewModel: ObservableObject {
-    let credentials: SoftLogoutCredentials?
+enum SessionRecoveryMode {
+    case softLogout
+    case restoreFailure
+
+    var title: String {
+        switch self {
+        case .softLogout:
+            return String(localized: "Session expired")
+        case .restoreFailure:
+            return String(localized: "Session needs repair")
+        }
+    }
+
+    func message(canSignIn: Bool) -> String {
+        if !canSignIn {
+            return String(localized: "Zyna couldn't load the saved session. Local encrypted message keys are still kept on this device.")
+        }
+
+        switch self {
+        case .softLogout:
+            return String(localized: "Sign in again to keep your encrypted message keys on this device.")
+        case .restoreFailure:
+            return String(localized: "Sign in again to repair this session while keeping encrypted message keys on this device.")
+        }
+    }
+}
+
+final class SessionRecoveryViewModel: ObservableObject {
+    let mode: SessionRecoveryMode
     var onAuthenticated: (() -> Void)?
     var onClearData: (() -> Void)?
 
+    @Published private(set) var credentials: SessionRecoveryCredentials?
     @Published var password = ""
     @Published var isLoading = false
     @Published var errorMessage: String?
 
-    init(credentials: SoftLogoutCredentials?) {
+    var canSignIn: Bool {
+        credentials?.canSignIn == true
+    }
+
+    init(credentials: SessionRecoveryCredentials?, mode: SessionRecoveryMode) {
         self.credentials = credentials
+        self.mode = mode
     }
 
     func signIn() {
@@ -31,7 +64,7 @@ final class SoftLogoutViewModel: ObservableObject {
 
         Task {
             do {
-                try await MatrixClientService.shared.loginAfterSoftLogout(password: password)
+                try await MatrixClientService.shared.loginAfterSessionRecovery(password: password)
                 await MainActor.run {
                     self.isLoading = false
                     self.password = ""
@@ -40,6 +73,30 @@ final class SoftLogoutViewModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.isLoading = false
+                    self.credentials = MatrixClientService.shared.sessionRecoveryCredentials
+                    self.errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func retryRestore() {
+        guard !isLoading else { return }
+
+        isLoading = true
+        errorMessage = nil
+
+        Task {
+            do {
+                try await MatrixClientService.shared.restoreSession()
+                await MainActor.run {
+                    self.isLoading = false
+                    self.onAuthenticated?()
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLoading = false
+                    self.credentials = MatrixClientService.shared.sessionRecoveryCredentials
                     self.errorMessage = error.localizedDescription
                 }
             }
@@ -52,12 +109,12 @@ final class SoftLogoutViewModel: ObservableObject {
     }
 }
 
-struct SoftLogoutView: View {
-    @StateObject private var viewModel: SoftLogoutViewModel
+struct SessionRecoveryView: View {
+    @StateObject private var viewModel: SessionRecoveryViewModel
     @State private var showPassword = false
     @State private var showClearDataConfirmation = false
 
-    init(viewModel: SoftLogoutViewModel) {
+    init(viewModel: SessionRecoveryViewModel) {
         _viewModel = StateObject(wrappedValue: viewModel)
     }
 
@@ -77,12 +134,12 @@ struct SoftLogoutView: View {
             VStack(spacing: 20) {
                 Spacer()
 
-                Text("Session expired")
+                Text(viewModel.mode.title)
                     .font(.system(size: 42, weight: .bold, design: .rounded))
                     .foregroundColor(.white.opacity(0.9))
                     .multilineTextAlignment(.center)
 
-                Text("Sign in again to keep your encrypted message keys on this device.")
+                Text(viewModel.mode.message(canSignIn: viewModel.canSignIn))
                     .font(.body)
                     .foregroundColor(.white.opacity(0.72))
                     .multilineTextAlignment(.center)
@@ -91,7 +148,9 @@ struct SoftLogoutView: View {
                 accountSummary()
                     .padding(.top, 12)
 
-                passwordInput()
+                if viewModel.canSignIn {
+                    passwordInput()
+                }
 
                 if let error = viewModel.errorMessage {
                     Text(error)
@@ -101,7 +160,11 @@ struct SoftLogoutView: View {
                         .padding(.horizontal)
                 }
 
-                signInButton()
+                if viewModel.canSignIn {
+                    signInButton()
+                } else {
+                    retryButton()
+                }
 
                 Button(role: .destructive) {
                     showClearDataConfirmation = true
@@ -141,8 +204,8 @@ struct SoftLogoutView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            if let credentials = viewModel.credentials {
-                Text(credentials.homeserverUrl)
+            if let homeserverUrl = viewModel.credentials?.homeserverUrl {
+                Text(homeserverUrl)
                     .font(.caption)
                     .foregroundColor(.white.opacity(0.55))
                     .lineLimit(1)
@@ -204,6 +267,29 @@ struct SoftLogoutView: View {
                         .tint(.white)
                 } else {
                     Text("Continue")
+                        .font(.headline)
+                }
+            }
+            .foregroundColor(.white)
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(.black, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(color: .black.opacity(0.2), radius: 5, x: 0, y: 5)
+        }
+        .disabled(viewModel.isLoading)
+        .padding(.horizontal)
+    }
+
+    private func retryButton() -> some View {
+        Button {
+            viewModel.retryRestore()
+        } label: {
+            Group {
+                if viewModel.isLoading {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text("Try Again")
                         .font(.headline)
                 }
             }

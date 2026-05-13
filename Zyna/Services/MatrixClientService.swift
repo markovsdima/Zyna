@@ -16,6 +16,7 @@ enum MatrixClientState {
     case loggedIn
     case syncing
     case softLoggedOut
+    case sessionRecoveryRequired
     case error(Error)
 }
 
@@ -36,14 +37,38 @@ extension BackupUploadWaitFailure {
     }
 }
 
-struct SoftLogoutCredentials {
+struct SessionRecoveryCredentials {
     let userId: String
-    let deviceId: String
-    let homeserverUrl: String
+    let deviceId: String?
+    let homeserverUrl: String?
+    let canSignIn: Bool
 }
 
 private let logAuth = ScopedLog(.auth)
 private let logSync = ScopedLog(.sync)
+
+private enum SessionRecoverySource {
+    case softLogout
+    case restoreFailure
+
+    var state: MatrixClientState {
+        switch self {
+        case .softLogout:
+            return .softLoggedOut
+        case .restoreFailure:
+            return .sessionRecoveryRequired
+        }
+    }
+
+    var logPrefix: String {
+        switch self {
+        case .softLogout:
+            return "Soft logout"
+        case .restoreFailure:
+            return "Session restore failed"
+        }
+    }
+}
 
 // MARK: - Matrix Client Service
 
@@ -80,9 +105,10 @@ final class MatrixClientService {
     private var clientDelegateHandle: TaskHandle?
     private var clientDelegate: ZynaClientDelegate?
     private var utdDelegate: ZynaUnableToDecryptDelegate?
-    private var softLogoutSession: MatrixRustSDK.Session?
+    private var sessionRecoverySession: MatrixRustSDK.Session?
+    private var sessionRecoverySource: SessionRecoverySource = .softLogout
     private let invalidatingSession = Atomic(false)
-    private let softLogoutActive = Atomic(false)
+    private let sessionRecoveryActive = Atomic(false)
 
     private let userIdKey = "com.zyna.matrix.lastUserId"
     private let localSessionIdKey = "com.zyna.matrix.localSessionId"
@@ -219,8 +245,8 @@ final class MatrixClientService {
 
             logAuth("Logged in as \(userId) localSession=\(localSessionId)")
 
-            softLogoutSession = nil
-            softLogoutActive.tryToClearFlag()
+            sessionRecoverySession = nil
+            sessionRecoveryActive.tryToClearFlag()
             self.client = client
             stateSubject.send(.loggedIn)
 
@@ -245,8 +271,7 @@ final class MatrixClientService {
             session = try sessionDelegate.retrieveSessionFromKeychain(userId: userId)
         } catch {
             logAuth("Stored session unavailable for \(userId): \(error)")
-            clearLocalSession(userId: userId)
-            stateSubject.send(.loggedOut)
+            await enterSessionRecovery(source: .restoreFailure, session: nil, reason: String(describing: error))
             throw error
         }
 
@@ -271,6 +296,8 @@ final class MatrixClientService {
             logAuth("Session restored for \(userId)")
             ensureLocalSessionId()
             activateLocalData(userId: userId)
+            sessionRecoverySession = nil
+            sessionRecoveryActive.tryToClearFlag()
 
             self.client = client
             stateSubject.send(.loggedIn)
@@ -282,12 +309,7 @@ final class MatrixClientService {
                 await enterSoftLogout(session: session, reason: String(describing: error))
                 throw error
             }
-            await stopSync()
-            detachEncryptionListeners()
-            detachClientDelegates()
-            client = nil
-            clearLocalSession(userId: userId)
-            stateSubject.send(.loggedOut)
+            await enterSessionRecovery(source: .restoreFailure, session: session, reason: String(describing: error))
             throw error
         }
     }
@@ -442,8 +464,8 @@ final class MatrixClientService {
         detachClientDelegates()
 
         client = nil
-        softLogoutSession = nil
-        softLogoutActive.tryToClearFlag()
+        sessionRecoverySession = nil
+        sessionRecoveryActive.tryToClearFlag()
         clearLocalSession(userId: userId)
         stateSubject.send(.loggedOut)
         logAuth("Logged out locally")
@@ -490,30 +512,44 @@ final class MatrixClientService {
 
     private func enterSoftLogout(reason: String) async {
         guard let session = currentOrStoredSession() else {
-            logAuth("Soft logout requested but no session was available; clearing local session")
-            await invalidateLocalSession(reason: reason)
+            logAuth("Soft logout requested but no session was available; preserving local crypto store. reason=\(reason)")
+            await enterSessionRecovery(source: .softLogout, session: nil, reason: reason)
             return
         }
         await enterSoftLogout(session: session, reason: reason)
     }
 
     private func enterSoftLogout(session: MatrixRustSDK.Session, reason: String) async {
-        softLogoutSession = session
-        guard softLogoutActive.tryToSetFlag() else { return }
+        await enterSessionRecovery(source: .softLogout, session: session, reason: reason)
+    }
 
-        logAuth("Soft logout; preserving local crypto store for \(session.userId). reason=\(reason)")
+    private func enterSessionRecovery(source: SessionRecoverySource, session: MatrixRustSDK.Session?, reason: String) async {
+        if let session { sessionRecoverySession = session }
+        sessionRecoverySource = source
+        guard sessionRecoveryActive.tryToSetFlag() else {
+            stateSubject.send(sessionRecoverySource.state)
+            return
+        }
+
+        let userId = session?.userId ?? UserDefaults.standard.string(forKey: userIdKey) ?? "unknown"
+        logAuth("\(source.logPrefix); preserving local crypto store for \(userId). reason=\(reason)")
         await stopSync()
         detachEncryptionListeners()
         detachClientDelegates()
         client = nil
-        stateSubject.send(.softLoggedOut)
+        stateSubject.send(sessionRecoverySource.state)
     }
 
     func loginAfterSoftLogout(password: String) async throws {
+        try await loginAfterSessionRecovery(password: password)
+    }
+
+    func loginAfterSessionRecovery(password: String) async throws {
         guard let session = currentOrStoredSession() else {
             throw AuthenticationError.sessionNotFound
         }
 
+        let recoveryStateOnFailure = sessionRecoverySource.state
         stateSubject.send(.loggingIn)
 
         do {
@@ -543,10 +579,11 @@ final class MatrixClientService {
             let refreshedSession = try client.session()
             UserDefaults.standard.set(refreshedSession.userId, forKey: userIdKey)
             ensureLocalSessionId()
+            activateLocalData(userId: refreshedSession.userId)
             sessionDelegate.saveSessionInKeychain(session: refreshedSession)
 
-            softLogoutSession = refreshedSession
-            softLogoutActive.tryToClearFlag()
+            sessionRecoverySession = refreshedSession
+            sessionRecoveryActive.tryToClearFlag()
             self.client = client
             do {
                 try await startSync()
@@ -555,16 +592,16 @@ final class MatrixClientService {
                 detachEncryptionListeners()
                 detachClientDelegates()
                 self.client = nil
-                softLogoutSession = refreshedSession
-                _ = softLogoutActive.tryToSetFlag()
+                sessionRecoverySession = refreshedSession
+                _ = sessionRecoveryActive.tryToSetFlag()
                 throw error
             }
 
-            softLogoutSession = nil
-            logAuth("Soft logout re-login succeeded for \(refreshedSession.userId) device=\(refreshedSession.deviceId)")
+            sessionRecoverySession = nil
+            logAuth("Session recovery sign-in succeeded for \(refreshedSession.userId) device=\(refreshedSession.deviceId)")
         } catch {
-            logAuth("Soft logout re-login failed: \(error)")
-            stateSubject.send(.softLoggedOut)
+            logAuth("Session recovery sign-in failed: \(error)")
+            stateSubject.send(recoveryStateOnFailure)
             throw error
         }
     }
@@ -659,17 +696,32 @@ final class MatrixClientService {
         UserDefaults.standard.string(forKey: localSessionIdKey)
     }
 
-    var softLogoutCredentials: SoftLogoutCredentials? {
-        guard let session = currentOrStoredSession() else { return nil }
-        return SoftLogoutCredentials(
-            userId: session.userId,
-            deviceId: session.deviceId,
-            homeserverUrl: session.homeserverUrl
+    var sessionRecoveryCredentials: SessionRecoveryCredentials? {
+        if let session = currentOrStoredSession() {
+            return SessionRecoveryCredentials(
+                userId: session.userId,
+                deviceId: session.deviceId,
+                homeserverUrl: session.homeserverUrl,
+                canSignIn: true
+            )
+        }
+        guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
+            return nil
+        }
+        return SessionRecoveryCredentials(
+            userId: userId,
+            deviceId: nil,
+            homeserverUrl: nil,
+            canSignIn: false
         )
     }
 
+    var softLogoutCredentials: SessionRecoveryCredentials? {
+        sessionRecoveryCredentials
+    }
+
     private func currentOrStoredSession() -> MatrixRustSDK.Session? {
-        if let session = softLogoutSession {
+        if let session = sessionRecoverySession {
             return session
         }
         if let client, let session = try? client.session() {
@@ -747,8 +799,12 @@ final class MatrixClientService {
         guard invalidatingSession.tryToSetFlag() else { return }
         defer { invalidatingSession.tryToClearFlag() }
 
-        logAuth("Invalid access token; clearing local session: \(reason)")
-        await logoutLocally()
+        logAuth("Invalid access token; preserving local crypto store for session recovery: \(reason)")
+        if let session = currentOrStoredSession() {
+            await enterSessionRecovery(source: .restoreFailure, session: session, reason: reason)
+        } else {
+            await enterSessionRecovery(source: .restoreFailure, session: nil, reason: reason)
+        }
     }
 
     private static func isInvalidAccessTokenError(_ error: Error) -> Bool {
