@@ -29,14 +29,12 @@ struct TimelineRepairResult {
 /// `storedMessage` rows.
 final class TimelineRepairService {
 
-    static let shared = TimelineRepairService(dbQueue: DatabaseService.shared.dbQueue)
+    static let shared = TimelineRepairService()
 
-    private let dbQueue: DatabaseQueue
+    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
     private let log = ScopedLog(.database, prefix: "[TimelineRepair]")
 
-    private init(dbQueue: DatabaseQueue) {
-        self.dbQueue = dbQueue
-    }
+    private init() {}
 
     func repairLocalTimelineCache() throws -> TimelineRepairResult {
         var result = TimelineRepairResult()

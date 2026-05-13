@@ -93,7 +93,7 @@ final class MatrixClientService {
 
     private init() {
         let keychain = Keychain(service: "com.zyna.matrix.crypto")
-            .accessibility(.whenUnlockedThisDeviceOnly)
+            .accessibility(.afterFirstUnlockThisDeviceOnly)
 
         if let stored = try? keychain.get(Self.passphraseKeychainKey) {
             passphrase = stored
@@ -107,25 +107,67 @@ final class MatrixClientService {
     // MARK: - Session Paths
 
     private func sessionDataPath(for userId: String? = nil) -> String {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = base.appendingPathComponent("matrix/data/\(userId ?? "default")")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = legacyMatrixDataDirectory()
+        _ = try? LocalDataProtection.createProtectedDirectory(
+            at: dir,
+            protection: .backgroundReadable,
+            excludeFromBackup: true
+        )
         return dir.path
     }
 
     private func sessionCachePath(for userId: String? = nil) -> String {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        let dir = base.appendingPathComponent("matrix/cache/\(userId ?? "default")")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = legacyMatrixCacheDirectory()
+        _ = try? LocalDataProtection.createProtectedDirectory(
+            at: dir,
+            protection: .backgroundReadable,
+            excludeFromBackup: true
+        )
         return dir.path
+    }
+
+    private func legacyMatrixDataDirectory() -> URL {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("matrix", isDirectory: true)
+            .appendingPathComponent("data", isDirectory: true)
+            .appendingPathComponent("default", isDirectory: true)
+    }
+
+    private func legacyMatrixCacheDirectory() -> URL {
+        FileManager.default
+            .urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("matrix", isDirectory: true)
+            .appendingPathComponent("cache", isDirectory: true)
+            .appendingPathComponent("default", isDirectory: true)
+    }
+
+    private func removeEmptyDirectory(_ url: URL) {
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(atPath: url.path),
+              contents.isEmpty else {
+            return
+        }
+        try? fm.removeItem(at: url)
     }
 
     /// Removes session data/cache directories so a fresh login doesn't collide
     /// with a previous device's crypto store.
-    private func clearSessionDirectories() {
+    private func clearSessionDirectories(userId: String? = nil) {
         let fm = FileManager.default
-        try? fm.removeItem(atPath: sessionDataPath())
-        try? fm.removeItem(atPath: sessionCachePath())
+        try? fm.removeItem(at: LocalDataProtection.matrixDataDirectory(for: nil))
+        try? fm.removeItem(at: LocalDataProtection.matrixCacheDirectory(for: nil))
+        if let userId, !userId.isEmpty {
+            try? fm.removeItem(at: LocalDataProtection.matrixDataDirectory(for: userId))
+            try? fm.removeItem(at: LocalDataProtection.matrixCacheDirectory(for: userId))
+        }
+        try? fm.removeItem(at: legacyMatrixDataDirectory())
+        try? fm.removeItem(at: legacyMatrixCacheDirectory())
+        removeEmptyDirectory(legacyMatrixDataDirectory().deletingLastPathComponent())
+        removeEmptyDirectory(legacyMatrixDataDirectory().deletingLastPathComponent().deletingLastPathComponent())
+        removeEmptyDirectory(legacyMatrixCacheDirectory().deletingLastPathComponent())
+        removeEmptyDirectory(legacyMatrixCacheDirectory().deletingLastPathComponent().deletingLastPathComponent())
+        LocalDataProtection.removeMatrixNoSessionStore()
     }
 
     // MARK: - Login
@@ -134,11 +176,12 @@ final class MatrixClientService {
     func login(username: String, password: String, homeserver: String = Brand.current.defaultHomeserver) async throws {
         stateSubject.send(.loggingIn)
 
-        // Clear stale crypto store and verification flag so the
-        // verification screen shows after a fresh login.
-        clearSessionDirectories()
+        // Clear stale local state so a fresh login cannot reuse another user's
+        // decrypted app cache or Matrix crypto store.
         if let existingUserId = UserDefaults.standard.string(forKey: userIdKey) {
-            SessionVerificationService.clearLocalSecretsFlag(userId: existingUserId)
+            clearLocalSession(userId: existingUserId)
+        } else {
+            clearSessionDirectories()
         }
 
         do {
@@ -168,6 +211,7 @@ final class MatrixClientService {
             let userId = try client.userId()
             UserDefaults.standard.set(userId, forKey: userIdKey)
             let localSessionId = startNewLocalSessionId()
+            activateLocalData(userId: userId)
 
             // Manually save session — SDK only auto-calls delegate on token refresh
             let session = try client.session()
@@ -202,7 +246,6 @@ final class MatrixClientService {
         } catch {
             logAuth("Stored session unavailable for \(userId): \(error)")
             clearLocalSession(userId: userId)
-            FileCacheService.shared.clearAll()
             stateSubject.send(.loggedOut)
             throw error
         }
@@ -227,6 +270,7 @@ final class MatrixClientService {
             try await client.restoreSession(session: session)
             logAuth("Session restored for \(userId)")
             ensureLocalSessionId()
+            activateLocalData(userId: userId)
 
             self.client = client
             stateSubject.send(.loggedIn)
@@ -243,7 +287,6 @@ final class MatrixClientService {
             detachClientDelegates()
             client = nil
             clearLocalSession(userId: userId)
-            FileCacheService.shared.clearAll()
             stateSubject.send(.loggedOut)
             throw error
         }
@@ -402,7 +445,6 @@ final class MatrixClientService {
         softLogoutSession = nil
         softLogoutActive.tryToClearFlag()
         clearLocalSession(userId: userId)
-        FileCacheService.shared.clearAll()
         stateSubject.send(.loggedOut)
         logAuth("Logged out locally")
     }
@@ -551,7 +593,11 @@ final class MatrixClientService {
 
     /// Build a client for a given homeserver (without logging in).
     func buildUnauthenticatedClient(homeserver: String) async throws -> Client {
-        clearSessionDirectories()
+        if let existingUserId = UserDefaults.standard.string(forKey: userIdKey) {
+            clearLocalSession(userId: existingUserId)
+        } else {
+            clearSessionDirectories()
+        }
 
         let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
             .passphrase(passphrase: passphrase)
@@ -592,6 +638,7 @@ final class MatrixClientService {
         let userId = try client.userId()
         UserDefaults.standard.set(userId, forKey: userIdKey)
         let localSessionId = startNewLocalSessionId()
+        activateLocalData(userId: userId)
 
         let session = try client.session()
         sessionDelegate.saveSessionInKeychain(session: session)
@@ -641,6 +688,33 @@ final class MatrixClientService {
         return UserDefaults.standard.string(forKey: userIdKey)
     }
 
+    private func activateLocalData(userId: String) {
+        DatabaseService.shared.activate(userId: userId)
+        FileCacheService.shared.activate(userId: userId)
+        MediaCache.shared.activate(userId: userId)
+        LocalDataProtection.removeLegacyGlobalLocalData()
+    }
+
+    private func clearAppLocalData(userId: String?) {
+        DatabaseService.shared.closeForLocalDataRemoval(userId: userId)
+        FileCacheService.shared.clearAll(userId: userId)
+        MediaCache.shared.clearAll(userId: userId)
+
+        if let userId, !userId.isEmpty {
+            LocalDataProtection.removeUserLocalData(userId: userId)
+            DatabasePassphraseStore.removePassphrase(for: userId)
+        } else {
+            LocalDataProtection.removeAllUserLocalData()
+            DatabasePassphraseStore.removeAllPassphrases()
+        }
+
+        LocalDataProtection.removeLegacyGlobalLocalData()
+        LocalDataProtection.removeTemporaryLocalData()
+        DatabaseService.shared.activate(userId: nil)
+        FileCacheService.shared.activate(userId: nil)
+        MediaCache.shared.activate(userId: nil)
+    }
+
     private func clearLocalSession(userId: String?) {
         if let userId, !userId.isEmpty {
             sessionDelegate.clearSession(userId: userId)
@@ -650,7 +724,8 @@ final class MatrixClientService {
         }
         UserDefaults.standard.removeObject(forKey: userIdKey)
         UserDefaults.standard.removeObject(forKey: localSessionIdKey)
-        clearSessionDirectories()
+        clearSessionDirectories(userId: userId)
+        clearAppLocalData(userId: userId)
     }
 
     @discardableResult

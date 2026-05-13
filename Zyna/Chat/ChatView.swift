@@ -3351,6 +3351,7 @@ extension ChatViewController: PHPickerViewControllerDelegate {
                 do {
                     try? FileManager.default.removeItem(at: destination)
                     try FileManager.default.copyItem(at: url, to: destination)
+                    try? LocalDataProtection.applyProtection(to: destination, protection: .sensitive)
                     logVideoUI(
                         "picker copied video type=\(typeIdentifier) temp=\(destination.lastPathComponent)"
                     )

@@ -913,8 +913,12 @@ final class TimelineService {
             let formattedCaption = FormattedBody(format: .html, body: encoded)
 
             let tmpURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + "." + Self.extensionFor(mimetype))
-            try data.write(to: tmpURL)
+                .appendingPathComponent("zyna-forward-\(UUID().uuidString)." + Self.extensionFor(mimetype))
+            try LocalDataProtection.writeProtectedData(
+                data,
+                to: tmpURL,
+                protection: .sensitive
+            )
 
             let fileInfo = FileInfo(
                 mimetype: mimetype,
@@ -959,8 +963,12 @@ final class TimelineService {
         do {
             let data = try await client.getMediaContent(mediaSource: source)
             let tmpURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + "." + Self.extensionFor(mimetype))
-            try data.write(to: tmpURL)
+                .appendingPathComponent("zyna-forward-\(UUID().uuidString)." + Self.extensionFor(mimetype))
+            try LocalDataProtection.writeProtectedData(
+                data,
+                to: tmpURL,
+                protection: .sensitive
+            )
 
             let receipt = await sendVoiceMessage(
                 url: tmpURL,
@@ -1218,9 +1226,21 @@ final class TimelineService {
         let imageURL = workingDirectoryURL.appendingPathComponent("image.jpg")
         let thumbnailURL = workingDirectoryURL.appendingPathComponent("thumbnail.jpg")
         do {
-            try FileManager.default.createDirectory(at: workingDirectoryURL, withIntermediateDirectories: true)
-            try image.imageData.write(to: imageURL, options: .atomic)
-            try image.thumbnailData.write(to: thumbnailURL, options: .atomic)
+            try LocalDataProtection.createProtectedDirectory(
+                at: workingDirectoryURL,
+                protection: .sensitive,
+                excludeFromBackup: true
+            )
+            try LocalDataProtection.writeProtectedData(
+                image.imageData,
+                to: imageURL,
+                protection: .sensitive
+            )
+            try LocalDataProtection.writeProtectedData(
+                image.thumbnailData,
+                to: thumbnailURL,
+                protection: .sensitive
+            )
         } catch {
             logTimeline("Image write to temp failed: \(error)")
             try? FileManager.default.removeItem(at: workingDirectoryURL)

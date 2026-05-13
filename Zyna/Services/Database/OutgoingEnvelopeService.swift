@@ -12,9 +12,9 @@ private let logVideoEnvelope = ScopedLog(.video, prefix: "[VideoEnvelope]")
 
 final class OutgoingEnvelopeService {
 
-    static let shared = OutgoingEnvelopeService(dbQueue: DatabaseService.shared.dbQueue)
+    static let shared = OutgoingEnvelopeService()
 
-    private let dbQueue: DatabaseQueue
+    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
     private let pendingBindingsQueue = DispatchQueue(
         label: "com.zyna.outgoingEnvelope.pendingBindings"
     )
@@ -26,9 +26,7 @@ final class OutgoingEnvelopeService {
         var mediaSourceJSON: String?
     }
 
-    private init(dbQueue: DatabaseQueue) {
-        self.dbQueue = dbQueue
-    }
+    private init() {}
 
     struct StoredOutgoingVoiceFile {
         let fileName: String
@@ -549,11 +547,13 @@ final class OutgoingEnvelopeService {
     }
 
     private func outgoingVoiceDirectoryURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let directory = base
-            .appendingPathComponent("zyna", isDirectory: true)
-            .appendingPathComponent("outgoing-voice", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let userId = UserDefaults.standard.string(forKey: "com.zyna.matrix.lastUserId")
+        let directory = LocalDataProtection.outgoingVoiceDirectory(for: userId)
+        _ = try? LocalDataProtection.createProtectedDirectory(
+            at: directory,
+            protection: .sensitive,
+            excludeFromBackup: true
+        )
         return directory
     }
 
@@ -564,6 +564,7 @@ final class OutgoingEnvelopeService {
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: destinationURL)
         try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        try? LocalDataProtection.applyProtection(to: destinationURL, protection: .sensitive)
         return StoredOutgoingVoiceFile(fileName: fileName, url: destinationURL)
     }
 

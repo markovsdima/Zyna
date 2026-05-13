@@ -58,7 +58,7 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
     private let decoder = JSONDecoder()
 
     private let keychain = Keychain(service: "com.zyna.matrix.session")
-        .accessibility(.whenUnlockedThisDeviceOnly)
+        .accessibility(.afterFirstUnlockThisDeviceOnly)
 
     func retrieveSessionFromKeychain(userId: String) throws -> MatrixRustSDK.Session {
         guard let sessionDataString = try keychain.get(userId),

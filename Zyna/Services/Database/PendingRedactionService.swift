@@ -108,7 +108,7 @@ final class PendingRedactionService {
         let identityKeys: Set<String>
     }
 
-    static let shared = PendingRedactionService(dbQueue: DatabaseService.shared.dbQueue)
+    static let shared = PendingRedactionService()
 
     private struct StoredMessageIdentifierState: FetchableRecord, Decodable {
         let eventId: String?
@@ -124,15 +124,13 @@ final class PendingRedactionService {
         let transactionId: String?
     }
 
-    private let dbQueue: DatabaseQueue
+    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
     private let activeAttemptsQueue = DispatchQueue(
         label: "com.zyna.pendingRedaction.activeAttempts"
     )
     private var activeAttemptMessageIds = Set<String>()
 
-    private init(dbQueue: DatabaseQueue) {
-        self.dbQueue = dbQueue
-    }
+    private init() {}
 
     func pendingMessageIds(roomId: String) -> Set<String> {
         (try? dbQueue.read { db in

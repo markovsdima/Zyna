@@ -10,20 +10,134 @@ final class DatabaseService {
 
     static let shared = DatabaseService()
 
-    let dbQueue: DatabaseQueue
+    private static let userIdKey = "com.zyna.matrix.lastUserId"
+
+    // This guards DatabaseQueue lifecycle work (close/open/migrate/recover).
+    // Keep NSLock here instead of Atomic/OSAllocatedUnfairLock: the critical
+    // section can perform file IO and Keychain-backed SQLCipher setup.
+    private let lock = NSLock()
+    private var activeUserId: String?
+    private var currentDbQueue: DatabaseQueue?
+
+    var dbQueue: DatabaseQueue {
+        lock.lock()
+        defer { lock.unlock() }
+        if let currentDbQueue {
+            return currentDbQueue
+        }
+        return openActiveDatabaseLocked()
+    }
 
     private init() {
-        let dir = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("zyna", isDirectory: true)
-        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        LocalDataProtection.removeLegacyGlobalLocalData()
+        LocalDataProtection.removeTemporaryLocalData()
 
-        let dbURL = dir.appendingPathComponent("zyna.db")
+        let userId = UserDefaults.standard.string(forKey: Self.userIdKey)
+        activeUserId = userId
+        currentDbQueue = nil
+        _ = openActiveDatabaseLocked()
+    }
+
+    func activate(userId: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard activeUserId != userId || currentDbQueue == nil else {
+            return
+        }
+
+        try? currentDbQueue?.close()
+        activeUserId = userId
+        currentDbQueue = nil
+        _ = openActiveDatabaseLocked()
+    }
+
+    func closeForLocalDataRemoval(userId: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if activeUserId == userId || userId == nil {
+            try? currentDbQueue?.close()
+            activeUserId = nil
+            currentDbQueue = nil
+        }
+    }
+
+    private func openActiveDatabaseLocked() -> DatabaseQueue {
+        do {
+            let dbQueue = try openAndMigrateDatabase(userId: activeUserId)
+            currentDbQueue = dbQueue
+            return dbQueue
+        } catch {
+            guard Self.canRecoverByRecreatingDatabase(from: error) else {
+                fatalError("Unable to open encrypted app database: \(error)")
+            }
+
+            LocalDataProtection.removeAppDatabase(for: activeUserId)
+
+            do {
+                let dbQueue = try openAndMigrateDatabase(userId: activeUserId)
+                currentDbQueue = dbQueue
+                return dbQueue
+            } catch {
+                fatalError("Unable to recreate encrypted app database: \(error)")
+            }
+        }
+    }
+
+    private func openAndMigrateDatabase(userId: String?) throws -> DatabaseQueue {
+        let dbQueue = try Self.openDatabase(userId: userId)
+        do {
+            try migrator.migrate(dbQueue)
+        } catch {
+            try? dbQueue.close()
+            throw error
+        }
+        LocalDataProtection.protectExistingDatabaseFiles(for: userId)
+        return dbQueue
+    }
+
+    private static func canRecoverByRecreatingDatabase(from error: Error) -> Bool {
+        guard let databaseError = error as? DatabaseError else {
+            return false
+        }
+        return databaseError.resultCode == .SQLITE_NOTADB
+    }
+
+    private static func openDatabase(userId: String?) throws -> DatabaseQueue {
+        let dbURL = LocalDataProtection.databaseURL(for: userId)
+        try LocalDataProtection.createProtectedDirectory(
+            at: dbURL.deletingLastPathComponent(),
+            protection: .sensitive,
+            excludeFromBackup: true
+        )
+
         var config = Configuration()
         config.foreignKeysEnabled = true
-        dbQueue = try! DatabaseQueue(path: dbURL.path, configuration: config)
-        try! migrator.migrate(dbQueue)
+
+        #if SQLITE_HAS_CODEC
+        config.prepareDatabase { db in
+            var passphrase = try DatabasePassphraseStore.passphraseData(for: userId)
+            defer { passphrase.resetBytes(in: 0..<passphrase.count) }
+            try db.usePassphrase(passphrase)
+            try validateSQLCipher(db)
+        }
+        return try DatabaseQueue(path: dbURL.path, configuration: config)
+        #elseif ZYNA_ALLOW_PLAINTEXT_APP_DB
+        return try DatabaseQueue(path: dbURL.path, configuration: config)
+        #else
+        throw DatabaseEncryptionError.sqlCipherUnavailable
+        #endif
     }
+
+    #if SQLITE_HAS_CODEC
+    private static func validateSQLCipher(_ db: Database) throws {
+        let cipherVersion = try String.fetchOne(db, sql: "PRAGMA cipher_version")
+        guard cipherVersion?.isEmpty == false else {
+            throw DatabaseEncryptionError.sqlCipherUnavailable
+        }
+    }
+    #endif
 
     private var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()

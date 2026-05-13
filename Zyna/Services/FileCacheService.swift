@@ -12,8 +12,9 @@ final class FileCacheService {
 
     static let shared = FileCacheService()
 
-    private let cacheDir: URL
-    private let metadataURL: URL
+    private var activeUserId: String?
+    private var cacheDir: URL
+    private var metadataURL: URL
     private let queue = DispatchQueue(label: "com.zyna.filecache", qos: .userInitiated)
 
     /// Maps mxc URL → CachedFile (filename on disk + original name).
@@ -25,21 +26,15 @@ final class FileCacheService {
     }
 
     private init() {
-        let appSupport = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        cacheDir = appSupport
-            .appendingPathComponent("zyna", isDirectory: true)
-            .appendingPathComponent("media-cache", isDirectory: true)
+        activeUserId = UserDefaults.standard.string(forKey: "com.zyna.matrix.lastUserId")
+        cacheDir = LocalDataProtection.mediaCacheDirectory(for: activeUserId)
         metadataURL = cacheDir.appendingPathComponent(".cache-metadata.json")
 
-        try? FileManager.default.createDirectory(
-            at: cacheDir, withIntermediateDirectories: true)
-
-        // Exclude from iCloud backup
-        var dir = cacheDir
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        try? dir.setResourceValues(values)
+        _ = try? LocalDataProtection.createProtectedDirectory(
+            at: cacheDir,
+            protection: .sensitive,
+            excludeFromBackup: true
+        )
 
         loadMetadata()
     }
@@ -90,13 +85,14 @@ final class FileCacheService {
         // Generate stable disk name from mxc URL
         let ext = (filename as NSString).pathExtension
         let diskName = stableFilename(for: source.url(), ext: ext)
-        let destURL = cacheDir.appendingPathComponent(diskName)
+        let destURL = queue.sync { cacheDir.appendingPathComponent(diskName) }
 
         // Persist: copy from SDK temp → our cache
         let persisted = (try? handle.persist(path: destURL.path)) ?? false
         if !persisted {
             try FileManager.default.copyItem(at: tempURL, to: destURL)
         }
+        try? LocalDataProtection.applyProtection(to: destURL, protection: .sensitive)
 
         let entry = CachedFile(diskName: diskName, originalFilename: filename)
         queue.sync {
@@ -114,14 +110,34 @@ final class FileCacheService {
         queue.sync { metadata[source.url()]?.originalFilename }
     }
 
+    func activate(userId: String?) {
+        queue.sync {
+            guard activeUserId != userId else { return }
+            activeUserId = userId
+            cacheDir = LocalDataProtection.mediaCacheDirectory(for: userId)
+            metadataURL = cacheDir.appendingPathComponent(".cache-metadata.json")
+            metadata.removeAll()
+            _ = try? LocalDataProtection.createProtectedDirectory(
+                at: cacheDir,
+                protection: .sensitive,
+                excludeFromBackup: true
+            )
+            loadMetadata()
+        }
+    }
+
     /// Removes all cached files and metadata. Call on logout.
-    func clearAll() {
+    func clearAll(userId: String? = nil) {
         queue.sync {
             metadata.removeAll()
         }
-        try? FileManager.default.removeItem(at: cacheDir)
-        try? FileManager.default.createDirectory(
-            at: cacheDir, withIntermediateDirectories: true)
+        let dir = LocalDataProtection.mediaCacheDirectory(for: userId ?? activeUserId)
+        try? FileManager.default.removeItem(at: dir)
+        _ = try? LocalDataProtection.createProtectedDirectory(
+            at: dir,
+            protection: .sensitive,
+            excludeFromBackup: true
+        )
     }
 
     // MARK: - Private
@@ -148,7 +164,11 @@ final class FileCacheService {
             guard let self else { return }
             let dict = self.metadata
             guard let data = try? JSONEncoder().encode(dict) else { return }
-            try? data.write(to: self.metadataURL, options: .atomic)
+            try? LocalDataProtection.writeProtectedData(
+                data,
+                to: self.metadataURL,
+                protection: .sensitive
+            )
         }
     }
 }
