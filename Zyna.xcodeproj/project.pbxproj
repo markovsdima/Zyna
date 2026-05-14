@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		322C5EE22FB6531C00F29FB7 /* MatrixRustSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */; };
 		322E76DC2DADAA7E003921EC /* PINCache.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76DB2DADAA7E003921EC /* PINCache.xcframework */; };
 		322E76DD2DADAA7E003921EC /* PINCache.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76DB2DADAA7E003921EC /* PINCache.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		322E76DF2DADAA8B003921EC /* PINOperation.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76DE2DADAA8B003921EC /* PINOperation.xcframework */; };
@@ -17,7 +18,6 @@
 		322E77772DB083AE003921EC /* AsyncDisplayKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		32E8235E2FB4EEE800A86B57 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 32E8235D2FB4EEE800A86B57 /* GRDB */; };
 		32ED2F0E2F59FA7E0080ED2A /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 32ED2F0D2F59FA7E0080ED2A /* WebRTC */; };
-		32F7D3022E3D59B3009282C3 /* MatrixRustSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3012E3D59B3009282C3 /* MatrixRustSDK */; };
 		32F7D31A2E3EE41A009282C3 /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
 /* End PBXBuildFile section */
 
@@ -94,12 +94,12 @@
 			files = (
 				322E76DC2DADAA7E003921EC /* PINCache.xcframework in Frameworks */,
 				322E77762DB083AE003921EC /* AsyncDisplayKit.xcframework in Frameworks */,
+				322C5EE22FB6531C00F29FB7 /* MatrixRustSDK in Frameworks */,
 				322E76DF2DADAA8B003921EC /* PINOperation.xcframework in Frameworks */,
 				32E8235E2FB4EEE800A86B57 /* GRDB in Frameworks */,
 				32F7D31A2E3EE41A009282C3 /* KeychainAccess in Frameworks */,
 				32ED2F0E2F59FA7E0080ED2A /* WebRTC in Frameworks */,
 				322E76E22DADAA97003921EC /* PINRemoteImage.xcframework in Frameworks */,
-				32F7D3022E3D59B3009282C3 /* MatrixRustSDK in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -173,10 +173,10 @@
 			);
 			name = Zyna;
 			packageProductDependencies = (
-				32F7D3012E3D59B3009282C3 /* MatrixRustSDK */,
 				32F7D3192E3EE41A009282C3 /* KeychainAccess */,
 				32ED2F0D2F59FA7E0080ED2A /* WebRTC */,
 				32E8235D2FB4EEE800A86B57 /* GRDB */,
+				322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */,
 			);
 			productName = Zyna;
 			productReference = 324E19562DAD578A00CB5769 /* Zyna.app */;
@@ -236,10 +236,10 @@
 			mainGroup = 324E194D2DAD578A00CB5769;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				32F7D3002E3D59B3009282C3 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */,
 				32F7D3182E3EE41A009282C3 /* XCRemoteSwiftPackageReference "KeychainAccess" */,
 				32ED2F0C2F59FA7E0080ED2A /* XCRemoteSwiftPackageReference "WebRTC" */,
 				32E8235C2FB4EEE800A86B57 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				322C5EE02FB6531C00F29FB7 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 324E19572DAD578A00CB5769 /* Products */;
@@ -582,6 +582,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		322C5EE02FB6531C00F29FB7 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/markovsdima/matrix-rust-components-swift";
+			requirement = {
+				kind = exactVersion;
+				version = "26.5.13-zyna.2";
+			};
+		};
 		32E8235C2FB4EEE800A86B57 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/markovsdima/GRDB.swift.git";
@@ -598,14 +606,6 @@
 				minimumVersion = 138.0.0;
 			};
 		};
-		32F7D3002E3D59B3009282C3 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/matrix-org/matrix-rust-components-swift";
-			requirement = {
-				kind = exactVersion;
-				version = 26.5.13;
-			};
-		};
 		32F7D3182E3EE41A009282C3 /* XCRemoteSwiftPackageReference "KeychainAccess" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/kishikawakatsumi/KeychainAccess";
@@ -617,6 +617,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 322C5EE02FB6531C00F29FB7 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */;
+			productName = MatrixRustSDK;
+		};
 		32E8235D2FB4EEE800A86B57 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 32E8235C2FB4EEE800A86B57 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
@@ -626,11 +631,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 32ED2F0C2F59FA7E0080ED2A /* XCRemoteSwiftPackageReference "WebRTC" */;
 			productName = WebRTC;
-		};
-		32F7D3012E3D59B3009282C3 /* MatrixRustSDK */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 32F7D3002E3D59B3009282C3 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */;
-			productName = MatrixRustSDK;
 		};
 		32F7D3192E3EE41A009282C3 /* KeychainAccess */ = {
 			isa = XCSwiftPackageProductDependency;
