@@ -654,14 +654,14 @@ final class MatrixClientService {
         await enterSoftLogout(session: session, reason: "Debug simulation")
     }
 
-    // MARK: - OIDC
+    // MARK: - OAuth
 
     // TODO: Replace with https://markovsdima.github.io/oidc/callback + Associated Domains once Apple Developer Account is active
-    private static let oidcRedirectURI = "zyna://oidc/callback"
+    private static let oauthRedirectURI = "zyna://oidc/callback"
 
-    private static let oidcConfig = OidcConfiguration(
+    private static let oauthConfig = OAuthConfiguration(
         clientName: "Zyna",
-        redirectUri: oidcRedirectURI,
+        redirectUri: oauthRedirectURI,
         clientUri: "https://github.com/markovsdima/Zyna",
         logoUri: nil,
         tosUri: nil,
@@ -696,24 +696,24 @@ final class MatrixClientService {
             .build()
     }
 
-    /// Start an OIDC authentication flow. Returns the login URL and authorization data.
-    func startOIDCFlow(client: Client) async throws -> (loginURL: URL, authData: OAuthAuthorizationData) {
-        let authData = try await client.urlForOidc(
-            oidcConfiguration: Self.oidcConfig,
+    /// Start an OAuth authentication flow. Returns the login URL and authorization data.
+    func startOAuthFlow(client: Client) async throws -> (loginURL: URL, authData: OAuthAuthorizationData) {
+        let authData = try await client.urlForOauth(
+            oauthConfiguration: Self.oauthConfig,
             prompt: .consent,
             loginHint: nil,
             deviceId: nil,
             additionalScopes: nil
         )
         guard let url = URL(string: authData.loginUrl()) else {
-            throw AuthenticationError.invalidOIDCURL
+            throw AuthenticationError.invalidOAuthURL
         }
         return (url, authData)
     }
 
-    /// Complete an OIDC flow after receiving the callback URL from the browser.
-    func completeOIDCFlow(client: Client, callbackURL: String) async throws {
-        try await client.loginWithOidcCallback(callbackUrl: callbackURL)
+    /// Complete an OAuth flow after receiving the callback URL from the browser.
+    func completeOAuthFlow(client: Client, callbackURL: String) async throws {
+        try await client.loginWithOauthCallback(callbackUrl: callbackURL)
 
         let userId = try client.userId()
         UserDefaults.standard.set(userId, forKey: userIdKey)
@@ -723,7 +723,7 @@ final class MatrixClientService {
         let session = try client.session()
         sessionDelegate.saveSessionInKeychain(session: session)
 
-        logAuth("OIDC login successful as \(userId) localSession=\(localSessionId)")
+        logAuth("OAuth login successful as \(userId) localSession=\(localSessionId)")
 
         self.client = client
         stateSubject.send(.loggedIn)

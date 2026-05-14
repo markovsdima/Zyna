@@ -5,7 +5,7 @@
 
 import Foundation
 import MatrixRustSDK
-import KeychainAccess
+@preconcurrency import KeychainAccess
 
 // MARK: - Authentication Errors
 
@@ -15,7 +15,7 @@ enum AuthenticationError: LocalizedError {
     case invalidCredentials
     case networkError
     case sessionNotFound
-    case invalidOIDCURL
+    case invalidOAuthURL
     case registrationNotSupported
 
     var errorDescription: String? {
@@ -30,7 +30,7 @@ enum AuthenticationError: LocalizedError {
             return "Network connection error"
         case .sessionNotFound:
             return "No saved session found"
-        case .invalidOIDCURL:
+        case .invalidOAuthURL:
             return "Server returned an invalid authentication URL"
         case .registrationNotSupported:
             return "This server does not support registration"
@@ -46,7 +46,7 @@ struct SessionData: Codable {
     let userId: String
     let deviceId: String
     let homeserverUrl: String
-    let oidcData: String?
+    let oauthData: String?
 }
 
 private let logKeychain = ScopedLog(.keychain)
@@ -74,7 +74,7 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
             userId: decoded.userId,
             deviceId: decoded.deviceId,
             homeserverUrl: decoded.homeserverUrl,
-            oidcData: decoded.oidcData,
+            oauthData: decoded.oauthData,
             slidingSyncVersion: .native
         )
     }
@@ -86,7 +86,7 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
             userId: session.userId,
             deviceId: session.deviceId,
             homeserverUrl: session.homeserverUrl,
-            oidcData: session.oidcData
+            oauthData: session.oauthData
         )
 
         do {

@@ -603,7 +603,7 @@
 			repositoryURL = "https://github.com/matrix-org/matrix-rust-components-swift";
 			requirement = {
 				kind = exactVersion;
-				version = 26.4.1;
+				version = 26.5.13;
 			};
 		};
 		32F7D3182E3EE41A009282C3 /* XCRemoteSwiftPackageReference "KeychainAccess" */ = {

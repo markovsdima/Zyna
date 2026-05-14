@@ -333,10 +333,10 @@ final class SessionVerificationService {
                         )
                     )
                 )
-            case .oidc:
-                logRecoveryReset("forceResetRecovery: identity reset requires unsupported OIDC approval")
+            case .oAuth:
+                logRecoveryReset("forceResetRecovery: identity reset requires unsupported OAuth approval")
                 await identityResetHandle.cancel()
-                throw VerificationError.identityResetOIDCUnsupported
+                throw VerificationError.identityResetOAuthUnsupported
             }
         } else {
             logRecoveryReset("forceResetRecovery: identity reset completed without interactive auth")
@@ -735,7 +735,7 @@ enum VerificationError: LocalizedError {
     case recoveryStateUnavailable
     case recoveryBackupUploadIncomplete
     case resetPasswordRequired
-    case identityResetOIDCUnsupported
+    case identityResetOAuthUnsupported
 
     var errorDescription: String? {
         switch self {
@@ -746,7 +746,7 @@ enum VerificationError: LocalizedError {
         case .recoveryStateUnavailable: return "Recovery state is still loading. Try again in a moment."
         case .recoveryBackupUploadIncomplete: return String(localized: "Zyna couldn't confirm that message keys were saved to encrypted backup. Check your connection and try again.")
         case .resetPasswordRequired: return String(localized: "Enter your account password to reset encryption.")
-        case .identityResetOIDCUnsupported: return String(localized: "Resetting encryption requires browser approval, which Zyna doesn't support yet.")
+        case .identityResetOAuthUnsupported: return String(localized: "Resetting encryption requires browser approval, which Zyna doesn't support yet.")
         }
     }
 
@@ -759,7 +759,7 @@ enum VerificationError: LocalizedError {
              .recoveryStateUnavailable,
              .recoveryBackupUploadIncomplete,
              .resetPasswordRequired,
-             .identityResetOIDCUnsupported:
+             .identityResetOAuthUnsupported:
             return false
         }
     }

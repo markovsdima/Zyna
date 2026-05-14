@@ -793,7 +793,6 @@ final class TimelineService {
         case .policyRuleRoom,
              .policyRuleServer,
              .policyRuleUser,
-             .roomAliases,
              .roomCanonicalAlias,
              .roomGuestAccess,
              .roomHistoryVisibility(historyVisibility: _),

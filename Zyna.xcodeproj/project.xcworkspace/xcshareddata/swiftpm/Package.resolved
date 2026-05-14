@@ -1,5 +1,5 @@
 {
-  "originHash" : "1d7524afe95eb71df571ae0d06e37570f2dbfa9160c1181f4d261ca5332dea02",
+  "originHash" : "77b258c8004376eb4e8144365961609debeee62212ab1391c4724b303a0a4e29",
   "pins" : [
     {
       "identity" : "grdb.swift",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/matrix-org/matrix-rust-components-swift",
       "state" : {
-        "revision" : "2916f3f9cc2aea86ba3a820cb6a8389e13e0284a",
-        "version" : "26.4.1"
+        "revision" : "02133b466cddbd5c911881acbb29cf14e5563344",
+        "version" : "26.5.13"
       }
     },
     {
