@@ -46,6 +46,7 @@ struct SessionRecoveryCredentials {
 
 private let logAuth = ScopedLog(.auth)
 private let logSync = ScopedLog(.sync)
+private let logRecoveryReset = ScopedLog(.auth, prefix: "[auth] recoveryReset")
 
 private enum SessionRecoverySource {
     case softLogout
@@ -116,6 +117,8 @@ final class MatrixClientService {
     // MSC4268 encrypted history sharing is experimental and affects privacy expectations:
     // invited users may receive keys for earlier room history. Keep disabled until the app has explicit UX for that behavior.
     private static let enableEncryptedHistorySharingOnInvite = false
+    private static let roomKeyRecipientStrategy: CollectStrategy = .identityBasedStrategy
+    private static let decryptionSettings = DecryptionSettings(senderDeviceTrustRequirement: .crossSignedOrLegacy)
 
     private init() {
         let keychain = Keychain(service: "com.zyna.matrix.crypto")
@@ -224,6 +227,8 @@ final class MatrixClientService {
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .autoEnableBackups(autoEnableBackups: true)
                 .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+                .roomKeyRecipientStrategy(strategy: Self.roomKeyRecipientStrategy)
+                .decryptionSettings(decryptionSettings: Self.decryptionSettings)
                 .enableShareHistoryOnInvite(enableShareHistoryOnInvite: Self.enableEncryptedHistorySharingOnInvite)
                 .build()
 
@@ -289,6 +294,8 @@ final class MatrixClientService {
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .autoEnableBackups(autoEnableBackups: true)
                 .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+                .roomKeyRecipientStrategy(strategy: Self.roomKeyRecipientStrategy)
+                .decryptionSettings(decryptionSettings: Self.decryptionSettings)
                 .enableShareHistoryOnInvite(enableShareHistoryOnInvite: Self.enableEncryptedHistorySharingOnInvite)
                 .build()
 
@@ -414,20 +421,52 @@ final class MatrixClientService {
 
     // MARK: - Logout
 
+    func enableKeyBackup() async throws {
+        guard let client else {
+            throw AuthenticationError.clientNotInitialized
+        }
+
+        let encryption = client.encryption()
+
+        do {
+            if try await encryption.backupExistsOnServer() {
+                logRecoveryReset("Server key backup already exists; recovery key is required to reconnect it")
+                throw BackupUploadWaitFailure.backupDisabled
+            }
+        } catch let failure as BackupUploadWaitFailure {
+            throw failure
+        } catch {
+            logRecoveryReset("Failed to check whether encryption key backup exists on server: \(error)")
+            throw BackupUploadWaitFailure.unknown
+        }
+
+        logRecoveryReset("Enabling encryption key backup")
+        do {
+            try await encryption.enableBackups()
+            logRecoveryReset("Encryption key backup enabled")
+        } catch RecoveryError.BackupExistsOnServer {
+            logRecoveryReset("Failed to enable encryption key backup: backup already exists on server")
+            throw BackupUploadWaitFailure.backupDisabled
+        } catch {
+            logRecoveryReset("Failed to enable encryption key backup: \(error)")
+            throw BackupUploadWaitFailure.unknown
+        }
+    }
+
     func waitForBackupUploadSteadyState() async throws {
         guard let client else {
             throw AuthenticationError.clientNotInitialized
         }
 
-        logAuth("Waiting for encryption key backup upload steady state")
+        logRecoveryReset("Waiting for encryption key backup upload steady state")
         let listener = ZynaBackupSteadyStateListener { state in
-            logAuth("Backup upload state: \(Self.describeBackupUploadState(state))")
+            logRecoveryReset("Backup upload state: \(Self.describeBackupUploadState(state))")
         }
         do {
             try await client.encryption().waitForBackupUploadSteadyState(progressListener: listener)
-            logAuth("Encryption key backup upload reached steady state")
+            logRecoveryReset("Encryption key backup upload reached steady state")
         } catch let error as SteadyStateError {
-            logAuth("Encryption key backup upload wait failed: \(error)")
+            logRecoveryReset("Encryption key backup upload wait failed: \(error)")
             switch error {
             case .BackupDisabled:
                 throw BackupUploadWaitFailure.backupDisabled
@@ -437,7 +476,7 @@ final class MatrixClientService {
                 throw BackupUploadWaitFailure.lagged
             }
         } catch {
-            logAuth("Encryption key backup upload wait failed: \(error)")
+            logRecoveryReset("Encryption key backup upload wait failed: \(error)")
             throw BackupUploadWaitFailure.unknown
         }
     }
@@ -566,6 +605,8 @@ final class MatrixClientService {
                 .autoEnableCrossSigning(autoEnableCrossSigning: true)
                 .autoEnableBackups(autoEnableBackups: true)
                 .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+                .roomKeyRecipientStrategy(strategy: Self.roomKeyRecipientStrategy)
+                .decryptionSettings(decryptionSettings: Self.decryptionSettings)
                 .enableShareHistoryOnInvite(enableShareHistoryOnInvite: Self.enableEncryptedHistorySharingOnInvite)
                 .build()
 
@@ -649,6 +690,8 @@ final class MatrixClientService {
             .autoEnableCrossSigning(autoEnableCrossSigning: true)
             .autoEnableBackups(autoEnableBackups: true)
             .backupDownloadStrategy(backupDownloadStrategy: .afterDecryptionFailure)
+            .roomKeyRecipientStrategy(strategy: Self.roomKeyRecipientStrategy)
+            .decryptionSettings(decryptionSettings: Self.decryptionSettings)
             .enableShareHistoryOnInvite(enableShareHistoryOnInvite: Self.enableEncryptedHistorySharingOnInvite)
             .build()
     }

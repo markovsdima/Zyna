@@ -42,10 +42,11 @@ struct SessionVerificationView: View {
             Text("This will permanently destroy your current key backup. All previously encrypted messages that haven't been decrypted on this device will become unreadable forever.\n\nOnly do this if you've lost your recovery key and have no other verified devices.")
         }
         .alert("Are you sure?", isPresented: $showResetFinalConfirmation) {
+            SecureField("Password", text: $viewModel.resetPassword)
             Button("Cancel", role: .cancel) {}
             Button("Delete backup and reset", role: .destructive) { viewModel.resetAndGenerateNewKey() }
         } message: {
-            Text("This cannot be undone. Your encrypted message history will be permanently lost.")
+            Text("This cannot be undone. Enter your account password to delete the old encrypted backup and reset encryption.")
         }
     }
 

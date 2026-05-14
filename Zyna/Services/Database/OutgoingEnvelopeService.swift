@@ -382,10 +382,11 @@ final class OutgoingEnvelopeService {
             return updateTransportState(transactionId: transactionId, state: .sending)
         case .replacedLocalEvent(let transactionId):
             return updateTransportState(transactionId: transactionId, state: .sending)
-        case .sendError(let transactionId, _, let isRecoverable):
+        case .sendError(let transactionId, let error, let isRecoverable):
+            let requiresExplicitRetry = OutgoingSendFailureReason.fromQueueWedgeError(error) != nil
             return updateTransportState(
                 transactionId: transactionId,
-                state: isRecoverable ? .retrying : .failed
+                state: (isRecoverable && !requiresExplicitRetry) ? .retrying : .failed
             )
         case .retryEvent(let transactionId):
             return updateTransportState(transactionId: transactionId, state: .retrying)
@@ -649,6 +650,10 @@ final class OutgoingEnvelopeService {
                     return false
                 }
             guard item.decodedTransportState != state else { return false }
+            if item.decodedTransportState == .failed,
+               [.sending, .uploading, .retrying].contains(state) {
+                return false
+            }
             item.transportState = state.rawValue
             try item.save(db)
             try recomputeEnvelopeState(id: item.groupId, in: db)

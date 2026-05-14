@@ -492,6 +492,18 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v13_readReceiptsRequireEventIds") { db in
+            try db.execute(
+                sql: """
+                    UPDATE storedMessage
+                    SET sendStatus = 'sending'
+                    WHERE isOutgoing = 1
+                      AND sendStatus = 'read'
+                      AND (eventId IS NULL OR eventId = '')
+                    """
+            )
+        }
+
         return migrator
     }
 

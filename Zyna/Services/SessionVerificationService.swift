@@ -67,6 +67,11 @@ struct RecoverySetupResult {
 }
 
 private let logVerify = ScopedLog(.auth)
+private let logRecoveryResetScope = ScopedLog(.auth, prefix: "[auth] recoveryReset")
+
+private func logRecoveryReset(_ message: String) {
+    logRecoveryResetScope(message)
+}
 
 // MARK: - Session Verification Service
 
@@ -78,6 +83,10 @@ final class SessionVerificationService {
 
     /// Fires when another device sends a verification request to this device.
     let incomingRequestSubject = PassthroughSubject<IncomingVerificationRequest, Never>()
+
+    /// Fires when local encryption readiness flags change outside the SDK's
+    /// verification state listener, e.g. after recovery key restore.
+    let encryptionReadinessSubject = PassthroughSubject<Void, Never>()
 
     private let matrixService = MatrixClientService.shared
     private var controller: SessionVerificationController?
@@ -150,10 +159,16 @@ final class SessionVerificationService {
         return UserDefaults.standard.bool(forKey: key)
     }
 
+    var canSendEncryptedMessages: Bool {
+        guard !hasPendingRecoverySetup else { return false }
+        return hasLocalSecrets || matrixService.verificationStateSubject.value == .verified
+    }
+
     func markLocalSecretsPresent() {
         guard let key = localSecretsKey else { return }
         UserDefaults.standard.set(true, forKey: key)
         logVerify("Local secrets flag set: \(key)")
+        encryptionReadinessSubject.send(())
     }
 
     func markRecoverySetupPending() {
@@ -162,6 +177,7 @@ final class SessionVerificationService {
         UserDefaults.standard.set(true, forKey: pendingKey)
         UserDefaults.standard.removeObject(forKey: completeKey)
         logVerify("Recovery setup marked pending: \(pendingKey)")
+        encryptionReadinessSubject.send(())
     }
 
     func markRecoverySetupComplete() {
@@ -170,6 +186,7 @@ final class SessionVerificationService {
         UserDefaults.standard.removeObject(forKey: pendingKey)
         UserDefaults.standard.set(true, forKey: completeKey)
         logVerify("Recovery setup marked complete: \(completeKey)")
+        encryptionReadinessSubject.send(())
     }
 
     static func clearLocalEncryptionFlags(userId: String) {
@@ -278,58 +295,178 @@ final class SessionVerificationService {
             }
 
             logVerify("enableRecovery: bootstrapping recovery from scratch")
-            markRecoverySetupPending()
-            let roomKeyUploadFailed = Atomic(false)
-            let progress = RecoveryProgressListener { state in
-                logVerify("Recovery progress: \(state)")
-                if state == .roomKeyUploadError {
-                    roomKeyUploadFailed.wrappedValue = true
-                }
-            }
-            let key = try await encryption.enableRecovery(
-                waitForBackupsToUpload: false,
-                passphrase: nil,
-                progressListener: progress
-            )
-            if roomKeyUploadFailed.wrappedValue {
-                logVerify("enableRecovery: room key upload failed")
-                return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: false)
-            }
-
-            do {
-                try await waitForBackupUploadSteadyState(timeout: .seconds(30))
-            } catch {
-                logVerify("enableRecovery: backup upload steady-state check failed: \(error)")
-                return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: false)
-            }
-
+            let result = try await bootstrapRecoveryFromScratch(encryption: encryption, logPrefix: "enableRecovery")
+            let key = result.recoveryKey
             logVerify("enableRecovery: done; key length=\(key.count) recoveryState=\(encryption.recoveryState())")
-            return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: true)
+            return result
         } catch {
             logVerify("enableRecovery FAILED: \(error)")
             throw error
         }
     }
 
-    /// Destructive reset: wipes existing recovery key and backup,
-    /// then bootstraps new ones from scratch. Only use when the user
-    /// has explicitly confirmed they accept losing old messages.
-    func forceResetRecovery() async throws -> RecoverySetupResult {
+    /// Destructive reset: resets the crypto identity and replaces the recovery
+    /// credentials. Only use when the user has explicitly confirmed they accept
+    /// losing encrypted history that cannot be decrypted by this device.
+    func forceResetRecovery(password: String) async throws -> RecoverySetupResult {
         guard let client = matrixService.client else {
             throw VerificationError.clientNotAvailable
         }
+        let trimmedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPassword.isEmpty else {
+            throw VerificationError.resetPasswordRequired
+        }
+
         let encryption = client.encryption()
-        logVerify("forceResetRecovery: resetting recovery key (destructive)")
-        let key = try await encryption.resetRecoveryKey()
+        let userId = try client.userId()
+        logRecoveryReset("forceResetRecovery: resetting crypto identity and recovery credentials (destructive)")
+
+        if let identityResetHandle = try await encryption.resetIdentity() {
+            switch identityResetHandle.authType() {
+            case .uiaa:
+                logRecoveryReset("forceResetRecovery: identity reset requires password UIA")
+                try await identityResetHandle.reset(
+                    auth: .password(
+                        passwordDetails: .init(
+                            identifier: userId,
+                            password: trimmedPassword
+                        )
+                    )
+                )
+            case .oidc:
+                logRecoveryReset("forceResetRecovery: identity reset requires unsupported OIDC approval")
+                await identityResetHandle.cancel()
+                throw VerificationError.identityResetOIDCUnsupported
+            }
+        } else {
+            logRecoveryReset("forceResetRecovery: identity reset completed without interactive auth")
+        }
+
+        await logRecoverySnapshot("forceResetRecovery: after identity reset", encryption: encryption)
+
+        let result = try await bootstrapRecoveryFromScratch(
+            encryption: encryption,
+            logPrefix: "forceResetRecovery",
+            resetExistingRecoveryKey: true
+        )
+        let key = result.recoveryKey
+        logRecoveryReset("forceResetRecovery: done; key length=\(key.count) recoveryState=\(encryption.recoveryState())")
+        return result
+    }
+
+    private func bootstrapRecoveryFromScratch(
+        encryption: Encryption,
+        logPrefix: String,
+        resetExistingRecoveryKey: Bool = false
+    ) async throws -> RecoverySetupResult {
         markRecoverySetupPending()
+        let currentRecoveryState = encryption.recoveryState()
+        if resetExistingRecoveryKey, currentRecoveryState == .enabled || currentRecoveryState == .incomplete {
+            logRecoveryReset("\(logPrefix): recovery already exists after identity reset")
+            return try await resetRecoveryKeyAndReconnectBackup(encryption: encryption, logPrefix: logPrefix)
+        }
+
+        let roomKeyUploadFailed = Atomic(false)
+        let progress = RecoveryProgressListener { state in
+            logRecoveryReset("\(logPrefix): recovery progress: \(Self.describeRecoveryProgress(state))")
+            if state == .roomKeyUploadError {
+                roomKeyUploadFailed.wrappedValue = true
+            }
+        }
+        let key: String
+        do {
+            key = try await encryption.enableRecovery(
+                waitForBackupsToUpload: false,
+                passphrase: nil,
+                progressListener: progress
+            )
+        } catch RecoveryError.BackupExistsOnServer where resetExistingRecoveryKey {
+            logRecoveryReset("\(logPrefix): backup exists after identity reset")
+            return try await resetRecoveryKeyAndReconnectBackup(encryption: encryption, logPrefix: logPrefix)
+        }
+        if roomKeyUploadFailed.wrappedValue {
+            logRecoveryReset("\(logPrefix): room key upload failed")
+            return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: false)
+        }
+
         do {
             try await waitForBackupUploadSteadyState(timeout: .seconds(30))
         } catch {
-            logVerify("forceResetRecovery: backup upload steady-state check failed: \(error)")
+            logRecoveryReset("\(logPrefix): backup upload steady-state check failed: \(error)")
             return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: false)
         }
-        logVerify("forceResetRecovery: done; key length=\(key.count) recoveryState=\(encryption.recoveryState())")
+
         return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: true)
+    }
+
+    private func resetRecoveryKeyAndReconnectBackup(
+        encryption: Encryption,
+        logPrefix: String
+    ) async throws -> RecoverySetupResult {
+        logRecoveryReset("\(logPrefix): resetting recovery key")
+        let key = try await encryption.resetRecoveryKey()
+        await logRecoverySnapshot("\(logPrefix): after resetRecoveryKey", encryption: encryption)
+
+        do {
+            try await reconnectBackupWithRecoveryKey(encryption: encryption, recoveryKey: key, logPrefix: logPrefix)
+        } catch {
+            logRecoveryReset("\(logPrefix): reconnecting backup with new recovery key failed: \(error)")
+            return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: false)
+        }
+
+        do {
+            try await waitForBackupUploadSteadyState(timeout: .seconds(30))
+            return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: true)
+        } catch {
+            logRecoveryReset("\(logPrefix): backup upload steady-state check failed after backup reconnect: \(error)")
+            return RecoverySetupResult(recoveryKey: key, backupUploadConfirmed: false)
+        }
+    }
+
+    private func reconnectBackupWithRecoveryKey(
+        encryption: Encryption,
+        recoveryKey: String,
+        logPrefix: String
+    ) async throws {
+        logRecoveryReset("\(logPrefix): reconnecting backup with new recovery key")
+        do {
+            try await encryption.recoverAndFixBackup(recoveryKey: recoveryKey)
+            logRecoveryReset("\(logPrefix): backup reconnected with new recovery key")
+            await logRecoverySnapshot("\(logPrefix): after recoverAndFixBackup", encryption: encryption)
+        } catch {
+            logRecoveryReset("\(logPrefix): first backup reconnect attempt failed: \(error); retrying after 2s")
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try await encryption.recoverAndFixBackup(recoveryKey: recoveryKey)
+            logRecoveryReset("\(logPrefix): backup reconnected with new recovery key on retry")
+            await logRecoverySnapshot("\(logPrefix): after recoverAndFixBackup retry", encryption: encryption)
+        }
+    }
+
+    private func logRecoverySnapshot(_ prefix: String, encryption: Encryption) async {
+        let backupExistsDescription: String
+        do {
+            backupExistsDescription = String(try await encryption.backupExistsOnServer())
+        } catch {
+            backupExistsDescription = "error(\(error))"
+        }
+        logRecoveryReset("\(prefix): recoveryState=\(encryption.recoveryState()) backupState=\(encryption.backupState()) backupExistsOnServer=\(backupExistsDescription)")
+    }
+
+    private static func describeRecoveryProgress(_ state: EnableRecoveryProgress) -> String {
+        switch state {
+        case .starting:
+            return "starting"
+        case .creatingBackup:
+            return "creatingBackup"
+        case .creatingRecoveryKey:
+            return "creatingRecoveryKey"
+        case .backingUp(let backedUpCount, let totalCount):
+            return "backingUp(backedUpCount: \(backedUpCount), totalCount: \(totalCount))"
+        case .roomKeyUploadError:
+            return "roomKeyUploadError"
+        case .done:
+            return "done(recoveryKey: <redacted>)"
+        }
     }
 
     // MARK: - Setup (controller + delegate)
@@ -475,12 +612,12 @@ final class SessionVerificationService {
     /// (e.g. wiped simulator) and there's no live peer to run
     /// emoji verification against.
     ///
-    /// `encryption.recover()` reads `m.secret_storage.default_key`
-    /// from the user's account data. On a fresh install that data
-    /// hasn't been synced yet, and an early call throws "info about
-    /// the secret key could not have been found". `waitForAccount
-    /// DataReady` gates the call until the SDK signals it has the
-    /// secret storage info.
+    /// `encryption.recoverAndFixBackup()` reads `m.secret_storage.default_key`
+    /// from the user's account data and reconnects/fixes key backup when the
+    /// server has a backup version that local crypto cannot use yet. On a fresh
+    /// install that account data hasn't been synced yet, and an early call can
+    /// throw "info about the secret key could not have been found". `waitForAccount
+    /// DataReady` gates the call until the SDK signals it has the secret storage info.
     func recover(key: String) async throws {
         guard let client = matrixService.client else {
             throw VerificationError.clientNotAvailable
@@ -490,22 +627,22 @@ final class SessionVerificationService {
         await waitForAccountDataReady(timeout: 10)
 
         let encryption = client.encryption()
-        logVerify("recover: attempting; recoveryState=\(encryption.recoveryState()); key length=\(trimmed.count)")
+        logRecoveryReset("recover: attempting; recoveryState=\(encryption.recoveryState()); key length=\(trimmed.count)")
         do {
-            try await encryption.recover(recoveryKey: trimmed)
-            logVerify("recover: success")
+            try await encryption.recoverAndFixBackup(recoveryKey: trimmed)
+            logRecoveryReset("recover: success")
         } catch {
             // Retry once after a short pause — sometimes account data
             // arrives between our wait and the recover call, and the
             // first attempt races the listener.
-            logVerify("recover: first attempt FAILED: \(error); retrying after 2s")
+            logRecoveryReset("recover: first attempt FAILED: \(error); retrying after 2s")
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            logVerify("recover: retry; recoveryState=\(encryption.recoveryState())")
+            logRecoveryReset("recover: retry; recoveryState=\(encryption.recoveryState())")
             do {
-                try await encryption.recover(recoveryKey: trimmed)
-                logVerify("recover: success on retry")
+                try await encryption.recoverAndFixBackup(recoveryKey: trimmed)
+                logRecoveryReset("recover: success on retry")
             } catch {
-                logVerify("recover: retry FAILED: \(error)")
+                logRecoveryReset("recover: retry FAILED: \(error)")
                 throw error
             }
         }
@@ -571,7 +708,7 @@ final class SessionVerificationService {
         do {
             try await waitForBackupUploadSteadyState(timeout: .seconds(30))
         } catch {
-            logVerify("confirmRecoveryBackupUpload: backup upload steady-state check failed: \(error)")
+            logRecoveryReset("confirmRecoveryBackupUpload: backup upload steady-state check failed: \(error)")
             throw VerificationError.recoveryBackupUploadIncomplete
         }
     }
@@ -597,6 +734,8 @@ enum VerificationError: LocalizedError {
     case recoveryKeyRequired
     case recoveryStateUnavailable
     case recoveryBackupUploadIncomplete
+    case resetPasswordRequired
+    case identityResetOIDCUnsupported
 
     var errorDescription: String? {
         switch self {
@@ -606,6 +745,8 @@ enum VerificationError: LocalizedError {
         case .recoveryKeyRequired: return "An encrypted key backup already exists. Enter your recovery key to restore access."
         case .recoveryStateUnavailable: return "Recovery state is still loading. Try again in a moment."
         case .recoveryBackupUploadIncomplete: return String(localized: "Zyna couldn't confirm that message keys were saved to encrypted backup. Check your connection and try again.")
+        case .resetPasswordRequired: return String(localized: "Enter your account password to reset encryption.")
+        case .identityResetOIDCUnsupported: return String(localized: "Resetting encryption requires browser approval, which Zyna doesn't support yet.")
         }
     }
 
@@ -616,7 +757,9 @@ enum VerificationError: LocalizedError {
         case .clientNotAvailable,
              .controllerNotReady,
              .recoveryStateUnavailable,
-             .recoveryBackupUploadIncomplete:
+             .recoveryBackupUploadIncomplete,
+             .resetPasswordRequired,
+             .identityResetOIDCUnsupported:
             return false
         }
     }

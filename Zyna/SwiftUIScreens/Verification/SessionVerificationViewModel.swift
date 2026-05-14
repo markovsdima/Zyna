@@ -24,6 +24,7 @@ final class SessionVerificationViewModel: ObservableObject {
     @Published var emojis: [SessionVerificationEmoji] = []
     @Published var recoveryKey: String?
     @Published var recoveryKeyInput: String = ""
+    @Published var resetPassword: String = ""
     @Published var errorMessage: String?
 
     /// Incoming request details (responder mode only).
@@ -211,34 +212,9 @@ final class SessionVerificationViewModel: ObservableObject {
 
     func confirmRecoveryKeySaved() {
         errorMessage = nil
-
-        guard recoveryBackupUploadConfirmed else {
-            step = .finishingRecoverySetup
-            Task {
-                do {
-                    try await service.confirmRecoveryBackupUpload()
-                    service.markLocalSecretsPresent()
-                    service.markRecoverySetupComplete()
-                    await MainActor.run {
-                        self.recoveryBackupUploadConfirmed = true
-                        self.step = .verified
-                    }
-                } catch {
-                    await MainActor.run {
-                        self.errorMessage = error.localizedDescription
-                        if let key = self.recoveryKey {
-                            self.step = .showingRecoveryKey(key)
-                        } else {
-                            self.step = .failed
-                        }
-                    }
-                }
-            }
-            return
-        }
-
         service.markLocalSecretsPresent()
         service.markRecoverySetupComplete()
+        recoveryBackupUploadConfirmed = true
         step = .verified
     }
 
@@ -247,10 +223,12 @@ final class SessionVerificationViewModel: ObservableObject {
     func resetAndGenerateNewKey() {
         errorMessage = nil
         recoveryBackupUploadConfirmed = false
+        let password = resetPassword
+        resetPassword = ""
         step = .generatingRecoveryKey
         Task {
             do {
-                let result = try await service.forceResetRecovery()
+                let result = try await service.forceResetRecovery(password: password)
                 service.markLocalSecretsPresent()
                 await MainActor.run {
                     self.recoveryBackupUploadConfirmed = result.backupUploadConfirmed
@@ -368,6 +346,6 @@ final class SessionVerificationViewModel: ObservableObject {
     }
 
     private static var backupUploadPendingMessage: String {
-        String(localized: "Recovery key was created, but Zyna still needs to confirm that message keys are saved to encrypted backup. Save this key now; after that, Zyna will retry the backup check before continuing.")
+        String(localized: "Recovery key was created, but Zyna could not yet confirm that message keys are saved to encrypted backup. Save this key now. You can continue after saving it; avoid signing out until backup has had time to finish.")
     }
 }

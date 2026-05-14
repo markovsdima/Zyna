@@ -137,7 +137,7 @@ final class TimelineDiffBatcher {
                 try dbQueue.write { db in
                     // Collect eventIds already marked as read so upserts don't downgrade them
                     let readEventIds = try Set(String.fetchAll(db,
-                        sql: "SELECT eventId FROM storedMessage WHERE roomId = ? AND sendStatus = 'read' AND isOutgoing = 1 AND eventId IS NOT NULL",
+                        sql: "SELECT eventId FROM storedMessage WHERE roomId = ? AND sendStatus = 'read' AND isOutgoing = 1 AND eventId IS NOT NULL AND eventId != ''",
                         arguments: [roomId]))
 
                     for op in ops {
@@ -213,6 +213,8 @@ final class TimelineDiffBatcher {
                                 UPDATE storedMessage
                                 SET sendStatus = 'read'
                                 WHERE roomId = ? AND isOutgoing = 1
+                                  AND eventId IS NOT NULL
+                                  AND eventId != ''
                                   AND timestamp <= ? AND sendStatus != 'read'
                                 """,
                             arguments: [roomId, cursorTs]

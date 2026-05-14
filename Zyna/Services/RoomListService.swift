@@ -341,7 +341,7 @@ final class ZynaRoomListService: NSObject {
         case .redacted:
             text = "..последнее сообщение удалено.."
         case .unableToDecrypt:
-            text = String(localized: "Encrypted message")
+            text = String(localized: "Unable to decrypt message")
         case .liveLocation:
             text = "Live location"
         case .other:

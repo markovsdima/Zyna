@@ -14,17 +14,134 @@ private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 private let logVideoTimeline = ScopedLog(.video, prefix: "[VideoTimeline]")
 private let logVideoQueue = ScopedLog(.video, prefix: "[VideoQueue]")
 
+enum OutgoingSendFailureReason: Equatable {
+    case ownDeviceVerificationRequired
+    case recipientIdentityVerificationRequired
+
+    static func fromQueueWedgeError(_ error: QueueWedgeError) -> OutgoingSendFailureReason? {
+        switch error {
+        case .crossVerificationRequired:
+            return .ownDeviceVerificationRequired
+        case .insecureDevices, .identityViolations:
+            return .recipientIdentityVerificationRequired
+        default:
+            return nil
+        }
+    }
+}
+
+struct OutgoingSendFailureContext: Equatable {
+    let reason: OutgoingSendFailureReason
+    let affectedUserIds: [String]
+    let insecureDevicesByUserId: [String: [String]]
+
+    static func reasonOnly(_ reason: OutgoingSendFailureReason) -> OutgoingSendFailureContext {
+        OutgoingSendFailureContext(
+            reason: reason,
+            affectedUserIds: [],
+            insecureDevicesByUserId: [:]
+        )
+    }
+
+    static func fromQueueWedgeError(_ error: QueueWedgeError) -> OutgoingSendFailureContext? {
+        switch error {
+        case .crossVerificationRequired:
+            return .reasonOnly(.ownDeviceVerificationRequired)
+        case .identityViolations(let users):
+            return OutgoingSendFailureContext(
+                reason: .recipientIdentityVerificationRequired,
+                affectedUserIds: users.sorted(),
+                insecureDevicesByUserId: [:]
+            )
+        case .insecureDevices(let userDeviceMap):
+            let normalized = userDeviceMap.mapValues { $0.sorted() }
+            return OutgoingSendFailureContext(
+                reason: .recipientIdentityVerificationRequired,
+                affectedUserIds: normalized.keys.sorted(),
+                insecureDevicesByUserId: normalized
+            )
+        default:
+            return nil
+        }
+    }
+
+    static func fromError(_ error: Error) -> OutgoingSendFailureContext? {
+        let errorText = [
+            String(reflecting: error),
+            String(describing: error),
+            (error as NSError).localizedDescription
+        ]
+        .joined(separator: "\n")
+        .lowercased()
+
+        if containsAny(
+            [
+                "crosssigningnotsetup",
+                "cross signing not setup",
+                "cross-signing has not been configured",
+                "sendingfromunverifieddevice",
+                "sending from unverified device",
+                "deviceverificationrequired",
+                "current device has not been cross-signed",
+                "not been cross-signed by our own identity"
+            ],
+            in: errorText
+        ) {
+            return .reasonOnly(.ownDeviceVerificationRequired)
+        }
+
+        if containsAny(
+            [
+                "verifieduserchangedidentity",
+                "verified user changed identity",
+                "changed their identity",
+                "verifieduserhasunsigneddevice",
+                "verified user has unsigned device",
+                "unsigned device",
+                "senderidentitynottrusted"
+            ],
+            in: errorText
+        ) {
+            return .reasonOnly(.recipientIdentityVerificationRequired)
+        }
+
+        return nil
+    }
+
+    private static func containsAny(_ needles: [String], in haystack: String) -> Bool {
+        needles.contains { haystack.contains($0) }
+    }
+}
+
 struct OutgoingDispatchReceipt {
     let acceptedByTransport: Bool
     let transactionId: String?
+    let failureContext: OutgoingSendFailureContext?
 
     static let failed = OutgoingDispatchReceipt(
         acceptedByTransport: false,
-        transactionId: nil
+        transactionId: nil,
+        failureContext: nil
     )
 
     static func accepted(transactionId: String?) -> OutgoingDispatchReceipt {
-        OutgoingDispatchReceipt(acceptedByTransport: true, transactionId: transactionId)
+        OutgoingDispatchReceipt(
+            acceptedByTransport: true,
+            transactionId: transactionId,
+            failureContext: nil
+        )
+    }
+
+    static func rejected(reason: OutgoingSendFailureReason?) -> OutgoingDispatchReceipt {
+        .rejected(context: reason.map(OutgoingSendFailureContext.reasonOnly))
+    }
+
+    static func rejected(context: OutgoingSendFailureContext?) -> OutgoingDispatchReceipt {
+        OutgoingDispatchReceipt(
+            acceptedByTransport: false,
+            transactionId: nil,
+            failureContext: context
+        )
     }
 }
 
@@ -743,7 +860,7 @@ final class TimelineService {
                 return .redacted
             case .unableToDecrypt(let message):
                 logTimeline("UTD: eventId=\(event.eventOrTransactionId) sender=\(event.sender) \(describeEncryptedMessage(message))")
-                return .text(body: String(localized: "Encrypted message"))
+                return .text(body: String(localized: "Unable to decrypt message"))
             case .other:
                 return nil
             case .liveLocation(content: _):
@@ -944,7 +1061,7 @@ final class TimelineService {
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("Forward media failed: \(error)")
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -986,7 +1103,7 @@ final class TimelineService {
             return receipt
         } catch {
             logTimeline("Forward voice failed: \(error)")
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -1046,6 +1163,10 @@ final class TimelineService {
         await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
     }
 
+    private static func rejectedReceipt(for error: Error) -> OutgoingDispatchReceipt {
+        .rejected(context: OutgoingSendFailureContext.fromError(error))
+    }
+
     // MARK: - Send
 
     @discardableResult
@@ -1059,7 +1180,7 @@ final class TimelineService {
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("Send failed: \(error)")
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -1090,7 +1211,7 @@ final class TimelineService {
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("Send failed: \(error)")
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -1112,7 +1233,7 @@ final class TimelineService {
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("Reply send failed: \(error)")
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -1149,7 +1270,7 @@ final class TimelineService {
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("Edit failed: \(error)")
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -1197,7 +1318,7 @@ final class TimelineService {
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("Voice send failed: \(error)")
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -1302,7 +1423,7 @@ final class TimelineService {
             logTimeline("Image send failed: \(error)")
             logMediaGroup("sendImage failed group=\(Self.describe(zynaAttributes.mediaGroup)) error=\(error)")
             Self.cleanupTemporaryMediaDirectory(workingDirectoryURL)
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -1401,7 +1522,7 @@ final class TimelineService {
                 "sendVideo failed filename=\(video.filename) errorType=\(String(describing: type(of: error))) error=\(error)"
             )
             Self.cleanupProcessedVideoFiles(video)
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -1467,7 +1588,7 @@ final class TimelineService {
             return .accepted(transactionId: transactionId)
         } catch {
             logTimeline("File send failed: \(error)")
-            return .failed
+            return Self.rejectedReceipt(for: error)
         }
     }
 
@@ -1489,7 +1610,7 @@ final class TimelineService {
 
     /// Send call signaling data through the timeline's encrypted
     /// send pipeline, wrapped in a Zyna HTML span carrier.
-    func sendCallSignaling(_ attrs: ZynaMessageAttributes) async {
+    func sendCallSignaling(_ attrs: ZynaMessageAttributes) async throws {
         guard let timeline else { return }
         let body = "\u{200B}"   // zero-width space — invisible in foreign clients
         let htmlBody = ZynaHTMLCodec.encode(
@@ -1503,6 +1624,8 @@ final class TimelineService {
             logTimeline("Call signaling sent via span")
         } catch {
             logTimeline("Call signaling send failed: \(error)")
+            await handleMatrixTransportError(error)
+            throw error
         }
     }
 

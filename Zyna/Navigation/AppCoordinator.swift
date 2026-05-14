@@ -269,7 +269,12 @@ final class AppCoordinator {
         presentOnTop(progressAlert)
 
         let backupTask = Task {
-            try await MatrixClientService.shared.waitForBackupUploadSteadyState()
+            do {
+                try await MatrixClientService.shared.waitForBackupUploadSteadyState()
+            } catch let failure as BackupUploadWaitFailure where failure.isBackupDisabled {
+                try await MatrixClientService.shared.enableKeyBackup()
+                try await MatrixClientService.shared.waitForBackupUploadSteadyState()
+            }
         }
 
         do {

@@ -76,10 +76,13 @@ final class ChatInputNode: ASDisplayNode {
     private var lastAppliedGlassContrast: CGFloat = -1
     private var lastEmittedRightGlyphState: RightGlyphState?
     private var metalActionGlyphsEnabled = false
+    private var isComposerLocked = false
+    private var lockedTapGesture: UITapGestureRecognizer?
 
     var onSend: ((String, UIColor?) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
     var onAttachTapped: (() -> Void)?
+    var onLockedComposerTapped: (() -> Void)?
     var onSizeChanged: (() -> Void)?
     var onWaveformUpdate: (([Float]) -> Void)?
     var onReplyCancelled: (() -> Void)?
@@ -505,6 +508,12 @@ final class ChatInputNode: ASDisplayNode {
         colorPress.delegate = self
         view.addGestureRecognizer(colorPress)
         self.colorPaletteLongPress = colorPress
+
+        let lockedTap = UITapGestureRecognizer(target: self, action: #selector(lockedComposerTapped))
+        lockedTap.cancelsTouchesInView = false
+        view.addGestureRecognizer(lockedTap)
+        lockedTapGesture = lockedTap
+        applyComposerLockedAppearance()
     }
 
     // MARK: - Layout
@@ -838,6 +847,10 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func sendVoicePreview() {
+        guard !isComposerLocked else {
+            onLockedComposerTapped?()
+            return
+        }
         previewPlayer.stop()
         if let data = voicePreview {
             onVoiceRecordingFinished?(data.fileURL, data.duration, data.waveform)
@@ -869,14 +882,31 @@ final class ChatInputNode: ASDisplayNode {
     // MARK: - Actions
 
     @objc private func attachTapped() {
+        guard !isComposerLocked else {
+            onLockedComposerTapped?()
+            return
+        }
         onAttachTapped?()
     }
 
     @objc private func sendTapped() {
+        guard !isComposerLocked else {
+            onLockedComposerTapped?()
+            return
+        }
         sendCurrentText(color: nil)
     }
 
+    @objc private func lockedComposerTapped() {
+        guard isComposerLocked else { return }
+        onLockedComposerTapped?()
+    }
+
     private func sendCurrentText(color: UIColor?) {
+        guard !isComposerLocked else {
+            onLockedComposerTapped?()
+            return
+        }
         let text = textInputNode.textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Allow empty text when forwarding — the content comes from
         // the forwarded message, not the text field.
@@ -928,6 +958,10 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func presentColorPalette() {
+        guard !isComposerLocked else {
+            onLockedComposerTapped?()
+            return
+        }
         guard colorPalette == nil, let window = view.window else { return }
         let palette = SendColorPaletteView()
         palette.onColorTapped = { [weak self] color in
@@ -950,6 +984,10 @@ final class ChatInputNode: ASDisplayNode {
     }
 
     private func commitSendWithColor(_ color: UIColor) {
+        guard !isComposerLocked else {
+            onLockedComposerTapped?()
+            return
+        }
         applySendButtonTint(color)
         dismissColorPalette()
         sendCurrentText(color: color)
@@ -1007,11 +1045,13 @@ extension ChatInputNode: UIGestureRecognizerDelegate {
         // Send-colour palette long-press: only when text is non-empty and
         // the touch is over the Send button.
         if gestureRecognizer === colorPaletteLongPress {
+            guard !isComposerLocked else { return false }
             guard !isTextEmpty, !isRecording, voicePreview == nil, !isShowingEdit else { return false }
             return sendButtonHitRect.contains(point)
         }
 
         // Mic recording long-press: only when text is empty.
+        guard !isComposerLocked else { return false }
         guard isTextEmpty, !isRecording, voicePreview == nil, !isShowingEdit else { return false }
         let micFrame = micButtonNode.view.frame.insetBy(dx: -20, dy: -20)
         let micFrameInSelf = view.convert(micFrame, from: micButtonNode.supernode?.view ?? view)
@@ -1057,7 +1097,38 @@ extension ChatInputNode {
     }
 
     func focusTextInput() {
+        guard !isComposerLocked else {
+            onLockedComposerTapped?()
+            return
+        }
         textInputNode.textView.becomeFirstResponder()
+    }
+
+    func setComposerLocked(_ locked: Bool) {
+        guard isComposerLocked != locked else { return }
+        isComposerLocked = locked
+        dismissColorPalette()
+        if locked {
+            textInputNode.textView.resignFirstResponder()
+        }
+        applyComposerLockedAppearance()
+    }
+
+    private func applyComposerLockedAppearance() {
+        guard isNodeLoaded else { return }
+        textInputNode.textView.isEditable = !isComposerLocked
+        textInputNode.textView.isSelectable = !isComposerLocked
+        attachButtonNode.isEnabled = !isComposerLocked
+        sendButtonNode.isEnabled = !isComposerLocked
+        micButtonNode.isEnabled = !isComposerLocked
+        let alpha: CGFloat = isComposerLocked ? 0.45 : 1
+        attachButtonNode.alpha = alpha
+        sendButtonNode.alpha = alpha
+        micButtonNode.alpha = alpha
+        textInputNode.alpha = isComposerLocked ? 0.65 : 1
+        textInputNode.accessibilityHint = isComposerLocked
+            ? String(localized: "Verify this device to send encrypted messages")
+            : nil
     }
 }
 

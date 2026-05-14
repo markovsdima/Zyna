@@ -103,6 +103,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     var onBack: (() -> Void)?
     var onCallTapped: (() -> Void)?
     var onTitleTapped: ((String) -> Void)?
+    var onSecurityUserTapped: ((String) -> Void)?
     var onRoomDetailsTapped: (() -> Void)?
     var onForwardMessage: ((ChatMessage) -> Void)?
 
@@ -1054,6 +1055,23 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 }
             }
             .store(in: &cancellables)
+
+        viewModel.$sendFailureNotice
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notice in
+                guard let self, let notice, !self.isPreviewMode else { return }
+                self.viewModel.clearSendFailureNotice(id: notice.id)
+                self.presentSendFailureNotice(notice)
+            }
+            .store(in: &cancellables)
+
+        viewModel.$isComposerSendBlocked
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] blocked in
+                guard let self, !self.isPreviewMode else { return }
+                self.glassInputBar.inputNode.setComposerLocked(blocked)
+            }
+            .store(in: &cancellables)
     }
 
     private func reloadRowsForAppearanceChange(userId: String) {
@@ -1148,6 +1166,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassInputBar.inputNode.onAttachTapped = { [weak self] in
             guard let self, self.viewModel.editingMessage == nil else { return }
             self.presentAttachmentSheet()
+        }
+
+        glassInputBar.inputNode.onLockedComposerTapped = { [weak self] in
+            self?.viewModel.handleBlockedComposerInteraction()
         }
 
         glassInputBar.inputNode.onReplyCancelled = { [weak self] in
@@ -2702,6 +2724,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         message.isSyntheticOutgoingEnvelope
             && message.canRetryOutgoingEnvelope
             && message.outgoingEnvelopeId != nil
+            && !viewModel.isComposerSendBlocked
     }
 
     private func canDiscardLocalOutgoingEnvelope(_ message: ChatMessage) -> Bool {
@@ -3047,6 +3070,63 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         )
         alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
         present(alert, animated: true)
+    }
+
+    private func presentSendFailureNotice(_ notice: ChatViewModel.SendFailureNotice) {
+        guard presentedViewController == nil else { return }
+
+        switch notice.reason {
+        case .ownDeviceVerificationRequired:
+            let alert = UIAlertController(
+                title: String(localized: "Verify This Device"),
+                message: String(localized: "Zyna only sends encrypted messages from verified devices. Verify this device or restore with your recovery key, then retry the message."),
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: String(localized: "Verify Device"), style: .default) { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self?.presentSessionVerificationFromSendFailure()
+                }
+            })
+            alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+            present(alert, animated: true)
+        case .recipientIdentityVerificationRequired:
+            presentRoomSendSecurityIssue(context: notice.context)
+        }
+    }
+
+    private func presentRoomSendSecurityIssue(context: OutgoingSendFailureContext) {
+        guard presentedViewController == nil else { return }
+
+        let securityViewModel = viewModel.makeRoomSendSecurityViewModel(context: context)
+        securityViewModel.onClose = { [weak self] in
+            self?.dismiss(animated: true)
+        }
+        securityViewModel.onOpenUser = { [weak self] userId in
+            guard let self else { return }
+            self.dismiss(animated: true) {
+                self.onSecurityUserTapped?(userId)
+            }
+        }
+
+        let vc = RoomSendSecurityView(viewModel: securityViewModel).wrapped()
+        vc.modalPresentationStyle = .pageSheet
+        present(vc, animated: true)
+    }
+
+    private func presentSessionVerificationFromSendFailure() {
+        guard presentedViewController == nil else { return }
+
+        let viewModel = SessionVerificationViewModel()
+        viewModel.onVerified = { [weak self] in
+            self?.dismiss(animated: true)
+        }
+        viewModel.onSkipped = { [weak self] in
+            self?.dismiss(animated: true)
+        }
+
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        vc.modalPresentationStyle = .fullScreen
+        present(vc, animated: true)
     }
 
     // MARK: - Photo Picker

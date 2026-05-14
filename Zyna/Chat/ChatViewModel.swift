@@ -50,6 +50,15 @@ final class ChatViewModel {
         }
     }
 
+    struct SendFailureNotice: Identifiable {
+        let id = UUID()
+        let context: OutgoingSendFailureContext
+
+        var reason: OutgoingSendFailureReason {
+            context.reason
+        }
+    }
+
     private struct RedactionTransitionCandidate {
         let message: StoredMessage
         let previous: StoredMessage
@@ -99,6 +108,8 @@ final class ChatViewModel {
     @Published private(set) var editingMessage: ChatMessage?
     @Published private(set) var pendingForwardContent: (preview: ChatMessage, content: RoomMessageEventContentWithoutRelation)?
     @Published private(set) var isInvited: Bool = false
+    @Published private(set) var sendFailureNotice: SendFailureNotice?
+    @Published private(set) var isComposerSendBlocked: Bool = false
     private var editingDraftOverride: String?
     private var activeEditAttemptId: UUID?
     private var recentlySentTransactionIds: Set<String> = []
@@ -160,6 +171,9 @@ final class ChatViewModel {
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
     var hasOlderInDB: Bool { window.hasOlderInDB }
     var roomIdentifier: String { roomId }
+    private var requiresVerifiedDeviceForSending: Bool {
+        room.encryptionState() != .notEncrypted
+    }
 
     init(room: Room, mode: ChatPresentationMode = .normal) {
         let roomId = room.id()
@@ -183,6 +197,22 @@ final class ChatViewModel {
         timelineService.isPaginatingSubject
             .receive(on: DispatchQueue.main)
             .assign(to: &$isPaginating)
+
+        MatrixClientService.shared.verificationStateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshComposerSendPermission()
+            }
+            .store(in: &cancellables)
+
+        SessionVerificationService.shared.encryptionReadinessSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshComposerSendPermission()
+            }
+            .store(in: &cancellables)
+
+        refreshComposerSendPermission()
 
         // Write path: SDK diffs → GRDB
         let batcher = diffBatcher
@@ -209,8 +239,14 @@ final class ChatViewModel {
                     if !didClearPendingEdit, didMutateOutgoingEnvelopes {
                         await self.refreshWindow()
                     }
-                case .sendError(let transactionId, _, let isRecoverable):
-                    guard !isRecoverable else {
+                case .sendError(let transactionId, let error, let isRecoverable):
+                    let failureContext = OutgoingSendFailureContext.fromQueueWedgeError(error)
+                    if let failureContext {
+                        await MainActor.run {
+                            self.sendFailureNotice = SendFailureNotice(context: failureContext)
+                        }
+                    }
+                    guard !isRecoverable || failureContext != nil else {
                         if didMutateOutgoingEnvelopes {
                             await self.refreshWindow()
                         }
@@ -1490,7 +1526,7 @@ final class ChatViewModel {
         )
         message.outgoingEnvelopeId = envelope.id
         message.isStaleOutgoingEnvelope = isStaleSessionEnvelope
-        message.canRetryOutgoingEnvelope = isStaleSessionEnvelope
+        message.canRetryOutgoingEnvelope = (isStaleSessionEnvelope || envelope.primaryItem?.transportState == .failed)
             && envelope.isRetryableAfterSessionChange
 
         logMediaGroup(
@@ -1509,7 +1545,8 @@ final class ChatViewModel {
         transportState: OutgoingTransportState?,
         hydratedMessage: ChatMessage?
     ) -> String {
-        if hydratedMessage?.sendStatus == "read" {
+        if hydratedMessage?.eventId != nil,
+           hydratedMessage?.sendStatus == "read" {
             return "read"
         }
         return transportState?.messageSendStatus ?? "queued"
@@ -2257,6 +2294,7 @@ final class ChatViewModel {
             ) else {
                 return
             }
+            publishSendFailureNotice(context: receipt.failureContext)
             await refreshWindow()
             return
         }
@@ -2278,6 +2316,54 @@ final class ChatViewModel {
             return
         }
         await refreshWindow()
+    }
+
+    private func publishSendFailureNotice(context: OutgoingSendFailureContext?) {
+        guard let context else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.sendFailureNotice = SendFailureNotice(context: context)
+        }
+    }
+
+    private func publishSendFailureNotice(reason: OutgoingSendFailureReason?) {
+        guard let reason else { return }
+        publishSendFailureNotice(context: .reasonOnly(reason))
+    }
+
+    private func refreshComposerSendPermission() {
+        let blocked = composerSendBlockedValue()
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isComposerSendBlocked != blocked else { return }
+                self.isComposerSendBlocked = blocked
+            }
+            return
+        }
+        guard isComposerSendBlocked != blocked else { return }
+        isComposerSendBlocked = blocked
+    }
+
+    private func composerSendBlockedValue() -> Bool {
+        !mode.isPreview
+            && requiresVerifiedDeviceForSending
+            && !SessionVerificationService.shared.canSendEncryptedMessages
+    }
+
+    @discardableResult
+    private func guardCanCreateOutgoingEnvelope() -> Bool {
+        let blocked = composerSendBlockedValue()
+        if Thread.isMainThread {
+            if blocked != isComposerSendBlocked {
+                isComposerSendBlocked = blocked
+            }
+        } else {
+            refreshComposerSendPermission()
+        }
+        guard !blocked else {
+            publishSendFailureNotice(reason: .ownDeviceVerificationRequired)
+            return false
+        }
+        return true
     }
 
     private func sendOutgoingText(
@@ -2486,6 +2572,8 @@ final class ChatViewModel {
     }
 
     func sendMessage(_ text: String, color: UIColor? = nil) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         if let editing = editingMessage {
             guard let itemId = editing.itemIdentifier,
                   let originalBody = editing.content.textBody
@@ -2609,6 +2697,8 @@ final class ChatViewModel {
     }
 
     func sendVoiceMessage(fileURL: URL, duration: TimeInterval, waveform: [Float]) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         Task { [weak self] in
             await self?.sendOutgoingVoice(
                 fileURL: fileURL,
@@ -2619,6 +2709,8 @@ final class ChatViewModel {
     }
 
     func sendFile(url: URL) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         Task { [weak self] in
             await self?.sendOutgoingFile(
                 url: url,
@@ -2635,6 +2727,8 @@ final class ChatViewModel {
         captionPlacement: CaptionPlacement = .bottom,
         layoutOverride: MediaGroupLayoutOverride? = nil
     ) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         Task { [weak self] in
             guard let self else { return }
             await self.sendImageBatch(
@@ -2655,6 +2749,8 @@ final class ChatViewModel {
         layoutOverride: MediaGroupLayoutOverride? = nil
     ) {
         guard !attachments.isEmpty else { return }
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         let videoCount = attachments.filter(\.isVideo).count
         if videoCount > 0 {
             logVideoSend(
@@ -2967,6 +3063,7 @@ final class ChatViewModel {
 
     func toggleReaction(_ key: String, for message: ChatMessage) {
         guard let itemId = message.itemIdentifier else { return }
+        guard guardCanCreateOutgoingEnvelope() else { return }
         Task {
             await timelineService.toggleReaction(key, to: itemId)
         }
@@ -2979,6 +3076,22 @@ final class ChatViewModel {
         }
     }
 
+    func clearSendFailureNotice(id: UUID) {
+        guard sendFailureNotice?.id == id else { return }
+        sendFailureNotice = nil
+    }
+
+    @MainActor
+    func makeRoomSendSecurityViewModel(
+        context: OutgoingSendFailureContext
+    ) -> RoomSendSecurityViewModel {
+        RoomSendSecurityViewModel(room: room, context: context)
+    }
+
+    func handleBlockedComposerInteraction() {
+        guard guardCanCreateOutgoingEnvelope() == false else { return }
+    }
+
     func retryOutgoingEnvelope(id envelopeId: String) {
         Task { [weak self] in
             await self?.retryOutgoingEnvelopeNow(id: envelopeId)
@@ -2987,10 +3100,11 @@ final class ChatViewModel {
 
     private func retryOutgoingEnvelopeNow(id envelopeId: String) async {
         guard let envelope = outgoingEnvelopes.envelope(id: envelopeId, roomId: roomId),
-              envelope.isStaleSession(currentSessionId: MatrixClientService.shared.currentLocalSessionId)
+              envelope.isRetryableAfterSessionChange
         else {
             return
         }
+        guard guardCanCreateOutgoingEnvelope() else { return }
 
         switch envelope.payload {
         case .text(let payload):
@@ -3139,6 +3253,7 @@ final class ChatViewModel {
             )
         }
         guard !intents.isEmpty else { return }
+        guard guardCanCreateOutgoingEnvelope() else { return }
         pendingRedactions.register(intents)
         pendingRedactionIds.formUnion(intents.map(\.messageId))
         pendingRedactionKeys.formUnion(
@@ -3177,6 +3292,7 @@ final class ChatViewModel {
     }
 
     private func redactItemIdentifier(_ itemId: ChatItemIdentifier, messageId: String) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
         let intent = PendingRedactionIntent(
             messageId: messageId,
             roomId: roomId,

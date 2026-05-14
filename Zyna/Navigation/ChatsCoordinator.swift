@@ -167,6 +167,9 @@ final class ChatsCoordinator {
         vc.onTitleTapped = { [weak self] userId in
             self?.showProfile(userId: userId)
         }
+        vc.onSecurityUserTapped = { [weak self] userId in
+            self?.showMemberDetail(room: room, userId: userId)
+        }
         vc.onRoomDetailsTapped = { [weak self] in
             self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
         }
@@ -198,6 +201,9 @@ final class ChatsCoordinator {
         }
         vc.onTitleTapped = { [weak self] userId in
             self?.showProfile(userId: userId)
+        }
+        vc.onSecurityUserTapped = { [weak self] userId in
+            self?.showMemberDetail(room: room, userId: userId)
         }
         vc.onRoomDetailsTapped = { [weak self] in
             self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
@@ -347,8 +353,50 @@ final class ChatsCoordinator {
     // MARK: - Calls
 
     private func startCall(in room: Room, timelineService: TimelineService) {
+        guard canSendEncryptedEvents(in: room) else {
+            presentVerificationRequiredForCall()
+            return
+        }
         CallService.shared.startCall(room: room, timelineService: timelineService)
         presentCallScreen(roomName: room.displayName() ?? "Call")
+    }
+
+    private func canSendEncryptedEvents(in room: Room) -> Bool {
+        room.encryptionState() == .notEncrypted
+            || SessionVerificationService.shared.canSendEncryptedMessages
+    }
+
+    private func presentVerificationRequiredForCall() {
+        guard navigationController.presentedViewController == nil else { return }
+
+        let alert = UIAlertController(
+            title: String(localized: "Verify This Device"),
+            message: String(localized: "Zyna only sends encrypted messages from verified devices. Verify this device or restore with your recovery key, then retry the message."),
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "Verify Device"), style: .default) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self?.presentSessionVerificationFromCall()
+            }
+        })
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        navigationController.present(alert, animated: true)
+    }
+
+    private func presentSessionVerificationFromCall() {
+        guard navigationController.presentedViewController == nil else { return }
+
+        let viewModel = SessionVerificationViewModel()
+        viewModel.onVerified = { [weak self] in
+            self?.navigationController.dismiss(animated: true)
+        }
+        viewModel.onSkipped = { [weak self] in
+            self?.navigationController.dismiss(animated: true)
+        }
+
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        vc.modalPresentationStyle = .fullScreen
+        navigationController.present(vc, animated: true)
     }
 
     func presentCallScreen(roomName: String) {
