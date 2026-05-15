@@ -155,6 +155,7 @@ final class ChatViewModel {
     private let window: MessageWindow
     private let outgoingEnvelopes = OutgoingEnvelopeService.shared
     private let pendingRedactions = PendingRedactionService.shared
+    private let pendingReactions = PendingReactionService.shared
     private let room: Room
     private let roomId: String
     private var hiddenMessageKeys = Set<String>()
@@ -280,6 +281,17 @@ final class ChatViewModel {
                     failure.error,
                     failure.disposition
                 )
+            }
+            .store(in: &cancellables)
+
+        OutgoingReactionOutboxService.shared.roomDidUpdateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
             }
             .store(in: &cancellables)
 
@@ -539,10 +551,13 @@ final class ChatViewModel {
             records: pendingRedactionRecords,
             now: now
         )
+        let pendingReactionRemovalsByEventId = pendingReactions
+            .pendingRemovalKeysByEventId(roomId: roomId)
         let rawMessages = newStored.compactMap { msg -> ChatMessage? in
             displayChatMessage(
                 for: msg,
                 pendingRedactionLookup: pendingRedactionLookup,
+                pendingReactionRemovalsByEventId: pendingReactionRemovalsByEventId,
                 now: now,
                 visibleRedactedKeys: newlyRedactedIdentityKeys
             )
@@ -785,10 +800,13 @@ final class ChatViewModel {
             records: pendingRedactionRecords,
             now: now
         )
+        let pendingReactionRemovalsByEventId = pendingReactions
+            .pendingRemovalKeysByEventId(roomId: roomId)
         let rawMessages = storedMessages.compactMap { msg -> ChatMessage? in
             displayChatMessage(
                 for: msg,
                 pendingRedactionLookup: pendingRedactionLookup,
+                pendingReactionRemovalsByEventId: pendingReactionRemovalsByEventId,
                 now: now,
                 visibleRedactedKeys: visibleRedactedKeys
             )
@@ -3210,8 +3228,34 @@ final class ChatViewModel {
     }
 
     func toggleReaction(_ key: String, for message: ChatMessage) {
-        guard let itemId = message.itemIdentifier else { return }
         guard guardCanCreateOutgoingEnvelope() else { return }
+        if let targetEventId = message.eventId,
+           !targetEventId.isEmpty,
+           DirectRawTextSender.isEnabled {
+            let hasOwnReaction = message.reactions.contains {
+                $0.key == key && $0.isOwn
+            }
+            let didPrepare = hasOwnReaction
+                ? pendingReactions.prepareDirectRawRemoval(
+                    roomId: roomId,
+                    targetEventId: targetEventId,
+                    key: key
+                )
+                : pendingReactions.prepareDirectRawAdd(
+                    roomId: roomId,
+                    targetEventId: targetEventId,
+                    key: key
+                )
+            if didPrepare {
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+                OutgoingReactionOutboxService.shared.kick(reason: "new-reaction")
+                return
+            }
+        }
+
+        guard let itemId = message.itemIdentifier else { return }
         Task {
             await timelineService.toggleReaction(key, to: itemId)
         }
@@ -3526,10 +3570,13 @@ final class ChatViewModel {
             records: pendingRedactionRecords,
             now: now
         )
+        let pendingReactionRemovalsByEventId = pendingReactions
+            .pendingRemovalKeysByEventId(roomId: roomId)
         let rawMessages = storedMessages.compactMap { msg -> ChatMessage? in
             displayChatMessage(
                 for: msg,
                 pendingRedactionLookup: pendingRedactionLookup,
+                pendingReactionRemovalsByEventId: pendingReactionRemovalsByEventId,
                 now: now,
                 visibleRedactedKeys: visibleRedactedKeys
             )
@@ -4075,6 +4122,7 @@ final class ChatViewModel {
     private func displayChatMessage(
         for message: StoredMessage,
         pendingRedactionLookup: PendingRedactionDisplayLookup,
+        pendingReactionRemovalsByEventId: [String: Set<String>],
         now: TimeInterval,
         visibleRedactedKeys: Set<String>
     ) -> ChatMessage? {
@@ -4090,14 +4138,54 @@ final class ChatViewModel {
             for: message,
             in: pendingPartialRedactions
         ) {
-            return pending.toChatMessage()
+            return pending.toChatMessage().map {
+                Self.markPendingReactionRemovals(
+                    in: $0,
+                    removalsByEventId: pendingReactionRemovalsByEventId
+                )
+            }
         }
         if Self.hasAnyIdentityKey(pendingRedactionKeys, for: message) { return nil }
         if message.contentType == "redacted",
            message.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) {
             return nil
         }
-        return message.toChatMessage()
+        return message.toChatMessage().map {
+            Self.markPendingReactionRemovals(
+                in: $0,
+                removalsByEventId: pendingReactionRemovalsByEventId
+            )
+        }
+    }
+
+    private static func markPendingReactionRemovals(
+        in message: ChatMessage,
+        removalsByEventId: [String: Set<String>]
+    ) -> ChatMessage {
+        guard let eventId = message.eventId,
+              let keys = removalsByEventId[eventId],
+              !keys.isEmpty else {
+            return message
+        }
+
+        var didChange = false
+        let reactions = message.reactions.map { reaction in
+            guard reaction.isOwn,
+                  keys.contains(reaction.key),
+                  !reaction.isPendingRemoval else {
+                return reaction
+            }
+            didChange = true
+            return MessageReaction(
+                key: reaction.key,
+                senders: reaction.senders,
+                isOwn: reaction.isOwn,
+                isPendingRemoval: true,
+                legacyCount: reaction.legacyCount
+            )
+        }
+
+        return didChange ? message.applyingReactions(reactions) : message
     }
 
     private func pendingRedactionPlaceholder(

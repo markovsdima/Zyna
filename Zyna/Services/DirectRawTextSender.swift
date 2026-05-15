@@ -55,6 +55,15 @@ enum DirectRawTextSender {
         return transactionId
     }
 
+    static func prepareReactionTransactionId(
+        existingTransactionId: String? = nil
+    ) -> String? {
+        guard isEnabled else { return nil }
+        let transactionId = existingTransactionId ?? genTransactionId()
+        logDirectRawText("DirectRawReactionTx prepared tx=\(transactionId)")
+        return transactionId
+    }
+
     static func send(
         room: Room,
         body: String,
@@ -145,6 +154,33 @@ enum DirectRawTextSender {
             let receipt = rejectedReceipt(for: error)
             logDirectRawText(
                 "DirectRawRedactionTx send failed event=\(eventId) tx=\(transactionId) "
+                    + "retryable=\(receipt.retryableTransportFailure) error=\(error)"
+            )
+            return receipt
+        }
+    }
+
+    static func sendReaction(
+        room: Room,
+        targetEventId: String,
+        key: String,
+        transactionId: String
+    ) async -> OutgoingDispatchReceipt {
+        do {
+            let reactionEventId = try await sendRawReaction(
+                room: room,
+                targetEventId: targetEventId,
+                key: key,
+                transactionId: transactionId
+            )
+            logDirectRawText(
+                "DirectRawReactionTx dispatch done target=\(targetEventId) reaction=\(reactionEventId) tx=\(transactionId)"
+            )
+            return .accepted(transactionId: transactionId, eventId: reactionEventId)
+        } catch {
+            let receipt = rejectedReceipt(for: error)
+            logDirectRawText(
+                "DirectRawReactionTx send failed target=\(targetEventId) tx=\(transactionId) "
                     + "retryable=\(receipt.retryableTransportFailure) error=\(error)"
             )
             return receipt
@@ -243,6 +279,36 @@ enum DirectRawTextSender {
         }
     }
 
+    private static func sendRawReaction(
+        room: Room,
+        targetEventId: String,
+        key: String,
+        transactionId: String
+    ) async throws -> String {
+        let content = try rawReactionContentJSON(
+            targetEventId: targetEventId,
+            key: key,
+            transactionId: transactionId
+        )
+        do {
+            logDirectRawText(
+                "DirectRawReactionTx send start target=\(targetEventId) tx=\(transactionId) key=\(key)"
+            )
+            let reactionEventId = try await room.sendRawWithTransactionIdReturningEventId(
+                eventType: "m.reaction",
+                content: content,
+                transactionId: transactionId
+            )
+            logDirectRawText(
+                "DirectRawReactionTx send accepted target=\(targetEventId) reaction=\(reactionEventId) tx=\(transactionId)"
+            )
+            return reactionEventId
+        } catch {
+            await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
+            throw error
+        }
+    }
+
     private static func rawTextMessageContentJSON(
         roomId: String,
         body: String,
@@ -326,6 +392,26 @@ enum DirectRawTextSender {
            !reason.isEmpty {
             content["reason"] = reason
         }
+        let data = try JSONSerialization.data(
+            withJSONObject: content,
+            options: [.sortedKeys]
+        )
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func rawReactionContentJSON(
+        targetEventId: String,
+        key: String,
+        transactionId: String
+    ) throws -> String {
+        let content: [String: Any] = [
+            "m.relates_to": [
+                "rel_type": "m.annotation",
+                "event_id": targetEventId,
+                "key": key
+            ],
+            transactionIdContentKey: transactionId
+        ]
         let data = try JSONSerialization.data(
             withJSONObject: content,
             options: [.sortedKeys]

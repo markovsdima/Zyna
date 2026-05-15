@@ -548,6 +548,44 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v16_directRawReactions") { db in
+            try db.create(table: "pendingReaction") { t in
+                t.primaryKey("id", .text)
+                t.column("roomId", .text).notNull()
+                t.column("targetEventId", .text).notNull()
+                t.column("reactionKey", .text).notNull()
+                t.column("state", .text).notNull()
+                t.column("transactionId", .text)
+                t.column("reactionEventId", .text)
+                t.column("redactionTransactionId", .text)
+                t.column("redactionEventId", .text)
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+                t.column("lastAttemptAt", .double)
+                t.column("attemptCount", .integer).notNull().defaults(to: 0)
+            }
+
+            try db.create(
+                index: "idx_pendingReaction_target",
+                on: "pendingReaction",
+                columns: ["roomId", "targetEventId", "reactionKey"]
+            )
+            try db.execute(
+                sql: """
+                    CREATE INDEX idx_pendingReaction_outbox
+                    ON pendingReaction(state, updatedAt)
+                    WHERE state IN ('addQueued', 'removeQueued')
+                """
+            )
+            try db.execute(
+                sql: """
+                    CREATE INDEX idx_pendingReaction_reactionEventId
+                    ON pendingReaction(reactionEventId)
+                    WHERE reactionEventId IS NOT NULL
+                """
+            )
+        }
+
         return migrator
     }
 

@@ -1684,7 +1684,7 @@ final class TimelineService {
     func toggleReaction(_ key: String, to itemId: ChatItemIdentifier) async {
         guard let timeline else { return }
         do {
-            try await timeline.toggleReaction(itemId: itemId.toSDK(), key: key)
+            _ = try await timeline.toggleReaction(itemId: itemId.toSDK(), key: key)
             logTimeline("Toggled reaction \(key)")
         } catch {
             logTimeline("Toggle reaction failed: \(error)")

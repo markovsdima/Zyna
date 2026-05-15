@@ -67,6 +67,7 @@ final class ReactionPillNode: ASControlNode {
         super.init()
         automaticallyManagesSubnodes = true
 
+        let isHighlightedOwn = reaction.isOwn && !reaction.isPendingRemoval
         let countText = reaction.count > 1 ? " \(reaction.count)" : ""
         let text = "\(reaction.key)\(countText)"
 
@@ -74,13 +75,18 @@ final class ReactionPillNode: ASControlNode {
             string: text,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 14),
-                .foregroundColor: reaction.isOwn ? AppColor.reactionForegroundOwn : AppColor.reactionForegroundOther
+                .foregroundColor: isHighlightedOwn
+                    ? AppColor.reactionForegroundOwn
+                    : AppColor.reactionForegroundOther
             ]
         )
+        labelNode.alpha = reaction.isOwn && reaction.isPendingRemoval ? 0.55 : 1
 
-        backgroundColor = reaction.isOwn ? AppColor.reactionBackgroundOwn : AppColor.reactionBackgroundOther
+        backgroundColor = isHighlightedOwn
+            ? AppColor.reactionBackgroundOwn
+            : AppColor.reactionBackgroundOther
         cornerRadius = 13
-        if reaction.isOwn {
+        if isHighlightedOwn {
             borderWidth = 1
             borderColor = AppColor.reactionBorderOwn.cgColor
         }

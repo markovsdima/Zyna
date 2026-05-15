@@ -28,6 +28,7 @@ final class AppCoordinator {
         OutgoingTextOutboxService.shared.start()
         OutgoingEditOutboxService.shared.start()
         OutgoingRedactionOutboxService.shared.start()
+        OutgoingReactionOutboxService.shared.start()
         observeClientState()
         observeNetworkRestoration()
 
