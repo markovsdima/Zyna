@@ -39,9 +39,14 @@ final class OutgoingEnvelopeService {
         envelopeId: String,
         body: String,
         replyInfo: ReplyInfo?,
-        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        transactionId: String? = nil
     ) -> String {
-        let item = makeEnvelopeItem(groupId: envelopeId, itemIndex: 0)
+        let item = makeEnvelopeItem(
+            groupId: envelopeId,
+            itemIndex: 0,
+            transactionId: transactionId
+        )
         createEnvelope(
             roomId: roomId,
             envelopeId: envelopeId,
@@ -54,7 +59,9 @@ final class OutgoingEnvelopeService {
             zynaAttributes: zynaAttributes,
             items: [item]
         )
-        logMediaGroup("outgoing create kind=text room=\(roomId) envelope=\(envelopeId)")
+        logMediaGroup(
+            "outgoing create kind=text room=\(roomId) envelope=\(envelopeId) tx=\(transactionId ?? "<nil>")"
+        )
         return item.bindingToken ?? ""
     }
 
@@ -357,12 +364,35 @@ final class OutgoingEnvelopeService {
     }
 
     @discardableResult
+    func markDispatchRetrying(envelopeId: String, itemIndex: Int) -> Bool {
+        (try? dbQueue.write { db in
+            guard var item = try OutgoingEnvelopeItemRecord
+                .filter(Column("groupId") == envelopeId && Column("itemIndex") == itemIndex)
+                .fetchOne(db) else { return false }
+            guard item.decodedTransportState != .retrying else { return false }
+            if item.decodedTransportState == .failed {
+                return false
+            }
+            item.bindingToken = nil
+            item.transportState = OutgoingTransportState.retrying.rawValue
+            try item.save(db)
+            try recomputeEnvelopeState(id: item.groupId, in: db)
+            return true
+        }) ?? false
+        .also {
+            if $0 {
+                logMediaGroup("outgoing markRetrying envelope=\(envelopeId) index=\(itemIndex)")
+            }
+        }
+    }
+
+    @discardableResult
     func markDispatchStarted(envelopeId: String, itemIndex: Int) -> Bool {
         (try? dbQueue.write { db in
             guard var item = try OutgoingEnvelopeItemRecord
                 .filter(Column("groupId") == envelopeId && Column("itemIndex") == itemIndex)
                 .fetchOne(db) else { return false }
-            guard item.decodedTransportState == .queued else { return false }
+            guard [.queued, .retrying].contains(item.decodedTransportState) else { return false }
             item.transportState = OutgoingTransportState.sending.rawValue
             try item.save(db)
             try recomputeEnvelopeState(id: item.groupId, in: db)
@@ -524,14 +554,15 @@ final class OutgoingEnvelopeService {
         mediaSource: MediaSource? = nil,
         previewImageData: Data? = nil,
         previewWidth: UInt64? = nil,
-        previewHeight: UInt64? = nil
+        previewHeight: UInt64? = nil,
+        transactionId: String? = nil
     ) -> OutgoingEnvelopeItemRecord {
         OutgoingEnvelopeItemRecord(
             id: OutgoingEnvelopeItemRecord.makeId(groupId: groupId, itemIndex: itemIndex),
             groupId: groupId,
             itemIndex: itemIndex,
-            bindingToken: UUID().uuidString,
-            transactionId: nil,
+            bindingToken: transactionId == nil ? UUID().uuidString : nil,
+            transactionId: transactionId,
             eventId: nil,
             mediaSourceJSON: mediaSource?.toJson(),
             previewImageData: previewImageData,

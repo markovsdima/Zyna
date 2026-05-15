@@ -164,10 +164,15 @@ final class TimelineDiffBatcher {
                                 )
                             }
 
-                            if let existing = try Self.existingStoredMessage(
+                            let existing = try Self.existingStoredMessage(
                                 for: record,
                                 in: db
-                            ) {
+                            )
+                            let shouldLogDirectRawTextBind = Self.shouldLogDirectRawTextBind(
+                                incoming: record,
+                                existing: existing
+                            )
+                            if let existing {
                                 Self.applyMonotonicMerge(
                                     existing: existing,
                                     incoming: &record
@@ -178,6 +183,17 @@ final class TimelineDiffBatcher {
                                let eventId = record.eventId,
                                readEventIds.contains(eventId) {
                                 record.sendStatus = "read"
+                            }
+
+                            if let eventId = record.eventId,
+                               record.isOutgoing,
+                               record.contentType == "text",
+                               let transactionId = record.transactionId,
+                               !transactionId.isEmpty,
+                               shouldLogDirectRawTextBind {
+                                logTimelineDB(
+                                    "DirectRawTx db bind text event=\(eventId) tx=\(transactionId) status=\(record.sendStatus)"
+                                )
                             }
 
                             if let eventId = record.eventId {
@@ -437,6 +453,21 @@ final class TimelineDiffBatcher {
             }
         }
         return nil
+    }
+
+    private static func shouldLogDirectRawTextBind(
+        incoming: StoredMessage,
+        existing: StoredMessage?
+    ) -> Bool {
+        guard incoming.isOutgoing,
+              incoming.contentType == "text",
+              incoming.eventId?.isEmpty == false,
+              incoming.transactionId?.isEmpty == false else {
+            return false
+        }
+        guard let existing else { return true }
+        return existing.eventId != incoming.eventId
+            || existing.transactionId != incoming.transactionId
     }
 
     private struct DedupeResult {

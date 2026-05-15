@@ -12,6 +12,7 @@ import MatrixRustSDK
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
+private let logDirectRawTx = ScopedLog(.timeline, prefix: "[DirectRawTx]")
 private let timelineHealthLog = ScopedLog(.database, prefix: "[TimelineHealth]")
 
 enum ChatPresentationMode {
@@ -166,6 +167,9 @@ final class ChatViewModel {
     private var lastBootstrapReadReceiptTarget: VisibleReadReceiptTarget?
     private var messageIndexByEventId: [String: Int] = [:]
     private var rowIndexByEventId: [String: Int] = [:]
+    private var directTextOutboxInFlightEnvelopeIds = Set<String>()
+    private var directTextOutboxRetryTask: Task<Void, Never>?
+    private var directTextOutboxRetryDelaySeconds: UInt64 = 5
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
@@ -331,6 +335,7 @@ final class ChatViewModel {
             guard let self else { return }
             await self.timelineService.startListening(subscribeForSync: !self.mode.isPreview)
             guard !self.mode.isPreview else { return }
+            await self.resumeDirectTextOutbox(reason: "timeline-start")
             let terminalFailures = await self.pendingRedactions.retryPendingRedactions(
                 roomId: self.roomId,
                 timelineService: self.timelineService
@@ -353,6 +358,125 @@ final class ChatViewModel {
             try? await Task.sleep(for: .seconds(1))
             await self?.syncFullHistory()
         }
+    }
+
+    private func resumeDirectTextOutbox(reason: String) async {
+        let candidates = outgoingEnvelopes
+            .envelopes(roomId: roomId, kind: .text)
+            .filter(Self.shouldAutoResumeDirectTextEnvelope)
+
+        guard !candidates.isEmpty else {
+            resetDirectTextOutboxRetryBackoff()
+            return
+        }
+
+        logDirectRawTx(
+            "outbox resume reason=\(reason) count=\(candidates.count) envelopes=\(candidates.map(\.id).joined(separator: ","))"
+        )
+
+        for envelope in candidates {
+            await resumeDirectTextEnvelope(envelope, reason: reason)
+        }
+    }
+
+    private func scheduleDirectTextOutboxRetry(reason: String) {
+        directTextOutboxRetryTask?.cancel()
+        let delaySeconds = directTextOutboxRetryDelaySeconds
+        directTextOutboxRetryDelaySeconds = min(delaySeconds * 2, 60)
+        logDirectRawTx(
+            "outbox retry scheduled reason=\(reason) delaySec=\(delaySeconds)"
+        )
+        directTextOutboxRetryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.resumeDirectTextOutbox(reason: reason)
+        }
+    }
+
+    private func resetDirectTextOutboxRetryBackoff() {
+        directTextOutboxRetryTask?.cancel()
+        directTextOutboxRetryTask = nil
+        directTextOutboxRetryDelaySeconds = 5
+    }
+
+    private static func shouldAutoResumeDirectTextEnvelope(
+        _ envelope: OutgoingEnvelopeSnapshot
+    ) -> Bool {
+        guard envelope.replyInfo == nil,
+              envelope.textPayload != nil,
+              let item = envelope.primaryItem,
+              item.eventId == nil,
+              let transactionId = item.transactionId,
+              !transactionId.isEmpty else {
+            return false
+        }
+
+        switch item.transportState {
+        case .queued, .sending, .retrying:
+            return true
+        case .uploading, .sent, .failed:
+            return false
+        }
+    }
+
+    private func resumeDirectTextEnvelope(
+        _ envelope: OutgoingEnvelopeSnapshot,
+        reason: String
+    ) async {
+        guard directTextOutboxInFlightEnvelopeIds.insert(envelope.id).inserted else {
+            return
+        }
+        defer {
+            directTextOutboxInFlightEnvelopeIds.remove(envelope.id)
+        }
+
+        guard let envelope = outgoingEnvelopes.envelope(id: envelope.id, roomId: roomId),
+              Self.shouldAutoResumeDirectTextEnvelope(envelope),
+              let item = envelope.primaryItem,
+              let transactionId = item.transactionId,
+              let textPayload = envelope.textPayload,
+              timelineService.prepareDirectRawTextTransactionId(
+                replyEventId: envelope.replyInfo?.eventId,
+                existingTransactionId: transactionId
+              ) == transactionId else {
+            return
+        }
+
+        logDirectRawTx(
+            "outbox send start reason=\(reason) envelope=\(envelope.id) tx=\(transactionId) state=\(item.transportState.rawValue)"
+        )
+
+        if outgoingEnvelopes.markDispatchStarted(
+            envelopeId: envelope.id,
+            itemIndex: item.itemIndex
+        ) {
+            await refreshWindow()
+        }
+
+        let receipt: OutgoingDispatchReceipt
+        if envelope.zynaAttributes.isEmpty {
+            receipt = await timelineService.sendMessage(
+                textPayload.body,
+                bindingToken: item.bindingToken ?? "",
+                transactionId: transactionId
+            )
+        } else {
+            receipt = await timelineService.sendMessage(
+                textPayload.body,
+                zynaAttributes: envelope.zynaAttributes,
+                bindingToken: item.bindingToken ?? "",
+                transactionId: transactionId
+            )
+        }
+
+        logDirectRawTx(
+            "outbox send receipt envelope=\(envelope.id) tx=\(transactionId) accepted=\(receipt.acceptedByTransport)"
+        )
+        await completeOutgoingDispatch(
+            envelopeId: envelope.id,
+            itemIndex: item.itemIndex,
+            receipt: receipt
+        )
     }
 
     // MARK: - Invite
@@ -2288,6 +2412,18 @@ final class ChatViewModel {
         receipt: OutgoingDispatchReceipt
     ) async {
         if !receipt.acceptedByTransport {
+            if receipt.retryableTransportFailure {
+                let didChange = outgoingEnvelopes.markDispatchRetrying(
+                    envelopeId: envelopeId,
+                    itemIndex: itemIndex
+                )
+                scheduleDirectTextOutboxRetry(reason: "retryable-failure")
+                if didChange {
+                    await refreshWindow()
+                }
+                return
+            }
+
             guard outgoingEnvelopes.markDispatchFailed(
                 envelopeId: envelopeId,
                 itemIndex: itemIndex
@@ -2373,12 +2509,16 @@ final class ChatViewModel {
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
     ) async {
         let envelopeId = UUID().uuidString
+        let transactionId = timelineService.prepareDirectRawTextTransactionId(
+            replyEventId: replyEventId
+        )
         let bindingToken = outgoingEnvelopes.createOutgoingText(
             roomId: roomId,
             envelopeId: envelopeId,
             body: body,
             replyInfo: replyInfo,
-            zynaAttributes: zynaAttributes
+            zynaAttributes: zynaAttributes,
+            transactionId: transactionId
         )
         await refreshWindow()
 
@@ -2392,13 +2532,15 @@ final class ChatViewModel {
         } else if zynaAttributes.isEmpty {
             receipt = await timelineService.sendMessage(
                 body,
-                bindingToken: bindingToken
+                bindingToken: bindingToken,
+                transactionId: transactionId
             )
         } else {
             receipt = await timelineService.sendMessage(
                 body,
                 zynaAttributes: zynaAttributes,
-                bindingToken: bindingToken
+                bindingToken: bindingToken,
+                transactionId: transactionId
             )
         }
 
@@ -3121,12 +3263,17 @@ final class ChatViewModel {
         body: String
     ) async {
         let retryEnvelopeId = UUID().uuidString
+        let transactionId = timelineService.prepareDirectRawTextTransactionId(
+            replyEventId: envelope.replyInfo?.eventId,
+            existingTransactionId: envelope.items.first?.transactionId
+        )
         let bindingToken = outgoingEnvelopes.createOutgoingText(
             roomId: roomId,
             envelopeId: retryEnvelopeId,
             body: body,
             replyInfo: envelope.replyInfo,
-            zynaAttributes: envelope.zynaAttributes
+            zynaAttributes: envelope.zynaAttributes,
+            transactionId: transactionId
         )
         outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
         await refreshWindow()
@@ -3141,13 +3288,15 @@ final class ChatViewModel {
         } else if envelope.zynaAttributes.isEmpty {
             receipt = await timelineService.sendMessage(
                 body,
-                bindingToken: bindingToken
+                bindingToken: bindingToken,
+                transactionId: transactionId
             )
         } else {
             receipt = await timelineService.sendMessage(
                 body,
                 zynaAttributes: envelope.zynaAttributes,
-                bindingToken: bindingToken
+                bindingToken: bindingToken,
+                transactionId: transactionId
             )
         }
 
