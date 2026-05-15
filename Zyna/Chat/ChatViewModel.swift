@@ -2434,7 +2434,7 @@ final class ChatViewModel {
         )
         await refreshWindow()
 
-        if replyEventId == nil, transactionId != nil {
+        if transactionId != nil {
             OutgoingTextOutboxService.shared.kick(
                 reason: "new-envelope",
                 envelopeId: envelopeId
@@ -2447,6 +2447,9 @@ final class ChatViewModel {
             receipt = await timelineService.sendReply(
                 body,
                 to: replyEventId,
+                replyInfo: replyInfo,
+                zynaAttributes: zynaAttributes,
+                transactionId: transactionId,
                 bindingToken: bindingToken
             )
         } else if zynaAttributes.isEmpty {
@@ -2735,11 +2738,14 @@ final class ChatViewModel {
         if let replyTarget = replyingTo, let eventId = replyTarget.eventId {
             replyingTo = nil
             let replyInfo = replyInfo(from: replyTarget)
+            let attrs = color.map { ZynaMessageAttributes(color: $0) }
+                ?? ZynaMessageAttributes()
             Task { [weak self] in
                 await self?.sendOutgoingText(
                     body: text,
                     replyEventId: eventId,
-                    replyInfo: replyInfo
+                    replyInfo: replyInfo,
+                    zynaAttributes: attrs
                 )
             }
             return
@@ -3198,7 +3204,7 @@ final class ChatViewModel {
         outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
         await refreshWindow()
 
-        if envelope.replyInfo?.eventId == nil, transactionId != nil {
+        if transactionId != nil {
             OutgoingTextOutboxService.shared.kick(
                 reason: "manual-retry",
                 envelopeId: retryEnvelopeId
@@ -3211,6 +3217,9 @@ final class ChatViewModel {
             receipt = await timelineService.sendReply(
                 body,
                 to: replyEventId,
+                replyInfo: envelope.replyInfo,
+                zynaAttributes: envelope.zynaAttributes,
+                transactionId: transactionId,
                 bindingToken: bindingToken
             )
         } else if envelope.zynaAttributes.isEmpty {

@@ -31,8 +31,7 @@ enum DirectRawTextSender {
         replyEventId: String?,
         existingTransactionId: String? = nil
     ) -> String? {
-        guard isEnabled,
-              replyEventId == nil else { return nil }
+        guard isEnabled else { return nil }
         let transactionId = existingTransactionId ?? genTransactionId()
         logDirectRawText("DirectRawTx prepared tx=\(transactionId)")
         return transactionId
@@ -41,24 +40,16 @@ enum DirectRawTextSender {
     static func send(
         room: Room,
         body: String,
+        replyInfo: ReplyInfo? = nil,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         transactionId: String
     ) async -> OutgoingDispatchReceipt {
-        let htmlBody: String?
-        if zynaAttributes.isEmpty {
-            htmlBody = nil
-        } else {
-            htmlBody = ZynaHTMLCodec.encode(
-                userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(body),
-                attributes: zynaAttributes
-            )
-        }
-
         do {
             let eventId = try await sendRawTextMessage(
                 room: room,
                 body: body,
-                htmlBody: htmlBody,
+                replyInfo: replyInfo,
+                zynaAttributes: zynaAttributes,
                 transactionId: transactionId
             )
             if zynaAttributes.isEmpty {
@@ -89,12 +80,15 @@ enum DirectRawTextSender {
     private static func sendRawTextMessage(
         room: Room,
         body: String,
-        htmlBody: String?,
+        replyInfo: ReplyInfo?,
+        zynaAttributes: ZynaMessageAttributes,
         transactionId: String
     ) async throws -> String {
         let content = try rawTextMessageContentJSON(
+            roomId: room.id(),
             body: body,
-            htmlBody: htmlBody,
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes,
             transactionId: transactionId
         )
         do {
@@ -115,15 +109,36 @@ enum DirectRawTextSender {
     }
 
     private static func rawTextMessageContentJSON(
+        roomId: String,
         body: String,
-        htmlBody: String?,
+        replyInfo: ReplyInfo?,
+        zynaAttributes: ZynaMessageAttributes,
         transactionId: String
     ) throws -> String {
+        let fallbackBody = replyInfo.map {
+            plainReplyBody(body: body, replyInfo: $0)
+        } ?? body
+
         var content: [String: Any] = [
             "msgtype": "m.text",
-            "body": body,
+            "body": fallbackBody,
             transactionIdContentKey: transactionId
         ]
+
+        if let replyInfo {
+            content["m.relates_to"] = [
+                "m.in_reply_to": [
+                    "event_id": replyInfo.eventId
+                ]
+            ]
+        }
+
+        let htmlBody = formattedBody(
+            roomId: roomId,
+            body: body,
+            replyInfo: replyInfo,
+            zynaAttributes: zynaAttributes
+        )
         if let htmlBody {
             content["format"] = "org.matrix.custom.html"
             content["formatted_body"] = htmlBody
@@ -133,6 +148,63 @@ enum DirectRawTextSender {
             options: [.sortedKeys]
         )
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func formattedBody(
+        roomId: String,
+        body: String,
+        replyInfo: ReplyInfo?,
+        zynaAttributes: ZynaMessageAttributes
+    ) -> String? {
+        guard replyInfo != nil || !zynaAttributes.isEmpty else { return nil }
+
+        var html = ZynaHTMLCodec.escapeForHTMLAttribute(body)
+        if let replyInfo {
+            html = htmlReplyFallback(roomId: roomId, replyInfo: replyInfo) + html
+        }
+
+        return ZynaHTMLCodec.encode(userHTML: html, attributes: zynaAttributes)
+    }
+
+    private static func plainReplyBody(body: String, replyInfo: ReplyInfo) -> String {
+        var quotedLines = replyInfo.body
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "> \($0)" }
+        if let firstLine = quotedLines.first {
+            quotedLines[0] = "> <\(replyInfo.senderId)> \(firstLine.dropFirst(2))"
+        } else {
+            quotedLines = ["> <\(replyInfo.senderId)>"]
+        }
+        return "\(quotedLines.joined(separator: "\n"))\n\n\(body)"
+    }
+
+    private static func htmlReplyFallback(
+        roomId: String,
+        replyInfo: ReplyInfo
+    ) -> String {
+        let roomEventLink = ZynaHTMLCodec.escapeForHTMLAttribute(
+            "https://matrix.to/#/\(roomId)/\(replyInfo.eventId)"
+        )
+        let senderLink = ZynaHTMLCodec.escapeForHTMLAttribute(
+            "https://matrix.to/#/\(replyInfo.senderId)"
+        )
+        let senderName = ZynaHTMLCodec.escapeForHTMLAttribute(
+            replyInfo.senderDisplayName ?? replyInfo.senderId
+        )
+        let quotedBody = htmlLineBreaks(
+            ZynaHTMLCodec.escapeForHTMLAttribute(replyInfo.body)
+        )
+
+        return """
+        <mx-reply><blockquote><a href="\(roomEventLink)">In reply to</a> <a href="\(senderLink)">\(senderName)</a><br>\(quotedBody)</blockquote></mx-reply>
+        """
+    }
+
+    private static func htmlLineBreaks(_ html: String) -> String {
+        html
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\n", with: "<br>")
     }
 
     private static func rejectedReceipt(for error: Error) -> OutgoingDispatchReceipt {

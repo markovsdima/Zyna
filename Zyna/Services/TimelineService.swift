@@ -1282,8 +1282,22 @@ final class TimelineService {
     func sendReply(
         _ text: String,
         to eventId: String,
+        replyInfo: ReplyInfo? = nil,
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        transactionId: String? = nil,
         bindingToken: String
     ) async -> OutgoingDispatchReceipt {
+        if let transactionId,
+           let replyInfo {
+            return await DirectRawTextSender.send(
+                room: room,
+                body: text,
+                replyInfo: replyInfo,
+                zynaAttributes: zynaAttributes,
+                transactionId: transactionId
+            )
+        }
+
         guard let timeline else { return .failed }
         do {
             let transactionId = try await sendWithTransaction(bindingToken: bindingToken) {

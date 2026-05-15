@@ -473,7 +473,6 @@ final class OutgoingEnvelopeService {
 
     static func isDirectTextOutboxCandidate(_ envelope: OutgoingEnvelopeSnapshot) -> Bool {
         guard envelope.kind == .text,
-              envelope.replyInfo == nil,
               envelope.textPayload != nil,
               let item = envelope.primaryItem,
               item.eventId == nil,

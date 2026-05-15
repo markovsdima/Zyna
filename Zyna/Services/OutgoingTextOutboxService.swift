@@ -232,6 +232,7 @@ final class OutgoingTextOutboxService {
         let receipt = await DirectRawTextSender.send(
             room: room,
             body: textPayload.body,
+            replyInfo: envelope.replyInfo,
             zynaAttributes: envelope.zynaAttributes,
             transactionId: transactionId
         )
