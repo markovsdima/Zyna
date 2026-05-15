@@ -255,7 +255,10 @@ final class MatrixClientService {
             self.client = client
             stateSubject.send(.loggedIn)
 
-            try await startSync()
+            try await startSyncForAuthenticatedSession(
+                session: session,
+                context: "Login"
+            )
         } catch {
             logAuth("Login failed: \(error)")
             stateSubject.send(.error(error))
@@ -266,6 +269,20 @@ final class MatrixClientService {
     // MARK: - Session Restore
 
     func restoreSession() async throws {
+        if client != nil {
+            guard syncService == nil else {
+                stateSubject.send(.syncing)
+                return
+            }
+
+            let session = currentOrStoredSession()
+            try await startSyncForAuthenticatedSession(
+                session: session,
+                context: "Session sync retry"
+            )
+            return
+        }
+
         guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
             logAuth("No stored userId found")
             throw AuthenticationError.sessionNotFound
@@ -308,23 +325,73 @@ final class MatrixClientService {
 
             self.client = client
             stateSubject.send(.loggedIn)
-
-            try await startSync()
         } catch {
             logAuth("Session restore failed: \(error)")
             if Self.isSoftLogoutError(error) {
                 await enterSoftLogout(session: session, reason: String(describing: error))
                 throw error
             }
+            if Self.isInvalidAccessTokenError(error) {
+                await enterSessionRecovery(source: .restoreFailure, session: session, reason: String(describing: error))
+                throw error
+            }
+            if Self.isRetryableTransportError(error) {
+                stateSubject.send(.error(error))
+                throw error
+            }
             await enterSessionRecovery(source: .restoreFailure, session: session, reason: String(describing: error))
             throw error
         }
+
+        try await startSyncForAuthenticatedSession(
+            session: session,
+            context: "Session restore"
+        )
     }
 
     // MARK: - Sync
 
+    private func startSyncForAuthenticatedSession(
+        session: MatrixRustSDK.Session?,
+        context: String
+    ) async throws {
+        do {
+            try await startSync()
+        } catch {
+            let reason = String(describing: error)
+            logAuth("\(context) sync start failed: \(error)")
+
+            if Self.isSoftLogoutError(error) {
+                if let session {
+                    await enterSoftLogout(session: session, reason: reason)
+                } else {
+                    await enterSoftLogout(reason: reason)
+                }
+                throw error
+            }
+
+            if Self.isInvalidAccessTokenError(error) {
+                await enterSessionRecovery(source: .restoreFailure, session: session, reason: reason)
+                throw error
+            }
+
+            if Self.isRetryableTransportError(error) {
+                logAuth("\(context) sync deferred until network recovers: \(error)")
+                stateSubject.send(.error(error))
+                return
+            }
+
+            await enterSessionRecovery(source: .restoreFailure, session: session, reason: reason)
+            throw error
+        }
+    }
+
     private func startSync() async throws {
         guard let client else { return }
+        guard syncService == nil else {
+            stateSubject.send(.syncing)
+            return
+        }
 
         await attachClientDelegates(to: client)
 
@@ -360,6 +427,8 @@ final class MatrixClientService {
     /// keep them alive; tearing them down releases the SDK side.
     private func attachEncryptionListeners() {
         guard let client else { return }
+        detachEncryptionListeners()
+
         let encryption = client.encryption()
 
         let vSync = encryption.verificationState()
@@ -626,17 +695,10 @@ final class MatrixClientService {
             sessionRecoverySession = refreshedSession
             sessionRecoveryActive.tryToClearFlag()
             self.client = client
-            do {
-                try await startSync()
-            } catch {
-                await stopSync()
-                detachEncryptionListeners()
-                detachClientDelegates()
-                self.client = nil
-                sessionRecoverySession = refreshedSession
-                _ = sessionRecoveryActive.tryToSetFlag()
-                throw error
-            }
+            try await startSyncForAuthenticatedSession(
+                session: refreshedSession,
+                context: "Session recovery sign-in"
+            )
 
             sessionRecoverySession = nil
             logAuth("Session recovery sign-in succeeded for \(refreshedSession.userId) device=\(refreshedSession.deviceId)")
@@ -728,7 +790,10 @@ final class MatrixClientService {
         self.client = client
         stateSubject.send(.loggedIn)
 
-        try await startSync()
+        try await startSyncForAuthenticatedSession(
+            session: session,
+            context: "OAuth login"
+        )
     }
 
     var hasStoredSession: Bool {
@@ -866,6 +931,82 @@ final class MatrixClientService {
             || compactDescription.contains("soft_logout=true")
             || compactDescription.contains("softlogout:true")
             || compactDescription.contains("softlogout=true")
+    }
+
+    static func isRetryableTransportError(_ error: Error) -> Bool {
+        if isInvalidAccessTokenError(error) || isSoftLogoutError(error) {
+            return false
+        }
+
+        let nsError = error as NSError
+        if isRetryableURLError(nsError) {
+            return true
+        }
+
+        let errorText = [
+            String(reflecting: error),
+            String(describing: error),
+            nsError.localizedDescription
+        ]
+        .joined(separator: "\n")
+        .lowercased()
+
+        return [
+            "not connected to internet",
+            "notconnectedtointernet",
+            "internet connection appears to be offline",
+            "network connection lost",
+            "networkconnectionlost",
+            "network is unreachable",
+            "no route to host",
+            "cannot find host",
+            "cannotfindhost",
+            "cannot connect to host",
+            "cannotconnecttohost",
+            "connection lost",
+            "connection refused",
+            "connection reset",
+            "dns",
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "server error",
+            "servererror",
+            "request error",
+            "error sending request",
+            "reqwest",
+            "hyper",
+            "transport"
+        ].contains { errorText.contains($0) }
+    }
+
+    private static func isRetryableURLError(_ error: NSError, depth: Int = 0) -> Bool {
+        if error.domain == NSURLErrorDomain {
+            switch error.code {
+            case NSURLErrorTimedOut,
+                 NSURLErrorCannotFindHost,
+                 NSURLErrorCannotConnectToHost,
+                 NSURLErrorNetworkConnectionLost,
+                 NSURLErrorDNSLookupFailed,
+                 NSURLErrorNotConnectedToInternet,
+                 NSURLErrorInternationalRoamingOff,
+                 NSURLErrorCallIsActive,
+                 NSURLErrorDataNotAllowed,
+                 NSURLErrorCannotLoadFromNetwork:
+                return true
+            default:
+                break
+            }
+        }
+
+        guard depth < 4,
+              let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError else {
+            return false
+        }
+        return isRetryableURLError(underlying, depth: depth + 1)
     }
 
     private static func describeBackupUploadState(_ state: BackupUploadState) -> String {

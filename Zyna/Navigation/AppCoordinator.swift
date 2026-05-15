@@ -19,9 +19,11 @@ final class AppCoordinator {
     private let backupUploadDeadline: Duration = .seconds(30)
     private let serverLogoutDeadline: Duration = .seconds(12)
     private var isShowingSessionRecovery = false
+    private var sessionRestoreTask: Task<Void, Never>?
 
     func start() {
         observeClientState()
+        observeNetworkRestoration()
 
         if MatrixClientService.shared.hasStoredSession {
             showMain()
@@ -67,6 +69,15 @@ final class AppCoordinator {
             .store(in: &cancellables)
     }
 
+    private func observeNetworkRestoration() {
+        NetworkReachability.shared.onRestored = { [weak self] in
+            DispatchQueue.main.async {
+                self?.retrySessionRestoreAfterNetworkRestored()
+            }
+        }
+        NetworkReachability.shared.start()
+    }
+
     // MARK: - Navigation
 
     private func showAuth() {
@@ -85,9 +96,21 @@ final class AppCoordinator {
     }
 
     private func restoreSessionInBackground() {
-        Task {
+        guard sessionRestoreTask == nil else { return }
+
+        sessionRestoreTask = Task { [weak self] in
+            guard let self else { return }
+
             do {
                 try await MatrixClientService.shared.restoreSession()
+                if case .error(let error) = MatrixClientService.shared.state,
+                   MatrixClientService.isRetryableTransportError(error) {
+                    await MainActor.run { [weak self] in
+                        self?.sessionRestoreTask = nil
+                    }
+                    return
+                }
+
                 PushService.shared.registerIfNeeded()
                 await MainActor.run { [weak self] in
                     self?.resumeHeartbeatIfNeeded()
@@ -96,6 +119,10 @@ final class AppCoordinator {
                 await self.setupVerificationRequestListener()
             } catch {
                 await MainActor.run { [weak self] in
+                    self?.sessionRestoreTask = nil
+                    if MatrixClientService.isRetryableTransportError(error) {
+                        return
+                    }
                     switch MatrixClientService.shared.state {
                     case .softLoggedOut, .sessionRecoveryRequired:
                         return
@@ -104,7 +131,24 @@ final class AppCoordinator {
                     }
                     self?.showAuth()
                 }
+                return
             }
+
+            await MainActor.run { [weak self] in
+                self?.sessionRestoreTask = nil
+            }
+        }
+    }
+
+    private func retrySessionRestoreAfterNetworkRestored() {
+        guard MatrixClientService.shared.hasStoredSession else { return }
+        guard !isPerformingLogout else { return }
+
+        switch MatrixClientService.shared.state {
+        case .softLoggedOut, .sessionRecoveryRequired, .syncing, .loggingIn, .loggedOut:
+            return
+        default:
+            restoreSessionInBackground()
         }
     }
 
