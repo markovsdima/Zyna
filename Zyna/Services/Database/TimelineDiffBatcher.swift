@@ -402,6 +402,8 @@ final class TimelineDiffBatcher {
             record.isEditPending = false
             record.isEditFailed = false
             record.editTransactionId = nil
+            record.pendingEditBody = nil
+            record.pendingEditZynaAttributesJSON = nil
             return
         }
 
@@ -419,6 +421,12 @@ final class TimelineDiffBatcher {
         }
         if record.editTransactionId == nil {
             record.editTransactionId = existing.editTransactionId
+        }
+        if record.pendingEditBody == nil {
+            record.pendingEditBody = existing.pendingEditBody
+        }
+        if record.pendingEditZynaAttributesJSON == nil {
+            record.pendingEditZynaAttributesJSON = existing.pendingEditZynaAttributesJSON
         }
     }
 

@@ -504,6 +504,29 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v14_pendingMessageEditOutbox") { db in
+            let existingColumns = try db.columns(in: "storedMessage").map(\.name)
+            if !existingColumns.contains("pendingEditBody") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "pendingEditBody", .text)
+                }
+            }
+            if !existingColumns.contains("pendingEditZynaAttributesJSON") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "pendingEditZynaAttributesJSON", .text)
+                }
+            }
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS idx_storedMessage_pendingEditOutbox
+                    ON storedMessage(roomId, timestamp)
+                    WHERE isEditPending = 1
+                      AND editTransactionId IS NOT NULL
+                      AND pendingEditBody IS NOT NULL
+                """
+            )
+        }
+
         return migrator
     }
 

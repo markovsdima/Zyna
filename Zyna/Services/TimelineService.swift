@@ -552,7 +552,13 @@ final class TimelineService {
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = root["content"] as? [String: Any]
         else { return nil }
-        return content["formatted_body"] as? String
+        if let formattedBody = content["formatted_body"] as? String {
+            return formattedBody
+        }
+        if let newContent = content["m.new_content"] as? [String: Any] {
+            return newContent["formatted_body"] as? String
+        }
+        return nil
     }
 
     private static func buildReactions(from event: EventTimelineItem) -> [MessageReaction] {

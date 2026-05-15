@@ -26,6 +26,7 @@ final class AppCoordinator {
 
     func start() {
         OutgoingTextOutboxService.shared.start()
+        OutgoingEditOutboxService.shared.start()
         observeClientState()
         observeNetworkRestoration()
 

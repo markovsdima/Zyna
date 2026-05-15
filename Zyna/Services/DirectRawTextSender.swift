@@ -37,6 +37,15 @@ enum DirectRawTextSender {
         return transactionId
     }
 
+    static func prepareEditTransactionId(
+        existingTransactionId: String? = nil
+    ) -> String? {
+        guard isEnabled else { return nil }
+        let transactionId = existingTransactionId ?? genTransactionId()
+        logDirectRawText("DirectRawEditTx prepared tx=\(transactionId)")
+        return transactionId
+    }
+
     static func send(
         room: Room,
         body: String,
@@ -77,6 +86,35 @@ enum DirectRawTextSender {
         }
     }
 
+    static func sendEdit(
+        room: Room,
+        eventId: String,
+        body: String,
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        transactionId: String
+    ) async -> OutgoingDispatchReceipt {
+        do {
+            let editEventId = try await sendRawTextEdit(
+                room: room,
+                eventId: eventId,
+                body: body,
+                zynaAttributes: zynaAttributes,
+                transactionId: transactionId
+            )
+            logDirectRawText(
+                "DirectRawEditTx dispatch done event=\(eventId) edit=\(editEventId) tx=\(transactionId)"
+            )
+            return .accepted(transactionId: transactionId, eventId: editEventId)
+        } catch {
+            let receipt = rejectedReceipt(for: error)
+            logDirectRawText(
+                "DirectRawEditTx send failed event=\(eventId) tx=\(transactionId) "
+                    + "retryable=\(receipt.retryableTransportFailure) error=\(error)"
+            )
+            return receipt
+        }
+    }
+
     private static func sendRawTextMessage(
         room: Room,
         body: String,
@@ -102,6 +140,38 @@ enum DirectRawTextSender {
             )
             logDirectRawText("DirectRawTx send accepted tx=\(transactionId) event=\(eventId)")
             return eventId
+        } catch {
+            await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
+            throw error
+        }
+    }
+
+    private static func sendRawTextEdit(
+        room: Room,
+        eventId: String,
+        body: String,
+        zynaAttributes: ZynaMessageAttributes,
+        transactionId: String
+    ) async throws -> String {
+        let content = try rawTextEditContentJSON(
+            body: body,
+            eventId: eventId,
+            zynaAttributes: zynaAttributes,
+            transactionId: transactionId
+        )
+        do {
+            logDirectRawText(
+                "DirectRawEditTx send start event=\(eventId) tx=\(transactionId) marker=\(transactionIdContentKey)"
+            )
+            let editEventId = try await room.sendRawWithTransactionIdReturningEventId(
+                eventType: "m.room.message",
+                content: content,
+                transactionId: transactionId
+            )
+            logDirectRawText(
+                "DirectRawEditTx send accepted event=\(eventId) edit=\(editEventId) tx=\(transactionId)"
+            )
+            return editEventId
         } catch {
             await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
             throw error
@@ -148,6 +218,55 @@ enum DirectRawTextSender {
             options: [.sortedKeys]
         )
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func rawTextEditContentJSON(
+        body: String,
+        eventId: String,
+        zynaAttributes: ZynaMessageAttributes,
+        transactionId: String
+    ) throws -> String {
+        let newContent = rawTextNewContent(
+            body: body,
+            zynaAttributes: zynaAttributes
+        )
+        var content = newContent
+        content["body"] = "* \(body)"
+        if let formattedBody = newContent["formatted_body"] as? String {
+            content["format"] = "org.matrix.custom.html"
+            content["formatted_body"] = "* \(formattedBody)"
+        }
+        content["m.new_content"] = newContent
+        content["m.relates_to"] = [
+            "rel_type": "m.replace",
+            "event_id": eventId
+        ]
+        content[transactionIdContentKey] = transactionId
+
+        let data = try JSONSerialization.data(
+            withJSONObject: content,
+            options: [.sortedKeys]
+        )
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func rawTextNewContent(
+        body: String,
+        zynaAttributes: ZynaMessageAttributes
+    ) -> [String: Any] {
+        var content: [String: Any] = [
+            "msgtype": "m.text",
+            "body": body
+        ]
+        guard !zynaAttributes.isEmpty else { return content }
+
+        let htmlBody = ZynaHTMLCodec.encode(
+            userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(body),
+            attributes: zynaAttributes
+        )
+        content["format"] = "org.matrix.custom.html"
+        content["formatted_body"] = htmlBody
+        return content
     }
 
     private static func formattedBody(

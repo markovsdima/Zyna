@@ -232,6 +232,26 @@ final class ChatViewModel {
             }
             .store(in: &cancellables)
 
+        OutgoingEditOutboxService.shared.roomDidUpdateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        OutgoingEditOutboxService.shared.sendFailureSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            }
+            .store(in: &cancellables)
+
         refreshComposerSendPermission()
 
         // Write path: SDK diffs → GRDB
@@ -2125,7 +2145,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 1,
                             isEditFailed = 0,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
                           AND (isEditPending = 0
@@ -2186,7 +2208,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 0,
                             isEditFailed = 0,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND editTransactionId = ?
                     """,
@@ -2214,7 +2238,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 0,
                             isEditFailed = 0,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
                     """,
@@ -2242,7 +2268,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 0,
                             isEditFailed = 1,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND editTransactionId = ?
                     """,
@@ -2270,7 +2298,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 0,
                             isEditFailed = 1,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
                     """,
@@ -2662,6 +2692,24 @@ final class ChatViewModel {
             activeEditAttemptId = attemptId
             Task { [weak self] in
                 guard let self else { return }
+                if let eventId = editing.eventId,
+                   let transactionId = DirectRawTextSender.prepareEditTransactionId(),
+                   PendingMessageEditService.shared.prepareDirectRawEdit(
+                       roomId: self.roomId,
+                       eventId: eventId,
+                       body: editedText,
+                       zynaAttributes: editing.zynaAttributes,
+                       transactionId: transactionId
+                   ) {
+                    await self.refreshWindow()
+                    OutgoingEditOutboxService.shared.kick(reason: "new-edit")
+                    await MainActor.run {
+                        guard self.activeEditAttemptId == attemptId else { return }
+                        self.activeEditAttemptId = nil
+                    }
+                    return
+                }
+
                 if let eventId = editing.eventId {
                     await self.markMessageEditPending(eventId: eventId)
                 }
