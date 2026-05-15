@@ -18,10 +18,14 @@ final class AppCoordinator {
     private weak var logoutFallbackAlert: UIAlertController?
     private let backupUploadDeadline: Duration = .seconds(30)
     private let serverLogoutDeadline: Duration = .seconds(12)
+    private let maxSessionRestoreRetryDelaySeconds: UInt64 = 60
     private var isShowingSessionRecovery = false
     private var sessionRestoreTask: Task<Void, Never>?
+    private var sessionRestoreRetryTask: Task<Void, Never>?
+    private var sessionRestoreRetryDelaySeconds: UInt64 = 5
 
     func start() {
+        OutgoingTextOutboxService.shared.start()
         observeClientState()
         observeNetworkRestoration()
 
@@ -98,6 +102,9 @@ final class AppCoordinator {
     private func restoreSessionInBackground() {
         guard sessionRestoreTask == nil else { return }
 
+        sessionRestoreRetryTask?.cancel()
+        sessionRestoreRetryTask = nil
+
         sessionRestoreTask = Task { [weak self] in
             guard let self else { return }
 
@@ -107,6 +114,7 @@ final class AppCoordinator {
                    MatrixClientService.isRetryableTransportError(error) {
                     await MainActor.run { [weak self] in
                         self?.sessionRestoreTask = nil
+                        self?.scheduleSessionRestoreRetry()
                     }
                     return
                 }
@@ -121,6 +129,7 @@ final class AppCoordinator {
                 await MainActor.run { [weak self] in
                     self?.sessionRestoreTask = nil
                     if MatrixClientService.isRetryableTransportError(error) {
+                        self?.scheduleSessionRestoreRetry()
                         return
                     }
                     switch MatrixClientService.shared.state {
@@ -136,6 +145,7 @@ final class AppCoordinator {
 
             await MainActor.run { [weak self] in
                 self?.sessionRestoreTask = nil
+                self?.clearSessionRestoreRetry(resetBackoff: true)
             }
         }
     }
@@ -148,7 +158,50 @@ final class AppCoordinator {
         case .softLoggedOut, .sessionRecoveryRequired, .syncing, .loggingIn, .loggedOut:
             return
         default:
+            clearSessionRestoreRetry(resetBackoff: true)
             restoreSessionInBackground()
+        }
+    }
+
+    private func scheduleSessionRestoreRetry() {
+        guard MatrixClientService.shared.hasStoredSession else { return }
+        guard !isPerformingLogout else { return }
+        guard sessionRestoreRetryTask == nil else { return }
+
+        let delaySeconds = sessionRestoreRetryDelaySeconds
+        sessionRestoreRetryDelaySeconds = min(
+            delaySeconds * 2,
+            maxSessionRestoreRetryDelaySeconds
+        )
+
+        sessionRestoreRetryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.sessionRestoreRetryTask = nil
+                self.retrySessionRestoreAfterScheduledDelay()
+            }
+        }
+    }
+
+    private func retrySessionRestoreAfterScheduledDelay() {
+        guard MatrixClientService.shared.hasStoredSession else { return }
+        guard !isPerformingLogout else { return }
+
+        switch MatrixClientService.shared.state {
+        case .softLoggedOut, .sessionRecoveryRequired, .syncing, .loggingIn, .loggedOut:
+            return
+        default:
+            restoreSessionInBackground()
+        }
+    }
+
+    private func clearSessionRestoreRetry(resetBackoff: Bool) {
+        sessionRestoreRetryTask?.cancel()
+        sessionRestoreRetryTask = nil
+        if resetBackoff {
+            sessionRestoreRetryDelaySeconds = 5
         }
     }
 

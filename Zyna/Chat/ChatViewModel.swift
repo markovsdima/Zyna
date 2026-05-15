@@ -12,7 +12,6 @@ import MatrixRustSDK
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
-private let logDirectRawTx = ScopedLog(.timeline, prefix: "[DirectRawTx]")
 private let timelineHealthLog = ScopedLog(.database, prefix: "[TimelineHealth]")
 
 enum ChatPresentationMode {
@@ -167,9 +166,6 @@ final class ChatViewModel {
     private var lastBootstrapReadReceiptTarget: VisibleReadReceiptTarget?
     private var messageIndexByEventId: [String: Int] = [:]
     private var rowIndexByEventId: [String: Int] = [:]
-    private var directTextOutboxInFlightEnvelopeIds = Set<String>()
-    private var directTextOutboxRetryTask: Task<Void, Never>?
-    private var directTextOutboxRetryDelaySeconds: UInt64 = 5
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
@@ -213,6 +209,26 @@ final class ChatViewModel {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.refreshComposerSendPermission()
+            }
+            .store(in: &cancellables)
+
+        OutgoingTextOutboxService.shared.roomDidUpdateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        OutgoingTextOutboxService.shared.sendFailureSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.sendFailureNotice = SendFailureNotice(context: failure.context)
             }
             .store(in: &cancellables)
 
@@ -335,7 +351,6 @@ final class ChatViewModel {
             guard let self else { return }
             await self.timelineService.startListening(subscribeForSync: !self.mode.isPreview)
             guard !self.mode.isPreview else { return }
-            await self.resumeDirectTextOutbox(reason: "timeline-start")
             let terminalFailures = await self.pendingRedactions.retryPendingRedactions(
                 roomId: self.roomId,
                 timelineService: self.timelineService
@@ -358,125 +373,6 @@ final class ChatViewModel {
             try? await Task.sleep(for: .seconds(1))
             await self?.syncFullHistory()
         }
-    }
-
-    private func resumeDirectTextOutbox(reason: String) async {
-        let candidates = outgoingEnvelopes
-            .envelopes(roomId: roomId, kind: .text)
-            .filter(Self.shouldAutoResumeDirectTextEnvelope)
-
-        guard !candidates.isEmpty else {
-            resetDirectTextOutboxRetryBackoff()
-            return
-        }
-
-        logDirectRawTx(
-            "outbox resume reason=\(reason) count=\(candidates.count) envelopes=\(candidates.map(\.id).joined(separator: ","))"
-        )
-
-        for envelope in candidates {
-            await resumeDirectTextEnvelope(envelope, reason: reason)
-        }
-    }
-
-    private func scheduleDirectTextOutboxRetry(reason: String) {
-        directTextOutboxRetryTask?.cancel()
-        let delaySeconds = directTextOutboxRetryDelaySeconds
-        directTextOutboxRetryDelaySeconds = min(delaySeconds * 2, 60)
-        logDirectRawTx(
-            "outbox retry scheduled reason=\(reason) delaySec=\(delaySeconds)"
-        )
-        directTextOutboxRetryTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
-            guard !Task.isCancelled else { return }
-            await self?.resumeDirectTextOutbox(reason: reason)
-        }
-    }
-
-    private func resetDirectTextOutboxRetryBackoff() {
-        directTextOutboxRetryTask?.cancel()
-        directTextOutboxRetryTask = nil
-        directTextOutboxRetryDelaySeconds = 5
-    }
-
-    private static func shouldAutoResumeDirectTextEnvelope(
-        _ envelope: OutgoingEnvelopeSnapshot
-    ) -> Bool {
-        guard envelope.replyInfo == nil,
-              envelope.textPayload != nil,
-              let item = envelope.primaryItem,
-              item.eventId == nil,
-              let transactionId = item.transactionId,
-              !transactionId.isEmpty else {
-            return false
-        }
-
-        switch item.transportState {
-        case .queued, .sending, .retrying:
-            return true
-        case .uploading, .sent, .failed:
-            return false
-        }
-    }
-
-    private func resumeDirectTextEnvelope(
-        _ envelope: OutgoingEnvelopeSnapshot,
-        reason: String
-    ) async {
-        guard directTextOutboxInFlightEnvelopeIds.insert(envelope.id).inserted else {
-            return
-        }
-        defer {
-            directTextOutboxInFlightEnvelopeIds.remove(envelope.id)
-        }
-
-        guard let envelope = outgoingEnvelopes.envelope(id: envelope.id, roomId: roomId),
-              Self.shouldAutoResumeDirectTextEnvelope(envelope),
-              let item = envelope.primaryItem,
-              let transactionId = item.transactionId,
-              let textPayload = envelope.textPayload,
-              timelineService.prepareDirectRawTextTransactionId(
-                replyEventId: envelope.replyInfo?.eventId,
-                existingTransactionId: transactionId
-              ) == transactionId else {
-            return
-        }
-
-        logDirectRawTx(
-            "outbox send start reason=\(reason) envelope=\(envelope.id) tx=\(transactionId) state=\(item.transportState.rawValue)"
-        )
-
-        if outgoingEnvelopes.markDispatchStarted(
-            envelopeId: envelope.id,
-            itemIndex: item.itemIndex
-        ) {
-            await refreshWindow()
-        }
-
-        let receipt: OutgoingDispatchReceipt
-        if envelope.zynaAttributes.isEmpty {
-            receipt = await timelineService.sendMessage(
-                textPayload.body,
-                bindingToken: item.bindingToken ?? "",
-                transactionId: transactionId
-            )
-        } else {
-            receipt = await timelineService.sendMessage(
-                textPayload.body,
-                zynaAttributes: envelope.zynaAttributes,
-                bindingToken: item.bindingToken ?? "",
-                transactionId: transactionId
-            )
-        }
-
-        logDirectRawTx(
-            "outbox send receipt envelope=\(envelope.id) tx=\(transactionId) accepted=\(receipt.acceptedByTransport)"
-        )
-        await completeOutgoingDispatch(
-            envelopeId: envelope.id,
-            itemIndex: item.itemIndex,
-            receipt: receipt
-        )
     }
 
     // MARK: - Invite
@@ -2417,7 +2313,10 @@ final class ChatViewModel {
                     envelopeId: envelopeId,
                     itemIndex: itemIndex
                 )
-                scheduleDirectTextOutboxRetry(reason: "retryable-failure")
+                OutgoingTextOutboxService.shared.kick(
+                    reason: "retryable-failure",
+                    envelopeId: envelopeId
+                )
                 if didChange {
                     await refreshWindow()
                 }
@@ -2440,18 +2339,31 @@ final class ChatViewModel {
             itemIndex: itemIndex
         )
 
-        guard let transactionId = receipt.transactionId,
-              outgoingEnvelopes.bindTransaction(
-                envelopeId: envelopeId,
-                itemIndex: itemIndex,
-                transactionId: transactionId
-              ) else {
+        guard let transactionId = receipt.transactionId else {
             if didMarkStarted {
                 await refreshWindow()
             }
             return
         }
-        await refreshWindow()
+
+        let didBindTransaction = outgoingEnvelopes.bindTransaction(
+            envelopeId: envelopeId,
+            itemIndex: itemIndex,
+            transactionId: transactionId
+        )
+        let didBindEvent: Bool
+        if let eventId = receipt.eventId {
+            didBindEvent = outgoingEnvelopes.bindEvent(
+                transactionId: transactionId,
+                eventId: eventId
+            )
+        } else {
+            didBindEvent = false
+        }
+
+        if didMarkStarted || didBindTransaction || didBindEvent {
+            await refreshWindow()
+        }
     }
 
     private func publishSendFailureNotice(context: OutgoingSendFailureContext?) {
@@ -2521,6 +2433,14 @@ final class ChatViewModel {
             transactionId: transactionId
         )
         await refreshWindow()
+
+        if replyEventId == nil, transactionId != nil {
+            OutgoingTextOutboxService.shared.kick(
+                reason: "new-envelope",
+                envelopeId: envelopeId
+            )
+            return
+        }
 
         let receipt: OutgoingDispatchReceipt
         if let replyEventId {
@@ -3277,6 +3197,14 @@ final class ChatViewModel {
         )
         outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
         await refreshWindow()
+
+        if envelope.replyInfo?.eventId == nil, transactionId != nil {
+            OutgoingTextOutboxService.shared.kick(
+                reason: "manual-retry",
+                envelopeId: retryEnvelopeId
+            )
+            return
+        }
 
         let receipt: OutgoingDispatchReceipt
         if let replyEventId = envelope.replyInfo?.eventId {

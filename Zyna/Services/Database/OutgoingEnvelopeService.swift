@@ -436,6 +436,60 @@ final class OutgoingEnvelopeService {
         envelopes(roomId: roomId, kind: .mediaBatch)
     }
 
+    func directTextOutboxCandidates(envelopeIds: Set<String>? = nil) -> [OutgoingEnvelopeSnapshot] {
+        if let envelopeIds, envelopeIds.isEmpty {
+            return []
+        }
+
+        return (try? dbQueue.read { db in
+            var request = OutgoingEnvelopeRecord
+                .filter(Column("kind") == OutgoingEnvelopeKind.text.rawValue)
+                .order(Column("createdAt").asc)
+
+            if let envelopeIds {
+                request = request.filter(envelopeIds.contains(Column("id")))
+            }
+
+            let envelopes = try request.fetchAll(db)
+            guard !envelopes.isEmpty else { return [] }
+
+            let groupIds = envelopes.map(\.id)
+            let items = try OutgoingEnvelopeItemRecord
+                .filter(groupIds.contains(Column("groupId")))
+                .order(Column("itemIndex").asc)
+                .fetchAll(db)
+            let itemsByGroupId = Dictionary(grouping: items, by: \.groupId)
+
+            return envelopes
+                .map { envelope in
+                    OutgoingEnvelopeSnapshot(
+                        record: envelope,
+                        items: itemsByGroupId[envelope.id] ?? []
+                    )
+                }
+                .filter(Self.isDirectTextOutboxCandidate)
+        }) ?? []
+    }
+
+    static func isDirectTextOutboxCandidate(_ envelope: OutgoingEnvelopeSnapshot) -> Bool {
+        guard envelope.kind == .text,
+              envelope.replyInfo == nil,
+              envelope.textPayload != nil,
+              let item = envelope.primaryItem,
+              item.eventId == nil,
+              let transactionId = item.transactionId,
+              !transactionId.isEmpty else {
+            return false
+        }
+
+        switch item.transportState {
+        case .queued, .sending, .retrying:
+            return true
+        case .uploading, .sent, .failed:
+            return false
+        }
+    }
+
     func envelopes(roomId: String, kind: OutgoingEnvelopeKind? = nil) -> [OutgoingEnvelopeSnapshot] {
         (try? dbQueue.read { db in
             let envelopes = try OutgoingEnvelopeRecord
@@ -463,10 +517,10 @@ final class OutgoingEnvelopeService {
         }) ?? []
     }
 
-    func envelope(id: String, roomId: String) -> OutgoingEnvelopeSnapshot? {
+    func envelope(id: String) -> OutgoingEnvelopeSnapshot? {
         try? dbQueue.read { db in
             guard let envelope = try OutgoingEnvelopeRecord
-                .filter(Column("id") == id && Column("roomId") == roomId)
+                .filter(Column("id") == id)
                 .fetchOne(db) else { return nil }
             let items = try OutgoingEnvelopeItemRecord
                 .filter(Column("groupId") == id)
@@ -474,6 +528,12 @@ final class OutgoingEnvelopeService {
                 .fetchAll(db)
             return OutgoingEnvelopeSnapshot(record: envelope, items: items)
         }
+    }
+
+    func envelope(id: String, roomId: String) -> OutgoingEnvelopeSnapshot? {
+        guard let envelope = envelope(id: id),
+              envelope.roomId == roomId else { return nil }
+        return envelope
     }
 
     func deleteEnvelopes(ids: Set<String>) {
@@ -608,7 +668,7 @@ final class OutgoingEnvelopeService {
         }
     }
 
-    private func bindEvent(transactionId: String, eventId: String) -> Bool {
+    func bindEvent(transactionId: String, eventId: String) -> Bool {
         (try? dbQueue.write { db in
             guard var item = try OutgoingEnvelopeItemRecord
                 .filter(Column("transactionId") == transactionId)

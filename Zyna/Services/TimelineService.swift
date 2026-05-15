@@ -116,20 +116,26 @@ struct OutgoingSendFailureContext: Equatable {
 struct OutgoingDispatchReceipt {
     let acceptedByTransport: Bool
     let transactionId: String?
+    let eventId: String?
     let failureContext: OutgoingSendFailureContext?
     let retryableTransportFailure: Bool
 
     static let failed = OutgoingDispatchReceipt(
         acceptedByTransport: false,
         transactionId: nil,
+        eventId: nil,
         failureContext: nil,
         retryableTransportFailure: false
     )
 
-    static func accepted(transactionId: String?) -> OutgoingDispatchReceipt {
+    static func accepted(
+        transactionId: String?,
+        eventId: String? = nil
+    ) -> OutgoingDispatchReceipt {
         OutgoingDispatchReceipt(
             acceptedByTransport: true,
             transactionId: transactionId,
+            eventId: eventId,
             failureContext: nil,
             retryableTransportFailure: false
         )
@@ -146,6 +152,7 @@ struct OutgoingDispatchReceipt {
         OutgoingDispatchReceipt(
             acceptedByTransport: false,
             transactionId: nil,
+            eventId: nil,
             failureContext: context,
             retryableTransportFailure: retryableTransportFailure
         )
@@ -155,9 +162,6 @@ struct OutgoingDispatchReceipt {
 // MARK: - Timeline Service
 
 final class TimelineService {
-
-    private static let directRawTextSendDefaultsKey = "com.zyna.matrix.directRawTextSend.enabled"
-    private static let directRawTextTransactionIdContentKey = "com.zyna.client_txn_id"
 
     let isPaginatingSubject = CurrentValueSubject<Bool, Never>(false)
     let rawTimelineItemsSubject = PassthroughSubject<[TimelineItem], Never>()
@@ -188,23 +192,14 @@ final class TimelineService {
 
     var hasLiveTimeline: Bool { timeline != nil }
 
-    private static var directRawTextSendEnabled: Bool {
-        let env = ProcessInfo.processInfo.environment["ZYNA_DIRECT_RAW_TEXT_SEND"]?.lowercased()
-        if env == "1" || env == "true" || env == "yes" {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: directRawTextSendDefaultsKey)
-    }
-
     func prepareDirectRawTextTransactionId(
         replyEventId: String?,
         existingTransactionId: String? = nil
     ) -> String? {
-        guard Self.directRawTextSendEnabled,
-              replyEventId == nil else { return nil }
-        let transactionId = existingTransactionId ?? genTransactionId()
-        logTimeline("DirectRawTx prepared tx=\(transactionId)")
-        return transactionId
+        DirectRawTextSender.prepareTransactionId(
+            replyEventId: replyEventId,
+            existingTransactionId: existingTransactionId
+        )
     }
 
     // MARK: - Start
@@ -496,7 +491,7 @@ final class TimelineService {
               let data = rawJSON.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = root["content"] as? [String: Any],
-              let transactionId = content[directRawTextTransactionIdContentKey] as? String,
+              let transactionId = content[DirectRawTextSender.transactionIdContentKey] as? String,
               !transactionId.isEmpty
         else {
             return nil
@@ -1213,118 +1208,6 @@ final class TimelineService {
         .rejected(context: OutgoingSendFailureContext.fromError(error))
     }
 
-    private static func directRawTextRejectedReceipt(for error: Error) -> OutgoingDispatchReceipt {
-        let context = OutgoingSendFailureContext.fromError(error)
-        return .rejected(
-            context: context,
-            retryableTransportFailure: context == nil && isRetryableDirectRawTextTransportError(error)
-        )
-    }
-
-    private static func isRetryableDirectRawTextTransportError(_ error: Error) -> Bool {
-        let nsError = error as NSError
-        if nsError.domain == NSURLErrorDomain {
-            switch nsError.code {
-            case NSURLErrorTimedOut,
-                 NSURLErrorCannotFindHost,
-                 NSURLErrorCannotConnectToHost,
-                 NSURLErrorNetworkConnectionLost,
-                 NSURLErrorDNSLookupFailed,
-                 NSURLErrorNotConnectedToInternet,
-                 NSURLErrorInternationalRoamingOff,
-                 NSURLErrorCallIsActive,
-                 NSURLErrorDataNotAllowed:
-                return true
-            default:
-                break
-            }
-        }
-
-        let errorText = [
-            String(reflecting: error),
-            String(describing: error),
-            nsError.localizedDescription
-        ]
-        .joined(separator: "\n")
-        .lowercased()
-
-        return containsAny(
-            [
-                "network",
-                "not connected",
-                "notconnectedtointernet",
-                "connection lost",
-                "networkconnectionlost",
-                "timed out",
-                "timeout",
-                "cannot find host",
-                "cannotfindhost",
-                "cannot connect",
-                "cannotconnecttohost",
-                "connection refused",
-                "dns",
-                "temporarily unavailable",
-                "service unavailable",
-                "bad gateway",
-                "gateway timeout",
-                "server error",
-                "servererror"
-            ],
-            in: errorText
-        )
-    }
-
-    private static func containsAny(_ needles: [String], in haystack: String) -> Bool {
-        needles.contains { haystack.contains($0) }
-    }
-
-    private func sendRawTextMessage(
-        body: String,
-        htmlBody: String?,
-        transactionId: String
-    ) async throws {
-        let content = try Self.rawTextMessageContentJSON(
-            body: body,
-            htmlBody: htmlBody,
-            transactionId: transactionId
-        )
-        do {
-            logTimeline(
-                "DirectRawTx send start tx=\(transactionId) marker=\(Self.directRawTextTransactionIdContentKey)"
-            )
-            try await room.sendRawWithTransactionId(
-                eventType: "m.room.message",
-                content: content,
-                transactionId: transactionId
-            )
-            logTimeline("DirectRawTx send accepted tx=\(transactionId)")
-        } catch {
-            await handleMatrixTransportError(error)
-            throw error
-        }
-    }
-
-    private static func rawTextMessageContentJSON(
-        body: String,
-        htmlBody: String?,
-        transactionId: String
-    ) throws -> String {
-        var content: [String: Any] = [
-            "msgtype": "m.text",
-            "body": body,
-            directRawTextTransactionIdContentKey: transactionId
-        ]
-        if let htmlBody {
-            content["format"] = "org.matrix.custom.html"
-            content["formatted_body"] = htmlBody
-        }
-        let data = try JSONSerialization.data(
-            withJSONObject: content,
-            options: [.sortedKeys]
-        )
-        return String(data: data, encoding: .utf8) ?? "{}"
-    }
-
     // MARK: - Send
 
     @discardableResult
@@ -1333,17 +1216,15 @@ final class TimelineService {
         bindingToken: String,
         transactionId: String? = nil
     ) async -> OutgoingDispatchReceipt {
-        do {
-            if let transactionId {
-                try await sendRawTextMessage(
-                    body: text,
-                    htmlBody: nil,
-                    transactionId: transactionId
-                )
-                logTimeline("DirectRawTx dispatch done tx=\(transactionId)")
-                return .accepted(transactionId: transactionId)
-            }
+        if let transactionId {
+            return await DirectRawTextSender.send(
+                room: room,
+                body: text,
+                transactionId: transactionId
+            )
+        }
 
+        do {
             guard let timeline else { return .failed }
             let transactionId = try await sendWithTransaction(bindingToken: bindingToken) {
                 _ = try await timeline.send(msg: messageEventContentFromMarkdown(md: text))
@@ -1351,13 +1232,6 @@ final class TimelineService {
             logTimeline("Message sent")
             return .accepted(transactionId: transactionId)
         } catch {
-            if let transactionId {
-                let receipt = Self.directRawTextRejectedReceipt(for: error)
-                logTimeline(
-                    "DirectRawTx send failed tx=\(transactionId) retryable=\(receipt.retryableTransportFailure) error=\(error)"
-                )
-                return receipt
-            }
             logTimeline("Send failed: \(error)")
             return Self.rejectedReceipt(for: error)
         }
@@ -1380,17 +1254,16 @@ final class TimelineService {
             attributes: zynaAttributes
         )
 
-        do {
-            if let transactionId {
-                try await sendRawTextMessage(
-                    body: text,
-                    htmlBody: htmlBody,
-                    transactionId: transactionId
-                )
-                logTimeline("DirectRawTx dispatch done attrs=true tx=\(transactionId)")
-                return .accepted(transactionId: transactionId)
-            }
+        if let transactionId {
+            return await DirectRawTextSender.send(
+                room: room,
+                body: text,
+                zynaAttributes: zynaAttributes,
+                transactionId: transactionId
+            )
+        }
 
+        do {
             guard let timeline else { return .failed }
             let transactionId = try await sendWithTransaction(bindingToken: bindingToken) {
                 _ = try await timeline.send(msg: messageEventContentFromHtml(
@@ -1400,13 +1273,6 @@ final class TimelineService {
             logTimeline("Message sent with Zyna attrs")
             return .accepted(transactionId: transactionId)
         } catch {
-            if let transactionId {
-                let receipt = Self.directRawTextRejectedReceipt(for: error)
-                logTimeline(
-                    "DirectRawTx send failed attrs=true tx=\(transactionId) retryable=\(receipt.retryableTransportFailure) error=\(error)"
-                )
-                return receipt
-            }
             logTimeline("Send failed: \(error)")
             return Self.rejectedReceipt(for: error)
         }
