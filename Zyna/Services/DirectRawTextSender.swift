@@ -46,6 +46,15 @@ enum DirectRawTextSender {
         return transactionId
     }
 
+    static func prepareRedactionTransactionId(
+        existingTransactionId: String? = nil
+    ) -> String? {
+        guard isEnabled else { return nil }
+        let transactionId = existingTransactionId ?? genTransactionId()
+        logDirectRawText("DirectRawRedactionTx prepared tx=\(transactionId)")
+        return transactionId
+    }
+
     static func send(
         room: Room,
         body: String,
@@ -115,6 +124,33 @@ enum DirectRawTextSender {
         }
     }
 
+    static func sendRedaction(
+        room: Room,
+        eventId: String,
+        reason: String? = nil,
+        transactionId: String
+    ) async -> OutgoingDispatchReceipt {
+        do {
+            let redactionEventId = try await sendRawRedaction(
+                room: room,
+                eventId: eventId,
+                reason: reason,
+                transactionId: transactionId
+            )
+            logDirectRawText(
+                "DirectRawRedactionTx dispatch done event=\(eventId) redaction=\(redactionEventId) tx=\(transactionId)"
+            )
+            return .accepted(transactionId: transactionId, eventId: redactionEventId)
+        } catch {
+            let receipt = rejectedReceipt(for: error)
+            logDirectRawText(
+                "DirectRawRedactionTx send failed event=\(eventId) tx=\(transactionId) "
+                    + "retryable=\(receipt.retryableTransportFailure) error=\(error)"
+            )
+            return receipt
+        }
+    }
+
     private static func sendRawTextMessage(
         room: Room,
         body: String,
@@ -172,6 +208,35 @@ enum DirectRawTextSender {
                 "DirectRawEditTx send accepted event=\(eventId) edit=\(editEventId) tx=\(transactionId)"
             )
             return editEventId
+        } catch {
+            await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
+            throw error
+        }
+    }
+
+    private static func sendRawRedaction(
+        room: Room,
+        eventId: String,
+        reason: String?,
+        transactionId: String
+    ) async throws -> String {
+        let content = try rawRedactionContentJSON(
+            eventId: eventId,
+            reason: reason
+        )
+        do {
+            logDirectRawText(
+                "DirectRawRedactionTx send start event=\(eventId) tx=\(transactionId)"
+            )
+            let redactionEventId = try await room.sendRawWithTransactionIdReturningEventId(
+                eventType: "m.room.redaction",
+                content: content,
+                transactionId: transactionId
+            )
+            logDirectRawText(
+                "DirectRawRedactionTx send accepted event=\(eventId) redaction=\(redactionEventId) tx=\(transactionId)"
+            )
+            return redactionEventId
         } catch {
             await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
             throw error
@@ -243,6 +308,24 @@ enum DirectRawTextSender {
         ]
         content[transactionIdContentKey] = transactionId
 
+        let data = try JSONSerialization.data(
+            withJSONObject: content,
+            options: [.sortedKeys]
+        )
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func rawRedactionContentJSON(
+        eventId: String,
+        reason: String?
+    ) throws -> String {
+        var content: [String: Any] = [
+            "redacts": eventId
+        ]
+        if let reason = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !reason.isEmpty {
+            content["reason"] = reason
+        }
         let data = try JSONSerialization.data(
             withJSONObject: content,
             options: [.sortedKeys]

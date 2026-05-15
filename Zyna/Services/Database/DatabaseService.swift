@@ -527,6 +527,27 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v15_directRawRedactions") { db in
+            let existingColumns = try db.columns(in: "pendingRedaction").map(\.name)
+            if !existingColumns.contains("redactionTransactionId") {
+                try db.alter(table: "pendingRedaction") { t in
+                    t.add(column: "redactionTransactionId", .text)
+                }
+            }
+            if !existingColumns.contains("redactionEventId") {
+                try db.alter(table: "pendingRedaction") { t in
+                    t.add(column: "redactionEventId", .text)
+                }
+            }
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS idx_pendingRedaction_transactionId
+                    ON pendingRedaction(redactionTransactionId)
+                    WHERE redactionTransactionId IS NOT NULL
+                """
+            )
+        }
+
         return migrator
     }
 

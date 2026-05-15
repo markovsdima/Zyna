@@ -77,6 +77,11 @@ final class ChatViewModel {
         let imageData: Data
     }
 
+    private struct PendingRedactionDisplayLookup {
+        let byMessageId: [String: PendingRedactionRecord]
+        let byIdentityKey: [String: PendingRedactionRecord]
+    }
+
     private struct VisibleReadReceiptTarget: Equatable {
         let eventId: String
     }
@@ -160,6 +165,7 @@ final class ChatViewModel {
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
     private var historySyncTask: Task<Void, Never>?
+    private var pendingRedactionPlaceholderWork: DispatchWorkItem?
     private var readReceiptWork: DispatchWorkItem?
     private var pendingReadReceiptSend: PendingReadReceiptSend?
     private var readReceiptBaselineTarget: VisibleReadReceiptTarget?
@@ -171,6 +177,7 @@ final class ChatViewModel {
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
     var hasOlderInDB: Bool { window.hasOlderInDB }
     var roomIdentifier: String { roomId }
+    private static let pendingRedactionPlaceholderDelay: TimeInterval = 1.7
     private var requiresVerifiedDeviceForSending: Bool {
         room.encryptionState() != .notEncrypted
     }
@@ -249,6 +256,30 @@ final class ChatViewModel {
                 guard let self,
                       self.roomId == failure.roomId else { return }
                 self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            }
+            .store(in: &cancellables)
+
+        OutgoingRedactionOutboxService.shared.roomDidUpdateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        OutgoingRedactionOutboxService.shared.redactionFailureSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.onRedactionFailed?(
+                    failure.messageId,
+                    failure.error,
+                    failure.disposition
+                )
             }
             .store(in: &cancellables)
 
@@ -499,22 +530,22 @@ final class ChatViewModel {
         )
 
         // 2. Build display array: filter hidden and already-redacted (keep newly-redacted for animation)
-        let displayStored = newStored.compactMap { msg -> StoredMessage? in
-            if Self.hasAnyIdentityKey(hiddenMessageKeys, for: msg) { return nil }
-            if let pending = Self.pendingPartialRedaction(
+        let now = Date().timeIntervalSince1970
+        let pendingRedactionRecords = pendingRedactions.pendingRecords(roomId: roomId)
+        let pendingRedactionLookup = Self.pendingRedactionDisplayLookup(
+            for: pendingRedactionRecords
+        )
+        schedulePendingRedactionPlaceholderRefresh(
+            records: pendingRedactionRecords,
+            now: now
+        )
+        let rawMessages = newStored.compactMap { msg -> ChatMessage? in
+            displayChatMessage(
                 for: msg,
-                in: pendingPartialRedactions
-            ) {
-                return pending
-            }
-            if Self.hasAnyIdentityKey(pendingRedactionKeys, for: msg) {
-                return nil
-            }
-            if msg.contentType == "redacted"
-                && msg.timelineIdentityKeys.isDisjoint(with: newlyRedactedIdentityKeys) {
-                return nil
-            }
-            return msg
+                pendingRedactionLookup: pendingRedactionLookup,
+                now: now,
+                visibleRedactedKeys: newlyRedactedIdentityKeys
+            )
         }
 
         let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: newStored)
@@ -525,7 +556,6 @@ final class ChatViewModel {
         }
         let olderBoundary = window.peekOlderNeighbor()
         let newerBoundary = window.peekNewerNeighbor()
-        let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
@@ -746,24 +776,26 @@ final class ChatViewModel {
                 .filter { $0.content.isRedacted }
                 .flatMap(\.timelineIdentityKeys)
         )
-        let displayStored = storedMessages.compactMap { msg -> StoredMessage? in
-            if Self.hasAnyIdentityKey(hiddenMessageKeys, for: msg) { return nil }
-            if let pending = Self.pendingPartialRedaction(
+        let now = Date().timeIntervalSince1970
+        let pendingRedactionRecords = pendingRedactions.pendingRecords(roomId: roomId)
+        let pendingRedactionLookup = Self.pendingRedactionDisplayLookup(
+            for: pendingRedactionRecords
+        )
+        schedulePendingRedactionPlaceholderRefresh(
+            records: pendingRedactionRecords,
+            now: now
+        )
+        let rawMessages = storedMessages.compactMap { msg -> ChatMessage? in
+            displayChatMessage(
                 for: msg,
-                in: pendingPartialRedactions
-            ) {
-                return pending
-            }
-            if Self.hasAnyIdentityKey(pendingRedactionKeys, for: msg) { return nil }
-            if msg.contentType == "redacted" {
-                return msg.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) ? nil : msg
-            }
-            return msg
+                pendingRedactionLookup: pendingRedactionLookup,
+                now: now,
+                visibleRedactedKeys: visibleRedactedKeys
+            )
         }
 
         let olderBoundary = window.peekOlderNeighbor()
         let newerBoundary = window.peekNewerNeighbor()
-        let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: Self.redactedMediaGroupIds(in: storedMessages),
@@ -3398,6 +3430,8 @@ final class ChatViewModel {
                 ).key
             }
         )
+        schedulePendingRedactionPlaceholderRefresh()
+        OutgoingRedactionOutboxService.shared.kick(reason: "new-redaction")
         Task { [weak self] in
             guard let self else { return }
             await withTaskGroup(of: Void.self) { group in
@@ -3437,6 +3471,8 @@ final class ChatViewModel {
         pendingRedactionKeys.insert(
             MessageIdentity.from(messageId: messageId, itemIdentifier: itemId).key
         )
+        schedulePendingRedactionPlaceholderRefresh()
+        OutgoingRedactionOutboxService.shared.kick(reason: "new-redaction")
         Task {
             do {
                 try await pendingRedactions.attempt(
@@ -3481,19 +3517,22 @@ final class ChatViewModel {
                 .flatMap(\.timelineIdentityKeys)
         )
         visibleRedactedKeys.subtract(keysToHide)
-        let displayStored = storedMessages.compactMap { msg -> StoredMessage? in
-            if Self.hasAnyIdentityKey(hiddenMessageKeys, for: msg) { return nil }
-            if let pending = Self.pendingPartialRedaction(
+        let now = Date().timeIntervalSince1970
+        let pendingRedactionRecords = pendingRedactions.pendingRecords(roomId: roomId)
+        let pendingRedactionLookup = Self.pendingRedactionDisplayLookup(
+            for: pendingRedactionRecords
+        )
+        schedulePendingRedactionPlaceholderRefresh(
+            records: pendingRedactionRecords,
+            now: now
+        )
+        let rawMessages = storedMessages.compactMap { msg -> ChatMessage? in
+            displayChatMessage(
                 for: msg,
-                in: pendingPartialRedactions
-            ) {
-                return pending
-            }
-            if Self.hasAnyIdentityKey(pendingRedactionKeys, for: msg) { return nil }
-            if msg.contentType == "redacted" {
-                return msg.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) ? nil : msg
-            }
-            return msg
+                pendingRedactionLookup: pendingRedactionLookup,
+                now: now,
+                visibleRedactedKeys: visibleRedactedKeys
+            )
         }
         let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: storedMessages)
         logMediaGroup(
@@ -3501,7 +3540,6 @@ final class ChatViewModel {
         )
         let olderBoundary = window.peekOlderNeighbor()
         let newerBoundary = window.peekNewerNeighbor()
-        let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
@@ -3570,6 +3608,7 @@ final class ChatViewModel {
 
     func cleanup() {
         historySyncTask?.cancel()
+        pendingRedactionPlaceholderWork?.cancel()
         readReceiptWork?.cancel()
         pendingReadReceiptSend = nil
         if !mode.isPreview {
@@ -4031,6 +4070,141 @@ final class ChatViewModel {
 
     func timelineIdentityKeys(for messageIds: Set<String>) -> Set<String> {
         Self.identityKeys(for: messageIds, in: window.currentStoredMessages())
+    }
+
+    private func displayChatMessage(
+        for message: StoredMessage,
+        pendingRedactionLookup: PendingRedactionDisplayLookup,
+        now: TimeInterval,
+        visibleRedactedKeys: Set<String>
+    ) -> ChatMessage? {
+        if Self.hasAnyIdentityKey(hiddenMessageKeys, for: message) { return nil }
+        if let pendingPlaceholder = pendingRedactionPlaceholder(
+            for: message,
+            lookup: pendingRedactionLookup,
+            now: now
+        ) {
+            return pendingPlaceholder
+        }
+        if let pending = Self.pendingPartialRedaction(
+            for: message,
+            in: pendingPartialRedactions
+        ) {
+            return pending.toChatMessage()
+        }
+        if Self.hasAnyIdentityKey(pendingRedactionKeys, for: message) { return nil }
+        if message.contentType == "redacted",
+           message.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) {
+            return nil
+        }
+        return message.toChatMessage()
+    }
+
+    private func pendingRedactionPlaceholder(
+        for message: StoredMessage,
+        lookup: PendingRedactionDisplayLookup,
+        now: TimeInterval
+    ) -> ChatMessage? {
+        guard let record = Self.pendingRedactionRecord(for: message, in: lookup),
+              now - record.createdAt >= Self.pendingRedactionPlaceholderDelay
+        else {
+            return nil
+        }
+
+        return ChatMessage(
+            id: "pending-redaction:\(record.messageId)",
+            eventId: nil,
+            transactionId: nil,
+            itemIdentifier: nil,
+            senderId: message.senderId,
+            senderDisplayName: nil,
+            senderAvatarUrl: nil,
+            isOutgoing: false,
+            timestamp: Date(timeIntervalSince1970: message.timestamp),
+            content: .systemEvent(
+                text: String(localized: "Deleting message..."),
+                kind: .roomState
+            ),
+            reactions: [],
+            replyInfo: nil,
+            isEditable: false,
+            isEdited: false,
+            isEditPending: false,
+            isEditFailed: false,
+            latestEditEventId: nil,
+            zynaAttributes: ZynaMessageAttributes(),
+            sendStatus: "sent"
+        )
+    }
+
+    private static func pendingRedactionRecord(
+        for message: StoredMessage,
+        in lookup: PendingRedactionDisplayLookup
+    ) -> PendingRedactionRecord? {
+        if let record = lookup.byMessageId[message.id] {
+            return record
+        }
+
+        for identityKey in message.timelineIdentityKeys {
+            if let record = lookup.byIdentityKey[identityKey] {
+                return record
+            }
+        }
+        return nil
+    }
+
+    private static func pendingRedactionDisplayLookup(
+        for records: [PendingRedactionRecord]
+    ) -> PendingRedactionDisplayLookup {
+        var byMessageId: [String: PendingRedactionRecord] = [:]
+        var byIdentityKey: [String: PendingRedactionRecord] = [:]
+
+        for record in records {
+            byMessageId[record.messageId] = record
+            byIdentityKey[MessageIdentity.local(record.messageId).key] = record
+            if let itemIdentifier = record.itemIdentifier {
+                byIdentityKey[
+                    MessageIdentity.from(
+                        messageId: record.messageId,
+                        itemIdentifier: itemIdentifier
+                    ).key
+                ] = record
+            }
+        }
+
+        return PendingRedactionDisplayLookup(
+            byMessageId: byMessageId,
+            byIdentityKey: byIdentityKey
+        )
+    }
+
+    private func schedulePendingRedactionPlaceholderRefresh(
+        records: [PendingRedactionRecord]? = nil,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        pendingRedactionPlaceholderWork?.cancel()
+
+        let records = records ?? pendingRedactions.pendingRecords(roomId: roomId)
+        let nextDelay = records
+            .map { $0.createdAt + Self.pendingRedactionPlaceholderDelay - now }
+            .filter { $0 > 0 }
+            .min()
+
+        guard let nextDelay else {
+            pendingRedactionPlaceholderWork = nil
+            return
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            Task { [weak self] in
+                await self?.refreshWindow()
+            }
+        }
+        pendingRedactionPlaceholderWork = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0.05, nextDelay),
+            execute: work
+        )
     }
 
     private static func hasAnyIdentityKey(

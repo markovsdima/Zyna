@@ -1166,6 +1166,16 @@
         }
       }
     },
+    "Deleting message..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удаление сообщения..."
+          }
+        }
+      }
+    },
     "Device Verified" : {
       "localizations" : {
         "ru" : {
