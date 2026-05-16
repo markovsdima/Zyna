@@ -240,6 +240,26 @@ final class ChatViewModel {
             }
             .store(in: &cancellables)
 
+        OutgoingImageOutboxService.shared.roomDidUpdateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        OutgoingImageOutboxService.shared.sendFailureSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            }
+            .store(in: &cancellables)
+
         OutgoingEditOutboxService.shared.roomDidUpdateSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] updatedRoomId in
@@ -2995,6 +3015,7 @@ final class ChatViewModel {
         zynaAttributes: ZynaMessageAttributes
     ) async {
         let envelopeId = UUID().uuidString
+        let transactionId = DirectRawMediaSender.prepareImageTransactionId()
         let bindingToken = outgoingEnvelopes.createOutgoingImage(
             roomId: roomId,
             envelopeId: envelopeId,
@@ -3003,9 +3024,33 @@ final class ChatViewModel {
             height: image.height,
             previewImageData: image.thumbnailData,
             replyInfo: replyInfo,
-            zynaAttributes: zynaAttributes
+            zynaAttributes: zynaAttributes,
+            transactionId: transactionId
         )
         await refreshWindow()
+
+        if let transactionId {
+            let didPrepare = PendingDirectImageService.shared.prepareImage(
+                envelopeId: envelopeId,
+                itemIndex: 0,
+                roomId: roomId,
+                image: image
+            )
+            if didPrepare {
+                OutgoingImageOutboxService.shared.kick(
+                    reason: "new-image",
+                    envelopeId: envelopeId
+                )
+            } else {
+                _ = outgoingEnvelopes.markDispatchFailed(
+                    envelopeId: envelopeId,
+                    itemIndex: 0
+                )
+                await refreshWindow()
+            }
+            _ = transactionId
+            return
+        }
 
         let receipt = await timelineService.sendImage(
             image: image,

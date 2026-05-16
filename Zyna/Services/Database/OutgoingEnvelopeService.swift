@@ -75,7 +75,8 @@ final class OutgoingEnvelopeService {
         previewImageData: Data?,
         previewSource: MediaSource? = nil,
         replyInfo: ReplyInfo?,
-        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        transactionId: String? = nil
     ) -> String {
         let normalizedCaption = Self.normalizeCaption(caption)
         let item = makeEnvelopeItem(
@@ -84,7 +85,8 @@ final class OutgoingEnvelopeService {
             mediaSource: previewSource,
             previewImageData: previewImageData,
             previewWidth: width,
-            previewHeight: height
+            previewHeight: height,
+            transactionId: transactionId
         )
         createEnvelope(
             roomId: roomId,
@@ -105,7 +107,7 @@ final class OutgoingEnvelopeService {
             items: [item]
         )
         logMediaGroup(
-            "outgoing create kind=image room=\(roomId) envelope=\(envelopeId) caption=\(normalizedCaption ?? "<nil>")"
+            "outgoing create kind=image room=\(roomId) envelope=\(envelopeId) tx=\(transactionId ?? "<nil>") caption=\(normalizedCaption ?? "<nil>")"
         )
         return item.bindingToken ?? ""
     }
@@ -387,12 +389,40 @@ final class OutgoingEnvelopeService {
     }
 
     @discardableResult
+    func markDispatchUploading(envelopeId: String, itemIndex: Int) -> Bool {
+        updateTransportState(
+            envelopeId: envelopeId,
+            itemIndex: itemIndex,
+            state: .uploading
+        )
+        .also {
+            if $0 {
+                logMediaGroup("outgoing markUploading envelope=\(envelopeId) index=\(itemIndex)")
+            }
+        }
+    }
+
+    @discardableResult
+    func markDispatchUploaded(envelopeId: String, itemIndex: Int) -> Bool {
+        updateTransportState(
+            envelopeId: envelopeId,
+            itemIndex: itemIndex,
+            state: .uploaded
+        )
+        .also {
+            if $0 {
+                logMediaGroup("outgoing markUploaded envelope=\(envelopeId) index=\(itemIndex)")
+            }
+        }
+    }
+
+    @discardableResult
     func markDispatchStarted(envelopeId: String, itemIndex: Int) -> Bool {
         (try? dbQueue.write { db in
             guard var item = try OutgoingEnvelopeItemRecord
                 .filter(Column("groupId") == envelopeId && Column("itemIndex") == itemIndex)
                 .fetchOne(db) else { return false }
-            guard [.queued, .retrying].contains(item.decodedTransportState) else { return false }
+            guard [.queued, .uploading, .uploaded, .retrying].contains(item.decodedTransportState) else { return false }
             item.transportState = OutgoingTransportState.sending.rawValue
             try item.save(db)
             try recomputeEnvelopeState(id: item.groupId, in: db)
@@ -484,7 +514,7 @@ final class OutgoingEnvelopeService {
         switch item.transportState {
         case .queued, .sending, .retrying:
             return true
-        case .uploading, .sent, .failed:
+        case .uploading, .uploaded, .sent, .failed:
             return false
         }
     }
@@ -537,6 +567,7 @@ final class OutgoingEnvelopeService {
 
     func deleteEnvelopes(ids: Set<String>) {
         guard !ids.isEmpty else { return }
+        PendingDirectImageService.shared.deleteAssets(envelopeIds: ids)
         let voiceFileNames: Set<String> = (try? dbQueue.write { db -> Set<String> in
             let envelopes = try OutgoingEnvelopeRecord
                 .filter(ids.contains(Column("id")))
@@ -756,6 +787,27 @@ final class OutgoingEnvelopeService {
         }
     }
 
+    private func updateTransportState(
+        envelopeId: String,
+        itemIndex: Int,
+        state: OutgoingTransportState
+    ) -> Bool {
+        (try? dbQueue.write { db in
+            guard var item = try OutgoingEnvelopeItemRecord
+                .filter(Column("groupId") == envelopeId && Column("itemIndex") == itemIndex)
+                .fetchOne(db) else { return false }
+            guard item.decodedTransportState != state else { return false }
+            if item.decodedTransportState == .failed,
+               [.sending, .uploading, .uploaded, .retrying].contains(state) {
+                return false
+            }
+            item.transportState = state.rawValue
+            try item.save(db)
+            try recomputeEnvelopeState(id: item.groupId, in: db)
+            return true
+        }) ?? false
+    }
+
     private func deleteEnvelope(containingTransactionId transactionId: String, roomId: String) -> Bool {
         (try? dbQueue.write { db in
             guard let item = try OutgoingEnvelopeItemRecord
@@ -820,6 +872,8 @@ final class OutgoingEnvelopeService {
             nextState = .retrying
         } else if itemStates.contains(.uploading) {
             nextState = .uploading
+        } else if itemStates.contains(.uploaded) {
+            nextState = .uploaded
         } else if itemStates.contains(.sending) {
             nextState = .sending
         } else if !itemStates.isEmpty && itemStates.allSatisfy({ $0 == .sent }) {

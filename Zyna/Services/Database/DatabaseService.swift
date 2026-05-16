@@ -586,6 +586,40 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v17_directRawImages") { db in
+            try db.create(table: "pendingDirectImage") { t in
+                t.primaryKey("itemId", .text)
+                    .references("pendingMediaGroupItem", onDelete: .cascade)
+                t.column("envelopeId", .text).notNull()
+                t.column("roomId", .text).notNull()
+                t.column("originalFileName", .text).notNull()
+                t.column("thumbnailFileName", .text).notNull()
+                t.column("originalMimetype", .text).notNull()
+                t.column("originalSize", .integer).notNull()
+                t.column("originalWidth", .integer).notNull()
+                t.column("originalHeight", .integer).notNull()
+                t.column("thumbnailMimetype", .text).notNull()
+                t.column("thumbnailSize", .integer).notNull()
+                t.column("thumbnailWidth", .integer).notNull()
+                t.column("thumbnailHeight", .integer).notNull()
+                t.column("blurhash", .text)
+                t.column("uploadedImageJSON", .text)
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingDirectImage_envelope",
+                on: "pendingDirectImage",
+                columns: ["envelopeId"]
+            )
+            try db.create(
+                index: "idx_pendingDirectImage_room",
+                on: "pendingDirectImage",
+                columns: ["roomId"]
+            )
+        }
+
         return migrator
     }
 

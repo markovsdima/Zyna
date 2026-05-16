@@ -263,7 +263,7 @@ final class OutgoingTextOutboxService {
             return .send
         case .sending:
             return .send
-        case .uploading, .sent, .failed:
+        case .uploading, .uploaded, .sent, .failed:
             return .skip
         }
     }

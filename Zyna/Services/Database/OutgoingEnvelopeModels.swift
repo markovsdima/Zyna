@@ -21,6 +21,7 @@ enum OutgoingTransportState: String, Codable, Equatable {
     case queued
     case sending
     case uploading
+    case uploaded
     case retrying
     case sent
     case failed
@@ -29,7 +30,7 @@ enum OutgoingTransportState: String, Codable, Equatable {
         switch self {
         case .queued:
             return "queued"
-        case .sending, .uploading:
+        case .sending, .uploading, .uploaded:
             return "sending"
         case .retrying:
             return "retrying"
