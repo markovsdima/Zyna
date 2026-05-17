@@ -320,6 +320,26 @@ final class ChatViewModel {
             }
             .store(in: &cancellables)
 
+        OutgoingForwardedMediaOutboxService.shared.roomDidUpdateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        OutgoingForwardedMediaOutboxService.shared.sendFailureSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            }
+            .store(in: &cancellables)
+
         OutgoingEditOutboxService.shared.roomDidUpdateSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] updatedRoomId in
@@ -2775,7 +2795,179 @@ final class ChatViewModel {
         caption: String?
     ) async {
         let envelopeId = UUID().uuidString
+        guard let draft = forwardedMediaDraft(from: preview),
+              let transactionId = DirectRawMediaSender.prepareForwardedMediaTransactionId()
+        else {
+            await sendOutgoingForwardedMediaLegacy(
+                preview: preview,
+                fallbackContent: fallbackContent,
+                attrs: attrs,
+                caption: caption,
+                envelopeId: envelopeId
+            )
+            return
+        }
 
+        switch draft.kind {
+        case .image:
+            guard case .image(_, _, let width, let height, _, let previewImageData) = preview.content else {
+                await timelineService.sendForwardedContent(fallbackContent)
+                return
+            }
+            _ = outgoingEnvelopes.createOutgoingImage(
+                roomId: roomId,
+                envelopeId: envelopeId,
+                caption: caption,
+                width: width,
+                height: height,
+                previewImageData: previewImageData,
+                previewSource: draft.source,
+                replyInfo: nil,
+                zynaAttributes: attrs
+            )
+        case .video:
+            guard case .video(_, _, let width, let height, let duration, let filename, let mimetype, let size, _, let previewThumbnailData) = preview.content else {
+                await timelineService.sendForwardedContent(fallbackContent)
+                return
+            }
+            _ = outgoingEnvelopes.createOutgoingVideo(
+                roomId: roomId,
+                envelopeId: envelopeId,
+                filename: filename,
+                caption: caption,
+                width: width,
+                height: height,
+                duration: duration,
+                mimetype: mimetype,
+                size: size,
+                previewThumbnailData: previewThumbnailData,
+                previewSource: draft.source,
+                replyInfo: nil,
+                zynaAttributes: attrs
+            )
+        case .voice:
+            guard case .voice(_, let duration, let waveform) = preview.content else {
+                await timelineService.sendForwardedContent(fallbackContent)
+                return
+            }
+            _ = outgoingEnvelopes.createOutgoingVoice(
+                roomId: roomId,
+                envelopeId: envelopeId,
+                duration: duration,
+                waveform: waveform,
+                previewSource: draft.source,
+                replyInfo: nil,
+                zynaAttributes: attrs
+            )
+        case .file:
+            guard case .file(_, let filename, let mimetype, let size, _) = preview.content else {
+                await timelineService.sendForwardedContent(fallbackContent)
+                return
+            }
+            _ = outgoingEnvelopes.createOutgoingFile(
+                roomId: roomId,
+                envelopeId: envelopeId,
+                filename: filename,
+                mimetype: mimetype,
+                size: size,
+                caption: caption,
+                previewSource: draft.source,
+                replyInfo: nil,
+                zynaAttributes: attrs
+            )
+        }
+        await refreshWindow()
+
+        let didPrepare = PendingForwardedMediaService.shared.prepareForwardedMedia(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            draft: draft,
+            caption: caption,
+            transactionId: transactionId
+        )
+        if didPrepare {
+            OutgoingForwardedMediaOutboxService.shared.kick(
+                reason: "new-forwarded-media",
+                envelopeId: envelopeId
+            )
+        } else {
+            _ = outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: 0
+            )
+            await refreshWindow()
+        }
+    }
+
+    private func forwardedMediaDraft(
+        from message: ChatMessage
+    ) -> PendingForwardedMediaDraft? {
+        switch message.content {
+        case .image(let source?, let thumbnailSource, let width, let height, _, _):
+            return PendingForwardedMediaDraft(
+                kind: .image,
+                source: source,
+                thumbnailSource: thumbnailSource,
+                filename: "image.jpg",
+                mimetype: "image/jpeg",
+                size: nil,
+                width: width,
+                height: height,
+                duration: nil,
+                waveform: []
+            )
+        case .video(let source?, let thumbnailSource, let width, let height, let duration, let filename, let mimetype, let size, _, _):
+            return PendingForwardedMediaDraft(
+                kind: .video,
+                source: source,
+                thumbnailSource: thumbnailSource,
+                filename: filename,
+                mimetype: mimetype ?? "video/mp4",
+                size: size,
+                width: width,
+                height: height,
+                duration: duration,
+                waveform: []
+            )
+        case .voice(let source?, let duration, let waveform):
+            return PendingForwardedMediaDraft(
+                kind: .voice,
+                source: source,
+                thumbnailSource: nil,
+                filename: "voice.m4a",
+                mimetype: "audio/mp4",
+                size: nil,
+                width: nil,
+                height: nil,
+                duration: duration,
+                waveform: waveform
+            )
+        case .file(let source?, let filename, let mimetype, let size, _):
+            return PendingForwardedMediaDraft(
+                kind: .file,
+                source: source,
+                thumbnailSource: nil,
+                filename: filename,
+                mimetype: mimetype ?? "application/octet-stream",
+                size: size,
+                width: nil,
+                height: nil,
+                duration: nil,
+                waveform: []
+            )
+        default:
+            return nil
+        }
+    }
+
+    private func sendOutgoingForwardedMediaLegacy(
+        preview: ChatMessage,
+        fallbackContent: RoomMessageEventContentWithoutRelation,
+        attrs: ZynaMessageAttributes,
+        caption: String?,
+        envelopeId: String
+    ) async {
         switch preview.content {
         case .image(let source, _, let width, let height, _, let previewImageData):
             guard let source,

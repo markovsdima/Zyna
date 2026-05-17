@@ -13,6 +13,7 @@ enum DirectRawMediaSender {
     private static let videoDefaultsKey = "com.zyna.matrix.directRawVideoSend.enabled"
     private static let fileDefaultsKey = "com.zyna.matrix.directRawFileSend.enabled"
     private static let voiceDefaultsKey = "com.zyna.matrix.directRawVoiceSend.enabled"
+    private static let forwardedMediaDefaultsKey = "com.zyna.matrix.directRawForwardedMediaSend.enabled"
 
     static var isImageEnabled: Bool {
         guard DirectRawTextSender.isEnabled else { return false }
@@ -78,6 +79,22 @@ enum DirectRawMediaSender {
         return true
     }
 
+    static var isForwardedMediaEnabled: Bool {
+        guard DirectRawTextSender.isEnabled else { return false }
+
+        let env = ProcessInfo.processInfo.environment["ZYNA_DIRECT_RAW_FORWARDED_MEDIA_SEND"]?.lowercased()
+        if env == "1" || env == "true" || env == "yes" {
+            return true
+        }
+        if env == "0" || env == "false" || env == "no" {
+            return false
+        }
+        if UserDefaults.standard.object(forKey: forwardedMediaDefaultsKey) != nil {
+            return UserDefaults.standard.bool(forKey: forwardedMediaDefaultsKey)
+        }
+        return true
+    }
+
     static func prepareImageTransactionId(
         existingTransactionId: String? = nil
     ) -> String? {
@@ -123,6 +140,18 @@ enum DirectRawMediaSender {
             .replacingOccurrences(of: "-", with: "")
             .lowercased()
         logDirectRawMedia("DirectRawFileTx prepared tx=\(transactionId)")
+        return transactionId
+    }
+
+    static func prepareForwardedMediaTransactionId(
+        existingTransactionId: String? = nil
+    ) -> String? {
+        guard isForwardedMediaEnabled else { return nil }
+        let transactionId = existingTransactionId ?? UUID()
+            .uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        logDirectRawMedia("DirectForwardMediaTx prepared tx=\(transactionId)")
         return transactionId
     }
 
@@ -365,6 +394,39 @@ enum DirectRawMediaSender {
         }
     }
 
+    static func sendForwardedMedia(
+        room: Room,
+        msgType: MessageType,
+        replyEventId: String?,
+        transactionId: String
+    ) async -> OutgoingDispatchReceipt {
+        do {
+            logDirectRawMedia(
+                "DirectForwardMediaTx send start tx=\(transactionId) reply=\(replyEventId ?? "-")"
+            )
+            let eventId = try await room.sendMessageTypeWithTransactionIdReturningEventId(
+                msgType: msgType,
+                transactionId: transactionId,
+                replyEventId: replyEventId
+            )
+            logDirectRawMedia(
+                "DirectForwardMediaTx send accepted tx=\(transactionId) event=\(eventId)"
+            )
+            scheduleForwardedMediaIntentionalCrashIfNeeded(
+                point: "after-send-accepted",
+                transactionId: transactionId
+            )
+            return .accepted(transactionId: transactionId, eventId: eventId)
+        } catch {
+            let receipt = rejectedReceipt(for: error)
+            logDirectRawMedia(
+                "DirectForwardMediaTx send failed tx=\(transactionId) retryable=\(receipt.retryableTransportFailure) error=\(error)"
+            )
+            await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
+            return receipt
+        }
+    }
+
     static func scheduleVideoIntentionalCrashIfNeeded(
         point: String,
         transactionId: String
@@ -402,6 +464,26 @@ enum DirectRawMediaSender {
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs))) {
             fatalError("DirectRawFileTx intentional crash \(point) tx=\(transactionId)")
+        }
+    }
+
+    static func scheduleForwardedMediaIntentionalCrashIfNeeded(
+        point: String,
+        transactionId: String
+    ) {
+        let requested = ProcessInfo.processInfo
+            .environment["ZYNA_DIRECT_RAW_FORWARDED_MEDIA_CRASH_POINT"]?
+            .lowercased()
+        guard requested == point else { return }
+
+        let delayMs = ProcessInfo.processInfo
+            .environment["ZYNA_DIRECT_RAW_FORWARDED_MEDIA_CRASH_DELAY_MS"]
+            .flatMap(UInt64.init) ?? 250
+        logDirectRawMedia(
+            "DirectForwardMediaTx crash scheduled point=\(point) tx=\(transactionId) delayMs=\(delayMs)"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs))) {
+            fatalError("DirectForwardMediaTx intentional crash \(point) tx=\(transactionId)")
         }
     }
 
@@ -544,7 +626,7 @@ enum DirectRawMediaSender {
         needles.contains { haystack.contains($0) }
     }
 
-    private static func mediaCaptionPayload(
+    static func mediaCaptionPayload(
         caption: String?,
         zynaAttributes: ZynaMessageAttributes
     ) -> (plain: String?, formattedHTML: String?) {

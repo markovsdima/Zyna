@@ -706,6 +706,46 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v21_directForwardedMedia") { db in
+            try db.create(table: "pendingForwardedMedia") { t in
+                t.primaryKey("itemId", .text)
+                    .references("pendingMediaGroupItem", onDelete: .cascade)
+                t.column("envelopeId", .text).notNull()
+                t.column("roomId", .text).notNull()
+                t.column("mediaKind", .text).notNull()
+                t.column("sourceJSON", .text).notNull()
+                t.column("thumbnailSourceJSON", .text)
+                t.column("filename", .text)
+                t.column("caption", .text)
+                t.column("mimetype", .text)
+                t.column("size", .integer)
+                t.column("width", .integer)
+                t.column("height", .integer)
+                t.column("duration", .double)
+                t.column("waveformJSON", .text)
+                t.column("transactionId", .text).notNull()
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingForwardedMedia_envelope",
+                on: "pendingForwardedMedia",
+                columns: ["envelopeId"]
+            )
+            try db.create(
+                index: "idx_pendingForwardedMedia_room",
+                on: "pendingForwardedMedia",
+                columns: ["roomId"]
+            )
+            try db.create(
+                index: "idx_pendingForwardedMedia_transactionId",
+                on: "pendingForwardedMedia",
+                columns: ["transactionId"],
+                unique: true
+            )
+        }
+
         return migrator
     }
 

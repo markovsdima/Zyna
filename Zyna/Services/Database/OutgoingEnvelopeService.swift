@@ -124,6 +124,7 @@ final class OutgoingEnvelopeService {
         mimetype: String?,
         size: UInt64?,
         previewThumbnailData: Data?,
+        previewSource: MediaSource? = nil,
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         transactionId: String? = nil
@@ -132,6 +133,7 @@ final class OutgoingEnvelopeService {
         let item = makeEnvelopeItem(
             groupId: envelopeId,
             itemIndex: 0,
+            mediaSource: previewSource,
             previewImageData: previewThumbnailData,
             previewWidth: width,
             previewHeight: height,
@@ -175,6 +177,7 @@ final class OutgoingEnvelopeService {
         duration: TimeInterval,
         waveform: [UInt16],
         localFileName: String? = nil,
+        previewSource: MediaSource? = nil,
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         transactionId: String? = nil
@@ -182,6 +185,7 @@ final class OutgoingEnvelopeService {
         let item = makeEnvelopeItem(
             groupId: envelopeId,
             itemIndex: 0,
+            mediaSource: previewSource,
             transactionId: transactionId
         )
         createEnvelope(
@@ -216,6 +220,7 @@ final class OutgoingEnvelopeService {
         mimetype: String?,
         size: UInt64?,
         caption: String?,
+        previewSource: MediaSource? = nil,
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         transactionId: String? = nil
@@ -224,6 +229,7 @@ final class OutgoingEnvelopeService {
         let item = makeEnvelopeItem(
             groupId: envelopeId,
             itemIndex: 0,
+            mediaSource: previewSource,
             transactionId: transactionId
         )
         createEnvelope(
@@ -738,6 +744,38 @@ final class OutgoingEnvelopeService {
         .also {
             if $0 {
                 logMediaGroup("outgoing bindEvent tx=\(transactionId) event=\(eventId)")
+            }
+        }
+    }
+
+    @discardableResult
+    func completeDirectDispatch(
+        envelopeId: String,
+        itemIndex: Int,
+        transactionId: String,
+        eventId: String
+    ) -> Bool {
+        (try? dbQueue.write { db in
+            guard var item = try OutgoingEnvelopeItemRecord
+                .filter(Column("groupId") == envelopeId && Column("itemIndex") == itemIndex)
+                .fetchOne(db) else { return false }
+            let didChange = item.transactionId != transactionId
+                || item.eventId != eventId
+                || item.bindingToken != nil
+                || item.decodedTransportState != .sent
+            item.bindingToken = nil
+            item.transactionId = transactionId
+            item.eventId = eventId
+            item.transportState = OutgoingTransportState.sent.rawValue
+            try item.save(db)
+            try recomputeEnvelopeState(id: item.groupId, in: db)
+            return didChange
+        }) ?? false
+        .also {
+            if $0 {
+                logMediaGroup(
+                    "outgoing completeDirect envelope=\(envelopeId) index=\(itemIndex) tx=\(transactionId) event=\(eventId)"
+                )
             }
         }
     }
