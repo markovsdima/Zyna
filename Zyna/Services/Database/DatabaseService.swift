@@ -679,6 +679,33 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v20_directRawFiles") { db in
+            try db.create(table: "pendingDirectFile") { t in
+                t.primaryKey("itemId", .text)
+                    .references("pendingMediaGroupItem", onDelete: .cascade)
+                t.column("envelopeId", .text).notNull()
+                t.column("roomId", .text).notNull()
+                t.column("storageDirectoryName", .text).notNull()
+                t.column("filename", .text).notNull()
+                t.column("mimetype", .text).notNull()
+                t.column("size", .integer).notNull()
+                t.column("uploadedFileJSON", .text)
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingDirectFile_envelope",
+                on: "pendingDirectFile",
+                columns: ["envelopeId"]
+            )
+            try db.create(
+                index: "idx_pendingDirectFile_room",
+                on: "pendingDirectFile",
+                columns: ["roomId"]
+            )
+        }
+
         return migrator
     }
 

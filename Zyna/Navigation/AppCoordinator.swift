@@ -28,6 +28,7 @@ final class AppCoordinator {
         OutgoingTextOutboxService.shared.start()
         OutgoingImageOutboxService.shared.start()
         OutgoingVideoOutboxService.shared.start()
+        OutgoingFileOutboxService.shared.start()
         OutgoingVoiceOutboxService.shared.start()
         OutgoingEditOutboxService.shared.start()
         OutgoingRedactionOutboxService.shared.start()

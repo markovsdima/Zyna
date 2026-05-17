@@ -1631,7 +1631,7 @@ final class TimelineService {
         guard let type = UTType(filenameExtension: (filename as NSString).pathExtension) else {
             return false
         }
-        return type.conforms(to: .movie) || type.conforms(to: .audiovisualContent)
+        return type.conforms(to: .movie) || type.conforms(to: .video)
     }
 
     @discardableResult

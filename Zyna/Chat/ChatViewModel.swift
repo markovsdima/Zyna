@@ -280,6 +280,26 @@ final class ChatViewModel {
             }
             .store(in: &cancellables)
 
+        OutgoingFileOutboxService.shared.roomDidUpdateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        OutgoingFileOutboxService.shared.sendFailureSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            }
+            .store(in: &cancellables)
+
         OutgoingVoiceOutboxService.shared.roomDidUpdateSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] updatedRoomId in
@@ -2700,6 +2720,7 @@ final class ChatViewModel {
         }
 
         let envelopeId = UUID().uuidString
+        let transactionId = DirectRawMediaSender.prepareFileTransactionId()
         let bindingToken = outgoingEnvelopes.createOutgoingFile(
             roomId: roomId,
             envelopeId: envelopeId,
@@ -2707,9 +2728,36 @@ final class ChatViewModel {
             mimetype: mimetype,
             size: fileSize,
             caption: caption,
-            replyInfo: replyInfo
+            replyInfo: replyInfo,
+            transactionId: transactionId
         )
         await refreshWindow()
+
+        if let transactionId {
+            let didPrepare = PendingDirectFileService.shared.prepareFile(
+                envelopeId: envelopeId,
+                itemIndex: 0,
+                roomId: roomId,
+                sourceURL: url,
+                filename: filename,
+                mimetype: mimetype ?? "application/octet-stream",
+                size: fileSize
+            )
+            if didPrepare {
+                OutgoingFileOutboxService.shared.kick(
+                    reason: "new-file",
+                    envelopeId: envelopeId
+                )
+            } else {
+                _ = outgoingEnvelopes.markDispatchFailed(
+                    envelopeId: envelopeId,
+                    itemIndex: 0
+                )
+                await refreshWindow()
+            }
+            _ = transactionId
+            return
+        }
 
         let receipt = await timelineService.sendFile(
             url: url,

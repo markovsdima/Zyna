@@ -217,10 +217,15 @@ final class OutgoingEnvelopeService {
         size: UInt64?,
         caption: String?,
         replyInfo: ReplyInfo?,
-        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        transactionId: String? = nil
     ) -> String {
         let normalizedCaption = Self.normalizeCaption(caption)
-        let item = makeEnvelopeItem(groupId: envelopeId, itemIndex: 0)
+        let item = makeEnvelopeItem(
+            groupId: envelopeId,
+            itemIndex: 0,
+            transactionId: transactionId
+        )
         createEnvelope(
             roomId: roomId,
             envelopeId: envelopeId,
@@ -241,7 +246,7 @@ final class OutgoingEnvelopeService {
             items: [item]
         )
         logMediaGroup(
-            "outgoing create kind=file room=\(roomId) envelope=\(envelopeId) filename=\(filename)"
+            "outgoing create kind=file room=\(roomId) envelope=\(envelopeId) tx=\(transactionId ?? "<nil>") filename=\(filename)"
         )
         return item.bindingToken ?? ""
     }
@@ -577,6 +582,7 @@ final class OutgoingEnvelopeService {
         guard !ids.isEmpty else { return }
         PendingDirectImageService.shared.deleteAssets(envelopeIds: ids)
         PendingDirectVideoService.shared.deleteAssets(envelopeIds: ids)
+        PendingDirectFileService.shared.deleteAssets(envelopeIds: ids)
         let voiceFileNames: Set<String> = (try? dbQueue.write { db -> Set<String> in
             let envelopes = try OutgoingEnvelopeRecord
                 .filter(ids.contains(Column("id")))

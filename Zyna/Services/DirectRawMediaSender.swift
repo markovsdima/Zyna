@@ -11,6 +11,7 @@ private let logDirectRawMedia = ScopedLog(.timeline)
 enum DirectRawMediaSender {
     private static let imageDefaultsKey = "com.zyna.matrix.directRawImageSend.enabled"
     private static let videoDefaultsKey = "com.zyna.matrix.directRawVideoSend.enabled"
+    private static let fileDefaultsKey = "com.zyna.matrix.directRawFileSend.enabled"
     private static let voiceDefaultsKey = "com.zyna.matrix.directRawVoiceSend.enabled"
 
     static var isImageEnabled: Bool {
@@ -61,6 +62,22 @@ enum DirectRawMediaSender {
         return true
     }
 
+    static var isFileEnabled: Bool {
+        guard DirectRawTextSender.isEnabled else { return false }
+
+        let env = ProcessInfo.processInfo.environment["ZYNA_DIRECT_RAW_FILE_SEND"]?.lowercased()
+        if env == "1" || env == "true" || env == "yes" {
+            return true
+        }
+        if env == "0" || env == "false" || env == "no" {
+            return false
+        }
+        if UserDefaults.standard.object(forKey: fileDefaultsKey) != nil {
+            return UserDefaults.standard.bool(forKey: fileDefaultsKey)
+        }
+        return true
+    }
+
     static func prepareImageTransactionId(
         existingTransactionId: String? = nil
     ) -> String? {
@@ -94,6 +111,18 @@ enum DirectRawMediaSender {
             .replacingOccurrences(of: "-", with: "")
             .lowercased()
         logDirectRawMedia("DirectRawVideoTx prepared tx=\(transactionId)")
+        return transactionId
+    }
+
+    static func prepareFileTransactionId(
+        existingTransactionId: String? = nil
+    ) -> String? {
+        guard isFileEnabled else { return nil }
+        let transactionId = existingTransactionId ?? UUID()
+            .uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        logDirectRawMedia("DirectRawFileTx prepared tx=\(transactionId)")
         return transactionId
     }
 
@@ -269,6 +298,73 @@ enum DirectRawMediaSender {
         return uploadedVoiceJSON
     }
 
+    static func uploadFile(
+        room: Room,
+        file: PendingDirectFileRecord,
+        fileURL: URL,
+        transactionId: String
+    ) async throws -> String {
+        logDirectRawMedia(
+            "DirectRawFileTx upload start tx=\(transactionId) filename=\(file.filename) bytes=\(file.size)"
+        )
+        let uploadedFileJSON = try await room.uploadFileForEvent(
+            filePath: fileURL.path(percentEncoded: false),
+            thumbnailFilePath: nil,
+            mimetype: file.mimetype,
+            size: UInt64(clamping: file.size),
+            thumbnailMimetype: nil,
+            thumbnailSize: nil,
+            thumbnailWidth: nil,
+            thumbnailHeight: nil,
+            progressWatcher: nil
+        )
+        logDirectRawMedia(
+            "DirectRawFileTx upload accepted tx=\(transactionId) uploadedBytes=\(uploadedFileJSON.count)"
+        )
+        return uploadedFileJSON
+    }
+
+    static func sendUploadedFile(
+        room: Room,
+        uploadedFileJSON: String,
+        caption: String?,
+        zynaAttributes: ZynaMessageAttributes,
+        replyEventId: String?,
+        transactionId: String
+    ) async -> OutgoingDispatchReceipt {
+        do {
+            let captionPayload = mediaCaptionPayload(
+                caption: caption,
+                zynaAttributes: zynaAttributes
+            )
+            logDirectRawMedia(
+                "DirectRawFileTx send start tx=\(transactionId) reply=\(replyEventId ?? "-")"
+            )
+            let eventId = try await room.sendUploadedFileWithTransactionIdReturningEventId(
+                uploadedFileJson: uploadedFileJSON,
+                transactionId: transactionId,
+                caption: captionPayload.plain,
+                formattedCaption: captionPayload.formattedHTML,
+                replyEventId: replyEventId
+            )
+            logDirectRawMedia(
+                "DirectRawFileTx send accepted tx=\(transactionId) event=\(eventId)"
+            )
+            scheduleFileIntentionalCrashIfNeeded(
+                point: "after-send-accepted",
+                transactionId: transactionId
+            )
+            return .accepted(transactionId: transactionId, eventId: eventId)
+        } catch {
+            let receipt = rejectedReceipt(for: error)
+            logDirectRawMedia(
+                "DirectRawFileTx send failed tx=\(transactionId) retryable=\(receipt.retryableTransportFailure) error=\(error)"
+            )
+            await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
+            return receipt
+        }
+    }
+
     static func scheduleVideoIntentionalCrashIfNeeded(
         point: String,
         transactionId: String
@@ -286,6 +382,26 @@ enum DirectRawMediaSender {
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs))) {
             fatalError("DirectRawVideoTx intentional crash \(point) tx=\(transactionId)")
+        }
+    }
+
+    static func scheduleFileIntentionalCrashIfNeeded(
+        point: String,
+        transactionId: String
+    ) {
+        let requested = ProcessInfo.processInfo
+            .environment["ZYNA_DIRECT_RAW_FILE_CRASH_POINT"]?
+            .lowercased()
+        guard requested == point else { return }
+
+        let delayMs = ProcessInfo.processInfo
+            .environment["ZYNA_DIRECT_RAW_FILE_CRASH_DELAY_MS"]
+            .flatMap(UInt64.init) ?? 250
+        logDirectRawMedia(
+            "DirectRawFileTx crash scheduled point=\(point) tx=\(transactionId) delayMs=\(delayMs)"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs))) {
+            fatalError("DirectRawFileTx intentional crash \(point) tx=\(transactionId)")
         }
     }
 
