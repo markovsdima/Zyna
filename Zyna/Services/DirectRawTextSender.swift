@@ -140,7 +140,7 @@ enum DirectRawTextSender {
         transactionId: String
     ) async -> OutgoingDispatchReceipt {
         do {
-            let redactionEventId = try await sendRawRedaction(
+            let redactionEventId = try await sendRedactionEvent(
                 room: room,
                 eventId: eventId,
                 reason: reason,
@@ -250,23 +250,19 @@ enum DirectRawTextSender {
         }
     }
 
-    private static func sendRawRedaction(
+    private static func sendRedactionEvent(
         room: Room,
         eventId: String,
         reason: String?,
         transactionId: String
     ) async throws -> String {
-        let content = try rawRedactionContentJSON(
-            eventId: eventId,
-            reason: reason
-        )
         do {
             logDirectRawText(
                 "DirectRawRedactionTx send start event=\(eventId) tx=\(transactionId)"
             )
-            let redactionEventId = try await room.sendRawWithTransactionIdReturningEventId(
-                eventType: "m.room.redaction",
-                content: content,
+            let redactionEventId = try await room.redactWithTransactionIdReturningEventId(
+                eventId: eventId,
+                reason: reason,
                 transactionId: transactionId
             )
             logDirectRawText(
@@ -374,24 +370,6 @@ enum DirectRawTextSender {
         ]
         content[transactionIdContentKey] = transactionId
 
-        let data = try JSONSerialization.data(
-            withJSONObject: content,
-            options: [.sortedKeys]
-        )
-        return String(data: data, encoding: .utf8) ?? "{}"
-    }
-
-    private static func rawRedactionContentJSON(
-        eventId: String,
-        reason: String?
-    ) throws -> String {
-        var content: [String: Any] = [
-            "redacts": eventId
-        ]
-        if let reason = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !reason.isEmpty {
-            content["reason"] = reason
-        }
         let data = try JSONSerialization.data(
             withJSONObject: content,
             options: [.sortedKeys]

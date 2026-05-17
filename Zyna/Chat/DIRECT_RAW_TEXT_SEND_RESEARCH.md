@@ -141,8 +141,11 @@ Main files:
 Behavior:
 
 - Zyna stores a persistent redaction intent.
-- If the target has a real event id, the redaction is sent through direct raw
-  `m.room.redaction` with a durable transaction id.
+- If the target has a real event id, the redaction is sent through
+  `Room.redactWithTransactionIdReturningEventId` with a durable transaction id.
+  Do not use the generic raw message send path for redactions. Use the room
+  redaction API so the SDK/homeserver can apply the room-version-specific
+  redaction event shape and avoid treating the operation like a normal message.
 - The returned redaction event id is persisted when available.
 - Retryable transport failures are retried by the app-level outbox.
 - Old fallback paths remain for cases where only an SDK item identifier is
