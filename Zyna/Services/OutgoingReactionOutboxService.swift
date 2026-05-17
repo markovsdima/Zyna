@@ -18,18 +18,15 @@ final class OutgoingReactionOutboxService {
     private let matrixService = MatrixClientService.shared
     private let pendingReactions = PendingReactionService.shared
 
-    private var cancellables = Set<AnyCancellable>()
-    private var started = false
-    private var scanTask: Task<Void, Never>?
-    private var pendingScanReason: String?
-    private var retryWakeTask: Task<Void, Never>?
-    private var retryWakeAt: Date?
-    private var inFlightReactionIds = Set<String>()
-    private var nextRetryAtByReactionId: [String: Date] = [:]
-    private var retryDelaySecondsByReactionId: [String: UInt64] = [:]
-
-    private let initialRetryDelaySeconds: UInt64 = 5
-    private let maxRetryDelaySeconds: UInt64 = 60
+    private let retryBackoff = OutgoingRetryBackoff<String>()
+    private let inFlight = OutgoingInFlightTracker<String>()
+    private lazy var scanCoordinator = OutgoingOutboxScanCoordinator(
+        isEnabled: { DirectRawTextSender.isEnabled },
+        log: { logOutgoingReactionOutbox($0) },
+        scan: { [weak self] reason, _ in
+            await self?.runScan(reason: reason)
+        }
+    )
 
     private enum AttemptDecision {
         case send
@@ -40,88 +37,19 @@ final class OutgoingReactionOutboxService {
 
     func start() {
         Task { @MainActor in
-            self.startOnMain()
+            self.scanCoordinator.start()
         }
     }
 
     func kick(reason: String) {
         Task { @MainActor in
-            self.kickOnMain(reason: reason)
+            self.scanCoordinator.kick(reason: reason)
         }
-    }
-
-    @MainActor
-    private func startOnMain() {
-        guard !started else { return }
-        started = true
-
-        matrixService.stateSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                Task { @MainActor in
-                    self?.handleClientState(state)
-                }
-            }
-            .store(in: &cancellables)
-    }
-
-    @MainActor
-    private func kickOnMain(reason: String) {
-        guard DirectRawTextSender.isEnabled else { return }
-        guard isSyncing else { return }
-
-        if scanTask != nil {
-            pendingScanReason = pendingScanReason.map { "\($0),\(reason)" } ?? reason
-            return
-        }
-
-        startScan(reason: reason)
-    }
-
-    @MainActor
-    private func handleClientState(_ state: MatrixClientState) {
-        switch state {
-        case .syncing:
-            kickOnMain(reason: "syncing")
-        default:
-            pendingScanReason = nil
-            retryWakeTask?.cancel()
-            retryWakeTask = nil
-            retryWakeAt = nil
-            scanTask?.cancel()
-        }
-    }
-
-    @MainActor
-    private var isSyncing: Bool {
-        if case .syncing = matrixService.state {
-            return true
-        }
-        return false
-    }
-
-    @MainActor
-    private func startScan(reason: String) {
-        scanTask = Task { [weak self] in
-            await self?.runScan(reason: reason)
-            await MainActor.run {
-                self?.finishScan()
-            }
-        }
-    }
-
-    @MainActor
-    private func finishScan() {
-        scanTask = nil
-
-        guard let reason = pendingScanReason else { return }
-        pendingScanReason = nil
-        kickOnMain(reason: reason)
     }
 
     @MainActor
     private func runScan(reason: String) async {
-        guard isSyncing,
+        guard scanCoordinator.isSyncing,
               DirectRawTextSender.isEnabled else { return }
 
         let candidates = pendingReactions.outboxCandidates()
@@ -136,7 +64,7 @@ final class OutgoingReactionOutboxService {
 
         for candidate in candidates {
             guard !Task.isCancelled,
-                  isSyncing else { return }
+                  scanCoordinator.isSyncing else { return }
             await sendIfEligible(candidate, reason: reason)
         }
     }
@@ -146,7 +74,10 @@ final class OutgoingReactionOutboxService {
         _ candidate: PendingReactionRecord,
         reason: String
     ) async {
-        guard !inFlightReactionIds.contains(candidate.id) else { return }
+        guard inFlight.begin(candidate.id) else { return }
+        defer {
+            inFlight.end(candidate.id)
+        }
 
         switch attemptDecision(for: candidate.id) {
         case .send:
@@ -156,13 +87,8 @@ final class OutgoingReactionOutboxService {
                 "outbox wait reason=\(reason) id=\(candidate.id) "
                     + "delaySec=\(String(format: "%.1f", delay))"
             )
-            scheduleWake(after: delay, reason: "delayed-\(reason)")
+            scanCoordinator.scheduleWake(after: delay, reason: "delayed-\(reason)")
             return
-        }
-
-        inFlightReactionIds.insert(candidate.id)
-        defer {
-            inFlightReactionIds.remove(candidate.id)
         }
 
         guard let latest = pendingReactions.record(id: candidate.id) else {
@@ -174,7 +100,7 @@ final class OutgoingReactionOutboxService {
             logOutgoingReactionOutbox(
                 "outbox missing room reason=\(reason) id=\(latest.id) room=\(latest.roomId)"
             )
-            scheduleWake(after: TimeInterval(initialRetryDelaySeconds), reason: "missing-room")
+            scanCoordinator.scheduleWake(after: retryBackoff.initialDelay, reason: "missing-room")
             return
         }
 
@@ -214,7 +140,7 @@ final class OutgoingReactionOutboxService {
         )
 
         guard !Task.isCancelled,
-              isSyncing else { return }
+              scanCoordinator.isSyncing else { return }
 
         logOutgoingReactionOutbox(
             "outbox add receipt id=\(record.id) tx=\(transactionId) "
@@ -263,7 +189,7 @@ final class OutgoingReactionOutboxService {
         )
 
         guard !Task.isCancelled,
-              isSyncing else { return }
+              scanCoordinator.isSyncing else { return }
 
         logOutgoingReactionOutbox(
             "outbox remove receipt id=\(record.id) tx=\(transactionId) "
@@ -315,61 +241,21 @@ final class OutgoingReactionOutboxService {
 
     @MainActor
     private func attemptDecision(for reactionId: String) -> AttemptDecision {
-        let now = Date()
-        if let nextRetryAt = nextRetryAtByReactionId[reactionId],
-           nextRetryAt > now {
-            return .wait(nextRetryAt.timeIntervalSince(now))
+        if let delay = retryBackoff.waitDelay(for: reactionId) {
+            return .wait(delay)
         }
         return .send
     }
 
     @MainActor
     private func scheduleRetry(for reactionId: String) {
-        let delay = retryDelaySecondsByReactionId[reactionId] ?? initialRetryDelaySeconds
-        retryDelaySecondsByReactionId[reactionId] = min(delay * 2, maxRetryDelaySeconds)
-        nextRetryAtByReactionId[reactionId] = Date().addingTimeInterval(TimeInterval(delay))
-        scheduleWake(after: TimeInterval(delay), reason: "retryable-failure")
-    }
-
-    @MainActor
-    private func scheduleWake(after delay: TimeInterval, reason: String) {
-        guard delay > 0 else {
-            kickOnMain(reason: reason)
-            return
-        }
-
-        let wakeAt = Date().addingTimeInterval(delay)
-        if let retryWakeAt,
-           retryWakeAt <= wakeAt {
-            return
-        }
-
-        retryWakeTask?.cancel()
-        retryWakeAt = wakeAt
-        logOutgoingReactionOutbox(
-            "outbox retry scheduled reason=\(reason) delaySec=\(String(format: "%.1f", delay))"
-        )
-        retryWakeTask = Task { [weak self] in
-            let nanoseconds = UInt64(delay * 1_000_000_000)
-            try? await Task.sleep(nanoseconds: nanoseconds)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.wake(reason: reason)
-            }
-        }
-    }
-
-    @MainActor
-    private func wake(reason: String) {
-        retryWakeTask = nil
-        retryWakeAt = nil
-        kickOnMain(reason: reason)
+        let delay = retryBackoff.scheduleRetry(for: reactionId)
+        scanCoordinator.scheduleWake(after: delay, reason: "retryable-failure")
     }
 
     @MainActor
     private func clearRetryMetadata(for reactionId: String) {
-        nextRetryAtByReactionId[reactionId] = nil
-        retryDelaySecondsByReactionId[reactionId] = nil
+        retryBackoff.clear(reactionId)
     }
 
     private func room(for roomId: String) -> Room? {

@@ -24,19 +24,15 @@ final class OutgoingTextOutboxService {
     private let matrixService = MatrixClientService.shared
     private let outgoingEnvelopes = OutgoingEnvelopeService.shared
 
-    private var cancellables = Set<AnyCancellable>()
-    private var started = false
-    private var scanTask: Task<Void, Never>?
-    private var pendingScanReason: String?
-    private var pendingEnvelopeIds: Set<String>?
-    private var retryWakeTask: Task<Void, Never>?
-    private var retryWakeAt: Date?
-    private var inFlightEnvelopeIds = Set<String>()
-    private var nextRetryAtByEnvelopeId: [String: Date] = [:]
-    private var retryDelaySecondsByEnvelopeId: [String: UInt64] = [:]
-
-    private let initialRetryDelaySeconds: UInt64 = 5
-    private let maxRetryDelaySeconds: UInt64 = 60
+    private let retryBackoff = OutgoingRetryBackoff<String>()
+    private let inFlight = OutgoingInFlightTracker<String>()
+    private lazy var scanCoordinator = OutgoingOutboxScanCoordinator(
+        isEnabled: { DirectRawTextSender.isEnabled },
+        log: { logOutgoingTextOutbox($0) },
+        scan: { [weak self] reason, envelopeIds in
+            await self?.runScan(reason: reason, envelopeIds: envelopeIds)
+        }
+    )
 
     private enum AttemptDecision {
         case send
@@ -48,110 +44,19 @@ final class OutgoingTextOutboxService {
 
     func start() {
         Task { @MainActor in
-            self.startOnMain()
+            self.scanCoordinator.start()
         }
     }
 
     func kick(reason: String, envelopeId: String? = nil) {
-        let envelopeIds = envelopeId.map { Set([$0]) }
         Task { @MainActor in
-            self.kickOnMain(reason: reason, envelopeIds: envelopeIds)
+            self.scanCoordinator.kick(reason: reason, envelopeId: envelopeId)
         }
-    }
-
-    @MainActor
-    private func startOnMain() {
-        guard !started else { return }
-        started = true
-
-        matrixService.stateSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                Task { @MainActor in
-                    self?.handleClientState(state)
-                }
-            }
-            .store(in: &cancellables)
-    }
-
-    @MainActor
-    private func kickOnMain(reason: String, envelopeIds: Set<String>?) {
-        guard DirectRawTextSender.isEnabled else { return }
-        guard isSyncing else { return }
-
-        if scanTask != nil {
-            let hadPendingScan = pendingScanReason != nil
-            pendingScanReason = pendingScanReason.map { "\($0),\(reason)" } ?? reason
-            mergePendingEnvelopeIds(envelopeIds, hadPendingScan: hadPendingScan)
-            return
-        }
-
-        startScan(reason: reason, envelopeIds: envelopeIds)
-    }
-
-    @MainActor
-    private func handleClientState(_ state: MatrixClientState) {
-        switch state {
-        case .syncing:
-            kickOnMain(reason: "syncing", envelopeIds: nil)
-        default:
-            pendingScanReason = nil
-            pendingEnvelopeIds = nil
-            retryWakeTask?.cancel()
-            retryWakeTask = nil
-            retryWakeAt = nil
-            scanTask?.cancel()
-        }
-    }
-
-    @MainActor
-    private var isSyncing: Bool {
-        if case .syncing = matrixService.state {
-            return true
-        }
-        return false
-    }
-
-    @MainActor
-    private func mergePendingEnvelopeIds(
-        _ envelopeIds: Set<String>?,
-        hadPendingScan: Bool
-    ) {
-        guard hadPendingScan else {
-            pendingEnvelopeIds = envelopeIds
-            return
-        }
-        if pendingEnvelopeIds == nil || envelopeIds == nil {
-            pendingEnvelopeIds = nil
-            return
-        }
-        pendingEnvelopeIds?.formUnion(envelopeIds ?? [])
-    }
-
-    @MainActor
-    private func startScan(reason: String, envelopeIds: Set<String>?) {
-        scanTask = Task { [weak self] in
-            await self?.runScan(reason: reason, envelopeIds: envelopeIds)
-            await MainActor.run {
-                self?.finishScan()
-            }
-        }
-    }
-
-    @MainActor
-    private func finishScan() {
-        scanTask = nil
-
-        guard let reason = pendingScanReason else { return }
-        let envelopeIds = pendingEnvelopeIds
-        pendingScanReason = nil
-        pendingEnvelopeIds = nil
-        kickOnMain(reason: reason, envelopeIds: envelopeIds)
     }
 
     @MainActor
     private func runScan(reason: String, envelopeIds: Set<String>?) async {
-        guard isSyncing,
+        guard scanCoordinator.isSyncing,
               DirectRawTextSender.isEnabled else { return }
 
         let candidates = outgoingEnvelopes.directTextOutboxCandidates(envelopeIds: envelopeIds)
@@ -166,7 +71,7 @@ final class OutgoingTextOutboxService {
 
         for candidate in candidates {
             guard !Task.isCancelled,
-                  isSyncing else { return }
+                  scanCoordinator.isSyncing else { return }
             await sendIfEligible(candidate, reason: reason)
         }
     }
@@ -176,7 +81,10 @@ final class OutgoingTextOutboxService {
         _ candidate: OutgoingEnvelopeSnapshot,
         reason: String
     ) async {
-        guard !inFlightEnvelopeIds.contains(candidate.id) else { return }
+        guard inFlight.begin(candidate.id) else { return }
+        defer {
+            inFlight.end(candidate.id)
+        }
 
         switch attemptDecision(for: candidate) {
         case .send:
@@ -189,15 +97,10 @@ final class OutgoingTextOutboxService {
                         + "delaySec=\(String(format: "%.1f", delay))"
                 )
             }
-            scheduleWake(after: delay, reason: "delayed-\(reason)")
+            scanCoordinator.scheduleWake(after: delay, reason: "delayed-\(reason)")
             return
         case .skip:
             return
-        }
-
-        inFlightEnvelopeIds.insert(candidate.id)
-        defer {
-            inFlightEnvelopeIds.remove(candidate.id)
         }
 
         guard let envelope = outgoingEnvelopes.envelope(id: candidate.id),
@@ -214,7 +117,7 @@ final class OutgoingTextOutboxService {
             logOutgoingTextOutbox(
                 "outbox missing room reason=\(reason) envelope=\(envelope.id) room=\(envelope.roomId)"
             )
-            scheduleWake(after: TimeInterval(initialRetryDelaySeconds), reason: "missing-room")
+            scanCoordinator.scheduleWake(after: retryBackoff.initialDelay, reason: "missing-room")
             return
         }
 
@@ -238,7 +141,7 @@ final class OutgoingTextOutboxService {
         )
 
         guard !Task.isCancelled,
-              isSyncing else { return }
+              scanCoordinator.isSyncing else { return }
 
         logOutgoingTextOutbox(
             "outbox send receipt envelope=\(envelope.id) tx=\(transactionId) "
@@ -250,15 +153,13 @@ final class OutgoingTextOutboxService {
     @MainActor
     private func attemptDecision(for envelope: OutgoingEnvelopeSnapshot) -> AttemptDecision {
         guard let item = envelope.primaryItem else { return .skip }
-        let now = Date()
 
         switch item.transportState {
         case .queued:
             return .send
         case .retrying:
-            if let nextRetryAt = nextRetryAtByEnvelopeId[envelope.id],
-               nextRetryAt > now {
-                return .wait(nextRetryAt.timeIntervalSince(now))
+            if let delay = retryBackoff.waitDelay(for: envelope.id) {
+                return .wait(delay)
             }
             return .send
         case .sending:
@@ -336,51 +237,13 @@ final class OutgoingTextOutboxService {
 
     @MainActor
     private func scheduleRetry(for envelopeId: String) {
-        let delay = retryDelaySecondsByEnvelopeId[envelopeId] ?? initialRetryDelaySeconds
-        retryDelaySecondsByEnvelopeId[envelopeId] = min(delay * 2, maxRetryDelaySeconds)
-        nextRetryAtByEnvelopeId[envelopeId] = Date().addingTimeInterval(TimeInterval(delay))
-        scheduleWake(after: TimeInterval(delay), reason: "retryable-failure")
-    }
-
-    @MainActor
-    private func scheduleWake(after delay: TimeInterval, reason: String) {
-        guard delay > 0 else {
-            kickOnMain(reason: reason, envelopeIds: nil)
-            return
-        }
-
-        let wakeAt = Date().addingTimeInterval(delay)
-        if let retryWakeAt,
-           retryWakeAt <= wakeAt {
-            return
-        }
-
-        retryWakeTask?.cancel()
-        retryWakeAt = wakeAt
-        logOutgoingTextOutbox(
-            "outbox retry scheduled reason=\(reason) delaySec=\(String(format: "%.1f", delay))"
-        )
-        retryWakeTask = Task { [weak self] in
-            let nanoseconds = UInt64(delay * 1_000_000_000)
-            try? await Task.sleep(nanoseconds: nanoseconds)
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.wake(reason: reason)
-            }
-        }
-    }
-
-    @MainActor
-    private func wake(reason: String) {
-        retryWakeTask = nil
-        retryWakeAt = nil
-        kickOnMain(reason: reason, envelopeIds: nil)
+        let delay = retryBackoff.scheduleRetry(for: envelopeId)
+        scanCoordinator.scheduleWake(after: delay, reason: "retryable-failure")
     }
 
     @MainActor
     private func clearRetryMetadata(for envelopeId: String) {
-        nextRetryAtByEnvelopeId[envelopeId] = nil
-        retryDelaySecondsByEnvelopeId[envelopeId] = nil
+        retryBackoff.clear(envelopeId)
     }
 
     @MainActor
