@@ -587,7 +587,7 @@
 			repositoryURL = "https://github.com/markovsdima/matrix-rust-components-swift";
 			requirement = {
 				kind = exactVersion;
-				version = "26.5.13-zyna.5-beta.3";
+				version = "26.5.13-zyna.5-beta.4";
 			};
 		};
 		32E8235C2FB4EEE800A86B57 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {

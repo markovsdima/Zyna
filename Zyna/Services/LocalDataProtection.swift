@@ -83,6 +83,11 @@ enum LocalDataProtection {
             .appendingPathComponent("outgoing-image", isDirectory: true)
     }
 
+    static func outgoingVideoDirectory(for userId: String?) -> URL {
+        userSupportDirectory(for: userId)
+            .appendingPathComponent("outgoing-video", isDirectory: true)
+    }
+
     static func voiceRecordingDirectory(for userId: String?) -> URL {
         userSupportDirectory(for: userId)
             .appendingPathComponent("voice-recordings-temp", isDirectory: true)

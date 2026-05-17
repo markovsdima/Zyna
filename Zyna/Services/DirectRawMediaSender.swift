@@ -10,6 +10,7 @@ private let logDirectRawMedia = ScopedLog(.timeline)
 
 enum DirectRawMediaSender {
     private static let imageDefaultsKey = "com.zyna.matrix.directRawImageSend.enabled"
+    private static let videoDefaultsKey = "com.zyna.matrix.directRawVideoSend.enabled"
     private static let voiceDefaultsKey = "com.zyna.matrix.directRawVoiceSend.enabled"
 
     static var isImageEnabled: Bool {
@@ -44,6 +45,22 @@ enum DirectRawMediaSender {
         return true
     }
 
+    static var isVideoEnabled: Bool {
+        guard DirectRawTextSender.isEnabled else { return false }
+
+        let env = ProcessInfo.processInfo.environment["ZYNA_DIRECT_RAW_VIDEO_SEND"]?.lowercased()
+        if env == "1" || env == "true" || env == "yes" {
+            return true
+        }
+        if env == "0" || env == "false" || env == "no" {
+            return false
+        }
+        if UserDefaults.standard.object(forKey: videoDefaultsKey) != nil {
+            return UserDefaults.standard.bool(forKey: videoDefaultsKey)
+        }
+        return true
+    }
+
     static func prepareImageTransactionId(
         existingTransactionId: String? = nil
     ) -> String? {
@@ -65,6 +82,18 @@ enum DirectRawMediaSender {
             .replacingOccurrences(of: "-", with: "")
             .lowercased()
         logDirectRawMedia("DirectRawVoiceTx prepared tx=\(transactionId)")
+        return transactionId
+    }
+
+    static func prepareVideoTransactionId(
+        existingTransactionId: String? = nil
+    ) -> String? {
+        guard isVideoEnabled else { return nil }
+        let transactionId = existingTransactionId ?? UUID()
+            .uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        logDirectRawMedia("DirectRawVideoTx prepared tx=\(transactionId)")
         return transactionId
     }
 
@@ -107,7 +136,7 @@ enum DirectRawMediaSender {
         transactionId: String
     ) async -> OutgoingDispatchReceipt {
         do {
-            let captionPayload = imageCaptionPayload(
+            let captionPayload = mediaCaptionPayload(
                 caption: caption,
                 zynaAttributes: zynaAttributes
             )
@@ -139,6 +168,80 @@ enum DirectRawMediaSender {
         }
     }
 
+    static func uploadVideo(
+        room: Room,
+        video: PendingDirectVideoRecord,
+        originalFileURL: URL,
+        thumbnailFileURL: URL,
+        transactionId: String
+    ) async throws -> String {
+        logDirectRawMedia(
+            "DirectRawVideoTx upload start tx=\(transactionId) bytes=\(video.originalSize) "
+                + "thumbBytes=\(video.thumbnailSize) size=\(video.originalWidth)x\(video.originalHeight) "
+                + "duration=\(String(format: "%.3f", video.originalDuration))"
+        )
+        let uploadedVideoJSON = try await room.uploadVideoForEvent(
+            originalFilePath: originalFileURL.path(percentEncoded: false),
+            thumbnailFilePath: thumbnailFileURL.path(percentEncoded: false),
+            originalMimetype: video.originalMimetype,
+            originalSize: UInt64(clamping: video.originalSize),
+            originalDuration: video.originalDuration,
+            originalWidth: UInt64(clamping: video.originalWidth),
+            originalHeight: UInt64(clamping: video.originalHeight),
+            thumbnailMimetype: video.thumbnailMimetype,
+            thumbnailSize: UInt64(clamping: video.thumbnailSize),
+            thumbnailWidth: UInt64(clamping: video.thumbnailWidth),
+            thumbnailHeight: UInt64(clamping: video.thumbnailHeight),
+            blurhash: video.blurhash,
+            progressWatcher: nil
+        )
+        logDirectRawMedia(
+            "DirectRawVideoTx upload accepted tx=\(transactionId) uploadedBytes=\(uploadedVideoJSON.count)"
+        )
+        return uploadedVideoJSON
+    }
+
+    static func sendUploadedVideo(
+        room: Room,
+        uploadedVideoJSON: String,
+        caption: String?,
+        zynaAttributes: ZynaMessageAttributes,
+        replyEventId: String?,
+        transactionId: String
+    ) async -> OutgoingDispatchReceipt {
+        do {
+            let captionPayload = mediaCaptionPayload(
+                caption: caption,
+                zynaAttributes: zynaAttributes
+            )
+            logDirectRawMedia(
+                "DirectRawVideoTx send start tx=\(transactionId) reply=\(replyEventId ?? "-")"
+            )
+            let eventId = try await room.sendUploadedVideoWithTransactionIdReturningEventId(
+                uploadedVideoJson: uploadedVideoJSON,
+                transactionId: transactionId,
+                caption: captionPayload.plain,
+                formattedCaption: captionPayload.formattedHTML,
+                replyEventId: replyEventId
+            )
+            logDirectRawMedia(
+                "DirectRawVideoTx send accepted tx=\(transactionId) event=\(eventId)"
+            )
+            scheduleVideoIntentionalCrashIfNeeded(
+                point: "after-send-accepted",
+                transactionId: transactionId
+            )
+            return .accepted(transactionId: transactionId, eventId: eventId)
+        } catch {
+            let receipt = rejectedReceipt(for: error)
+            logDirectRawMedia(
+                "DirectRawVideoTx send failed tx=\(transactionId) retryable=\(receipt.retryableTransportFailure) error=\(error)"
+            )
+            await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
+            return receipt
+        }
+    }
+
     static func uploadVoice(
         room: Room,
         fileURL: URL,
@@ -164,6 +267,26 @@ enum DirectRawMediaSender {
             "DirectRawVoiceTx upload accepted tx=\(transactionId) uploadedBytes=\(uploadedVoiceJSON.count)"
         )
         return uploadedVoiceJSON
+    }
+
+    static func scheduleVideoIntentionalCrashIfNeeded(
+        point: String,
+        transactionId: String
+    ) {
+        let requested = ProcessInfo.processInfo
+            .environment["ZYNA_DIRECT_RAW_VIDEO_CRASH_POINT"]?
+            .lowercased()
+        guard requested == point else { return }
+
+        let delayMs = ProcessInfo.processInfo
+            .environment["ZYNA_DIRECT_RAW_VIDEO_CRASH_DELAY_MS"]
+            .flatMap(UInt64.init) ?? 250
+        logDirectRawMedia(
+            "DirectRawVideoTx crash scheduled point=\(point) tx=\(transactionId) delayMs=\(delayMs)"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs))) {
+            fatalError("DirectRawVideoTx intentional crash \(point) tx=\(transactionId)")
+        }
     }
 
     static func sendUploadedVoice(
@@ -305,7 +428,7 @@ enum DirectRawMediaSender {
         needles.contains { haystack.contains($0) }
     }
 
-    private static func imageCaptionPayload(
+    private static func mediaCaptionPayload(
         caption: String?,
         zynaAttributes: ZynaMessageAttributes
     ) -> (plain: String?, formattedHTML: String?) {

@@ -125,7 +125,8 @@ final class OutgoingEnvelopeService {
         size: UInt64?,
         previewThumbnailData: Data?,
         replyInfo: ReplyInfo?,
-        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        transactionId: String? = nil
     ) -> String {
         let normalizedCaption = Self.normalizeCaption(caption)
         let item = makeEnvelopeItem(
@@ -133,7 +134,8 @@ final class OutgoingEnvelopeService {
             itemIndex: 0,
             previewImageData: previewThumbnailData,
             previewWidth: width,
-            previewHeight: height
+            previewHeight: height,
+            transactionId: transactionId
         )
         createEnvelope(
             roomId: roomId,
@@ -158,10 +160,10 @@ final class OutgoingEnvelopeService {
             items: [item]
         )
         logMediaGroup(
-            "outgoing create kind=video room=\(roomId) envelope=\(envelopeId) filename=\(filename) caption=\(normalizedCaption ?? "<nil>")"
+            "outgoing create kind=video room=\(roomId) envelope=\(envelopeId) tx=\(transactionId ?? "<nil>") filename=\(filename) caption=\(normalizedCaption ?? "<nil>")"
         )
         logVideoEnvelope(
-            "create room=\(roomId) envelope=\(envelopeId) bindingToken=\(item.bindingToken ?? "<nil>") filename=\(filename) bytes=\(size.map(String.init) ?? "<nil>") size=\(width.map(String.init) ?? "<nil>")x\(height.map(String.init) ?? "<nil>") duration=\(duration.map { String(format: "%.3f", $0) } ?? "<nil>") thumbBytes=\(previewThumbnailData?.count ?? 0) caption=\(normalizedCaption ?? "<nil>")"
+            "create room=\(roomId) envelope=\(envelopeId) bindingToken=\(item.bindingToken ?? "<nil>") tx=\(transactionId ?? "<nil>") filename=\(filename) bytes=\(size.map(String.init) ?? "<nil>") size=\(width.map(String.init) ?? "<nil>")x\(height.map(String.init) ?? "<nil>") duration=\(duration.map { String(format: "%.3f", $0) } ?? "<nil>") thumbBytes=\(previewThumbnailData?.count ?? 0) caption=\(normalizedCaption ?? "<nil>")"
         )
         return item.bindingToken ?? ""
     }
@@ -574,6 +576,7 @@ final class OutgoingEnvelopeService {
     func deleteEnvelopes(ids: Set<String>) {
         guard !ids.isEmpty else { return }
         PendingDirectImageService.shared.deleteAssets(envelopeIds: ids)
+        PendingDirectVideoService.shared.deleteAssets(envelopeIds: ids)
         let voiceFileNames: Set<String> = (try? dbQueue.write { db -> Set<String> in
             let envelopes = try OutgoingEnvelopeRecord
                 .filter(ids.contains(Column("id")))

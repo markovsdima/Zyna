@@ -260,6 +260,26 @@ final class ChatViewModel {
             }
             .store(in: &cancellables)
 
+        OutgoingVideoOutboxService.shared.roomDidUpdateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        OutgoingVideoOutboxService.shared.sendFailureSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            }
+            .store(in: &cancellables)
+
         OutgoingVoiceOutboxService.shared.roomDidUpdateSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] updatedRoomId in
@@ -3124,6 +3144,7 @@ final class ChatViewModel {
         zynaAttributes: ZynaMessageAttributes
     ) async {
         let envelopeId = UUID().uuidString
+        let transactionId = DirectRawMediaSender.prepareVideoTransactionId()
         logVideoSend(
             "singleVideo start envelope=\(envelopeId) filename=\(video.filename) bytes=\(video.size) size=\(video.width)x\(video.height) duration=\(String(format: "%.3f", video.duration)) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>") attrsEmpty=\(zynaAttributes.isEmpty)"
         )
@@ -3139,15 +3160,39 @@ final class ChatViewModel {
             size: video.size,
             previewThumbnailData: video.thumbnailData,
             replyInfo: replyInfo,
-            zynaAttributes: zynaAttributes
+            zynaAttributes: zynaAttributes,
+            transactionId: transactionId
         )
         logVideoSend(
-            "singleVideo envelopeCreated envelope=\(envelopeId) bindingToken=\(bindingToken.isEmpty ? "<empty>" : bindingToken) thumbBytes=\(video.thumbnailSize)"
+            "singleVideo envelopeCreated envelope=\(envelopeId) bindingToken=\(bindingToken.isEmpty ? "<empty>" : bindingToken) tx=\(transactionId ?? "<nil>") thumbBytes=\(video.thumbnailSize)"
         )
         await refreshWindow()
 
-        // TODO(video): Surface upload progress, retry, and terminal errors in
-        // the timeline UI once the basic send/receive path is stable.
+        if let transactionId {
+            let didPrepare = PendingDirectVideoService.shared.prepareVideo(
+                envelopeId: envelopeId,
+                itemIndex: 0,
+                roomId: roomId,
+                video: video
+            )
+            if didPrepare {
+                OutgoingVideoOutboxService.shared.kick(
+                    reason: "new-video",
+                    envelopeId: envelopeId
+                )
+                cleanupProcessedVideoFiles(video, delay: 10)
+            } else {
+                _ = outgoingEnvelopes.markDispatchFailed(
+                    envelopeId: envelopeId,
+                    itemIndex: 0
+                )
+                cleanupProcessedVideoFiles(video)
+                await refreshWindow()
+            }
+            _ = transactionId
+            return
+        }
+
         let receipt = await timelineService.sendVideo(
             video: video,
             caption: caption,
@@ -3159,6 +3204,23 @@ final class ChatViewModel {
             "singleVideo receipt envelope=\(envelopeId) accepted=\(receipt.acceptedByTransport) tx=\(receipt.transactionId ?? "<nil>")"
         )
         await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+    }
+
+    private func cleanupProcessedVideoFiles(_ video: ProcessedVideo, delay: TimeInterval = 0) {
+        let videoURL = video.videoURL
+        let thumbnailURL = video.thumbnailURL
+        let workingDirectoryURL = video.videoURL.deletingLastPathComponent()
+        let cleanup = {
+            try? FileManager.default.removeItem(at: videoURL)
+            try? FileManager.default.removeItem(at: thumbnailURL)
+            try? FileManager.default.removeItem(at: workingDirectoryURL)
+        }
+
+        if delay > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: cleanup)
+        } else {
+            DispatchQueue.global(qos: .utility).async(execute: cleanup)
+        }
     }
 
     private func normalizedCaption(_ caption: String?) -> String? {
