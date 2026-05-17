@@ -89,21 +89,21 @@ because grouping metadata is missing or partially wrong.
 More detail about receiver-side grouped media presentation lives in
 [INCOMING_ASSEMBLY.md](./INCOMING_ASSEMBLY.md).
 
-## Local Echo And Sync
+## Outgoing And Sync
 
 Grouped photos are slightly harder than normal messages because the
-Matrix SDK gives us local echo and synced events as separate stages.
+user sees one visual bubble while Matrix still stores and syncs separate
+image events.
 
 To keep the sender UI stable, Zyna now uses a dedicated outgoing layer
-instead of rendering photo groups directly from transient Matrix local
-echo rows.
+instead of rendering photo groups from transient SDK local echo rows.
 
 In practice this means:
 
 - the sender bubble is rendered from Zyna's persistent local outgoing
   state
-- Matrix send queue is still used for transport state such as
-  `transactionId`, upload progress, retries, and final `eventId`
+- the direct image outbox owns transaction ids, upload/send retry, and
+  returned event-id binding
 - the outgoing bubble retires only after the final timeline messages
   are matched and hydrated
 
