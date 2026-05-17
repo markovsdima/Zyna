@@ -286,8 +286,8 @@ final class OutgoingImageOutboxService {
         let receipt = await DirectRawMediaSender.sendUploadedImage(
             room: room,
             uploadedImageJSON: uploadedImageJSON,
-            caption: latest.envelope.imagePayload?.caption,
-            zynaAttributes: latest.envelope.zynaAttributes,
+            caption: caption(for: latest),
+            zynaAttributes: zynaAttributes(for: latest),
             replyEventId: latest.envelope.replyInfo?.eventId,
             transactionId: transactionId
         )
@@ -500,6 +500,36 @@ final class OutgoingImageOutboxService {
     private func clearRetryMetadata(for envelopeId: String) {
         nextRetryAtByEnvelopeId[envelopeId] = nil
         retryDelaySecondsByEnvelopeId[envelopeId] = nil
+    }
+
+    private func caption(for candidate: PendingDirectImageCandidate) -> String? {
+        switch candidate.envelope.kind {
+        case .image:
+            return candidate.envelope.imagePayload?.caption
+        case .mediaBatch:
+            return candidate.envelope.mediaBatchPayload?.caption
+        default:
+            return nil
+        }
+    }
+
+    private func zynaAttributes(
+        for candidate: PendingDirectImageCandidate
+    ) -> ZynaMessageAttributes {
+        guard let batch = candidate.envelope.mediaBatchPayload else {
+            return candidate.envelope.zynaAttributes
+        }
+
+        return ZynaMessageAttributes(
+            mediaGroup: MediaGroupInfo(
+                id: candidate.envelope.id,
+                index: candidate.item.itemIndex,
+                total: candidate.envelope.expectedItemCount,
+                captionMode: .replicated,
+                captionPlacement: batch.captionPlacement,
+                layoutOverride: batch.layoutOverride
+            )
+        )
     }
 
     @MainActor

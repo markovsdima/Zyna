@@ -3227,22 +3227,64 @@ final class ChatViewModel {
             images: images,
             layoutOverride: layoutOverride
         )
+        let directTransactionIds: [String]? = {
+            guard DirectRawMediaSender.isImageEnabled else { return nil }
+            var transactionIds: [String] = []
+            transactionIds.reserveCapacity(images.count)
+            for _ in images {
+                guard let transactionId = DirectRawMediaSender.prepareImageTransactionId() else {
+                    return nil
+                }
+                transactionIds.append(transactionId)
+            }
+            return transactionIds
+        }()
         let bindingTokens = outgoingEnvelopes.createOutgoingMediaBatch(
             roomId: roomId,
             envelopeId: mediaGroupId,
             caption: normalizedCaption,
             captionPlacement: captionPlacement,
             layoutOverride: layoutOverride,
-            items: images.map {
+            items: images.enumerated().map { index, image in
                 OutgoingMediaDraftItem(
-                    previewImageData: $0.thumbnailData,
-                    width: $0.width,
-                    height: $0.height
+                    previewImageData: image.thumbnailData,
+                    width: image.width,
+                    height: image.height,
+                    transactionId: directTransactionIds?[index]
                 )
             },
             replyInfo: replyInfo
         )
         await refreshWindow()
+
+        if directTransactionIds != nil {
+            var didPrepareAll = true
+            for (index, image) in images.enumerated() {
+                let didPrepare = PendingDirectImageService.shared.prepareImage(
+                    envelopeId: mediaGroupId,
+                    itemIndex: index,
+                    roomId: roomId,
+                    image: image
+                )
+                didPrepareAll = didPrepareAll && didPrepare
+            }
+
+            if didPrepareAll {
+                OutgoingImageOutboxService.shared.kick(
+                    reason: "new-image-batch",
+                    envelopeId: mediaGroupId
+                )
+            } else {
+                for index in images.indices {
+                    _ = outgoingEnvelopes.markDispatchFailed(
+                        envelopeId: mediaGroupId,
+                        itemIndex: index
+                    )
+                }
+                await refreshWindow()
+            }
+            return
+        }
 
         for (index, image) in images.enumerated() {
             guard bindingTokens.indices.contains(index) else { continue }

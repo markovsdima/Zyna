@@ -145,7 +145,7 @@ final class PendingDirectImageService {
 
         return (try? dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
-                .filter(Column("kind") == OutgoingEnvelopeKind.image.rawValue)
+                .filter(Self.directImageEnvelopeKinds.contains(Column("kind")))
                 .order(Column("createdAt").asc)
 
             if let envelopeIds {
@@ -170,24 +170,25 @@ final class PendingDirectImageService {
                 ($0.itemId, $0)
             })
 
-            return envelopes.compactMap { envelope -> PendingDirectImageCandidate? in
+            return envelopes.flatMap { envelope -> [PendingDirectImageCandidate] in
                 let snapshot = OutgoingEnvelopeSnapshot(
                     record: envelope,
                     items: itemsByGroupId[envelope.id] ?? []
                 )
-                guard let item = snapshot.primaryItem,
-                      item.eventId == nil,
-                      let transactionId = item.transactionId,
-                      !transactionId.isEmpty,
-                      let image = imagesByItemId[item.id],
-                      Self.isOutboxState(item.transportState) else {
-                    return nil
+                return snapshot.items.compactMap { item -> PendingDirectImageCandidate? in
+                    guard item.eventId == nil,
+                          let transactionId = item.transactionId,
+                          !transactionId.isEmpty,
+                          let image = imagesByItemId[item.id],
+                          Self.isOutboxState(item.transportState) else {
+                        return nil
+                    }
+                    return PendingDirectImageCandidate(
+                        envelope: snapshot,
+                        item: item,
+                        image: image
+                    )
                 }
-                return PendingDirectImageCandidate(
-                    envelope: snapshot,
-                    item: item,
-                    image: image
-                )
             }
         }) ?? []
     }
@@ -201,7 +202,7 @@ final class PendingDirectImageService {
 
         return (try? dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
-                .filter(Column("kind") == OutgoingEnvelopeKind.image.rawValue)
+                .filter(Self.directImageEnvelopeKinds.contains(Column("kind")))
                 .order(Column("createdAt").asc)
 
             if let envelopeIds {
@@ -224,23 +225,24 @@ final class PendingDirectImageService {
 
             let itemsByGroupId = Dictionary(grouping: items, by: \.groupId)
 
-            return envelopes.compactMap { envelope -> PendingDirectImageMissingAssetCandidate? in
+            return envelopes.flatMap { envelope -> [PendingDirectImageMissingAssetCandidate] in
                 let snapshot = OutgoingEnvelopeSnapshot(
                     record: envelope,
                     items: itemsByGroupId[envelope.id] ?? []
                 )
-                guard let item = snapshot.primaryItem,
-                      item.eventId == nil,
-                      let transactionId = item.transactionId,
-                      !transactionId.isEmpty,
-                      !imageItemIds.contains(item.id),
-                      Self.isOutboxState(item.transportState) else {
-                    return nil
+                return snapshot.items.compactMap { item -> PendingDirectImageMissingAssetCandidate? in
+                    guard item.eventId == nil,
+                          let transactionId = item.transactionId,
+                          !transactionId.isEmpty,
+                          !imageItemIds.contains(item.id),
+                          Self.isOutboxState(item.transportState) else {
+                        return nil
+                    }
+                    return PendingDirectImageMissingAssetCandidate(
+                        envelope: snapshot,
+                        item: item
+                    )
                 }
-                return PendingDirectImageMissingAssetCandidate(
-                    envelope: snapshot,
-                    item: item
-                )
             }
         }) ?? []
     }
@@ -275,6 +277,13 @@ final class PendingDirectImageService {
         case .sent, .failed:
             return false
         }
+    }
+
+    private static var directImageEnvelopeKinds: [String] {
+        [
+            OutgoingEnvelopeKind.image.rawValue,
+            OutgoingEnvelopeKind.mediaBatch.rawValue
+        ]
     }
 
     private func imageDirectoryURL() -> URL {

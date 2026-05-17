@@ -538,6 +538,19 @@ struct OutgoingMediaDraftItem {
     let previewImageData: Data
     let width: UInt64
     let height: UInt64
+    let transactionId: String?
+
+    init(
+        previewImageData: Data,
+        width: UInt64,
+        height: UInt64,
+        transactionId: String? = nil
+    ) {
+        self.previewImageData = previewImageData
+        self.width = width
+        self.height = height
+        self.transactionId = transactionId
+    }
 }
 
 struct OutgoingEnvelopeItemSnapshot {

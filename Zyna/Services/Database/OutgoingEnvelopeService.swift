@@ -259,7 +259,8 @@ final class OutgoingEnvelopeService {
                 itemIndex: index,
                 previewImageData: draftItem.previewImageData,
                 previewWidth: draftItem.width,
-                previewHeight: draftItem.height
+                previewHeight: draftItem.height,
+                transactionId: draftItem.transactionId
             )
         }
         createEnvelope(
@@ -282,7 +283,7 @@ final class OutgoingEnvelopeService {
             items: items
         )
         logMediaGroup(
-            "outgoing create kind=mediaBatch room=\(roomId) envelope=\(envelopeId) items=\(draftItems.count) captionPlacement=\(captionPlacement.rawValue) caption=\(normalizedCaption ?? "<nil>")"
+            "outgoing create kind=mediaBatch room=\(roomId) envelope=\(envelopeId) items=\(draftItems.count) directTx=\(draftItems.contains { $0.transactionId != nil }) captionPlacement=\(captionPlacement.rawValue) caption=\(normalizedCaption ?? "<nil>")"
         )
         return items.compactMap(\.bindingToken)
     }
