@@ -337,34 +337,6 @@ final class OutgoingEnvelopeService {
     }
 
     @discardableResult
-    func bindReservedTransaction(bindingToken: String, transactionId: String) -> Bool {
-        (try? dbQueue.write { db in
-            guard var item = try OutgoingEnvelopeItemRecord
-                .filter(Column("bindingToken") == bindingToken)
-                .fetchOne(db) else { return false }
-            let pendingBinding = consumePendingBinding(for: transactionId)
-            let didChange = item.transactionId != transactionId
-                || item.bindingToken != nil
-                || item.decodedTransportState != .sending
-                || pendingBinding != nil
-            item.bindingToken = nil
-            item.transactionId = transactionId
-            item.transportState = OutgoingTransportState.sending.rawValue
-            if let pendingBinding {
-                apply(pendingBinding: pendingBinding, to: &item)
-            }
-            try item.save(db)
-            try recomputeEnvelopeState(id: item.groupId, in: db)
-            return didChange
-        }) ?? false
-        .also {
-            if $0 {
-                logMediaGroup("outgoing bindReserved token=\(bindingToken) tx=\(transactionId)")
-            }
-        }
-    }
-
-    @discardableResult
     func markDispatchFailed(envelopeId: String, itemIndex: Int) -> Bool {
         (try? dbQueue.write { db in
             guard var item = try OutgoingEnvelopeItemRecord
@@ -451,33 +423,6 @@ final class OutgoingEnvelopeService {
             if $0 {
                 logMediaGroup("outgoing markStarted envelope=\(envelopeId) index=\(itemIndex)")
             }
-        }
-    }
-
-    @discardableResult
-    func handleSendQueueUpdate(roomId: String, update: RoomSendQueueUpdate) -> Bool {
-        switch update {
-        case .newLocalEvent(let transactionId):
-            return updateTransportState(transactionId: transactionId, state: .sending)
-        case .replacedLocalEvent(let transactionId):
-            return updateTransportState(transactionId: transactionId, state: .sending)
-        case .sendError(let transactionId, let error, let isRecoverable):
-            let requiresExplicitRetry = OutgoingSendFailureReason.fromQueueWedgeError(error) != nil
-            return updateTransportState(
-                transactionId: transactionId,
-                state: (isRecoverable && !requiresExplicitRetry) ? .retrying : .failed
-            )
-        case .retryEvent(let transactionId):
-            return updateTransportState(transactionId: transactionId, state: .retrying)
-        case .sentEvent(let transactionId, let eventId):
-            return bindEvent(transactionId: transactionId, eventId: eventId)
-        case .mediaUpload(let relatedTo, let file, _, _):
-            if let file {
-                return bindMediaSource(transactionId: relatedTo, mediaSource: file)
-            }
-            return updateTransportState(transactionId: relatedTo, state: .uploading)
-        case .cancelledLocalEvent(let transactionId):
-            return deleteEnvelope(containingTransactionId: transactionId, roomId: roomId)
         }
     }
 
@@ -780,66 +725,6 @@ final class OutgoingEnvelopeService {
         }
     }
 
-    private func bindMediaSource(transactionId: String, mediaSource: MediaSource) -> Bool {
-        let mediaSourceJSON = mediaSource.toJson()
-        return (try? dbQueue.write { db in
-            guard var item = try OutgoingEnvelopeItemRecord
-                .filter(Column("transactionId") == transactionId)
-                .fetchOne(db) else {
-                    stashPendingBinding(
-                        for: transactionId,
-                        mutate: { binding in
-                            binding.mediaSourceJSON = mediaSourceJSON
-                            binding.state = .uploading
-                        }
-                    )
-                    return false
-                }
-            let didChange = item.mediaSourceJSON != mediaSourceJSON
-                || item.decodedTransportState != .uploading
-            item.mediaSourceJSON = mediaSourceJSON
-            item.transportState = OutgoingTransportState.uploading.rawValue
-            try item.save(db)
-            try recomputeEnvelopeState(id: item.groupId, in: db)
-            return didChange
-        }) ?? false
-        .also {
-            if $0 {
-                logMediaGroup("outgoing bindMediaSource tx=\(transactionId) url=\(mediaSource.url())")
-            }
-        }
-    }
-
-    private func updateTransportState(transactionId: String, state: OutgoingTransportState) -> Bool {
-        (try? dbQueue.write { db in
-            guard var item = try OutgoingEnvelopeItemRecord
-                .filter(Column("transactionId") == transactionId)
-                .fetchOne(db) else {
-                    stashPendingBinding(
-                        for: transactionId,
-                        mutate: { binding in
-                            binding.state = state
-                        }
-                    )
-                    return false
-                }
-            guard item.decodedTransportState != state else { return false }
-            if item.decodedTransportState == .failed,
-               [.sending, .uploading, .retrying].contains(state) {
-                return false
-            }
-            item.transportState = state.rawValue
-            try item.save(db)
-            try recomputeEnvelopeState(id: item.groupId, in: db)
-            return true
-        }) ?? false
-        .also {
-            if $0 {
-                logMediaGroup("outgoing state tx=\(transactionId) state=\(state.rawValue)")
-            }
-        }
-    }
-
     private func updateTransportState(
         envelopeId: String,
         itemIndex: Int,
@@ -859,23 +744,6 @@ final class OutgoingEnvelopeService {
             try recomputeEnvelopeState(id: item.groupId, in: db)
             return true
         }) ?? false
-    }
-
-    private func deleteEnvelope(containingTransactionId transactionId: String, roomId: String) -> Bool {
-        (try? dbQueue.write { db in
-            guard let item = try OutgoingEnvelopeItemRecord
-                .filter(Column("transactionId") == transactionId)
-                .fetchOne(db),
-                  let envelope = try OutgoingEnvelopeRecord
-                    .filter(Column("id") == item.groupId && Column("roomId") == roomId)
-                    .fetchOne(db) else { return false }
-            return try OutgoingEnvelopeRecord.deleteOne(db, key: envelope.id)
-        }) ?? false
-        .also {
-            if $0 {
-                logMediaGroup("outgoing delete cancelled room=\(roomId) tx=\(transactionId)")
-            }
-        }
     }
 
     private func stashPendingBinding(

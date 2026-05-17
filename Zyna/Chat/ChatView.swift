@@ -1047,8 +1047,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 guard let self, !self.isPreviewMode else { return }
                 if let forward {
                     self.glassInputBar.inputNode.setForwardPreview(
-                        senderName: forward.preview.senderDisplayName ?? forward.preview.senderId,
-                        body: forward.preview.content.textPreview
+                        senderName: forward.senderDisplayName ?? forward.senderId,
+                        body: forward.content.textPreview
                     )
                 } else {
                     self.glassInputBar.inputNode.setForwardPreview(senderName: nil, body: nil)

@@ -85,7 +85,7 @@ enum ChatMessageContent: Equatable {
         }
     }
 
-    /// Media source + mimetype for re-upload during forwarding.
+    /// Media source + mimetype for by-reference forwarding.
     var mediaForwardInfo: (source: MediaSource, mimetype: String)? {
         switch self {
         case .image(let source?, _, _, _, _, _):

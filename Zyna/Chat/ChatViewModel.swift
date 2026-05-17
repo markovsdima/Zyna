@@ -111,7 +111,7 @@ final class ChatViewModel {
     var sdkPaginationExhausted = false
     @Published private(set) var replyingTo: ChatMessage?
     @Published private(set) var editingMessage: ChatMessage?
-    @Published private(set) var pendingForwardContent: (preview: ChatMessage, content: RoomMessageEventContentWithoutRelation)?
+    @Published private(set) var pendingForwardContent: ChatMessage?
     @Published private(set) var isInvited: Bool = false
     @Published private(set) var sendFailureNotice: SendFailureNotice?
     @Published private(set) var isComposerSendBlocked: Bool = false
@@ -410,54 +410,6 @@ final class ChatViewModel {
                 self?.seedReadReceiptBaseline(eventId: eventId)
             }
         }
-        timelineService.onSendQueueUpdate = { [weak self] update, didMutateOutgoingEnvelopes in
-            Task { [weak self] in
-                guard let self else { return }
-                switch update {
-                case .sentEvent(let transactionId, _):
-                    await self.rememberSentTransaction(transactionId)
-                    let didClearPendingEdit = await self.clearPendingMessageEdit(
-                        transactionId: transactionId
-                    )
-                    if !didClearPendingEdit, didMutateOutgoingEnvelopes {
-                        await self.refreshWindow()
-                    }
-                case .sendError(let transactionId, let error, let isRecoverable):
-                    let failureContext = OutgoingSendFailureContext.fromQueueWedgeError(error)
-                    if let failureContext {
-                        await MainActor.run {
-                            self.sendFailureNotice = SendFailureNotice(context: failureContext)
-                        }
-                    }
-                    guard !isRecoverable || failureContext != nil else {
-                        if didMutateOutgoingEnvelopes {
-                            await self.refreshWindow()
-                        }
-                        return
-                    }
-                    await self.rememberFailedTransaction(transactionId)
-                    let didFailPendingEdit = await self.failPendingMessageEdit(
-                        transactionId: transactionId
-                    )
-                    if !didFailPendingEdit, didMutateOutgoingEnvelopes {
-                        await self.refreshWindow()
-                    }
-                case .cancelledLocalEvent(let transactionId):
-                    await self.rememberFailedTransaction(transactionId)
-                    let didFailPendingEdit = await self.failPendingMessageEdit(
-                        transactionId: transactionId
-                    )
-                    if !didFailPendingEdit, didMutateOutgoingEnvelopes {
-                        await self.refreshWindow()
-                    }
-                default:
-                    if didMutateOutgoingEnvelopes {
-                        await self.refreshWindow()
-                    }
-                }
-            }
-        }
-
         // Bridge: batcher flush → window refresh
         let win = window
         diffBatcher.onFlush = { [weak win] summary in
@@ -515,8 +467,7 @@ final class ChatViewModel {
             await self.timelineService.startListening(subscribeForSync: !self.mode.isPreview)
             guard !self.mode.isPreview else { return }
             let terminalFailures = await self.pendingRedactions.retryPendingRedactions(
-                roomId: self.roomId,
-                timelineService: self.timelineService
+                roomId: self.roomId
             )
             guard !terminalFailures.isEmpty else { return }
             await MainActor.run { [weak self] in
@@ -2261,12 +2212,12 @@ final class ChatViewModel {
         editingMessage = message
     }
 
-    func setPendingForward(preview: ChatMessage, content: RoomMessageEventContentWithoutRelation) {
+    func setPendingForward(_ preview: ChatMessage) {
         activeEditAttemptId = nil
         editingDraftOverride = nil
         replyingTo = nil
         editingMessage = nil
-        pendingForwardContent = (preview, content)
+        pendingForwardContent = preview
     }
 
     func editingInputText(for message: ChatMessage) -> String? {
@@ -2527,70 +2478,6 @@ final class ChatViewModel {
         )
     }
 
-    private func completeOutgoingDispatch(
-        envelopeId: String,
-        itemIndex: Int = 0,
-        receipt: OutgoingDispatchReceipt
-    ) async {
-        if !receipt.acceptedByTransport {
-            if receipt.retryableTransportFailure {
-                let didChange = outgoingEnvelopes.markDispatchRetrying(
-                    envelopeId: envelopeId,
-                    itemIndex: itemIndex
-                )
-                OutgoingTextOutboxService.shared.kick(
-                    reason: "retryable-failure",
-                    envelopeId: envelopeId
-                )
-                if didChange {
-                    await refreshWindow()
-                }
-                return
-            }
-
-            guard outgoingEnvelopes.markDispatchFailed(
-                envelopeId: envelopeId,
-                itemIndex: itemIndex
-            ) else {
-                return
-            }
-            publishSendFailureNotice(context: receipt.failureContext)
-            await refreshWindow()
-            return
-        }
-
-        let didMarkStarted = outgoingEnvelopes.markDispatchStarted(
-            envelopeId: envelopeId,
-            itemIndex: itemIndex
-        )
-
-        guard let transactionId = receipt.transactionId else {
-            if didMarkStarted {
-                await refreshWindow()
-            }
-            return
-        }
-
-        let didBindTransaction = outgoingEnvelopes.bindTransaction(
-            envelopeId: envelopeId,
-            itemIndex: itemIndex,
-            transactionId: transactionId
-        )
-        let didBindEvent: Bool
-        if let eventId = receipt.eventId {
-            didBindEvent = outgoingEnvelopes.bindEvent(
-                transactionId: transactionId,
-                eventId: eventId
-            )
-        } else {
-            didBindEvent = false
-        }
-
-        if didMarkStarted || didBindTransaction || didBindEvent {
-            await refreshWindow()
-        }
-    }
-
     private func publishSendFailureNotice(context: OutgoingSendFailureContext?) {
         guard let context else { return }
         DispatchQueue.main.async { [weak self] in
@@ -2649,7 +2536,7 @@ final class ChatViewModel {
         let transactionId = timelineService.prepareDirectRawTextTransactionId(
             replyEventId: replyEventId
         )
-        let bindingToken = outgoingEnvelopes.createOutgoingText(
+        outgoingEnvelopes.createOutgoingText(
             roomId: roomId,
             envelopeId: envelopeId,
             body: body,
@@ -2659,40 +2546,48 @@ final class ChatViewModel {
         )
         await refreshWindow()
 
-        if transactionId != nil {
-            OutgoingTextOutboxService.shared.kick(
-                reason: "new-envelope",
-                envelopeId: envelopeId
-            )
+        guard transactionId != nil else {
+            if outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: 0
+            ) {
+                await refreshWindow()
+            }
             return
         }
 
-        let receipt: OutgoingDispatchReceipt
-        if let replyEventId {
-            receipt = await timelineService.sendReply(
-                body,
-                to: replyEventId,
-                replyInfo: replyInfo,
-                zynaAttributes: zynaAttributes,
-                transactionId: transactionId,
-                bindingToken: bindingToken
-            )
-        } else if zynaAttributes.isEmpty {
-            receipt = await timelineService.sendMessage(
-                body,
-                bindingToken: bindingToken,
-                transactionId: transactionId
-            )
-        } else {
-            receipt = await timelineService.sendMessage(
-                body,
-                zynaAttributes: zynaAttributes,
-                bindingToken: bindingToken,
-                transactionId: transactionId
-            )
-        }
+        OutgoingTextOutboxService.shared.kick(
+            reason: "new-envelope",
+            envelopeId: envelopeId
+        )
+    }
 
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+    private func failOutgoingEnvelope(
+        envelopeId: String,
+        itemIndex: Int = 0
+    ) async {
+        if outgoingEnvelopes.markDispatchFailed(
+            envelopeId: envelopeId,
+            itemIndex: itemIndex
+        ) {
+            await refreshWindow()
+        }
+    }
+
+    private func failOutgoingEnvelopeItems(
+        envelopeId: String,
+        itemIndices: Range<Int>
+    ) async {
+        var didChange = false
+        for index in itemIndices {
+            didChange = outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: index
+            ) || didChange
+        }
+        if didChange {
+            await refreshWindow()
+        }
     }
 
     private func sendOutgoingVoice(
@@ -2713,7 +2608,7 @@ final class ChatViewModel {
             let normalized = max(0, min(1, sample))
             return UInt16((normalized * 1024).rounded())
         }
-        let bindingToken = outgoingEnvelopes.createOutgoingVoice(
+        outgoingEnvelopes.createOutgoingVoice(
             roomId: roomId,
             envelopeId: envelopeId,
             duration: duration,
@@ -2724,43 +2619,34 @@ final class ChatViewModel {
         )
         await refreshWindow()
 
-        if let transactionId,
-           let storedVoice {
-            let didPrepare = PendingDirectVoiceService.shared.prepareVoice(
-                envelopeId: envelopeId,
-                itemIndex: 0,
-                roomId: roomId,
-                mimetype: mimetype
-            )
-            if didPrepare {
-                OutgoingVoiceOutboxService.shared.kick(
-                    reason: "new-voice",
-                    envelopeId: envelopeId
-                )
-            } else {
-                _ = outgoingEnvelopes.markDispatchFailed(
-                    envelopeId: envelopeId,
-                    itemIndex: 0
-                )
-                await refreshWindow()
-            }
-            _ = transactionId
-            _ = storedVoice
+        guard transactionId != nil,
+              let storedVoice else {
+            await failOutgoingEnvelope(envelopeId: envelopeId)
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
                 try? FileManager.default.removeItem(at: fileURL)
             }
             return
         }
 
-        let receipt = await timelineService.sendVoiceMessage(
-            url: storedVoice?.url ?? fileURL,
-            duration: duration,
-            waveform: waveform,
-            mimetype: mimetype,
-            bindingToken: bindingToken
+        let didPrepare = PendingDirectVoiceService.shared.prepareVoice(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            mimetype: mimetype
         )
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
-
+        if didPrepare {
+            OutgoingVoiceOutboxService.shared.kick(
+                reason: "new-voice",
+                envelopeId: envelopeId
+            )
+        } else {
+            _ = outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: 0
+            )
+            await refreshWindow()
+        }
+        _ = storedVoice
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
             try? FileManager.default.removeItem(at: fileURL)
         }
@@ -2786,7 +2672,7 @@ final class ChatViewModel {
 
         let envelopeId = UUID().uuidString
         let transactionId = DirectRawMediaSender.prepareFileTransactionId()
-        let bindingToken = outgoingEnvelopes.createOutgoingFile(
+        outgoingEnvelopes.createOutgoingFile(
             roomId: roomId,
             envelopeId: envelopeId,
             filename: filename,
@@ -2798,44 +2684,36 @@ final class ChatViewModel {
         )
         await refreshWindow()
 
-        if let transactionId {
-            let didPrepare = PendingDirectFileService.shared.prepareFile(
-                envelopeId: envelopeId,
-                itemIndex: 0,
-                roomId: roomId,
-                sourceURL: url,
-                filename: filename,
-                mimetype: mimetype ?? "application/octet-stream",
-                size: fileSize
-            )
-            if didPrepare {
-                OutgoingFileOutboxService.shared.kick(
-                    reason: "new-file",
-                    envelopeId: envelopeId
-                )
-            } else {
-                _ = outgoingEnvelopes.markDispatchFailed(
-                    envelopeId: envelopeId,
-                    itemIndex: 0
-                )
-                await refreshWindow()
-            }
-            _ = transactionId
+        guard transactionId != nil else {
+            await failOutgoingEnvelope(envelopeId: envelopeId)
             return
         }
 
-        let receipt = await timelineService.sendFile(
-            url: url,
-            caption: caption,
-            replyEventId: replyEventId,
-            bindingToken: bindingToken
+        let didPrepare = PendingDirectFileService.shared.prepareFile(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            sourceURL: url,
+            filename: filename,
+            mimetype: mimetype ?? "application/octet-stream",
+            size: fileSize
         )
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        if didPrepare {
+            OutgoingFileOutboxService.shared.kick(
+                reason: "new-file",
+                envelopeId: envelopeId
+            )
+        } else {
+            _ = outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: 0
+            )
+            await refreshWindow()
+        }
     }
 
     private func sendOutgoingForwardedMedia(
         preview: ChatMessage,
-        fallbackContent: RoomMessageEventContentWithoutRelation,
         attrs: ZynaMessageAttributes,
         caption: String?
     ) async {
@@ -2843,20 +2721,12 @@ final class ChatViewModel {
         guard let draft = forwardedMediaDraft(from: preview),
               let transactionId = DirectRawMediaSender.prepareForwardedMediaTransactionId()
         else {
-            await sendOutgoingForwardedMediaLegacy(
-                preview: preview,
-                fallbackContent: fallbackContent,
-                attrs: attrs,
-                caption: caption,
-                envelopeId: envelopeId
-            )
             return
         }
 
         switch draft.kind {
         case .image:
             guard case .image(_, _, let width, let height, _, let previewImageData) = preview.content else {
-                await timelineService.sendForwardedContent(fallbackContent)
                 return
             }
             _ = outgoingEnvelopes.createOutgoingImage(
@@ -2872,7 +2742,6 @@ final class ChatViewModel {
             )
         case .video:
             guard case .video(_, _, let width, let height, let duration, let filename, let mimetype, let size, _, let previewThumbnailData) = preview.content else {
-                await timelineService.sendForwardedContent(fallbackContent)
                 return
             }
             _ = outgoingEnvelopes.createOutgoingVideo(
@@ -2892,7 +2761,6 @@ final class ChatViewModel {
             )
         case .voice:
             guard case .voice(_, let duration, let waveform) = preview.content else {
-                await timelineService.sendForwardedContent(fallbackContent)
                 return
             }
             _ = outgoingEnvelopes.createOutgoingVoice(
@@ -2906,7 +2774,6 @@ final class ChatViewModel {
             )
         case .file:
             guard case .file(_, let filename, let mimetype, let size, _) = preview.content else {
-                await timelineService.sendForwardedContent(fallbackContent)
                 return
             }
             _ = outgoingEnvelopes.createOutgoingFile(
@@ -3006,101 +2873,11 @@ final class ChatViewModel {
         }
     }
 
-    private func sendOutgoingForwardedMediaLegacy(
-        preview: ChatMessage,
-        fallbackContent: RoomMessageEventContentWithoutRelation,
-        attrs: ZynaMessageAttributes,
-        caption: String?,
-        envelopeId: String
-    ) async {
-        switch preview.content {
-        case .image(let source, _, let width, let height, _, let previewImageData):
-            guard let source,
-                  let mediaInfo = preview.content.mediaForwardInfo else {
-                await timelineService.sendForwardedContent(fallbackContent)
-                return
-            }
-            let bindingToken = outgoingEnvelopes.createOutgoingImage(
-                roomId: roomId,
-                envelopeId: envelopeId,
-                caption: caption,
-                width: width,
-                height: height,
-                previewImageData: previewImageData,
-                previewSource: source,
-                replyInfo: nil,
-                zynaAttributes: attrs
-            )
-            await refreshWindow()
-            let receipt = await timelineService.forwardMedia(
-                source: source,
-                mimetype: mediaInfo.mimetype,
-                attrs: attrs,
-                caption: caption,
-                bindingToken: bindingToken
-            )
-            await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
-        case .voice(let source, let duration, let waveform):
-            guard let source,
-                  let mediaInfo = preview.content.mediaForwardInfo else {
-                await timelineService.sendForwardedContent(fallbackContent)
-                return
-            }
-            let bindingToken = outgoingEnvelopes.createOutgoingVoice(
-                roomId: roomId,
-                envelopeId: envelopeId,
-                duration: duration,
-                waveform: waveform,
-                replyInfo: nil,
-                zynaAttributes: attrs
-            )
-            await refreshWindow()
-            let receipt = await timelineService.forwardVoiceMessage(
-                source: source,
-                mimetype: mediaInfo.mimetype,
-                duration: duration,
-                waveform: waveform,
-                attrs: attrs,
-                caption: caption,
-                bindingToken: bindingToken
-            )
-            await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
-        case .file(let source, let filename, let mimetype, let size, _):
-            guard let source,
-                  let mediaInfo = preview.content.mediaForwardInfo else {
-                await timelineService.sendForwardedContent(fallbackContent)
-                return
-            }
-            let bindingToken = outgoingEnvelopes.createOutgoingFile(
-                roomId: roomId,
-                envelopeId: envelopeId,
-                filename: filename,
-                mimetype: mimetype,
-                size: size,
-                caption: caption,
-                replyInfo: nil,
-                zynaAttributes: attrs
-            )
-            await refreshWindow()
-            let receipt = await timelineService.forwardMedia(
-                source: source,
-                mimetype: mediaInfo.mimetype,
-                attrs: attrs,
-                caption: caption,
-                bindingToken: bindingToken
-            )
-            await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
-        default:
-            await timelineService.sendForwardedContent(fallbackContent)
-        }
-    }
-
     func sendMessage(_ text: String, color: UIColor? = nil) {
         guard guardCanCreateOutgoingEnvelope() else { return }
 
         if let editing = editingMessage {
-            guard let itemId = editing.itemIdentifier,
-                  let originalBody = editing.content.textBody
+            guard let originalBody = editing.content.textBody
             else {
                 setEditingTarget(nil)
                 return
@@ -3139,39 +2916,9 @@ final class ChatViewModel {
                     return
                 }
 
-                if let eventId = editing.eventId {
-                    await self.markMessageEditPending(eventId: eventId)
-                }
-
-                let receipt = await self.timelineService.editMessage(
-                    editedText,
-                    itemId: itemId,
-                    zynaAttributes: editing.zynaAttributes
-                )
-
-                if let eventId = editing.eventId {
-                    if receipt.acceptedByTransport {
-                        if let transactionId = receipt.transactionId,
-                           await self.hasRecentlySentTransaction(transactionId) {
-                            await self.clearPendingMessageEdit(eventId: eventId)
-                        } else if let transactionId = receipt.transactionId,
-                                  await self.hasRecentlyFailedTransaction(transactionId) {
-                            await self.failPendingMessageEdit(eventId: eventId)
-                        } else if let transactionId = receipt.transactionId {
-                            await self.bindPendingMessageEditTransaction(
-                                eventId: eventId,
-                                transactionId: transactionId
-                            )
-                        }
-                    } else {
-                        await self.clearPendingMessageEdit(eventId: eventId)
-                    }
-                }
-
                 await MainActor.run {
                     guard self.activeEditAttemptId == attemptId else { return }
                     self.activeEditAttemptId = nil
-                    guard !receipt.acceptedByTransport else { return }
                     guard self.canRestoreFailedEditDraft?() ?? true else { return }
                     self.editingDraftOverride = editedText
                     self.replyingTo = nil
@@ -3188,26 +2935,22 @@ final class ChatViewModel {
         // Forward takes priority
         if let forward = pendingForwardContent {
             pendingForwardContent = nil
-            let senderName = forward.preview.senderDisplayName ?? forward.preview.senderId
+            let senderName = forward.senderDisplayName ?? forward.senderId
             let attrs = ZynaMessageAttributes(forwardedFrom: senderName)
 
-            if let body = forward.preview.content.textBody {
+            if let body = forward.content.textBody {
                 Task { [weak self] in
                     await self?.sendOutgoingText(body: body, zynaAttributes: attrs)
                 }
-            } else if forward.preview.content.mediaForwardInfo != nil {
+            } else if forward.content.mediaForwardInfo != nil {
                 let caption = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
                 Task { [weak self] in
                     await self?.sendOutgoingForwardedMedia(
-                        preview: forward.preview,
-                        fallbackContent: forward.content,
+                        preview: forward,
                         attrs: attrs,
                         caption: caption
                     )
                 }
-            } else {
-                // Fallback: send without attributes
-                Task { await timelineService.sendForwardedContent(forward.content) }
             }
             return
         }
@@ -3375,7 +3118,7 @@ final class ChatViewModel {
     ) async {
         let envelopeId = UUID().uuidString
         let transactionId = DirectRawMediaSender.prepareImageTransactionId()
-        let bindingToken = outgoingEnvelopes.createOutgoingImage(
+        outgoingEnvelopes.createOutgoingImage(
             roomId: roomId,
             envelopeId: envelopeId,
             caption: caption,
@@ -3388,37 +3131,25 @@ final class ChatViewModel {
         )
         await refreshWindow()
 
-        if let transactionId {
-            let didPrepare = PendingDirectImageService.shared.prepareImage(
-                envelopeId: envelopeId,
-                itemIndex: 0,
-                roomId: roomId,
-                image: image
-            )
-            if didPrepare {
-                OutgoingImageOutboxService.shared.kick(
-                    reason: "new-image",
-                    envelopeId: envelopeId
-                )
-            } else {
-                _ = outgoingEnvelopes.markDispatchFailed(
-                    envelopeId: envelopeId,
-                    itemIndex: 0
-                )
-                await refreshWindow()
-            }
-            _ = transactionId
+        guard transactionId != nil else {
+            await failOutgoingEnvelope(envelopeId: envelopeId)
             return
         }
 
-        let receipt = await timelineService.sendImage(
-            image: image,
-            caption: caption,
-            zynaAttributes: zynaAttributes,
-            replyEventId: replyEventId,
-            bindingToken: bindingToken
+        let didPrepare = PendingDirectImageService.shared.prepareImage(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            image: image
         )
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        if didPrepare {
+            OutgoingImageOutboxService.shared.kick(
+                reason: "new-image",
+                envelopeId: envelopeId
+            )
+        } else {
+            await failOutgoingEnvelope(envelopeId: envelopeId)
+        }
     }
 
     private func sendSingleVideo(
@@ -3433,7 +3164,7 @@ final class ChatViewModel {
         logVideoSend(
             "singleVideo start envelope=\(envelopeId) filename=\(video.filename) bytes=\(video.size) size=\(video.width)x\(video.height) duration=\(String(format: "%.3f", video.duration)) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>") attrsEmpty=\(zynaAttributes.isEmpty)"
         )
-        let bindingToken = outgoingEnvelopes.createOutgoingVideo(
+        outgoingEnvelopes.createOutgoingVideo(
             roomId: roomId,
             envelopeId: envelopeId,
             filename: video.filename,
@@ -3449,46 +3180,32 @@ final class ChatViewModel {
             transactionId: transactionId
         )
         logVideoSend(
-            "singleVideo envelopeCreated envelope=\(envelopeId) bindingToken=\(bindingToken.isEmpty ? "<empty>" : bindingToken) tx=\(transactionId ?? "<nil>") thumbBytes=\(video.thumbnailSize)"
+            "singleVideo envelopeCreated envelope=\(envelopeId) tx=\(transactionId ?? "<nil>") thumbBytes=\(video.thumbnailSize)"
         )
         await refreshWindow()
 
-        if let transactionId {
-            let didPrepare = PendingDirectVideoService.shared.prepareVideo(
-                envelopeId: envelopeId,
-                itemIndex: 0,
-                roomId: roomId,
-                video: video
-            )
-            if didPrepare {
-                OutgoingVideoOutboxService.shared.kick(
-                    reason: "new-video",
-                    envelopeId: envelopeId
-                )
-                cleanupProcessedVideoFiles(video, delay: 10)
-            } else {
-                _ = outgoingEnvelopes.markDispatchFailed(
-                    envelopeId: envelopeId,
-                    itemIndex: 0
-                )
-                cleanupProcessedVideoFiles(video)
-                await refreshWindow()
-            }
-            _ = transactionId
+        guard transactionId != nil else {
+            cleanupProcessedVideoFiles(video)
+            await failOutgoingEnvelope(envelopeId: envelopeId)
             return
         }
 
-        let receipt = await timelineService.sendVideo(
-            video: video,
-            caption: caption,
-            zynaAttributes: zynaAttributes,
-            replyEventId: replyEventId,
-            bindingToken: bindingToken
+        let didPrepare = PendingDirectVideoService.shared.prepareVideo(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            video: video
         )
-        logVideoSend(
-            "singleVideo receipt envelope=\(envelopeId) accepted=\(receipt.acceptedByTransport) tx=\(receipt.transactionId ?? "<nil>")"
-        )
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        if didPrepare {
+            OutgoingVideoOutboxService.shared.kick(
+                reason: "new-video",
+                envelopeId: envelopeId
+            )
+            cleanupProcessedVideoFiles(video, delay: 10)
+        } else {
+            cleanupProcessedVideoFiles(video)
+            await failOutgoingEnvelope(envelopeId: envelopeId)
+        }
     }
 
     private func cleanupProcessedVideoFiles(_ video: ProcessedVideo, delay: TimeInterval = 0) {
@@ -3640,7 +3357,7 @@ final class ChatViewModel {
             }
             return transactionIds
         }()
-        let bindingTokens = outgoingEnvelopes.createOutgoingMediaBatch(
+        outgoingEnvelopes.createOutgoingMediaBatch(
             roomId: roomId,
             envelopeId: mediaGroupId,
             caption: normalizedCaption,
@@ -3658,59 +3375,34 @@ final class ChatViewModel {
         )
         await refreshWindow()
 
-        if directTransactionIds != nil {
-            var didPrepareAll = true
-            for (index, image) in images.enumerated() {
-                let didPrepare = PendingDirectImageService.shared.prepareImage(
-                    envelopeId: mediaGroupId,
-                    itemIndex: index,
-                    roomId: roomId,
-                    image: image
-                )
-                didPrepareAll = didPrepareAll && didPrepare
-            }
-
-            if didPrepareAll {
-                OutgoingImageOutboxService.shared.kick(
-                    reason: "new-image-batch",
-                    envelopeId: mediaGroupId
-                )
-            } else {
-                for index in images.indices {
-                    _ = outgoingEnvelopes.markDispatchFailed(
-                        envelopeId: mediaGroupId,
-                        itemIndex: index
-                    )
-                }
-                await refreshWindow()
-            }
+        guard directTransactionIds != nil else {
+            await failOutgoingEnvelopeItems(
+                envelopeId: mediaGroupId,
+                itemIndices: images.indices
+            )
             return
         }
 
+        var didPrepareAll = true
         for (index, image) in images.enumerated() {
-            guard bindingTokens.indices.contains(index) else { continue }
-            let attrs = ZynaMessageAttributes(
-                mediaGroup: MediaGroupInfo(
-                    id: mediaGroupId,
-                    index: index,
-                    total: images.count,
-                    captionMode: .replicated,
-                    captionPlacement: captionPlacement,
-                    layoutOverride: layoutOverride
-                )
-            )
-
-            let receipt = await timelineService.sendImage(
-                image: image,
-                caption: normalizedCaption,
-                zynaAttributes: attrs,
-                replyEventId: replyEventId,
-                bindingToken: bindingTokens[index]
-            )
-            await completeOutgoingDispatch(
+            let didPrepare = PendingDirectImageService.shared.prepareImage(
                 envelopeId: mediaGroupId,
                 itemIndex: index,
-                receipt: receipt
+                roomId: roomId,
+                image: image
+            )
+            didPrepareAll = didPrepareAll && didPrepare
+        }
+
+        if didPrepareAll {
+            OutgoingImageOutboxService.shared.kick(
+                reason: "new-image-batch",
+                envelopeId: mediaGroupId
+            )
+        } else {
+            await failOutgoingEnvelopeItems(
+                envelopeId: mediaGroupId,
+                itemIndices: images.indices
             )
         }
     }
@@ -3718,8 +3410,7 @@ final class ChatViewModel {
     func toggleReaction(_ key: String, for message: ChatMessage) {
         guard guardCanCreateOutgoingEnvelope() else { return }
         if let targetEventId = message.eventId,
-           !targetEventId.isEmpty,
-           DirectRawTextSender.isEnabled {
+           !targetEventId.isEmpty {
             let hasOwnReaction = message.reactions.contains {
                 $0.key == key && $0.isOwn
             }
@@ -3741,11 +3432,6 @@ final class ChatViewModel {
                 OutgoingReactionOutboxService.shared.kick(reason: "new-reaction")
                 return
             }
-        }
-
-        guard let itemId = message.itemIdentifier else { return }
-        Task {
-            await timelineService.toggleReaction(key, to: itemId)
         }
     }
 
@@ -3805,7 +3491,7 @@ final class ChatViewModel {
             replyEventId: envelope.replyInfo?.eventId,
             existingTransactionId: envelope.items.first?.transactionId
         )
-        let bindingToken = outgoingEnvelopes.createOutgoingText(
+        outgoingEnvelopes.createOutgoingText(
             roomId: roomId,
             envelopeId: retryEnvelopeId,
             body: body,
@@ -3816,40 +3502,15 @@ final class ChatViewModel {
         outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
         await refreshWindow()
 
-        if transactionId != nil {
-            OutgoingTextOutboxService.shared.kick(
-                reason: "manual-retry",
-                envelopeId: retryEnvelopeId
-            )
+        guard transactionId != nil else {
+            await failOutgoingEnvelope(envelopeId: retryEnvelopeId)
             return
         }
 
-        let receipt: OutgoingDispatchReceipt
-        if let replyEventId = envelope.replyInfo?.eventId {
-            receipt = await timelineService.sendReply(
-                body,
-                to: replyEventId,
-                replyInfo: envelope.replyInfo,
-                zynaAttributes: envelope.zynaAttributes,
-                transactionId: transactionId,
-                bindingToken: bindingToken
-            )
-        } else if envelope.zynaAttributes.isEmpty {
-            receipt = await timelineService.sendMessage(
-                body,
-                bindingToken: bindingToken,
-                transactionId: transactionId
-            )
-        } else {
-            receipt = await timelineService.sendMessage(
-                body,
-                zynaAttributes: envelope.zynaAttributes,
-                bindingToken: bindingToken,
-                transactionId: transactionId
-            )
-        }
-
-        await completeOutgoingDispatch(envelopeId: retryEnvelopeId, receipt: receipt)
+        OutgoingTextOutboxService.shared.kick(
+            reason: "manual-retry",
+            envelopeId: retryEnvelopeId
+        )
     }
 
     private func retryVoiceEnvelope(
@@ -3866,10 +3527,8 @@ final class ChatViewModel {
             return
         }
 
-        let transactionId = envelope.zynaAttributes.isEmpty
-            ? DirectRawMediaSender.prepareVoiceTransactionId()
-            : nil
-        let bindingToken = outgoingEnvelopes.createOutgoingVoice(
+        let transactionId = DirectRawMediaSender.prepareVoiceTransactionId()
+        outgoingEnvelopes.createOutgoingVoice(
             roomId: roomId,
             envelopeId: retryEnvelopeId,
             duration: payload.duration,
@@ -3882,39 +3541,25 @@ final class ChatViewModel {
         outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
         await refreshWindow()
 
-        if transactionId != nil {
-            let didPrepare = PendingDirectVoiceService.shared.prepareVoice(
-                envelopeId: retryEnvelopeId,
-                itemIndex: 0,
-                roomId: roomId,
-                mimetype: "audio/mp4"
-            )
-            if didPrepare {
-                OutgoingVoiceOutboxService.shared.kick(
-                    reason: "retry-voice",
-                    envelopeId: retryEnvelopeId
-                )
-            } else {
-                _ = outgoingEnvelopes.markDispatchFailed(
-                    envelopeId: retryEnvelopeId,
-                    itemIndex: 0
-                )
-                await refreshWindow()
-            }
+        guard transactionId != nil else {
+            await failOutgoingEnvelope(envelopeId: retryEnvelopeId)
             return
         }
 
-        let waveform = payload.waveform.map { sample in
-            Float(sample) / 1024
-        }
-        let receipt = await timelineService.sendVoiceMessage(
-            url: storedVoice.url,
-            duration: payload.duration,
-            waveform: waveform,
-            zynaAttributes: envelope.zynaAttributes,
-            bindingToken: bindingToken
+        let didPrepare = PendingDirectVoiceService.shared.prepareVoice(
+            envelopeId: retryEnvelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            mimetype: "audio/mp4"
         )
-        await completeOutgoingDispatch(envelopeId: retryEnvelopeId, receipt: receipt)
+        if didPrepare {
+            OutgoingVoiceOutboxService.shared.kick(
+                reason: "retry-voice",
+                envelopeId: retryEnvelopeId
+            )
+        } else {
+            await failOutgoingEnvelope(envelopeId: retryEnvelopeId)
+        }
     }
 
     func reactionSummaryEntries(for message: ChatMessage) async -> [ReactionSummaryEntry] {
@@ -3998,8 +3643,7 @@ final class ChatViewModel {
                         guard let self else { return }
                         do {
                             try await self.pendingRedactions.attempt(
-                                intent,
-                                timelineService: self.timelineService
+                                intent
                             )
                         } catch {
                             await MainActor.run {
@@ -4034,8 +3678,7 @@ final class ChatViewModel {
         Task {
             do {
                 try await pendingRedactions.attempt(
-                    intent,
-                    timelineService: timelineService
+                    intent
                 )
             } catch {
                 await MainActor.run {
@@ -4177,7 +3820,6 @@ final class ChatViewModel {
         }
         timelineService.onDiffs = nil
         timelineService.onOwnFullyReadMarker = nil
-        timelineService.onSendQueueUpdate = nil
         diffBatcher.onFlush = nil
         timelineService.stopListening()
     }

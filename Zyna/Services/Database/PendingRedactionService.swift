@@ -136,7 +136,6 @@ final class PendingRedactionService {
 
     private enum RedactionAttemptTarget {
         case directRaw(eventId: String, transactionId: String)
-        case sdk(ChatItemIdentifier)
     }
 
     private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
@@ -289,12 +288,11 @@ final class PendingRedactionService {
         )
     }
 
-    func attempt(_ intent: PendingRedactionIntent, timelineService: TimelineService) async throws {
+    func attempt(_ intent: PendingRedactionIntent) async throws {
         _ = try await attempt(
             messageId: intent.messageId,
             roomId: intent.roomId,
-            fallbackItemIdentifier: intent.itemIdentifier,
-            timelineService: timelineService
+            fallbackItemIdentifier: intent.itemIdentifier
         )
     }
 
@@ -302,13 +300,11 @@ final class PendingRedactionService {
         try await attempt(
             messageId: record.messageId,
             roomId: record.roomId,
-            fallbackItemIdentifier: record.itemIdentifier,
-            timelineService: nil
+            fallbackItemIdentifier: record.itemIdentifier
         )
     }
 
-    func retryPendingRedactions(roomId: String, timelineService: TimelineService) async -> [TerminalFailure] {
-        guard timelineService.hasLiveTimeline else { return [] }
+    func retryPendingRedactions(roomId: String) async -> [TerminalFailure] {
         _ = reconcileResolvedPendingMessageIds(roomId: roomId)
 
         let records = pendingRecords(roomId: roomId)
@@ -325,8 +321,7 @@ final class PendingRedactionService {
                         _ = try await self.attempt(
                             messageId: record.messageId,
                             roomId: record.roomId,
-                            fallbackItemIdentifier: record.itemIdentifier,
-                            timelineService: timelineService
+                            fallbackItemIdentifier: record.itemIdentifier
                         )
                     } catch {
                         if let attemptError = error as? PendingRedactionAttemptError,
@@ -352,8 +347,7 @@ final class PendingRedactionService {
     private func attempt(
         messageId: String,
         roomId: String,
-        fallbackItemIdentifier: ChatItemIdentifier?,
-        timelineService: TimelineService?
+        fallbackItemIdentifier: ChatItemIdentifier?
     ) async throws -> Bool {
         guard beginAttempt(for: messageId) else { return false }
         defer { endAttempt(for: messageId) }
@@ -393,7 +387,7 @@ final class PendingRedactionService {
             }
 
             try record.save(db)
-            return .sdk(itemIdentifier)
+            return nil
         }
 
         guard let target else {
@@ -410,20 +404,6 @@ final class PendingRedactionService {
                 transactionId: transactionId
             )
             return true
-        case .sdk(let itemIdentifier):
-            guard let timelineService,
-                  timelineService.hasLiveTimeline else { return false }
-            do {
-                try await timelineService.redactEvent(itemIdentifier)
-                return true
-            } catch {
-                let disposition = Self.classifyFailureDisposition(for: error)
-                if disposition == .terminal {
-                    clearPersistentIntent(messageId: messageId)
-                    throw PendingRedactionAttemptError.terminal(error)
-                }
-                throw PendingRedactionAttemptError.retryable(error)
-            }
         }
     }
 
@@ -631,46 +611,6 @@ final class PendingRedactionService {
         }
     }
 
-    private static func classifyFailureDisposition(for error: Error) -> PendingRedactionFailureDisposition {
-        guard let clientError = error as? ClientError else {
-            return .retryable
-        }
-
-        switch clientError {
-        case .MatrixApi(let kind, _, _, _):
-            switch kind {
-            case .forbidden,
-                    .guestAccessForbidden,
-                    .unauthorized,
-                    .unknownToken,
-                    .missingToken,
-                    .notFound,
-                    .badJson,
-                    .badState,
-                    .invalidParam,
-                    .missingParam,
-                    .unrecognized,
-                    .tooLarge,
-                    .userDeactivated,
-                    .userLocked,
-                    .userSuspended:
-                return .terminal
-            default:
-                return .retryable
-            }
-        case .Generic(let msg, let details):
-            let normalized = [msg, details]
-                .compactMap { $0?.lowercased() }
-                .joined(separator: " ")
-            if normalized.contains("forbidden")
-                || normalized.contains("power level")
-                || normalized.contains("unauthorized")
-                || normalized.contains("not authorized") {
-                return .terminal
-            }
-            return .retryable
-        }
-    }
 }
 
 private final class LockedTerminalFailures {

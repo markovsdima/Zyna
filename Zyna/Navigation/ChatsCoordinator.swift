@@ -124,19 +124,14 @@ final class ChatsCoordinator {
         navigationController.present(overlay, animated: false)
     }
 
-    private func showForwardPicker(message: ChatMessage, timelineService: TimelineService) {
-        guard let eventId = message.eventId else { return }
-
-        Task { @MainActor in
-            guard let content = await timelineService.extractForwardContent(eventId: eventId) else { return }
-            self.presentForwardPicker(message: message, content: content)
-        }
+    private func showForwardPicker(message: ChatMessage) {
+        guard message.eventId != nil,
+              message.content.textBody != nil
+                || message.content.mediaForwardInfo != nil else { return }
+        presentForwardPicker(message: message)
     }
 
-    private func presentForwardPicker(
-        message: ChatMessage,
-        content: RoomMessageEventContentWithoutRelation
-    ) {
+    private func presentForwardPicker(message: ChatMessage) {
         let picker = ForwardPickerViewController()
         let nav = ZynaNavigationController(rootViewController: picker)
 
@@ -147,8 +142,7 @@ final class ChatsCoordinator {
             self?.navigationController.dismiss(animated: true)
             self?.openChatWithForward(
                 roomId: selectedRoom.id,
-                forwardPreview: message,
-                forwardContent: content
+                forwardPreview: message
             )
         }
 
@@ -174,15 +168,14 @@ final class ChatsCoordinator {
             self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
         }
         vc.onForwardMessage = { [weak self] message in
-            self?.showForwardPicker(message: message, timelineService: viewModel.timelineService)
+            self?.showForwardPicker(message: message)
         }
         return (vc, viewModel)
     }
 
     private func openChatWithForward(
         roomId: String,
-        forwardPreview: ChatMessage,
-        forwardContent: RoomMessageEventContentWithoutRelation
+        forwardPreview: ChatMessage
     ) {
         // Pop back to root, then open the target chat
         navigationController.popToRoot(animated: false)
@@ -209,12 +202,12 @@ final class ChatsCoordinator {
             self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
         }
         vc.onForwardMessage = { [weak self] message in
-            self?.showForwardPicker(message: message, timelineService: viewModel.timelineService)
+            self?.showForwardPicker(message: message)
         }
         navigationController.push(vc)
 
         // Set pending forward after push so the input bar shows it
-        viewModel.setPendingForward(preview: forwardPreview, content: forwardContent)
+        viewModel.setPendingForward(forwardPreview)
     }
 
     private func showProfile(userId: String) {
