@@ -235,7 +235,7 @@ final class PendingDirectImageService {
                           let transactionId = item.transactionId,
                           !transactionId.isEmpty,
                           !imageItemIds.contains(item.id),
-                          Self.isOutboxState(item.transportState) else {
+                          item.transportState == .queued else {
                         return nil
                     }
                     return PendingDirectImageMissingAssetCandidate(

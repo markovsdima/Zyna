@@ -260,6 +260,26 @@ final class ChatViewModel {
             }
             .store(in: &cancellables)
 
+        OutgoingVoiceOutboxService.shared.roomDidUpdateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+            }
+            .store(in: &cancellables)
+
+        OutgoingVoiceOutboxService.shared.sendFailureSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            }
+            .store(in: &cancellables)
+
         OutgoingEditOutboxService.shared.roomDidUpdateSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] updatedRoomId in
@@ -2576,10 +2596,14 @@ final class ChatViewModel {
         waveform: [Float]
     ) async {
         let envelopeId = UUID().uuidString
+        let mimetype = "audio/mp4"
         let storedVoice = try? outgoingEnvelopes.storeOutgoingVoiceFile(
             sourceURL: fileURL,
             envelopeId: envelopeId
         )
+        let transactionId = storedVoice == nil
+            ? nil
+            : DirectRawMediaSender.prepareVoiceTransactionId()
         let waveformPayload = waveform.map { sample -> UInt16 in
             let normalized = max(0, min(1, sample))
             return UInt16((normalized * 1024).rounded())
@@ -2590,14 +2614,44 @@ final class ChatViewModel {
             duration: duration,
             waveform: waveformPayload,
             localFileName: storedVoice?.fileName,
-            replyInfo: nil
+            replyInfo: nil,
+            transactionId: transactionId
         )
         await refreshWindow()
+
+        if let transactionId,
+           let storedVoice {
+            let didPrepare = PendingDirectVoiceService.shared.prepareVoice(
+                envelopeId: envelopeId,
+                itemIndex: 0,
+                roomId: roomId,
+                mimetype: mimetype
+            )
+            if didPrepare {
+                OutgoingVoiceOutboxService.shared.kick(
+                    reason: "new-voice",
+                    envelopeId: envelopeId
+                )
+            } else {
+                _ = outgoingEnvelopes.markDispatchFailed(
+                    envelopeId: envelopeId,
+                    itemIndex: 0
+                )
+                await refreshWindow()
+            }
+            _ = transactionId
+            _ = storedVoice
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+            return
+        }
 
         let receipt = await timelineService.sendVoiceMessage(
             url: storedVoice?.url ?? fileURL,
             duration: duration,
             waveform: waveform,
+            mimetype: mimetype,
             bindingToken: bindingToken
         )
         await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
@@ -3465,6 +3519,9 @@ final class ChatViewModel {
             return
         }
 
+        let transactionId = envelope.zynaAttributes.isEmpty
+            ? DirectRawMediaSender.prepareVoiceTransactionId()
+            : nil
         let bindingToken = outgoingEnvelopes.createOutgoingVoice(
             roomId: roomId,
             envelopeId: retryEnvelopeId,
@@ -3472,10 +3529,33 @@ final class ChatViewModel {
             waveform: payload.waveform,
             localFileName: storedVoice.fileName,
             replyInfo: envelope.replyInfo,
-            zynaAttributes: envelope.zynaAttributes
+            zynaAttributes: envelope.zynaAttributes,
+            transactionId: transactionId
         )
         outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
         await refreshWindow()
+
+        if transactionId != nil {
+            let didPrepare = PendingDirectVoiceService.shared.prepareVoice(
+                envelopeId: retryEnvelopeId,
+                itemIndex: 0,
+                roomId: roomId,
+                mimetype: "audio/mp4"
+            )
+            if didPrepare {
+                OutgoingVoiceOutboxService.shared.kick(
+                    reason: "retry-voice",
+                    envelopeId: retryEnvelopeId
+                )
+            } else {
+                _ = outgoingEnvelopes.markDispatchFailed(
+                    envelopeId: retryEnvelopeId,
+                    itemIndex: 0
+                )
+                await refreshWindow()
+            }
+            return
+        }
 
         let waveform = payload.waveform.map { sample in
             Float(sample) / 1024

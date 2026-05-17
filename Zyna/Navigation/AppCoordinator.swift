@@ -27,6 +27,7 @@ final class AppCoordinator {
     func start() {
         OutgoingTextOutboxService.shared.start()
         OutgoingImageOutboxService.shared.start()
+        OutgoingVoiceOutboxService.shared.start()
         OutgoingEditOutboxService.shared.start()
         OutgoingRedactionOutboxService.shared.start()
         OutgoingReactionOutboxService.shared.start()

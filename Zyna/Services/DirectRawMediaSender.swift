@@ -10,6 +10,7 @@ private let logDirectRawMedia = ScopedLog(.timeline)
 
 enum DirectRawMediaSender {
     private static let imageDefaultsKey = "com.zyna.matrix.directRawImageSend.enabled"
+    private static let voiceDefaultsKey = "com.zyna.matrix.directRawVoiceSend.enabled"
 
     static var isImageEnabled: Bool {
         guard DirectRawTextSender.isEnabled else { return false }
@@ -27,6 +28,22 @@ enum DirectRawMediaSender {
         return true
     }
 
+    static var isVoiceEnabled: Bool {
+        guard DirectRawTextSender.isEnabled else { return false }
+
+        let env = ProcessInfo.processInfo.environment["ZYNA_DIRECT_RAW_VOICE_SEND"]?.lowercased()
+        if env == "1" || env == "true" || env == "yes" {
+            return true
+        }
+        if env == "0" || env == "false" || env == "no" {
+            return false
+        }
+        if UserDefaults.standard.object(forKey: voiceDefaultsKey) != nil {
+            return UserDefaults.standard.bool(forKey: voiceDefaultsKey)
+        }
+        return true
+    }
+
     static func prepareImageTransactionId(
         existingTransactionId: String? = nil
     ) -> String? {
@@ -36,6 +53,18 @@ enum DirectRawMediaSender {
             .replacingOccurrences(of: "-", with: "")
             .lowercased()
         logDirectRawMedia("DirectRawImageTx prepared tx=\(transactionId)")
+        return transactionId
+    }
+
+    static func prepareVoiceTransactionId(
+        existingTransactionId: String? = nil
+    ) -> String? {
+        guard isVoiceEnabled else { return nil }
+        let transactionId = existingTransactionId ?? UUID()
+            .uuidString
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        logDirectRawMedia("DirectRawVoiceTx prepared tx=\(transactionId)")
         return transactionId
     }
 
@@ -110,6 +139,66 @@ enum DirectRawMediaSender {
         }
     }
 
+    static func uploadVoice(
+        room: Room,
+        fileURL: URL,
+        mimetype: String,
+        duration: TimeInterval,
+        waveform: [Float],
+        transactionId: String
+    ) async throws -> String {
+        let fileSize = (try? FileManager.default
+            .attributesOfItem(atPath: fileURL.path)[.size] as? UInt64) ?? 0
+        logDirectRawMedia(
+            "DirectRawVoiceTx upload start tx=\(transactionId) bytes=\(fileSize) "
+                + "duration=\(String(format: "%.3f", duration)) waveform=\(waveform.count)"
+        )
+        let uploadedVoiceJSON = try await room.uploadVoiceForEvent(
+            filePath: fileURL.path(percentEncoded: false),
+            mimetype: mimetype,
+            size: fileSize,
+            duration: duration,
+            waveform: waveform
+        )
+        logDirectRawMedia(
+            "DirectRawVoiceTx upload accepted tx=\(transactionId) uploadedBytes=\(uploadedVoiceJSON.count)"
+        )
+        return uploadedVoiceJSON
+    }
+
+    static func sendUploadedVoice(
+        room: Room,
+        uploadedVoiceJSON: String,
+        replyEventId: String?,
+        transactionId: String
+    ) async -> OutgoingDispatchReceipt {
+        do {
+            logDirectRawMedia(
+                "DirectRawVoiceTx send start tx=\(transactionId) reply=\(replyEventId ?? "-")"
+            )
+            let eventId = try await room.sendUploadedVoiceWithTransactionIdReturningEventId(
+                uploadedVoiceJson: uploadedVoiceJSON,
+                transactionId: transactionId,
+                replyEventId: replyEventId
+            )
+            logDirectRawMedia(
+                "DirectRawVoiceTx send accepted tx=\(transactionId) event=\(eventId)"
+            )
+            scheduleVoiceIntentionalCrashIfNeeded(
+                point: "after-send-accepted",
+                transactionId: transactionId
+            )
+            return .accepted(transactionId: transactionId, eventId: eventId)
+        } catch {
+            let receipt = rejectedReceipt(for: error)
+            logDirectRawMedia(
+                "DirectRawVoiceTx send failed tx=\(transactionId) retryable=\(receipt.retryableTransportFailure) error=\(error)"
+            )
+            await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
+            return receipt
+        }
+    }
+
     static func rejectedReceipt(for error: Error) -> OutgoingDispatchReceipt {
         let context = OutgoingSendFailureContext.fromError(error)
         return .rejected(
@@ -135,6 +224,26 @@ enum DirectRawMediaSender {
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs))) {
             fatalError("DirectRawImageTx intentional crash \(point) tx=\(transactionId)")
+        }
+    }
+
+    static func scheduleVoiceIntentionalCrashIfNeeded(
+        point: String,
+        transactionId: String
+    ) {
+        let requested = ProcessInfo.processInfo
+            .environment["ZYNA_DIRECT_RAW_VOICE_CRASH_POINT"]?
+            .lowercased()
+        guard requested == point else { return }
+
+        let delayMs = ProcessInfo.processInfo
+            .environment["ZYNA_DIRECT_RAW_VOICE_CRASH_DELAY_MS"]
+            .flatMap(UInt64.init) ?? 250
+        logDirectRawMedia(
+            "DirectRawVoiceTx crash scheduled point=\(point) tx=\(transactionId) delayMs=\(delayMs)"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs))) {
+            fatalError("DirectRawVoiceTx intentional crash \(point) tx=\(transactionId)")
         }
     }
 

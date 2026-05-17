@@ -174,9 +174,14 @@ final class OutgoingEnvelopeService {
         waveform: [UInt16],
         localFileName: String? = nil,
         replyInfo: ReplyInfo?,
-        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        transactionId: String? = nil
     ) -> String {
-        let item = makeEnvelopeItem(groupId: envelopeId, itemIndex: 0)
+        let item = makeEnvelopeItem(
+            groupId: envelopeId,
+            itemIndex: 0,
+            transactionId: transactionId
+        )
         createEnvelope(
             roomId: roomId,
             envelopeId: envelopeId,
@@ -196,7 +201,7 @@ final class OutgoingEnvelopeService {
             items: [item]
         )
         logMediaGroup(
-            "outgoing create kind=voice room=\(roomId) envelope=\(envelopeId) duration=\(duration)"
+            "outgoing create kind=voice room=\(roomId) envelope=\(envelopeId) tx=\(transactionId ?? "<nil>") duration=\(duration)"
         )
         return item.bindingToken ?? ""
     }

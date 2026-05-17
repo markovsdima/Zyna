@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/markovsdima/matrix-rust-components-swift",
       "state" : {
-        "revision" : "4147e076a527568279a88ea2bd11adb9c5b4afb9",
-        "version" : "26.5.13-zyna.5-beta.1"
+        "revision" : "ad12f321d057eb2b4ba6022c9c57e39500134cbc",
+        "version" : "26.5.13-zyna.5-beta.2"
       }
     },
     {

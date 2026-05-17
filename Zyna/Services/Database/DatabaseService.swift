@@ -620,6 +620,30 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v18_directRawVoices") { db in
+            try db.create(table: "pendingDirectVoice") { t in
+                t.primaryKey("itemId", .text)
+                    .references("pendingMediaGroupItem", onDelete: .cascade)
+                t.column("envelopeId", .text).notNull()
+                t.column("roomId", .text).notNull()
+                t.column("mimetype", .text).notNull()
+                t.column("uploadedVoiceJSON", .text)
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingDirectVoice_envelope",
+                on: "pendingDirectVoice",
+                columns: ["envelopeId"]
+            )
+            try db.create(
+                index: "idx_pendingDirectVoice_room",
+                on: "pendingDirectVoice",
+                columns: ["roomId"]
+            )
+        }
+
         return migrator
     }
 
