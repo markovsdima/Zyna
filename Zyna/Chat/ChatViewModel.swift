@@ -1505,7 +1505,52 @@ final class ChatViewModel {
 
         let primaryMessage = rawMessages[primaryMessageIndex]
         guard primaryMessage.eventId != nil else { return false }
+        if isExplicitlyBound(primaryMessage, to: envelope) {
+            return explicitlyBoundMessageIsRenderable(
+                primaryMessage,
+                envelopeKind: envelope.kind
+            )
+        }
         return hydratedMessage(primaryMessage, matches: envelope)
+    }
+
+    private static func isExplicitlyBound(
+        _ message: ChatMessage,
+        to envelope: OutgoingEnvelopeSnapshot
+    ) -> Bool {
+        let eventIds = Set(envelope.items.compactMap(\.eventId))
+        if let eventId = message.eventId,
+           eventIds.contains(eventId) {
+            return true
+        }
+
+        let transactionIds = Set(envelope.items.compactMap(\.transactionId))
+        if let transactionId = message.transactionId,
+           transactionIds.contains(transactionId) {
+            return true
+        }
+
+        return false
+    }
+
+    private static func explicitlyBoundMessageIsRenderable(
+        _ message: ChatMessage,
+        envelopeKind: OutgoingEnvelopeKind
+    ) -> Bool {
+        switch (envelopeKind, message.content) {
+        case (.text, .text):
+            return true
+        case (.image, .image(let source, _, _, _, _, _)):
+            return source != nil
+        case (.video, .video(let source, _, _, _, _, _, _, _, _, _)):
+            return source != nil
+        case (.voice, .voice(let source, _, _)):
+            return source != nil
+        case (.file, .file(let source, _, _, _, _)):
+            return source != nil
+        default:
+            return false
+        }
     }
 
     private static func hydratedMessage(
