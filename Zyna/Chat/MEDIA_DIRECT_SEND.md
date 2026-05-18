@@ -70,6 +70,7 @@ Single photos and grouped photos use the same image outbox.
 Photo groups are not Matrix-native galleries. They are multiple normal image
 events with Zyna media-group tags. This keeps other Matrix clients safe: they
 see individual images and captions even if they do not understand the grouping.
+Future Matrix gallery work is tracked in `MEDIA_GALLERY_MSC4274.md`.
 
 ### Videos
 

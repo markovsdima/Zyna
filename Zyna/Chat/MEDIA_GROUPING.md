@@ -39,6 +39,10 @@ Matrix does not give us a real album or grouped-media API here, so
 every photo is still sent as its own normal event. The grouping is a
 Zyna presentation layer on top of that.
 
+Matrix gallery events are being explored separately through MSC4274, but they
+are not the production path Zyna uses today. See
+[MEDIA_GALLERY_MSC4274.md](./MEDIA_GALLERY_MSC4274.md).
+
 The important decision is this:
 
 - the visible caption is stored as a normal Matrix caption on every
