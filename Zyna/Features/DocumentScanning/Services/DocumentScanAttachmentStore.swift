@@ -34,23 +34,32 @@ final class DocumentScanAttachmentStore {
         if let rootURL {
             self.rootURL = rootURL
         } else {
-            let caches = fileManager
-                .urls(for: .cachesDirectory, in: .userDomainMask)
-                .first!
-            self.rootURL = caches
-                .appendingPathComponent("zyna", isDirectory: true)
+            let userId = UserDefaults.standard.string(forKey: "com.zyna.matrix.lastUserId")
+            self.rootURL = LocalDataProtection.userCachesDirectory(for: userId)
                 .appendingPathComponent(Constants.rootFolder, isDirectory: true)
         }
 
-        try? fileManager.createDirectory(at: self.rootURL, withIntermediateDirectories: true)
+        _ = try? LocalDataProtection.createProtectedDirectory(
+            at: self.rootURL,
+            protection: .sensitive,
+            excludeFromBackup: true
+        )
         cleanupExpiredFiles()
     }
 
     func writePDFData(_ data: Data, filename: String) throws -> URL {
-        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try LocalDataProtection.createProtectedDirectory(
+            at: rootURL,
+            protection: .sensitive,
+            excludeFromBackup: true
+        )
         let sanitized = sanitizedFilename(filename)
         let url = uniqueURL(for: sanitized)
-        try data.write(to: url, options: .atomic)
+        try LocalDataProtection.writeProtectedData(
+            data,
+            to: url,
+            protection: .sensitive
+        )
         return url
     }
 

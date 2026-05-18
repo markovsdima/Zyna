@@ -117,6 +117,8 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var isEditFailed: Bool
     var latestEditEventId: String?
     var editTransactionId: String?
+    var pendingEditBody: String?
+    var pendingEditZynaAttributesJSON: String?
 
     var zynaAttributesJSON: String?
 }
@@ -179,6 +181,8 @@ extension StoredMessage {
         self.isEditFailed = msg.isEditFailed
         self.latestEditEventId = msg.latestEditEventId
         self.editTransactionId = nil
+        self.pendingEditBody = nil
+        self.pendingEditZynaAttributesJSON = nil
 
         switch msg.itemIdentifier {
         case .eventId(let id):

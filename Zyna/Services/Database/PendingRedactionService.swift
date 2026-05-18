@@ -35,6 +35,10 @@ enum PendingRedactionAttemptError: Error {
     }
 }
 
+private struct PendingRedactionTransportError: Error, CustomStringConvertible {
+    let description: String
+}
+
 struct PendingRedactionIntent {
     let messageId: String
     let roomId: String
@@ -51,6 +55,8 @@ struct PendingRedactionRecord: Codable, FetchableRecord, PersistableRecord {
     var createdAt: TimeInterval
     var lastAttemptAt: TimeInterval?
     var attemptCount: Int
+    var redactionTransactionId: String?
+    var redactionEventId: String?
 
     init(
         messageId: String,
@@ -58,13 +64,17 @@ struct PendingRedactionRecord: Codable, FetchableRecord, PersistableRecord {
         itemIdentifier: ChatItemIdentifier?,
         createdAt: TimeInterval = Date().timeIntervalSince1970,
         lastAttemptAt: TimeInterval? = nil,
-        attemptCount: Int = 0
+        attemptCount: Int = 0,
+        redactionTransactionId: String? = nil,
+        redactionEventId: String? = nil
     ) {
         self.messageId = messageId
         self.roomId = roomId
         self.createdAt = createdAt
         self.lastAttemptAt = lastAttemptAt
         self.attemptCount = attemptCount
+        self.redactionTransactionId = redactionTransactionId
+        self.redactionEventId = redactionEventId
         apply(itemIdentifier)
     }
 
@@ -108,7 +118,7 @@ final class PendingRedactionService {
         let identityKeys: Set<String>
     }
 
-    static let shared = PendingRedactionService(dbQueue: DatabaseService.shared.dbQueue)
+    static let shared = PendingRedactionService()
 
     private struct StoredMessageIdentifierState: FetchableRecord, Decodable {
         let eventId: String?
@@ -124,15 +134,17 @@ final class PendingRedactionService {
         let transactionId: String?
     }
 
-    private let dbQueue: DatabaseQueue
+    private enum RedactionAttemptTarget {
+        case directRaw(eventId: String, transactionId: String)
+    }
+
+    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
     private let activeAttemptsQueue = DispatchQueue(
         label: "com.zyna.pendingRedaction.activeAttempts"
     )
     private var activeAttemptMessageIds = Set<String>()
 
-    private init(dbQueue: DatabaseQueue) {
-        self.dbQueue = dbQueue
-    }
+    private init() {}
 
     func pendingMessageIds(roomId: String) -> Set<String> {
         (try? dbQueue.read { db in
@@ -190,6 +202,16 @@ final class PendingRedactionService {
                 )
             }
             return keys
+        }) ?? []
+    }
+
+    func pendingRecords(roomId: String? = nil) -> [PendingRedactionRecord] {
+        (try? dbQueue.read { db in
+            var request = PendingRedactionRecord.order(Column("createdAt").asc)
+            if let roomId {
+                request = request.filter(Column("roomId") == roomId)
+            }
+            return try request.fetchAll(db)
         }) ?? []
     }
 
@@ -266,25 +288,26 @@ final class PendingRedactionService {
         )
     }
 
-    func attempt(_ intent: PendingRedactionIntent, timelineService: TimelineService) async throws {
-        try await attempt(
+    func attempt(_ intent: PendingRedactionIntent) async throws {
+        _ = try await attempt(
             messageId: intent.messageId,
             roomId: intent.roomId,
-            fallbackItemIdentifier: intent.itemIdentifier,
-            timelineService: timelineService
+            fallbackItemIdentifier: intent.itemIdentifier
         )
     }
 
-    func retryPendingRedactions(roomId: String, timelineService: TimelineService) async -> [TerminalFailure] {
-        guard timelineService.hasLiveTimeline else { return [] }
+    func attemptDirectRawIfPossible(_ record: PendingRedactionRecord) async throws -> Bool {
+        try await attempt(
+            messageId: record.messageId,
+            roomId: record.roomId,
+            fallbackItemIdentifier: record.itemIdentifier
+        )
+    }
+
+    func retryPendingRedactions(roomId: String) async -> [TerminalFailure] {
         _ = reconcileResolvedPendingMessageIds(roomId: roomId)
 
-        let records: [PendingRedactionRecord] = (try? await dbQueue.read { db in
-            try PendingRedactionRecord
-                .filter(Column("roomId") == roomId)
-                .order(Column("createdAt").asc)
-                .fetchAll(db)
-        }) ?? []
+        let records = pendingRecords(roomId: roomId)
 
         guard !records.isEmpty else { return [] }
 
@@ -295,11 +318,10 @@ final class PendingRedactionService {
                 group.addTask { [weak self] in
                     guard let self else { return }
                     do {
-                        try await self.attempt(
+                        _ = try await self.attempt(
                             messageId: record.messageId,
                             roomId: record.roomId,
-                            fallbackItemIdentifier: record.itemIdentifier,
-                            timelineService: timelineService
+                            fallbackItemIdentifier: record.itemIdentifier
                         )
                     } catch {
                         if let attemptError = error as? PendingRedactionAttemptError,
@@ -325,14 +347,12 @@ final class PendingRedactionService {
     private func attempt(
         messageId: String,
         roomId: String,
-        fallbackItemIdentifier: ChatItemIdentifier?,
-        timelineService: TimelineService
-    ) async throws {
-        guard timelineService.hasLiveTimeline else { return }
-        guard beginAttempt(for: messageId) else { return }
+        fallbackItemIdentifier: ChatItemIdentifier?
+    ) async throws -> Bool {
+        guard beginAttempt(for: messageId) else { return false }
         defer { endAttempt(for: messageId) }
 
-        let itemIdentifier = try await dbQueue.write { [self] db -> ChatItemIdentifier? in
+        let target = try await dbQueue.write { [self] db -> RedactionAttemptTarget? in
             var record = try PendingRedactionRecord.fetchOne(db, key: messageId)
                 ?? PendingRedactionRecord(
                     messageId: messageId,
@@ -344,6 +364,11 @@ final class PendingRedactionService {
             record.apply(fallbackItemIdentifier)
             try self.refreshItemIdentifier(for: &record, in: db)
 
+            if record.redactionEventId?.isEmpty == false {
+                try record.save(db)
+                return nil
+            }
+
             guard let itemIdentifier = record.itemIdentifier else {
                 try record.save(db)
                 return nil
@@ -351,24 +376,100 @@ final class PendingRedactionService {
 
             record.lastAttemptAt = Date().timeIntervalSince1970
             record.attemptCount += 1
-            try record.save(db)
-            return itemIdentifier
-        }
 
-        guard let itemIdentifier else {
-            logPendingRedaction("attempt skipped messageId=\(messageId) no identifier")
-            return
-        }
-
-        do {
-            try await timelineService.redactEvent(itemIdentifier)
-        } catch {
-            let disposition = Self.classifyFailureDisposition(for: error)
-            if disposition == .terminal {
-                clearPersistentIntent(messageId: messageId)
-                throw PendingRedactionAttemptError.terminal(error)
+            if case .eventId(let eventId) = itemIdentifier,
+               let transactionId = DirectRawTextSender.prepareRedactionTransactionId(
+                   existingTransactionId: record.redactionTransactionId
+               ) {
+                record.redactionTransactionId = transactionId
+                try record.save(db)
+                return .directRaw(eventId: eventId, transactionId: transactionId)
             }
-            throw PendingRedactionAttemptError.retryable(error)
+
+            try record.save(db)
+            return nil
+        }
+
+        guard let target else {
+            logPendingRedaction("attempt skipped messageId=\(messageId) no identifier")
+            return false
+        }
+
+        switch target {
+        case .directRaw(let eventId, let transactionId):
+            try await sendDirectRawRedaction(
+                roomId: roomId,
+                messageId: messageId,
+                eventId: eventId,
+                transactionId: transactionId
+            )
+            return true
+        }
+    }
+
+    private func sendDirectRawRedaction(
+        roomId: String,
+        messageId: String,
+        eventId: String,
+        transactionId: String
+    ) async throws {
+        guard let room = try? MatrixClientService.shared.client?.getRoom(roomId: roomId) else {
+            throw PendingRedactionAttemptError.retryable(
+                PendingRedactionTransportError(
+                    description: "Room unavailable for redaction room=\(roomId)"
+                )
+            )
+        }
+
+        let receipt = await DirectRawTextSender.sendRedaction(
+            room: room,
+            eventId: eventId,
+            transactionId: transactionId
+        )
+
+        guard receipt.acceptedByTransport else {
+            let error = PendingRedactionTransportError(
+                description: "Direct raw redaction rejected event=\(eventId) tx=\(transactionId)"
+            )
+            if receipt.retryableTransportFailure {
+                throw PendingRedactionAttemptError.retryable(error)
+            }
+            clearPersistentIntent(messageId: messageId)
+            throw PendingRedactionAttemptError.terminal(error)
+        }
+
+        if let redactionEventId = receipt.eventId {
+            bindAcceptedDirectRawRedaction(
+                messageId: messageId,
+                transactionId: transactionId,
+                redactionEventId: redactionEventId
+            )
+        }
+    }
+
+    private func bindAcceptedDirectRawRedaction(
+        messageId: String,
+        transactionId: String,
+        redactionEventId: String
+    ) {
+        do {
+            try dbQueue.write { db in
+                guard var record = try PendingRedactionRecord.fetchOne(
+                    db,
+                    key: messageId
+                ), record.redactionTransactionId == transactionId else {
+                    return
+                }
+                record.redactionEventId = redactionEventId
+                try record.save(db)
+            }
+            logPendingRedaction(
+                "direct accepted messageId=\(messageId) redaction=\(redactionEventId) tx=\(transactionId)"
+            )
+        } catch {
+            logPendingRedaction(
+                "direct bind failed messageId=\(messageId) redaction=\(redactionEventId) error=\(error)"
+            )
         }
     }
 
@@ -510,46 +611,6 @@ final class PendingRedactionService {
         }
     }
 
-    private static func classifyFailureDisposition(for error: Error) -> PendingRedactionFailureDisposition {
-        guard let clientError = error as? ClientError else {
-            return .retryable
-        }
-
-        switch clientError {
-        case .MatrixApi(let kind, _, _, _):
-            switch kind {
-            case .forbidden,
-                    .guestAccessForbidden,
-                    .unauthorized,
-                    .unknownToken,
-                    .missingToken,
-                    .notFound,
-                    .badJson,
-                    .badState,
-                    .invalidParam,
-                    .missingParam,
-                    .unrecognized,
-                    .tooLarge,
-                    .userDeactivated,
-                    .userLocked,
-                    .userSuspended:
-                return .terminal
-            default:
-                return .retryable
-            }
-        case .Generic(let msg, let details):
-            let normalized = [msg, details]
-                .compactMap { $0?.lowercased() }
-                .joined(separator: " ")
-            if normalized.contains("forbidden")
-                || normalized.contains("power level")
-                || normalized.contains("unauthorized")
-                || normalized.contains("not authorized") {
-                return .terminal
-            }
-            return .retryable
-        }
-    }
 }
 
 private final class LockedTerminalFailures {

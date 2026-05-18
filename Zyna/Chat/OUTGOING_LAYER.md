@@ -1,219 +1,182 @@
 # Chat Outgoing Layer
 
-This note explains the sender-side message layer we added on top of
-Matrix transport.
+This document describes the current outgoing chat architecture in Zyna.
 
-It is not a cosmetic refactor. It is a deliberate architectural layer
-that keeps outgoing UI stable while the SDK goes through noisy local
-echo, upload, replace, sync, and hydration stages.
+The important change: chat outgoing delivery no longer depends on Matrix Rust
+SDK timeline local echo or the SDK send queue. Zyna owns durable outgoing
+intent, retry policy, and UI render state. Matrix still owns encryption,
+transport, server acceptance, sync, and final timeline truth.
 
-## Why It Exists
+## Core Model
 
-Matrix local echo is useful, but it is not a reliable UI truth for
-Zyna.
+For every outgoing chat operation:
 
-That is especially true when:
+1. Zyna stores the user's intent in its encrypted local database before
+   transport starts.
+2. Zyna creates and stores a stable Matrix transaction id before transport
+   starts.
+3. An app-level outbox sends the operation through a direct Room-level SDK API
+   using that transaction id.
+4. The SDK binding returns the accepted Matrix event id.
+5. Zyna stores the returned event id and binds the local outgoing item to the
+   server event.
+6. Later sync materializes the event in the normal timeline, and the outgoing
+   envelope retires by event id.
 
-- the SDK emits temporary local echo states
-- raw event JSON arrives later than the first visible message row
-- Zyna-only metadata lives in hidden spans, not in the typed SDK model
-- one visual message is really a richer Zyna concept, like a grouped
-  photo bubble
+The transaction id gives idempotent retry. The returned event id is the reliable
+bind point. Custom Matrix content markers are diagnostic metadata only.
 
-If sender UI renders directly from those transient SDK rows, bubbles
-can jump, split, collapse, duplicate, or lose custom presentation
-rules.
+## Why This Exists
 
-The outgoing layer exists to stop that.
+The old text path waited for SDK local echo and associated the next emitted
+local transaction id with the first waiter. That FIFO-style binding was fragile
+under concurrency, app restart, identical parallel sends, and crashes between
+SDK accept and local echo observation.
 
-## Core Rule
-
-For outgoing messages:
-
-- Zyna owns render truth
-- Matrix owns transport truth and server truth
-
-That means:
-
-- the sender bubble is rendered from Zyna's persistent local outgoing
-  state
-- Matrix send queue is used for `transactionId`, upload progress,
-  retries, `eventId`, and final server-backed content
-- incomplete or missing SDK metadata must not overwrite already known
-  local truth
-
-## What The Layer Contains
-
-The layer is represented by `OutgoingEnvelope` records and item
-records in the local database.
-
-Each envelope stores:
-
-- local identity
-- room identity
-- kind
-- current transport state
-- payload
-- reply snapshot
-- Zyna metadata
-- Matrix local session identity
-- item-level transport bindings like `bindingToken`, `transactionId`,
-  `eventId`, and uploaded media source
-
-This makes the outgoing state persistent across:
-
-- leaving and re-entering the chat
-- delayed sync
-- late raw JSON hydration
-- long uploads
-- retries and failures
-
-The session identity is local to Zyna. It is not a Matrix access token
-and it is not sent over the network. It marks which locally restored SDK
-session owned the envelope when the envelope was created.
-
-## Why We Still Split By Kind
-
-The lifecycle is shared, but payload and matching rules are not.
-
-We currently keep separate kinds for:
-
-- `text`
-- `image`
-- `voice`
-- `file`
-- `mediaBatch`
-
-This is intentional.
-
-The state machine is common, but these message types differ in:
-
-- synthetic rendering
-- transport payload
-- how they match and retire against timeline messages
-- what data they need before they can be considered hydrated
-
-Without kinds, the layer would turn into one weak optional-field blob
-and become less reliable, not more universal.
-
-## Binding Model
-
-The layer does not depend on "did send return a transaction id right
-away".
-
-Each outgoing item is created with a persistent `bindingToken`.
-
-The transport flow then resolves:
-
-`bindingToken -> transactionId -> eventId / media source`
-
-This removes the fragile gap where a sender bubble could exist before
-it had a stable binding to the Matrix send queue.
-
-The binding token must remain valid across slow or offline sends. If the
-SDK accepts a send and later emits `newLocalEvent`, the outgoing layer
-still needs to bind that late transaction id back to the existing
-envelope. A timeout in our UI must not discard that binding while the SDK
-send queue still owns the send.
-
-## Session Boundaries
-
-The Matrix Rust SDK owns its own persistent send queue. That queue is
-valid only for the SDK session/store that accepted the send.
-
-Zyna therefore stores a local Matrix session id on each outgoing
-envelope. A new id is created after a fresh login. Restoring the same
-local session keeps the same id. Clearing the local session removes it.
-
-If an envelope belongs to a different local session than the current one,
-it is stale:
-
-- it must not keep rendering as `sending`, `uploading`, or `retrying`
-- it is shown as failed
-- retryable payloads may offer `Retry Send`
-- non-retryable payloads may offer removal
-
-This prevents a half-dead SDK session from leaving sender UI stuck after
-an invalid token, local logout, or relogin.
-
-This rule is intentionally separate from normal offline retry. If the
-session did not change, a pending send may still be owned by the SDK
-queue and should be allowed to finish when connectivity returns.
-
-## Retry Model
-
-Retry after a session change creates a new envelope in the current
-session and removes the stale envelope.
-
-That keeps ownership clear:
-
-- the old envelope represents the old SDK session
-- the new envelope gets a fresh binding token
-- Matrix transport sees a normal new send
-- UI continues through the standard outgoing lifecycle
-
-Text retry can be reconstructed from the text payload, reply snapshot,
-and Zyna metadata stored in the envelope.
-
-Voice retry requires a local audio file. Recorded voice files are copied
-to durable app support storage when the outgoing envelope is created.
-The durable file is kept until the envelope is retired or removed. This
-lets voice retry survive app relaunch and local session reset.
-
-Media retry is intentionally narrower for now. If the original local
-asset is not safely owned by the outgoing layer, the UI should offer
-removal rather than pretending the send can be replayed safely.
+The new path removes that gap. A bubble can exist only after Zyna has a durable
+local record and a stable transaction id. When transport accepts, Zyna receives
+the final event id directly instead of inferring it from local echo ordering.
 
 ## Render Ownership
 
-The outgoing layer is only for sender-side rendering during the
-outgoing lifecycle.
+During the outgoing lifecycle:
 
-It is not a replacement for the normal timeline model.
+- Zyna owns sender-side render truth.
+- Matrix owns transport truth and server truth.
 
-The rule is:
+That means the sender bubble is rendered from Zyna's outgoing database state
+while the operation is queued, uploading, sending, retrying, or waiting for
+sync. Once the final timeline event is stored and matched, the outgoing envelope
+retires and normal Matrix-backed timeline rendering takes over.
 
-- while the message is still in outgoing lifecycle, UI may render from
-  the envelope
-- once the final timeline message is stable and matched, the envelope
-  retires
-- after that, normal persisted timeline state takes over
+This layer is not a replacement for the timeline store. It is a sender-side
+stability layer above Matrix transport.
 
-So this is not "our own chat protocol". It is a sender-side stability
-layer above Matrix transport.
+## Stored State
 
-## Why It Matters For Zyna
+The common outgoing shape is an `OutgoingEnvelope` plus one or more item records.
 
-Zyna keeps adding features that do not map cleanly to the SDK's early
-typed local echo model.
+An envelope stores:
 
-Examples:
+- local identity and room identity;
+- message kind;
+- transport state;
+- text/media payload references;
+- reply snapshot;
+- Zyna presentation metadata;
+- stable Matrix transaction ids;
+- returned Matrix event ids.
 
-- grouped photo bubbles
-- caption placement rules
-- forwarding metadata
-- future custom Zyna tags and presentation rules
+Media and non-message operations may also have dedicated durable records:
 
-The outgoing layer lets us support those features without making UI
-shape depend on when the SDK decides to expose raw carrier metadata.
+- uploaded media JSON for images, videos, files, and voice;
+- protected app-owned local file paths;
+- pending edit records;
+- pending redaction records;
+- pending reaction records;
+- forwarded media source metadata.
 
-## Current Scope
+## Outbox Runner
 
-This layer is for outgoing messages.
+All outgoing outboxes share the same coordination model through
+`OutgoingOutboxScanCoordinator`:
 
-It is not used as the source of truth for:
+- subscribe to Matrix client state;
+- scan only when the client is `.syncing`;
+- coalesce repeated kicks while a scan is already running;
+- optionally scope scans to a known envelope id;
+- schedule retry wakeups;
+- cancel work when the client leaves syncing state.
 
-- incoming messages
-- read receipts
-- reactions
-- long-term timeline ownership
+`OutgoingRetryBackoff` owns in-memory exponential retry delays, and
+`OutgoingInFlightTracker` prevents parallel sends of the same logical item.
 
-Those stay in the normal Matrix-backed message pipeline.
+The individual `Outgoing*OutboxService` classes still own type-specific
+behavior: candidate selection, payload validation, SDK call choice, upload/send
+steps, event-id binding, and failure handling.
 
-## Practical Goal
+## Covered Operations
 
-The sender should see the message in its final intended shape
-immediately, and it should stay visually stable while Matrix transport
-does its work underneath.
+The durable direct path currently covers:
 
-That is the entire point of this layer.
+| Operation | Outbox | SDK path |
+| --- | --- | --- |
+| Text and replies | `OutgoingTextOutboxService` | `sendRawWithTransactionIdReturningEventId` |
+| Edits | `OutgoingEditOutboxService` | raw replacement event with transaction id |
+| Redactions | `OutgoingRedactionOutboxService` | `redactWithTransactionIdReturningEventId` |
+| Reactions | `OutgoingReactionOutboxService` | add reaction raw event, remove by redaction |
+| Images and photo groups | `OutgoingImageOutboxService` | split upload/send image helpers |
+| Videos | `OutgoingVideoOutboxService` | split upload/send video helpers |
+| Files | `OutgoingFileOutboxService` | split upload/send file helpers |
+| Voice | `OutgoingVoiceOutboxService` | split upload/send voice helpers |
+| Forwarded media | `OutgoingForwardedMediaOutboxService` | typed message resend by reference |
+
+The old SDK timeline-send bridge, local echo transaction broker, SDK send queue
+update bridge, and chat fallback sends have been removed from the chat outgoing
+path.
+
+`TimelineService` still owns timeline listening, pagination, read receipts, and
+non-chat-composer Matrix operations. Call signaling is intentionally outside
+this outgoing chat architecture.
+
+Known boundary: direct reaction removal requires the reaction event id. Zyna can
+reliably remove reactions it created through the direct path because that event
+id is stored at add time. Older own reactions from before this architecture need
+a reliable event-id mapping before they can be removed through the same durable
+path.
+
+## Retry And Restart
+
+Retry is app-owned:
+
+- retryable transport failures keep the durable record and move it to retrying;
+- terminal failures mark the operation failed or roll back the UI state;
+- app restart re-scans pending outbox records after Matrix reaches `.syncing`;
+- opening the chat is not required for transport retry.
+
+Retry uses the same transaction id, so duplicate transport attempts should
+resolve to the same Matrix event instead of creating duplicate user messages.
+
+For media, upload and event send are split. If upload succeeds and the uploaded
+media JSON is saved, a later retry only resends the event. If the app crashes
+after upload succeeds but before saving the uploaded JSON, retry may upload
+again and leave an orphan media blob on the media repository. That is acceptable
+for this architecture and is described in `MEDIA_DIRECT_SEND.md`.
+
+## Matching And Retirement
+
+Outgoing envelopes retire by event id. The event id returned by the direct SDK
+binding is stored immediately after transport accept. When sync later stores
+the same event in the local timeline database, the pending envelope can be
+removed or marked sent without guessing.
+
+Do not rely on:
+
+- arrival order of SDK local echo;
+- custom `com.zyna.*` markers returning from sync;
+- message body, filename, or timestamp equality;
+- in-memory waiter state.
+
+Those are useful for diagnostics or presentation, not reliable transport
+binding.
+
+## What Not To Reintroduce
+
+Avoid these patterns:
+
+- waiting for SDK local echo to learn the transaction id;
+- assigning SDK local events to waiters by FIFO;
+- routing chat composer sends through SDK timeline send queue;
+- rebuilding encrypted Matrix media JSON in Swift;
+- treating filename/body equality as a stronger bind than event id;
+- making retry depend on an open chat screen.
+
+## Related Documents
+
+- `MEDIA_DIRECT_SEND.md` explains image, video, file, voice, photo group, and
+  forwarded media delivery.
+- `MATRIX_SDK_DIRECT_SEND_FFI.md` records the SDK/Swift binding requirements.
+- `REDACTION_FLOW.md` explains delete UI state versus persistent redaction
+  delivery.
+- `MEDIA_GROUPING.md` and `INCOMING_ASSEMBLY.md` explain grouped media
+  presentation.

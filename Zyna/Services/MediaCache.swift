@@ -69,7 +69,8 @@ final class MediaCache {
 
     // MARK: - Disk
 
-    private let diskDir: URL
+    private var activeUserId: String?
+    private var diskDir: URL
     private let ioQueue = DispatchQueue(label: "com.zyna.mediacache.io", qos: .utility)
 
     // MARK: - Request deduplication
@@ -81,11 +82,12 @@ final class MediaCache {
     private init() {
         memory.countLimit = 300
 
-        let caches = FileManager.default
-            .urls(for: .cachesDirectory, in: .userDomainMask).first!
-        diskDir = caches.appendingPathComponent("zyna-thumbnails", isDirectory: true)
-        try? FileManager.default.createDirectory(
-            at: diskDir, withIntermediateDirectories: true
+        activeUserId = UserDefaults.standard.string(forKey: "com.zyna.matrix.lastUserId")
+        diskDir = LocalDataProtection.thumbnailsDirectory(for: activeUserId)
+        _ = try? LocalDataProtection.createProtectedDirectory(
+            at: diskDir,
+            protection: .sensitive,
+            excludeFromBackup: true
         )
     }
 
@@ -584,6 +586,33 @@ final class MediaCache {
         return diskDir.appendingPathComponent(filename)
     }
 
+    func activate(userId: String?) {
+        memory.removeAllObjects()
+        ioQueue.sync {
+            guard activeUserId != userId else { return }
+            activeUserId = userId
+            diskDir = LocalDataProtection.thumbnailsDirectory(for: userId)
+            _ = try? LocalDataProtection.createProtectedDirectory(
+                at: diskDir,
+                protection: .sensitive,
+                excludeFromBackup: true
+            )
+        }
+    }
+
+    func clearAll(userId: String? = nil) {
+        memory.removeAllObjects()
+        ioQueue.sync {
+            let directory = LocalDataProtection.thumbnailsDirectory(for: userId ?? activeUserId)
+            try? FileManager.default.removeItem(at: directory)
+            _ = try? LocalDataProtection.createProtectedDirectory(
+                at: directory,
+                protection: .sensitive,
+                excludeFromBackup: true
+            )
+        }
+    }
+
     private func readDisk(key: String) async -> Entry? {
         let path = diskPath(for: key)
         return await withCheckedContinuation { cont in
@@ -600,7 +629,11 @@ final class MediaCache {
     private func writeDisk(key: String, data: Data) {
         let path = diskPath(for: key)
         ioQueue.async {
-            try? data.write(to: path, options: .atomic)
+            try? LocalDataProtection.writeProtectedData(
+                data,
+                to: path,
+                protection: .sensitive
+            )
         }
     }
 }

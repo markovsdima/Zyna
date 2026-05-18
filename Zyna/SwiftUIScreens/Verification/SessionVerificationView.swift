@@ -42,10 +42,11 @@ struct SessionVerificationView: View {
             Text("This will permanently destroy your current key backup. All previously encrypted messages that haven't been decrypted on this device will become unreadable forever.\n\nOnly do this if you've lost your recovery key and have no other verified devices.")
         }
         .alert("Are you sure?", isPresented: $showResetFinalConfirmation) {
+            SecureField("Password", text: $viewModel.resetPassword)
             Button("Cancel", role: .cancel) {}
             Button("Delete backup and reset", role: .destructive) { viewModel.resetAndGenerateNewKey() }
         } message: {
-            Text("This cannot be undone. Your encrypted message history will be permanently lost.")
+            Text("This cannot be undone. Enter your account password to delete the old encrypted backup and reset encryption.")
         }
     }
 
@@ -86,6 +87,8 @@ struct SessionVerificationView: View {
             recoveryIntroView()
         case .generatingRecoveryKey:
             generatingKeyView()
+        case .finishingRecoverySetup:
+            finishingRecoverySetupView()
         case .showingRecoveryKey(let key):
             recoveryKeyView(key)
         case .enteringRecoveryKey:
@@ -130,6 +133,17 @@ struct SessionVerificationView: View {
         }
     }
 
+    private func finishingRecoverySetupView() -> some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.5)
+                .tint(.white)
+            Text("Saving message keys…")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundColor(.white.opacity(0.7))
+        }
+    }
+
     private func recoveryKeyView(_ key: String) -> some View {
         VStack(spacing: 20) {
             Text("Your Recovery Key")
@@ -141,6 +155,14 @@ struct SessionVerificationView: View {
                 .foregroundColor(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
+
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(.subheadline)
+                    .foregroundColor(.yellow.opacity(0.9))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
 
             Text(key)
                 .font(.system(.body, design: .monospaced))
@@ -190,6 +212,8 @@ struct SessionVerificationView: View {
             needsRecoveryKeyView()
         case .generatingRecoveryKey:
             generatingKeyView()
+        case .finishingRecoverySetup:
+            finishingRecoverySetupView()
         case .showingRecoveryKey(let key):
             recoveryKeyView(key)
         case .verified:
@@ -269,6 +293,14 @@ struct SessionVerificationView: View {
                 .foregroundColor(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
+
+            if let error = viewModel.errorMessage {
+                Text(error)
+                    .font(.subheadline)
+                    .foregroundColor(.yellow.opacity(0.9))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
 
             TextField("", text: $viewModel.recoveryKeyInput, axis: .vertical)
                 .font(.system(.body, design: .monospaced))
@@ -504,13 +536,14 @@ struct SessionVerificationView: View {
                 textButton("I have a recovery key") { viewModel.useRecoveryKey() }
                 textButton("Skip for now") { viewModel.skip() }
             }
-        case .generatingRecoveryKey:
+        case .generatingRecoveryKey, .finishingRecoverySetup:
             EmptyView()
         case .showingRecoveryKey:
             primaryButton("Done") { showSavedConfirmation = true }
         case .enteringRecoveryKey:
             VStack(spacing: 12) {
                 primaryButton("Restore") { viewModel.restoreFromRecoveryKey() }
+                textButton("Reset recovery key") { showResetWarning = true }
                 textButton("Cancel") { viewModel.skip() }
             }
         case .restoringFromRecoveryKey:
@@ -521,6 +554,7 @@ struct SessionVerificationView: View {
             VStack(spacing: 12) {
                 primaryButton("Try Again") { viewModel.setupRecovery() }
                 textButton("I have a recovery key") { viewModel.useRecoveryKey() }
+                textButton("Reset recovery key") { showResetWarning = true }
                 textButton("Skip for now") { viewModel.skip() }
             }
         default:
@@ -560,7 +594,7 @@ struct SessionVerificationView: View {
             }
         case .restoringFromRecoveryKey:
             EmptyView()
-        case .generatingRecoveryKey:
+        case .generatingRecoveryKey, .finishingRecoverySetup:
             EmptyView()
         case .showingRecoveryKey:
             primaryButton("Done") { showSavedConfirmation = true }

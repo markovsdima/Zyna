@@ -15,6 +15,7 @@ final class CallViewController: ASDKViewController<CallNode> {
     private let callService: CallService
     private let roomName: String
     private var cancellables = Set<AnyCancellable>()
+    private var latestFailureMessage: String?
 
     // MARK: - Init
 
@@ -76,6 +77,14 @@ final class CallViewController: ASDKViewController<CallNode> {
                 self?.updateUI(for: state)
             }
             .store(in: &cancellables)
+
+        callService.failureMessageSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] message in
+                self?.latestFailureMessage = message
+                self?.node.updateStatus(message)
+            }
+            .store(in: &cancellables)
     }
 
     private func updateUI(for state: CallState) {
@@ -104,8 +113,9 @@ final class CallViewController: ASDKViewController<CallNode> {
             node.updateStatus("Connected")
 
         case .ended:
-            node.updateStatus("Call ended")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            node.updateStatus(latestFailureMessage ?? "Call ended")
+            let dismissDelay: TimeInterval = latestFailureMessage == nil ? 1.0 : 2.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + dismissDelay) { [weak self] in
                 self?.onDismiss?()
             }
         }

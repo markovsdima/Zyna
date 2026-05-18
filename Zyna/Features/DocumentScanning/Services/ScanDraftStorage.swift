@@ -120,15 +120,16 @@ final class FileBackedScanDraftStorage: ScanDraftStorageService {
         if let rootURL {
             self.rootURL = rootURL
         } else {
-            let appSupport = fileManager
-                .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-                .first!
-            self.rootURL = appSupport
-                .appendingPathComponent("zyna", isDirectory: true)
+            let userId = UserDefaults.standard.string(forKey: "com.zyna.matrix.lastUserId")
+            self.rootURL = LocalDataProtection.userSupportDirectory(for: userId)
                 .appendingPathComponent(Constants.rootFolder, isDirectory: true)
         }
 
-        try? fileManager.createDirectory(at: self.rootURL, withIntermediateDirectories: true)
+        _ = try? LocalDataProtection.createProtectedDirectory(
+            at: self.rootURL,
+            protection: .sensitive,
+            excludeFromBackup: true
+        )
         excludeFromBackup(self.rootURL)
     }
 
@@ -136,7 +137,11 @@ final class FileBackedScanDraftStorage: ScanDraftStorageService {
         try queue.sync {
             let draftId = UUID()
             let dir = draftDirectoryURL(for: draftId)
-            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            try LocalDataProtection.createProtectedDirectory(
+                at: dir,
+                protection: .sensitive,
+                excludeFromBackup: true
+            )
             let manifest = DraftManifest(id: draftId, createdAt: Date(), pages: [])
             try saveManifest(manifest, to: dir)
             return draftId
@@ -161,7 +166,11 @@ final class FileBackedScanDraftStorage: ScanDraftStorageService {
 
             let pageId = UUID()
             let fileName = "\(pageId.uuidString)_original.jpg"
-            try data.write(to: dir.appendingPathComponent(fileName), options: .atomic)
+            try LocalDataProtection.writeProtectedData(
+                data,
+                to: dir.appendingPathComponent(fileName),
+                protection: .sensitive
+            )
 
             var manifest = try loadManifest(from: dir)
             manifest.pages.append(DraftPageManifest(
@@ -189,7 +198,11 @@ final class FileBackedScanDraftStorage: ScanDraftStorageService {
             var manifest = location.manifest
             var page = manifest.pages[location.pageIndex]
             let fileName = "\(pageId.uuidString)_corrected.jpg"
-            try data.write(to: location.draftURL.appendingPathComponent(fileName), options: .atomic)
+            try LocalDataProtection.writeProtectedData(
+                data,
+                to: location.draftURL.appendingPathComponent(fileName),
+                protection: .sensitive
+            )
             page.correctedImagePath = fileName
             manifest.pages[location.pageIndex] = page
             try saveManifest(manifest, to: location.draftURL)
@@ -314,7 +327,11 @@ final class FileBackedScanDraftStorage: ScanDraftStorageService {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(manifest)
-        try data.write(to: manifestURL(in: draftURL), options: .atomic)
+        try LocalDataProtection.writeProtectedData(
+            data,
+            to: manifestURL(in: draftURL),
+            protection: .sensitive
+        )
     }
 
     private func allDraftManifests() throws -> [(URL, DraftManifest)] {

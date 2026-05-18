@@ -140,6 +140,10 @@ final class GlassNavBar: ASDisplayNode {
         didSet { titleNode.memberCount = memberCount; setNeedsLayout() }
     }
 
+    var connectionStatus: String? {
+        didSet { titleNode.connectionStatus = connectionStatus; setNeedsLayout() }
+    }
+
     var isTappable: Bool = false {
         didSet { titleNode.isTappable = isTappable }
     }

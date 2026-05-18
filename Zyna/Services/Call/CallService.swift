@@ -36,6 +36,7 @@ final class CallService {
     // MARK: - State
 
     let stateSubject = CurrentValueSubject<CallState, Never>(.idle)
+    let failureMessageSubject = PassthroughSubject<String, Never>()
     var state: CallState { stateSubject.value }
 
     // MARK: - Delegate
@@ -99,7 +100,7 @@ final class CallService {
         do {
             try await signalingService?.sendInvite(content)
         } catch {
-            logCall("Failed to send offer: \(error)")
+            handleSignalingSendFailure(error, action: "send offer")
             endCall(reason: .normal)
         }
     }
@@ -118,7 +119,7 @@ final class CallService {
                 stateSubject.send(.connecting(callId: cid, roomId: rid))
             }
         } catch {
-            logCall("Failed to send answer: \(error)")
+            handleSignalingSendFailure(error, action: "send answer")
             endCall(reason: .normal)
         }
     }
@@ -132,6 +133,10 @@ final class CallService {
             try await signalingService?.sendCandidates(content)
         } catch {
             logCall("Failed to send ICE candidates: \(error)")
+            if OutgoingSendFailureContext.fromError(error) != nil {
+                handleSignalingSendFailure(error, action: "send ICE candidates")
+                endCall(reason: .normal)
+            }
         }
     }
 
@@ -203,6 +208,24 @@ final class CallService {
     /// an open chat. The service stays alive until the call ends.
     func attachTimelineService(_ service: TimelineService) {
         ownedTimelineService = service
+    }
+
+    private func handleSignalingSendFailure(_ error: Error, action: String) {
+        logCall("Failed to \(action): \(error)")
+        failureMessageSubject.send(Self.signalingFailureMessage(for: error))
+    }
+
+    private static func signalingFailureMessage(for error: Error) -> String {
+        guard let context = OutgoingSendFailureContext.fromError(error) else {
+            return String(localized: "Could not send encrypted call signaling. Try again.")
+        }
+
+        switch context.reason {
+        case .ownDeviceVerificationRequired:
+            return String(localized: "Verify this device to make encrypted calls.")
+        case .recipientIdentityVerificationRequired:
+            return String(localized: "Could not continue the secure call. Check participant verification and try again.")
+        }
     }
 
     // MARK: - Handle Incoming Call (called by notification listener or TimelineService)
@@ -286,7 +309,7 @@ final class CallService {
             guard !Task.isCancelled else { return }
             guard self?.state.callId == callId else { return }
 
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 logCall("Call \(callId) timed out")
                 self?.endCall(reason: .timeout)
             }
@@ -358,7 +381,7 @@ final class CallService {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP])
             try session.setActive(true)
             logCall("Audio session configured")
         } catch {

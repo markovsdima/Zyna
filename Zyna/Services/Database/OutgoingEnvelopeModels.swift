@@ -21,6 +21,7 @@ enum OutgoingTransportState: String, Codable, Equatable {
     case queued
     case sending
     case uploading
+    case uploaded
     case retrying
     case sent
     case failed
@@ -29,7 +30,7 @@ enum OutgoingTransportState: String, Codable, Equatable {
         switch self {
         case .queued:
             return "queued"
-        case .sending, .uploading:
+        case .sending, .uploading, .uploaded:
             return "sending"
         case .retrying:
             return "retrying"
@@ -537,6 +538,19 @@ struct OutgoingMediaDraftItem {
     let previewImageData: Data
     let width: UInt64
     let height: UInt64
+    let transactionId: String?
+
+    init(
+        previewImageData: Data,
+        width: UInt64,
+        height: UInt64,
+        transactionId: String? = nil
+    ) {
+        self.previewImageData = previewImageData
+        self.width = width
+        self.height = height
+        self.transactionId = transactionId
+    }
 }
 
 struct OutgoingEnvelopeItemSnapshot {

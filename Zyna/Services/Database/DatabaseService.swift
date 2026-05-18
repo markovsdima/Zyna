@@ -10,20 +10,134 @@ final class DatabaseService {
 
     static let shared = DatabaseService()
 
-    let dbQueue: DatabaseQueue
+    private static let userIdKey = "com.zyna.matrix.lastUserId"
+
+    // This guards DatabaseQueue lifecycle work (close/open/migrate/recover).
+    // Keep NSLock here instead of Atomic/OSAllocatedUnfairLock: the critical
+    // section can perform file IO and Keychain-backed SQLCipher setup.
+    private let lock = NSLock()
+    private var activeUserId: String?
+    private var currentDbQueue: DatabaseQueue?
+
+    var dbQueue: DatabaseQueue {
+        lock.lock()
+        defer { lock.unlock() }
+        if let currentDbQueue {
+            return currentDbQueue
+        }
+        return openActiveDatabaseLocked()
+    }
 
     private init() {
-        let dir = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("zyna", isDirectory: true)
-        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        LocalDataProtection.removeLegacyGlobalLocalData()
+        LocalDataProtection.removeTemporaryLocalData()
 
-        let dbURL = dir.appendingPathComponent("zyna.db")
+        let userId = UserDefaults.standard.string(forKey: Self.userIdKey)
+        activeUserId = userId
+        currentDbQueue = nil
+        _ = openActiveDatabaseLocked()
+    }
+
+    func activate(userId: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard activeUserId != userId || currentDbQueue == nil else {
+            return
+        }
+
+        try? currentDbQueue?.close()
+        activeUserId = userId
+        currentDbQueue = nil
+        _ = openActiveDatabaseLocked()
+    }
+
+    func closeForLocalDataRemoval(userId: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if activeUserId == userId || userId == nil {
+            try? currentDbQueue?.close()
+            activeUserId = nil
+            currentDbQueue = nil
+        }
+    }
+
+    private func openActiveDatabaseLocked() -> DatabaseQueue {
+        do {
+            let dbQueue = try openAndMigrateDatabase(userId: activeUserId)
+            currentDbQueue = dbQueue
+            return dbQueue
+        } catch {
+            guard Self.canRecoverByRecreatingDatabase(from: error) else {
+                fatalError("Unable to open encrypted app database: \(error)")
+            }
+
+            LocalDataProtection.removeAppDatabase(for: activeUserId)
+
+            do {
+                let dbQueue = try openAndMigrateDatabase(userId: activeUserId)
+                currentDbQueue = dbQueue
+                return dbQueue
+            } catch {
+                fatalError("Unable to recreate encrypted app database: \(error)")
+            }
+        }
+    }
+
+    private func openAndMigrateDatabase(userId: String?) throws -> DatabaseQueue {
+        let dbQueue = try Self.openDatabase(userId: userId)
+        do {
+            try migrator.migrate(dbQueue)
+        } catch {
+            try? dbQueue.close()
+            throw error
+        }
+        LocalDataProtection.protectExistingDatabaseFiles(for: userId)
+        return dbQueue
+    }
+
+    private static func canRecoverByRecreatingDatabase(from error: Error) -> Bool {
+        guard let databaseError = error as? DatabaseError else {
+            return false
+        }
+        return databaseError.resultCode == .SQLITE_NOTADB
+    }
+
+    private static func openDatabase(userId: String?) throws -> DatabaseQueue {
+        let dbURL = LocalDataProtection.databaseURL(for: userId)
+        try LocalDataProtection.createProtectedDirectory(
+            at: dbURL.deletingLastPathComponent(),
+            protection: .sensitive,
+            excludeFromBackup: true
+        )
+
         var config = Configuration()
         config.foreignKeysEnabled = true
-        dbQueue = try! DatabaseQueue(path: dbURL.path, configuration: config)
-        try! migrator.migrate(dbQueue)
+
+        #if SQLITE_HAS_CODEC
+        config.prepareDatabase { db in
+            var passphrase = try DatabasePassphraseStore.passphraseData(for: userId)
+            defer { passphrase.resetBytes(in: 0..<passphrase.count) }
+            try db.usePassphrase(passphrase)
+            try validateSQLCipher(db)
+        }
+        return try DatabaseQueue(path: dbURL.path, configuration: config)
+        #elseif ZYNA_ALLOW_PLAINTEXT_APP_DB
+        return try DatabaseQueue(path: dbURL.path, configuration: config)
+        #else
+        throw DatabaseEncryptionError.sqlCipherUnavailable
+        #endif
     }
+
+    #if SQLITE_HAS_CODEC
+    private static func validateSQLCipher(_ db: Database) throws {
+        let cipherVersion = try String.fetchOne(db, sql: "PRAGMA cipher_version")
+        guard cipherVersion?.isEmpty == false else {
+            throw DatabaseEncryptionError.sqlCipherUnavailable
+        }
+    }
+    #endif
 
     private var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -376,6 +490,260 @@ final class DatabaseService {
                     t.add(column: "matrixSessionId", .text)
                 }
             }
+        }
+
+        migrator.registerMigration("v13_readReceiptsRequireEventIds") { db in
+            try db.execute(
+                sql: """
+                    UPDATE storedMessage
+                    SET sendStatus = 'sending'
+                    WHERE isOutgoing = 1
+                      AND sendStatus = 'read'
+                      AND (eventId IS NULL OR eventId = '')
+                    """
+            )
+        }
+
+        migrator.registerMigration("v14_pendingMessageEditOutbox") { db in
+            let existingColumns = try db.columns(in: "storedMessage").map(\.name)
+            if !existingColumns.contains("pendingEditBody") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "pendingEditBody", .text)
+                }
+            }
+            if !existingColumns.contains("pendingEditZynaAttributesJSON") {
+                try db.alter(table: "storedMessage") { t in
+                    t.add(column: "pendingEditZynaAttributesJSON", .text)
+                }
+            }
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS idx_storedMessage_pendingEditOutbox
+                    ON storedMessage(roomId, timestamp)
+                    WHERE isEditPending = 1
+                      AND editTransactionId IS NOT NULL
+                      AND pendingEditBody IS NOT NULL
+                """
+            )
+        }
+
+        migrator.registerMigration("v15_directRawRedactions") { db in
+            let existingColumns = try db.columns(in: "pendingRedaction").map(\.name)
+            if !existingColumns.contains("redactionTransactionId") {
+                try db.alter(table: "pendingRedaction") { t in
+                    t.add(column: "redactionTransactionId", .text)
+                }
+            }
+            if !existingColumns.contains("redactionEventId") {
+                try db.alter(table: "pendingRedaction") { t in
+                    t.add(column: "redactionEventId", .text)
+                }
+            }
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS idx_pendingRedaction_transactionId
+                    ON pendingRedaction(redactionTransactionId)
+                    WHERE redactionTransactionId IS NOT NULL
+                """
+            )
+        }
+
+        migrator.registerMigration("v16_directRawReactions") { db in
+            try db.create(table: "pendingReaction") { t in
+                t.primaryKey("id", .text)
+                t.column("roomId", .text).notNull()
+                t.column("targetEventId", .text).notNull()
+                t.column("reactionKey", .text).notNull()
+                t.column("state", .text).notNull()
+                t.column("transactionId", .text)
+                t.column("reactionEventId", .text)
+                t.column("redactionTransactionId", .text)
+                t.column("redactionEventId", .text)
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+                t.column("lastAttemptAt", .double)
+                t.column("attemptCount", .integer).notNull().defaults(to: 0)
+            }
+
+            try db.create(
+                index: "idx_pendingReaction_target",
+                on: "pendingReaction",
+                columns: ["roomId", "targetEventId", "reactionKey"]
+            )
+            try db.execute(
+                sql: """
+                    CREATE INDEX idx_pendingReaction_outbox
+                    ON pendingReaction(state, updatedAt)
+                    WHERE state IN ('addQueued', 'removeQueued')
+                """
+            )
+            try db.execute(
+                sql: """
+                    CREATE INDEX idx_pendingReaction_reactionEventId
+                    ON pendingReaction(reactionEventId)
+                    WHERE reactionEventId IS NOT NULL
+                """
+            )
+        }
+
+        migrator.registerMigration("v17_directRawImages") { db in
+            try db.create(table: "pendingDirectImage") { t in
+                t.primaryKey("itemId", .text)
+                    .references("pendingMediaGroupItem", onDelete: .cascade)
+                t.column("envelopeId", .text).notNull()
+                t.column("roomId", .text).notNull()
+                t.column("originalFileName", .text).notNull()
+                t.column("thumbnailFileName", .text).notNull()
+                t.column("originalMimetype", .text).notNull()
+                t.column("originalSize", .integer).notNull()
+                t.column("originalWidth", .integer).notNull()
+                t.column("originalHeight", .integer).notNull()
+                t.column("thumbnailMimetype", .text).notNull()
+                t.column("thumbnailSize", .integer).notNull()
+                t.column("thumbnailWidth", .integer).notNull()
+                t.column("thumbnailHeight", .integer).notNull()
+                t.column("blurhash", .text)
+                t.column("uploadedImageJSON", .text)
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingDirectImage_envelope",
+                on: "pendingDirectImage",
+                columns: ["envelopeId"]
+            )
+            try db.create(
+                index: "idx_pendingDirectImage_room",
+                on: "pendingDirectImage",
+                columns: ["roomId"]
+            )
+        }
+
+        migrator.registerMigration("v18_directRawVoices") { db in
+            try db.create(table: "pendingDirectVoice") { t in
+                t.primaryKey("itemId", .text)
+                    .references("pendingMediaGroupItem", onDelete: .cascade)
+                t.column("envelopeId", .text).notNull()
+                t.column("roomId", .text).notNull()
+                t.column("mimetype", .text).notNull()
+                t.column("uploadedVoiceJSON", .text)
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingDirectVoice_envelope",
+                on: "pendingDirectVoice",
+                columns: ["envelopeId"]
+            )
+            try db.create(
+                index: "idx_pendingDirectVoice_room",
+                on: "pendingDirectVoice",
+                columns: ["roomId"]
+            )
+        }
+
+        migrator.registerMigration("v19_directRawVideos") { db in
+            try db.create(table: "pendingDirectVideo") { t in
+                t.primaryKey("itemId", .text)
+                    .references("pendingMediaGroupItem", onDelete: .cascade)
+                t.column("envelopeId", .text).notNull()
+                t.column("roomId", .text).notNull()
+                t.column("originalFileName", .text).notNull()
+                t.column("thumbnailFileName", .text).notNull()
+                t.column("originalMimetype", .text).notNull()
+                t.column("originalSize", .integer).notNull()
+                t.column("originalWidth", .integer).notNull()
+                t.column("originalHeight", .integer).notNull()
+                t.column("originalDuration", .double).notNull()
+                t.column("thumbnailMimetype", .text).notNull()
+                t.column("thumbnailSize", .integer).notNull()
+                t.column("thumbnailWidth", .integer).notNull()
+                t.column("thumbnailHeight", .integer).notNull()
+                t.column("blurhash", .text)
+                t.column("uploadedVideoJSON", .text)
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingDirectVideo_envelope",
+                on: "pendingDirectVideo",
+                columns: ["envelopeId"]
+            )
+            try db.create(
+                index: "idx_pendingDirectVideo_room",
+                on: "pendingDirectVideo",
+                columns: ["roomId"]
+            )
+        }
+
+        migrator.registerMigration("v20_directRawFiles") { db in
+            try db.create(table: "pendingDirectFile") { t in
+                t.primaryKey("itemId", .text)
+                    .references("pendingMediaGroupItem", onDelete: .cascade)
+                t.column("envelopeId", .text).notNull()
+                t.column("roomId", .text).notNull()
+                t.column("storageDirectoryName", .text).notNull()
+                t.column("filename", .text).notNull()
+                t.column("mimetype", .text).notNull()
+                t.column("size", .integer).notNull()
+                t.column("uploadedFileJSON", .text)
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingDirectFile_envelope",
+                on: "pendingDirectFile",
+                columns: ["envelopeId"]
+            )
+            try db.create(
+                index: "idx_pendingDirectFile_room",
+                on: "pendingDirectFile",
+                columns: ["roomId"]
+            )
+        }
+
+        migrator.registerMigration("v21_directForwardedMedia") { db in
+            try db.create(table: "pendingForwardedMedia") { t in
+                t.primaryKey("itemId", .text)
+                    .references("pendingMediaGroupItem", onDelete: .cascade)
+                t.column("envelopeId", .text).notNull()
+                t.column("roomId", .text).notNull()
+                t.column("mediaKind", .text).notNull()
+                t.column("sourceJSON", .text).notNull()
+                t.column("thumbnailSourceJSON", .text)
+                t.column("filename", .text)
+                t.column("caption", .text)
+                t.column("mimetype", .text)
+                t.column("size", .integer)
+                t.column("width", .integer)
+                t.column("height", .integer)
+                t.column("duration", .double)
+                t.column("waveformJSON", .text)
+                t.column("transactionId", .text).notNull()
+                t.column("createdAt", .double).notNull()
+                t.column("updatedAt", .double).notNull()
+            }
+
+            try db.create(
+                index: "idx_pendingForwardedMedia_envelope",
+                on: "pendingForwardedMedia",
+                columns: ["envelopeId"]
+            )
+            try db.create(
+                index: "idx_pendingForwardedMedia_room",
+                on: "pendingForwardedMedia",
+                columns: ["roomId"]
+            )
+            try db.create(
+                index: "idx_pendingForwardedMedia_transactionId",
+                on: "pendingForwardedMedia",
+                columns: ["transactionId"],
+                unique: true
+            )
         }
 
         return migrator

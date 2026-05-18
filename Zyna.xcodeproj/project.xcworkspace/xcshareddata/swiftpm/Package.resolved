@@ -1,13 +1,13 @@
 {
-  "originHash" : "1a33dd70e9277fddbc9e5d5490bb973a696ce1bb17734fb84f61e631c1515a0c",
+  "originHash" : "dbdaad5a41e6e571674f96af8257c2b6ef7f633a46a938aa7babc40d950efada",
   "pins" : [
     {
       "identity" : "grdb.swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/groue/GRDB.swift.git",
+      "location" : "https://github.com/markovsdima/GRDB.swift.git",
       "state" : {
-        "revision" : "a5a1be26b4513dc7ec360eb56bc08a345bac6649",
-        "version" : "7.5.0"
+        "revision" : "baff9c73f8ac694c269537317b5be9b62dfdf598",
+        "version" : "7.10.0-sqlcipher.1"
       }
     },
     {
@@ -22,10 +22,19 @@
     {
       "identity" : "matrix-rust-components-swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/matrix-org/matrix-rust-components-swift",
+      "location" : "https://github.com/markovsdima/matrix-rust-components-swift",
       "state" : {
-        "revision" : "2916f3f9cc2aea86ba3a820cb6a8389e13e0284a",
-        "version" : "26.4.1"
+        "revision" : "8f0aa6f4bd5cc256a79b97472701ba7fe657232c",
+        "version" : "26.5.13-zyna.5-beta.6"
+      }
+    },
+    {
+      "identity" : "sqlcipher.swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/sqlcipher/SQLCipher.swift.git",
+      "state" : {
+        "revision" : "07bf6bc2191a063d6f1e7c3b5f276a3fadfe36b7",
+        "version" : "4.16.0"
       }
     },
     {

@@ -56,8 +56,8 @@ struct AuthView: View {
                     signInButton()
                 }
 
-                if !viewModel.serverSupportsPassword && viewModel.serverSupportsOIDC {
-                    oidcSignInButton()
+                if !viewModel.serverSupportsPassword && viewModel.serverSupportsOAuth {
+                    oauthSignInButton()
                 }
 
                 createAccountButton()
@@ -201,9 +201,9 @@ struct AuthView: View {
         .padding(.horizontal)
     }
 
-    private func oidcSignInButton() -> some View {
+    private func oauthSignInButton() -> some View {
         Button(action: {
-            viewModel.loginWithOIDC(homeserver: homeserver)
+            viewModel.loginWithOAuth(homeserver: homeserver)
         }) {
             Group {
                 if viewModel.isLoading {
