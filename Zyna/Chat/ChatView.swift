@@ -835,6 +835,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
             .store(in: &cancellables)
 
+        viewModel.$connectionStatusText
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                self?.glassNavBar.connectionStatus = status
+            }
+            .store(in: &cancellables)
+
         viewModel.$isGroupChat
             .receive(on: DispatchQueue.main)
             .sink { [weak self] flag in
@@ -3097,7 +3104,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func presentRoomSendSecurityIssue(context: OutgoingSendFailureContext) {
         guard presentedViewController == nil else { return }
 
-        let securityViewModel = viewModel.makeRoomSendSecurityViewModel(context: context)
+        guard let securityViewModel = viewModel.makeRoomSendSecurityViewModel(context: context) else {
+            return
+        }
         securityViewModel.onClose = { [weak self] in
             self?.dismiss(animated: true)
         }

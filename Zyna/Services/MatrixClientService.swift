@@ -81,6 +81,8 @@ final class MatrixClientService {
 
     let stateSubject = CurrentValueSubject<MatrixClientState, Never>(.loggedOut)
     var state: MatrixClientState { stateSubject.value }
+    let syncServiceStateSubject = CurrentValueSubject<SyncServiceState, Never>(.idle)
+    var syncServiceState: SyncServiceState { syncServiceStateSubject.value }
 
     /// Live encryption state from SDK listeners. `.unknown` until
     /// the SDK fires the first event after listener attach (which
@@ -101,6 +103,7 @@ final class MatrixClientService {
     private let sessionDelegate = DefaultSessionDelegate()
     private let passphrase: String
     private var syncStateHandle: TaskHandle?
+    private var syncServiceStateHandle: TaskHandle?
     private var verificationStateHandle: TaskHandle?
     private var recoveryStateHandle: TaskHandle?
     private var clientDelegateHandle: TaskHandle?
@@ -399,24 +402,40 @@ final class MatrixClientService {
         // we don't miss the first state delivery from the SDK.
         attachEncryptionListeners()
 
-        let syncService = try await client.syncService().finish()
+        let syncService = try await client.syncService()
+            .withOfflineMode()
+            .finish()
         let roomListService = syncService.roomListService()
 
         self.syncService = syncService
         self.roomListService = roomListService
+        attachSyncServiceStateListener(to: syncService)
 
         await client.registerNotificationHandler(listener: CallNotificationListener())
 
         await syncService.start()
+        syncServiceStateSubject.send(.running)
         stateSubject.send(.syncing)
         logSync("Sync started")
     }
 
     func stopSync() async {
         await syncService?.stop()
+        syncServiceStateHandle = nil
         syncService = nil
         roomListService = nil
+        syncServiceStateSubject.send(.idle)
         logSync("Sync stopped")
+    }
+
+    private func attachSyncServiceStateListener(to syncService: SyncService) {
+        syncServiceStateHandle = nil
+        syncServiceStateSubject.send(.idle)
+        let listener = ZynaSyncServiceStateObserver { [weak self] state in
+            logSync("SyncService state changed: \(state)")
+            self?.syncServiceStateSubject.send(state)
+        }
+        syncServiceStateHandle = syncService.state(listener: listener)
     }
 
     // MARK: - Encryption State Listeners
@@ -1025,6 +1044,18 @@ final class MatrixClientService {
 }
 
 // MARK: - SDK Listener Adapters
+
+private final class ZynaSyncServiceStateObserver: SyncServiceStateObserver {
+    private let handler: @Sendable (SyncServiceState) -> Void
+
+    init(handler: @escaping @Sendable (SyncServiceState) -> Void) {
+        self.handler = handler
+    }
+
+    func onUpdate(state: SyncServiceState) {
+        handler(state)
+    }
+}
 
 private final class ZynaVerificationStateListener: VerificationStateListener {
     private let handler: @Sendable (VerificationState) -> Void

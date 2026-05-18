@@ -7,11 +7,16 @@ import Combine
 import UIKit
 import MatrixRustSDK
 
+enum ChatOpenTarget {
+    case live(Room)
+    case cached(RoomModel)
+}
+
 final class RoomsViewModel {
 
     private(set) var chats: [RoomModel] = []
 
-    var onChatSelected: ((Room) -> Void)?
+    var onChatSelected: ((ChatOpenTarget) -> Void)?
     var onTableUpdate: ((RoomsTableUpdate) -> Void)?
     /// Lightweight presence flips — applied in place so cells aren't
     /// re-created (that would flicker during presence bursts).
@@ -191,32 +196,18 @@ final class RoomsViewModel {
     // MARK: - Actions
 
     func selectChat(at index: Int) {
-        resolveChat(at: index) { [weak self] room in
-            self?.onChatSelected?(room)
+        resolveChat(at: index) { [weak self] target in
+            self?.onChatSelected?(target)
         }
     }
 
-    func resolveChat(at index: Int, completion: @escaping (Room) -> Void) {
+    func resolveChat(at index: Int, completion: @escaping (ChatOpenTarget) -> Void) {
         guard chats.indices.contains(index) else { return }
-        let roomId = chats[index].id
-        resolveChat(roomId: roomId, completion: completion)
-    }
-
-    private func resolveChat(roomId: String, completion: @escaping (Room) -> Void) {
-        if let room = roomListService.room(for: roomId) {
-            completion(room)
-            return
-        }
-        // SDK not ready yet (rooms visible from GRDB cache).
-        // Poll until the room appears or timeout after 10s.
-        Task { @MainActor in
-            for _ in 0..<20 {
-                try? await Task.sleep(for: .milliseconds(500))
-                if let room = self.roomListService.room(for: roomId) {
-                    completion(room)
-                    return
-                }
-            }
+        let chat = chats[index]
+        if let room = roomListService.room(for: chat.id) {
+            completion(.live(room))
+        } else {
+            completion(.cached(chat))
         }
     }
 

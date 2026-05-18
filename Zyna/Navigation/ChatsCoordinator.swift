@@ -20,12 +20,12 @@ final class ChatsCoordinator {
 
     func start() {
         let vc = RoomsViewController(audioPlayer: audioPlayer)
-        vc.onChatSelected = { [weak self] room in
-            self?.showChat(room)
+        vc.onChatSelected = { [weak self] target in
+            self?.showChat(target)
         }
-        vc.onChatPreviewRequested = { [weak self] room, sourceFrame, backgroundSourceView in
+        vc.onChatPreviewRequested = { [weak self] target, sourceFrame, backgroundSourceView in
             self?.showChatPreview(
-                room,
+                target,
                 sourceFrame: sourceFrame,
                 backgroundSourceView: backgroundSourceView
             )
@@ -100,18 +100,32 @@ final class ChatsCoordinator {
     }
 
     func showChat(_ room: Room, animated: Bool) {
-        let (vc, _) = makeChatScreen(room: room)
+        showChat(.live(room), animated: animated)
+    }
+
+    private func showChat(_ target: ChatOpenTarget) {
+        showChat(target, animated: true)
+    }
+
+    private func showChat(_ target: ChatOpenTarget, animated: Bool) {
+        let (vc, _) = makeChatScreen(target: target)
         navigationController.push(vc, animated: animated)
     }
 
     private func showChatPreview(
-        _ room: Room,
+        _ target: ChatOpenTarget,
         sourceFrame: CGRect?,
         backgroundSourceView: UIView?
     ) {
         guard navigationController.presentedViewController == nil else { return }
 
-        let viewModel = ChatViewModel(room: room, mode: .preview)
+        let viewModel: ChatViewModel
+        switch target {
+        case .live(let room):
+            viewModel = ChatViewModel(room: room, mode: .preview)
+        case .cached(let room):
+            viewModel = ChatViewModel(cachedRoom: room, mode: .preview)
+        }
         let chatController = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
         let resolvedBackgroundSourceView = navigationController.parent?.view
             ?? backgroundSourceView
@@ -141,7 +155,7 @@ final class ChatsCoordinator {
         picker.onRoomSelected = { [weak self] selectedRoom in
             self?.navigationController.dismiss(animated: true)
             self?.openChatWithForward(
-                roomId: selectedRoom.id,
+                roomModel: selectedRoom,
                 forwardPreview: message
             )
         }
@@ -149,22 +163,34 @@ final class ChatsCoordinator {
         navigationController.present(nav, animated: true)
     }
 
-    private func makeChatScreen(room: Room) -> (controller: ChatViewController, viewModel: ChatViewModel) {
-        let viewModel = ChatViewModel(room: room)
+    private func makeChatScreen(
+        target: ChatOpenTarget
+    ) -> (controller: ChatViewController, viewModel: ChatViewModel) {
+        let viewModel: ChatViewModel
+        switch target {
+        case .live(let room):
+            viewModel = ChatViewModel(room: room)
+        case .cached(let room):
+            viewModel = ChatViewModel(cachedRoom: room)
+        }
         let vc = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
         vc.onCallTapped = { [weak self] in
-            self?.startCall(in: room, timelineService: viewModel.timelineService)
+            guard let room = viewModel.liveRoom,
+                  let timelineService = viewModel.liveTimelineService else { return }
+            self?.startCall(in: room, timelineService: timelineService)
         }
         vc.onTitleTapped = { [weak self] userId in
             self?.showProfile(userId: userId)
         }
         vc.onSecurityUserTapped = { [weak self] userId in
+            guard let room = viewModel.liveRoom else { return }
             self?.showMemberDetail(room: room, userId: userId)
         }
         vc.onRoomDetailsTapped = { [weak self] in
+            guard let room = viewModel.liveRoom else { return }
             self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
         }
         vc.onForwardMessage = { [weak self] message in
@@ -174,36 +200,21 @@ final class ChatsCoordinator {
     }
 
     private func openChatWithForward(
-        roomId: String,
+        roomModel: RoomModel,
         forwardPreview: ChatMessage
     ) {
         // Pop back to root, then open the target chat
         navigationController.popToRoot(animated: false)
 
-        guard let room = roomListService.room(for: roomId)
-                ?? (try? MatrixClientService.shared.client?.getRoom(roomId: roomId))
-        else { return }
+        let target: ChatOpenTarget
+        if let room = roomListService.room(for: roomModel.id)
+            ?? (try? MatrixClientService.shared.client?.getRoom(roomId: roomModel.id)) {
+            target = .live(room)
+        } else {
+            target = .cached(roomModel)
+        }
 
-        let viewModel = ChatViewModel(room: room)
-        let vc = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
-        vc.onBack = { [weak self] in
-            self?.navigationController.pop()
-        }
-        vc.onCallTapped = { [weak self] in
-            self?.startCall(in: room, timelineService: viewModel.timelineService)
-        }
-        vc.onTitleTapped = { [weak self] userId in
-            self?.showProfile(userId: userId)
-        }
-        vc.onSecurityUserTapped = { [weak self] userId in
-            self?.showMemberDetail(room: room, userId: userId)
-        }
-        vc.onRoomDetailsTapped = { [weak self] in
-            self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
-        }
-        vc.onForwardMessage = { [weak self] message in
-            self?.showForwardPicker(message: message)
-        }
+        let (vc, viewModel) = makeChatScreen(target: target)
         navigationController.push(vc)
 
         // Set pending forward after push so the input bar shows it
@@ -338,9 +349,11 @@ final class ChatsCoordinator {
     /// Opens a chat and immediately starts a call. Used by the Calls tab.
     func showChatAndCall(room: Room) {
         navigationController.popToRoot(animated: false)
-        let (vc, viewModel) = makeChatScreen(room: room)
+        let (vc, viewModel) = makeChatScreen(target: .live(room))
         navigationController.push(vc, animated: false)
-        startCall(in: room, timelineService: viewModel.timelineService)
+        if let timelineService = viewModel.liveTimelineService {
+            startCall(in: room, timelineService: timelineService)
+        }
     }
 
     // MARK: - Calls

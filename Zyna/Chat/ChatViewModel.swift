@@ -14,6 +14,19 @@ private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
 private let timelineHealthLog = ScopedLog(.database, prefix: "[TimelineHealth]")
 
+private protocol OutgoingOutboxFailureEvent {
+    var roomId: String { get }
+    var context: OutgoingSendFailureContext { get }
+}
+
+extension OutgoingTextOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingImageOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingVideoOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingFileOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingVoiceOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingForwardedMediaOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingEditOutboxFailure: OutgoingOutboxFailureEvent {}
+
 enum ChatPresentationMode {
     case normal
     case preview
@@ -144,19 +157,20 @@ final class ChatViewModel {
     @Published private(set) var memberCount: Int?
     @Published private(set) var isGroupChat: Bool = false
     @Published private(set) var searchState: ChatSearchState?
+    @Published private(set) var connectionStatusText: String?
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
 
     // MARK: - Private
 
-    let timelineService: TimelineService
+    private(set) var timelineService: TimelineService?
     private let diffBatcher: TimelineDiffBatcher
     private let window: MessageWindow
     private let outgoingEnvelopes = OutgoingEnvelopeService.shared
     private let pendingRedactions = PendingRedactionService.shared
     private let pendingReactions = PendingReactionService.shared
-    private let room: Room
+    private var room: Room?
     private let roomId: String
     private var hiddenMessageKeys = Set<String>()
     private var pendingPartialRedactions: [String: StoredMessage] = [:]
@@ -173,24 +187,30 @@ final class ChatViewModel {
     private var lastBootstrapReadReceiptTarget: VisibleReadReceiptTarget?
     private var messageIndexByEventId: [String: Int] = [:]
     private var rowIndexByEventId: [String: Int] = [:]
+    private var didLoadInitialWindow = false
+    private var roomResolutionTask: Task<Void, Never>?
+    private var currentMatrixClientState = MatrixClientService.shared.state
+    private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
     var hasOlderInDB: Bool { window.hasOlderInDB }
     var roomIdentifier: String { roomId }
+    var liveRoom: Room? { room }
+    var liveTimelineService: TimelineService? { timelineService }
     private static let pendingRedactionPlaceholderDelay: TimeInterval = 1.7
     private var requiresVerifiedDeviceForSending: Bool {
-        room.encryptionState() != .notEncrypted
+        guard let room else { return false }
+        return room.encryptionState() != .notEncrypted
     }
 
     init(room: Room, mode: ChatPresentationMode = .normal) {
         let roomId = room.id()
-        self.room = room
+        self.room = nil
         self.roomId = roomId
         self.mode = mode
         self.roomName = room.displayName() ?? "Chat"
-        self.isInvited = room.membership() == .invited
-        self.timelineService = TimelineService(room: room)
+        self.timelineService = nil
         self.diffBatcher = TimelineDiffBatcher(
             roomId: roomId,
             dbQueue: DatabaseService.shared.dbQueue
@@ -202,10 +222,36 @@ final class ChatViewModel {
         self.pendingRedactionIds = pendingRedactions.pendingMessageIds(roomId: roomId)
         self.pendingRedactionKeys = pendingRedactions.pendingMessageIdentityKeys(roomId: roomId)
 
-        timelineService.isPaginatingSubject
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$isPaginating)
+        bindCommonServices()
+        attachLiveRoom(room)
+    }
 
+    init(cachedRoom: RoomModel, mode: ChatPresentationMode = .normal) {
+        self.room = nil
+        self.roomId = cachedRoom.id
+        self.mode = mode
+        self.roomName = cachedRoom.name.isEmpty ? "Chat" : cachedRoom.name
+        self.timelineService = nil
+        self.diffBatcher = TimelineDiffBatcher(
+            roomId: cachedRoom.id,
+            dbQueue: DatabaseService.shared.dbQueue
+        )
+        self.window = MessageWindow(
+            roomId: cachedRoom.id,
+            dbQueue: DatabaseService.shared.dbQueue
+        )
+        self.pendingRedactionIds = pendingRedactions.pendingMessageIds(roomId: cachedRoom.id)
+        self.pendingRedactionKeys = pendingRedactions.pendingMessageIdentityKeys(roomId: cachedRoom.id)
+        self.directUserId = cachedRoom.directUserId
+        self.partnerUserId = cachedRoom.directUserId
+        self.isGroupChat = cachedRoom.directUserId == nil
+
+        bindCommonServices()
+        loadInitialWindowIfNeeded()
+        scheduleLiveRoomResolution()
+    }
+
+    private func bindCommonServices() {
         MatrixClientService.shared.verificationStateSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -220,156 +266,42 @@ final class ChatViewModel {
             }
             .store(in: &cancellables)
 
-        OutgoingTextOutboxService.shared.roomDidUpdateSubject
+        MatrixClientService.shared.stateSubject
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] updatedRoomId in
-                guard let self,
-                      self.roomId == updatedRoomId else { return }
-                Task { [weak self] in
-                    await self?.refreshWindow()
-                }
+            .sink { [weak self] state in
+                self?.handleMatrixState(state)
             }
             .store(in: &cancellables)
 
-        OutgoingTextOutboxService.shared.sendFailureSubject
+        MatrixClientService.shared.syncServiceStateSubject
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] failure in
-                guard let self,
-                      self.roomId == failure.roomId else { return }
-                self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            .sink { [weak self] state in
+                self?.handleSyncServiceState(state)
             }
             .store(in: &cancellables)
 
-        OutgoingImageOutboxService.shared.roomDidUpdateSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] updatedRoomId in
-                guard let self,
-                      self.roomId == updatedRoomId else { return }
-                Task { [weak self] in
-                    await self?.refreshWindow()
-                }
-            }
-            .store(in: &cancellables)
+        bindOutgoingUpdates()
+        bindWindow()
+        refreshComposerSendPermission()
+    }
 
-        OutgoingImageOutboxService.shared.sendFailureSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] failure in
-                guard let self,
-                      self.roomId == failure.roomId else { return }
-                self.sendFailureNotice = SendFailureNotice(context: failure.context)
-            }
-            .store(in: &cancellables)
-
-        OutgoingVideoOutboxService.shared.roomDidUpdateSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] updatedRoomId in
-                guard let self,
-                      self.roomId == updatedRoomId else { return }
-                Task { [weak self] in
-                    await self?.refreshWindow()
-                }
-            }
-            .store(in: &cancellables)
-
-        OutgoingVideoOutboxService.shared.sendFailureSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] failure in
-                guard let self,
-                      self.roomId == failure.roomId else { return }
-                self.sendFailureNotice = SendFailureNotice(context: failure.context)
-            }
-            .store(in: &cancellables)
-
-        OutgoingFileOutboxService.shared.roomDidUpdateSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] updatedRoomId in
-                guard let self,
-                      self.roomId == updatedRoomId else { return }
-                Task { [weak self] in
-                    await self?.refreshWindow()
-                }
-            }
-            .store(in: &cancellables)
-
-        OutgoingFileOutboxService.shared.sendFailureSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] failure in
-                guard let self,
-                      self.roomId == failure.roomId else { return }
-                self.sendFailureNotice = SendFailureNotice(context: failure.context)
-            }
-            .store(in: &cancellables)
-
-        OutgoingVoiceOutboxService.shared.roomDidUpdateSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] updatedRoomId in
-                guard let self,
-                      self.roomId == updatedRoomId else { return }
-                Task { [weak self] in
-                    await self?.refreshWindow()
-                }
-            }
-            .store(in: &cancellables)
-
-        OutgoingVoiceOutboxService.shared.sendFailureSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] failure in
-                guard let self,
-                      self.roomId == failure.roomId else { return }
-                self.sendFailureNotice = SendFailureNotice(context: failure.context)
-            }
-            .store(in: &cancellables)
-
-        OutgoingForwardedMediaOutboxService.shared.roomDidUpdateSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] updatedRoomId in
-                guard let self,
-                      self.roomId == updatedRoomId else { return }
-                Task { [weak self] in
-                    await self?.refreshWindow()
-                }
-            }
-            .store(in: &cancellables)
-
-        OutgoingForwardedMediaOutboxService.shared.sendFailureSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] failure in
-                guard let self,
-                      self.roomId == failure.roomId else { return }
-                self.sendFailureNotice = SendFailureNotice(context: failure.context)
-            }
-            .store(in: &cancellables)
-
-        OutgoingEditOutboxService.shared.roomDidUpdateSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] updatedRoomId in
-                guard let self,
-                      self.roomId == updatedRoomId else { return }
-                Task { [weak self] in
-                    await self?.refreshWindow()
-                }
-            }
-            .store(in: &cancellables)
-
-        OutgoingEditOutboxService.shared.sendFailureSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] failure in
-                guard let self,
-                      self.roomId == failure.roomId else { return }
-                self.sendFailureNotice = SendFailureNotice(context: failure.context)
-            }
-            .store(in: &cancellables)
-
-        OutgoingRedactionOutboxService.shared.roomDidUpdateSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] updatedRoomId in
-                guard let self,
-                      self.roomId == updatedRoomId else { return }
-                Task { [weak self] in
-                    await self?.refreshWindow()
-                }
-            }
-            .store(in: &cancellables)
+    private func bindOutgoingUpdates() {
+        bindRoomUpdate(OutgoingTextOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingTextOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingImageOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingImageOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingVideoOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingVideoOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingFileOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingFileOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingVoiceOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingVoiceOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingForwardedMediaOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingForwardedMediaOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingEditOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingEditOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingRedactionOutboxService.shared.roomDidUpdateSubject)
+        bindRoomUpdate(OutgoingReactionOutboxService.shared.roomDidUpdateSubject)
 
         OutgoingRedactionOutboxService.shared.redactionFailureSubject
             .receive(on: DispatchQueue.main)
@@ -383,8 +315,10 @@ final class ChatViewModel {
                 )
             }
             .store(in: &cancellables)
+    }
 
-        OutgoingReactionOutboxService.shared.roomDidUpdateSubject
+    private func bindRoomUpdate(_ publisher: PassthroughSubject<String, Never>) {
+        publisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] updatedRoomId in
                 guard let self,
@@ -394,10 +328,44 @@ final class ChatViewModel {
                 }
             }
             .store(in: &cancellables)
+    }
 
-        refreshComposerSendPermission()
+    private func bindSendFailure<Failure: OutgoingOutboxFailureEvent>(
+        _ publisher: PassthroughSubject<Failure, Never>
+    ) {
+        publisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            }
+            .store(in: &cancellables)
+    }
 
-        // Write path: SDK diffs → GRDB
+    private func bindWindow() {
+        let win = window
+        diffBatcher.onFlush = { [weak win] summary in
+            win?.refresh(origin: .timelineFlush(summary))
+        }
+
+        window.onChange = { [weak self] newStored, prevStored, origin in
+            self?.handleObservationChange(
+                newStored: newStored,
+                prevStored: prevStored,
+                origin: origin
+            )
+        }
+    }
+
+    private func bindTimelineService(_ timelineService: TimelineService) {
+        timelineService.isPaginatingSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isPaginating in
+                self?.isPaginating = isPaginating
+            }
+            .store(in: &cancellables)
+
         let batcher = diffBatcher
         timelineService.onDiffs = { diffs in
             batcher.receive(diffs: diffs)
@@ -410,26 +378,30 @@ final class ChatViewModel {
                 self?.seedReadReceiptBaseline(eventId: eventId)
             }
         }
-        // Bridge: batcher flush → window refresh
-        let win = window
-        diffBatcher.onFlush = { [weak win] summary in
-            win?.refresh(origin: .timelineFlush(summary))
-        }
+    }
 
-        // Read path: window changes → UI
-        window.onChange = { [weak self] newStored, prevStored, origin in
-            self?.handleObservationChange(
-                newStored: newStored,
-                prevStored: prevStored,
-                origin: origin
-            )
-        }
+    private func attachLiveRoom(_ room: Room) {
+        guard self.room == nil else { return }
 
-        // Defer timeline setup until invite is accepted
+        roomResolutionTask?.cancel()
+        roomResolutionTask = nil
+        self.room = room
+        isInvited = room.membership() == .invited
+
+        let timelineService = TimelineService(room: room)
+        self.timelineService = timelineService
+        bindTimelineService(timelineService)
+        refreshComposerSendPermission()
+        updateConnectionStatus()
+        resolveRoomInfo(room)
+
+        // Defer timeline setup until invite is accepted.
         if !isInvited {
             startTimelineAndHistory()
         }
+    }
 
+    private func resolveRoomInfo(_ room: Room) {
         Task { [weak self] in
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
@@ -438,6 +410,8 @@ final class ChatViewModel {
                 await MainActor.run {
                     self.directUserId = userId
                     self.partnerUserId = userId
+                    self.memberCount = nil
+                    self.isGroupChat = false
                 }
                 if !self.mode.isPreview {
                     PresenceTracker.shared.register(userIds: [userId], for: "chat")
@@ -449,6 +423,8 @@ final class ChatViewModel {
             } else {
                 let count = Int(info.joinedMembersCount)
                 await MainActor.run {
+                    self.partnerPresence = nil
+                    self.partnerUserId = nil
                     self.memberCount = count
                     self.isGroupChat = true
                 }
@@ -456,15 +432,101 @@ final class ChatViewModel {
         }
     }
 
+    private func handleMatrixState(_ state: MatrixClientState) {
+        currentMatrixClientState = state
+        updateConnectionStatus()
+        guard room == nil else { return }
+
+        switch state {
+        case .loggedIn, .syncing, .error:
+            scheduleLiveRoomResolution()
+        case .loggedOut, .loggingIn, .softLoggedOut, .sessionRecoveryRequired:
+            break
+        }
+    }
+
+    private func handleSyncServiceState(_ state: SyncServiceState) {
+        currentSyncServiceState = state
+        updateConnectionStatus()
+        guard room == nil else { return }
+        if state == .running {
+            scheduleLiveRoomResolution()
+        }
+    }
+
+    private func updateConnectionStatus() {
+        connectionStatusText = Self.connectionStatusText(
+            matrixState: currentMatrixClientState,
+            syncState: currentSyncServiceState,
+            hasLiveRoom: room != nil
+        )
+    }
+
+    private static func connectionStatusText(
+        matrixState: MatrixClientState,
+        syncState: SyncServiceState,
+        hasLiveRoom: Bool
+    ) -> String? {
+        switch matrixState {
+        case .softLoggedOut, .sessionRecoveryRequired:
+            return "Session locked"
+        default:
+            break
+        }
+
+        if case .syncing = matrixState,
+           syncState == .running,
+           hasLiveRoom {
+            return nil
+        }
+
+        return "Connecting..."
+    }
+
+    private func scheduleLiveRoomResolution() {
+        guard room == nil,
+              roomResolutionTask == nil else { return }
+
+        roomResolutionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled && self.room == nil {
+                if Task.isCancelled { return }
+                if let room = self.resolveLiveRoomFromClient() {
+                    self.attachLiveRoom(room)
+                    return
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+            self.roomResolutionTask = nil
+        }
+    }
+
+    private func resolveLiveRoomFromClient() -> Room? {
+        if let room = try? MatrixClientService.shared.client?.getRoom(roomId: roomId) {
+            return room
+        }
+        return MatrixClientService.shared.client?.rooms().first { $0.id() == roomId }
+    }
+
+    private func loadInitialWindowIfNeeded() {
+        guard !didLoadInitialWindow else { return }
+        didLoadInitialWindow = true
+        window.loadInitial()
+    }
+
     // MARK: - Timeline Bootstrap
 
     private func startTimelineAndHistory() {
+        guard let timelineService else {
+            loadInitialWindowIfNeeded()
+            return
+        }
         sdkPaginationExhausted = false
-        window.loadInitial()
+        loadInitialWindowIfNeeded()
 
         Task { [weak self] in
             guard let self else { return }
-            await self.timelineService.startListening(subscribeForSync: !self.mode.isPreview)
+            await timelineService.startListening(subscribeForSync: !self.mode.isPreview)
             guard !self.mode.isPreview else { return }
             let terminalFailures = await self.pendingRedactions.retryPendingRedactions(
                 roomId: self.roomId
@@ -492,7 +554,7 @@ final class ChatViewModel {
     // MARK: - Invite
 
     func acceptInvite() {
-        guard isInvited else { return }
+        guard isInvited, let room else { return }
         Task {
             do {
                 try await room.join()
@@ -1961,7 +2023,8 @@ final class ChatViewModel {
 
     /// Paginate from server when GRDB is exhausted.
     func loadOlderFromServer() {
-        guard !isPaginating else { return }
+        guard !isPaginating,
+              let timelineService else { return }
         Task {
             await timelineService.paginateBackwards(numEvents: 50)
         }
@@ -2033,12 +2096,13 @@ final class ChatViewModel {
         to target: VisibleReadReceiptTarget,
         mode: PendingReadReceiptSend
     ) {
+        guard let timelineService else { return }
         readReceiptWork?.cancel()
         pendingReadReceiptSend = mode
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             Task {
-                let didSend = await self.timelineService.sendReadReceipt(for: target.eventId)
+                let didSend = await timelineService.sendReadReceipt(for: target.eventId)
                 await MainActor.run {
                     self.finishReadReceiptSend(mode, didSend: didSend)
                 }
@@ -2504,8 +2568,9 @@ final class ChatViewModel {
     }
 
     private func composerSendBlockedValue() -> Bool {
-        !mode.isPreview
-            && requiresVerifiedDeviceForSending
+        guard !mode.isPreview else { return false }
+        guard room != nil else { return true }
+        return requiresVerifiedDeviceForSending
             && !SessionVerificationService.shared.canSendEncryptedMessages
     }
 
@@ -2520,6 +2585,7 @@ final class ChatViewModel {
             refreshComposerSendPermission()
         }
         guard !blocked else {
+            guard room != nil else { return false }
             publishSendFailureNotice(reason: .ownDeviceVerificationRequired)
             return false
         }
@@ -2532,6 +2598,7 @@ final class ChatViewModel {
         replyInfo: ReplyInfo? = nil,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
     ) async {
+        guard let timelineService else { return }
         let envelopeId = UUID().uuidString
         let transactionId = timelineService.prepareDirectRawTextTransactionId(
             replyEventId: replyEventId
@@ -3450,8 +3517,9 @@ final class ChatViewModel {
     @MainActor
     func makeRoomSendSecurityViewModel(
         context: OutgoingSendFailureContext
-    ) -> RoomSendSecurityViewModel {
-        RoomSendSecurityViewModel(room: room, context: context)
+    ) -> RoomSendSecurityViewModel? {
+        guard let room else { return nil }
+        return RoomSendSecurityViewModel(room: room, context: context)
     }
 
     func handleBlockedComposerInteraction() {
@@ -3486,6 +3554,7 @@ final class ChatViewModel {
         _ envelope: OutgoingEnvelopeSnapshot,
         body: String
     ) async {
+        guard let timelineService else { return }
         let retryEnvelopeId = UUID().uuidString
         let transactionId = timelineService.prepareDirectRawTextTransactionId(
             replyEventId: envelope.replyInfo?.eventId,
@@ -3585,9 +3654,11 @@ final class ChatViewModel {
         var displayNames: [String: String] = [:]
         displayNames.reserveCapacity(uniqueIds.count)
 
-        for userId in uniqueIds {
-            let member = try? await room.member(userId: userId)
-            displayNames[userId] = member?.displayName ?? userId
+        if let room {
+            for userId in uniqueIds {
+                let member = try? await room.member(userId: userId)
+                displayNames[userId] = member?.displayName ?? userId
+            }
         }
 
         return flattened.map {
@@ -3818,15 +3889,19 @@ final class ChatViewModel {
         if !mode.isPreview {
             PresenceTracker.shared.unregister(for: "chat")
         }
-        timelineService.onDiffs = nil
-        timelineService.onOwnFullyReadMarker = nil
+        roomResolutionTask?.cancel()
+        roomResolutionTask = nil
+        timelineService?.onDiffs = nil
+        timelineService?.onReadCursor = nil
+        timelineService?.onOwnFullyReadMarker = nil
         diffBatcher.onFlush = nil
-        timelineService.stopListening()
+        timelineService?.stopListening()
     }
 
     // MARK: - Background History Sync
 
     private func syncFullHistory() async {
+        guard let timelineService else { return }
         var stagnantBatchCount = 0
         while !Task.isCancelled {
             let countBefore = storedMessageCount()
