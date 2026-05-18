@@ -42,8 +42,9 @@ final class NetworkReachability {
     // MARK: - State
 
     /// True if a usable network path is currently available.
-    /// Reads are thread-safe (protected by the monitor's queue).
-    private(set) var isReachable: Bool = true
+    var isReachable: Bool {
+        reachable.wrappedValue
+    }
 
     // MARK: - Callbacks
 
@@ -59,6 +60,7 @@ final class NetworkReachability {
 
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.zyna.network.reachability")
+    private let reachable = Atomic(true)
     private var started = false
 
     private init() {}
@@ -73,8 +75,11 @@ final class NetworkReachability {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             let nowReachable = path.status == .satisfied
-            let wasReachable = self.isReachable
-            self.isReachable = nowReachable
+            let wasReachable = self.reachable.withValue { reachable in
+                let previous = reachable
+                reachable = nowReachable
+                return previous
+            }
 
             if !wasReachable && nowReachable {
                 self.onRestored?()

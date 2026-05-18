@@ -174,15 +174,18 @@ enum MediaPreprocessor {
     private static func processVideoFile(from sourceURL: URL) async throws -> ProcessedVideo {
         let workingDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("zyna-video-\(UUID().uuidString)", isDirectory: true)
-        // TODO(video): Add a startup janitor for stale zyna-video-* folders left
-        // by failed sends or app termination between preprocessing and cleanup.
-        try FileManager.default.createDirectory(at: workingDir, withIntermediateDirectories: true)
+        try LocalDataProtection.createProtectedDirectory(
+            at: workingDir,
+            protection: .sensitive,
+            excludeFromBackup: true
+        )
 
         do {
             let sourceExtension = sourceURL.pathExtension.isEmpty ? "mov" : sourceURL.pathExtension
             let inputURL = workingDir.appendingPathComponent("source.\(sourceExtension)")
             try? FileManager.default.removeItem(at: inputURL)
             try FileManager.default.copyItem(at: sourceURL, to: inputURL)
+            try? LocalDataProtection.applyProtection(to: inputURL, protection: .sensitive)
 
             let asset = AVURLAsset(url: inputURL)
             guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
@@ -227,6 +230,7 @@ enum MediaPreprocessor {
                 sourceDisplaySize: displaySize,
                 duration: durationTime
             )
+            try? LocalDataProtection.applyProtection(to: outputURL, protection: .sensitive)
             logVideoPreprocess("transcode done outputBytes=\(fileSize(at: outputURL))")
 
             let thumbnail = try await generateVideoThumbnail(
@@ -524,7 +528,11 @@ enum MediaPreprocessor {
         let blurhash = image.zynaBlurHash(numberOfComponents: (3, 3))
 
         let thumbnailURL = workingDir.appendingPathComponent("thumbnail.jpg")
-        try data.write(to: thumbnailURL, options: .atomic)
+        try LocalDataProtection.writeProtectedData(
+            data,
+            to: thumbnailURL,
+            protection: .sensitive
+        )
         return VideoThumbnail(
             url: thumbnailURL,
             data: data,

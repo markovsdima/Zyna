@@ -19,12 +19,12 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         audioPlayer: audioPlayer
     )
 
-    var onChatSelected: ((Room) -> Void)? {
+    var onChatSelected: ((ChatOpenTarget) -> Void)? {
         get { viewModel.onChatSelected }
         set { viewModel.onChatSelected = newValue }
     }
 
-    var onChatPreviewRequested: ((Room, CGRect?, UIView?) -> Void)?
+    var onChatPreviewRequested: ((ChatOpenTarget, CGRect?, UIView?) -> Void)?
     var onComposeTapped: (() -> Void)?
 
     private weak var previewPressRecognizer: UILongPressGestureRecognizer?
@@ -71,18 +71,34 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
         }
 
         MatrixClientService.shared.stateSubject
+            .combineLatest(MatrixClientService.shared.syncServiceStateSubject)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                switch state {
-                case .syncing:
-                    self?.glassTopBar.subtitle = nil
-                case .error:
-                    self?.glassTopBar.subtitle = "Connection error"
-                default:
-                    self?.glassTopBar.subtitle = "Connecting..."
-                }
+            .sink { [weak self] clientState, syncState in
+                self?.glassTopBar.subtitle = Self.connectionSubtitle(
+                    clientState: clientState,
+                    syncState: syncState
+                )
             }
             .store(in: &cancellables)
+    }
+
+    private static func connectionSubtitle(
+        clientState: MatrixClientState,
+        syncState: SyncServiceState
+    ) -> String? {
+        switch clientState {
+        case .softLoggedOut, .sessionRecoveryRequired:
+            return "Session locked"
+        default:
+            break
+        }
+
+        if case .syncing = clientState,
+           syncState == .running {
+            return nil
+        }
+
+        return "Connecting..."
     }
 
     private func applyTableUpdate(_ update: RoomsTableUpdate) {
@@ -206,12 +222,12 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
             }
         }
 
-        viewModel.resolveChat(at: indexPath.row) { [weak self] room in
+        viewModel.resolveChat(at: indexPath.row) { [weak self] target in
             guard let self,
                   self.pendingPreviewResolutionGeneration == generation
             else { return }
             self.pendingPreviewResolutionGeneration = nil
-            self.onChatPreviewRequested?(room, sourceFrame, self.backgroundPreviewSourceView())
+            self.onChatPreviewRequested?(target, sourceFrame, self.backgroundPreviewSourceView())
         }
     }
 

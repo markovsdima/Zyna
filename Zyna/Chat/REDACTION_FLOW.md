@@ -1,8 +1,8 @@
 # Chat Redaction Flow
 
-This note describes the current delete and redaction model for chat
-messages. The goal is immediate UI feedback with reliable redaction
-delivery across app restarts and chat reopen.
+This note describes the current delete and redaction model for chat messages.
+The goal is immediate UI feedback with reliable redaction delivery across app
+restarts. Delivery must not depend on keeping the chat screen open.
 
 ## Core Model
 
@@ -15,7 +15,7 @@ These layers must stay separate.
 
 The delete path is:
 
-`ChatView -> ChatViewModel -> PendingRedactionService -> TimelineService -> Matrix -> GRDB -> MessageWindow -> ChatViewModel`
+`ChatView -> ChatViewModel -> PendingRedactionService -> OutgoingRedactionOutboxService -> DirectRawTextSender -> Matrix -> GRDB -> MessageWindow -> ChatViewModel`
 
 ## Responsibilities
 
@@ -35,12 +35,14 @@ The delete path is:
 
 - persistent redaction intents
 - retryable vs terminal failure classification
-- retry on next live timeline start
+- persistent state cleanup after sync confirms redaction
 - reconciliation when GRDB materializes `contentType = 'redacted'`
 
-`TimelineService` owns:
+`OutgoingRedactionOutboxService` owns:
 
-- the actual `redactEvent(...)` call into Matrix timeline
+- scanning pending redactions when Matrix reaches `.syncing`
+- retry/backoff and in-flight protection
+- direct `Room.redactWithTransactionIdReturningEventId` delivery
 
 ## Persistent Intent
 
@@ -65,7 +67,8 @@ When the user deletes a message:
 2. `ChatViewModel` keeps enough local state to hide the message
    immediately and preserve media-group reflow.
 3. `PendingRedactionService` persists a redaction intent.
-4. `TimelineService` attempts `redactEvent(...)`.
+4. `OutgoingRedactionOutboxService` sends a direct redaction when Matrix is
+   syncing and the target has a real event id.
 
 If the redaction echo arrives normally:
 
@@ -77,7 +80,7 @@ If the app is killed before that happens:
 
 - the pending intent remains in GRDB
 - the message stays hidden on reopen
-- retry happens after the room timeline is listening again
+- retry happens after Matrix reaches `.syncing`
 
 If delete fails with a terminal error:
 
@@ -89,7 +92,7 @@ If delete fails with a retryable error:
 
 - the persistent intent remains stored
 - the message may stay hidden locally
-- retry happens on the next timeline start
+- retry happens from the app-level outgoing outbox after Matrix is syncing
 
 ## UI State vs Delivery State
 
@@ -114,7 +117,7 @@ If this model is working correctly:
 - delete hides immediately
 - reopen does not reintroduce a locally deleted message
 - unresolved deletes survive app restart
-- retry does not depend on `ChatViewModel` staying alive
+- retry does not depend on `ChatViewModel` staying alive or a chat being open
 - delivery can continue after `transactionId -> eventId` transition
 - media-group reflow stays a UI concern, not a persistence concern
 - terminal failures do not leave messages hidden locally forever

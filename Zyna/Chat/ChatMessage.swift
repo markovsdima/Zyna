@@ -85,7 +85,7 @@ enum ChatMessageContent: Equatable {
         }
     }
 
-    /// Media source + mimetype for re-upload during forwarding.
+    /// Media source + mimetype for by-reference forwarding.
     var mediaForwardInfo: (source: MediaSource, mimetype: String)? {
         switch self {
         case .image(let source?, _, _, _, _, _):
@@ -240,6 +240,7 @@ struct MessageReaction: Equatable {
     let key: String
     let senders: [ReactionSender]
     let isOwn: Bool
+    let isPendingRemoval: Bool
     /// Fallback count for GRDB rows that still use the older reactions cache format.
     /// Once a message is refreshed from Matrix timeline/history sync, sender details
     /// are written and this fallback is no longer needed.
@@ -249,11 +250,13 @@ struct MessageReaction: Equatable {
         key: String,
         senders: [ReactionSender],
         isOwn: Bool,
+        isPendingRemoval: Bool = false,
         legacyCount: Int? = nil
     ) {
         self.key = key
         self.senders = senders
         self.isOwn = isOwn
+        self.isPendingRemoval = isPendingRemoval
         self.legacyCount = legacyCount
     }
 
@@ -533,6 +536,41 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             isOutgoing: isOutgoing,
             timestamp: timestamp,
             content: updatedContent,
+            reactions: reactions,
+            replyInfo: replyInfo,
+            isEditable: isEditable,
+            isEdited: isEdited,
+            isEditPending: isEditPending,
+            isEditFailed: isEditFailed,
+            latestEditEventId: latestEditEventId,
+            zynaAttributes: zynaAttributes,
+            sendStatus: sendStatus
+        )
+        copy.isFirstInCluster = isFirstInCluster
+        copy.isLastInCluster = isLastInCluster
+        copy.mediaGroupPresentation = mediaGroupPresentation
+        copy.outgoingEnvelopeId = outgoingEnvelopeId
+        copy.isStaleOutgoingEnvelope = isStaleOutgoingEnvelope
+        copy.canRetryOutgoingEnvelope = canRetryOutgoingEnvelope
+        copy.incomingAssemblyId = incomingAssemblyId
+        return copy
+    }
+
+    func applyingReactions(_ reactions: [MessageReaction]) -> ChatMessage {
+        guard self.reactions != reactions else { return self }
+
+        var copy = ChatMessage(
+            id: id,
+            eventId: eventId,
+            transactionId: transactionId,
+            itemIdentifier: itemIdentifier,
+            senderId: senderId,
+            senderDisplayName: senderDisplayName,
+            senderNameColorHex: senderNameColorHex,
+            senderAvatarUrl: senderAvatarUrl,
+            isOutgoing: isOutgoing,
+            timestamp: timestamp,
+            content: content,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: isEditable,

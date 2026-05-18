@@ -9,6 +9,11 @@ import MatrixRustSDK
 
 private let logCall = ScopedLog(.call)
 
+private enum CallSignalingSecurityError: Error {
+    case deviceVerificationRequired
+    case timelineUnavailable
+}
+
 // MARK: - Call Signaling Service
 
 /// Handles sending and receiving call signaling events for VoIP.
@@ -56,6 +61,7 @@ final class CallSignalingService {
     // MARK: - Send Events
 
     func sendInvite(_ content: CallInviteContent) async throws {
+        try ensureCanSendEncryptedCallSignal()
         guard let json = CallEventJSON.encode(content) else {
             logCall("Failed to encode call invite")
             return
@@ -66,16 +72,19 @@ final class CallSignalingService {
     }
 
     func sendAnswer(_ content: CallAnswerContent) async throws {
+        try ensureCanSendEncryptedCallSignal()
         try await sendViaTimeline(type: "m.call.answer", content: content)
         logCall("Sent m.call.answer (callId: \(content.callId))")
     }
 
     func sendCandidates(_ content: CallCandidatesContent) async throws {
+        try ensureCanSendEncryptedCallSignal()
         try await sendViaTimeline(type: "m.call.candidates", content: content)
         logCall("Sent m.call.candidates (callId: \(content.callId), count: \(content.candidates.count))")
     }
 
     func sendHangup(_ content: CallHangupContent) async throws {
+        try ensureCanSendEncryptedCallSignal()
         try await sendViaTimeline(type: "m.call.hangup", content: content)
         logCall("Sent m.call.hangup (callId: \(content.callId))")
     }
@@ -96,10 +105,21 @@ final class CallSignalingService {
     /// placeholder for foreign clients.
     private func sendViaTimeline<T: Encodable>(type: String, content: T) async throws {
         guard let payload = CallEventJSON.encode(content) else { return }
+        guard let timelineService else {
+            throw CallSignalingSecurityError.timelineUnavailable
+        }
+
         let attrs = ZynaMessageAttributes(
             callSignal: CallSignalData(type: type, payload: payload)
         )
-        await timelineService?.sendCallSignaling(attrs)
+        try await timelineService.sendCallSignaling(attrs)
+    }
+
+    private func ensureCanSendEncryptedCallSignal() throws {
+        guard room.encryptionState() == .notEncrypted
+                || SessionVerificationService.shared.canSendEncryptedMessages else {
+            throw CallSignalingSecurityError.deviceVerificationRequired
+        }
     }
 
     // MARK: - Private — Receive

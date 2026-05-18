@@ -37,6 +37,10 @@ final class PresenceTitleNode: ASDisplayNode {
         didSet { updateStatus() }
     }
 
+    var connectionStatus: String? {
+        didSet { updateStatus() }
+    }
+
     var isTappable = false {
         didSet { updateAccessibility() }
     }
@@ -489,6 +493,12 @@ final class PresenceTitleNode: ASDisplayNode {
     }
 
     private func updateStatus() {
+        if let connectionStatus,
+           !connectionStatus.isEmpty {
+            setStatus(connectionStatus, color: glassMaterial.secondaryForeground)
+            return
+        }
+
         // DM: show presence
         if let presence {
             if presence.online {

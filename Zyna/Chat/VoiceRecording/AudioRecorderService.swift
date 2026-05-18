@@ -5,6 +5,7 @@
 
 import AVFoundation
 import Combine
+import Foundation
 
 final class AudioRecorderService {
 
@@ -24,6 +25,8 @@ final class AudioRecorderService {
     private var fileURL: URL?
     private var displayLink: DisplayLinkToken?
     private var waveformSamples: [Float] = []
+
+    private static let userIdKey = "com.zyna.matrix.lastUserId"
 
     // MARK: - Public API
 
@@ -92,7 +95,21 @@ final class AudioRecorderService {
             return
         }
 
-        let url = FileManager.default.temporaryDirectory
+        let userId = UserDefaults.standard.string(forKey: Self.userIdKey)
+        let directory = LocalDataProtection.voiceRecordingDirectory(for: userId)
+        do {
+            try LocalDataProtection.createProtectedDirectory(
+                at: directory,
+                protection: .sensitive,
+                excludeFromBackup: true
+            )
+        } catch {
+            log("recording directory error: \(error)")
+            state = .error(error)
+            return
+        }
+
+        let url = directory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("m4a")
 
@@ -107,6 +124,7 @@ final class AudioRecorderService {
             let rec = try AVAudioRecorder(url: url, settings: settings)
             rec.isMeteringEnabled = true
             rec.record()
+            try? LocalDataProtection.applyProtection(to: url, protection: .sensitive)
 
             self.recorder = rec
             self.fileURL = url

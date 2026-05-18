@@ -569,10 +569,10 @@ private final class FileAttachmentPreviewCell: UICollectionViewCell {
             iconName = "doc.richtext.fill"
         } else if type?.conforms(to: .image) == true {
             iconName = "photo.fill"
-        } else if type?.conforms(to: .audiovisualContent) == true || type?.conforms(to: .movie) == true {
-            iconName = "video.fill"
         } else if type?.conforms(to: .audio) == true {
             iconName = "music.note"
+        } else if type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true {
+            iconName = "video.fill"
         } else if type?.conforms(to: .archive) == true {
             iconName = "archivebox.fill"
         } else if type?.conforms(to: .plainText) == true || type?.conforms(to: .text) == true {

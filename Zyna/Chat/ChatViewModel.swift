@@ -14,6 +14,19 @@ private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
 private let timelineHealthLog = ScopedLog(.database, prefix: "[TimelineHealth]")
 
+private protocol OutgoingOutboxFailureEvent {
+    var roomId: String { get }
+    var context: OutgoingSendFailureContext { get }
+}
+
+extension OutgoingTextOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingImageOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingVideoOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingFileOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingVoiceOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingForwardedMediaOutboxFailure: OutgoingOutboxFailureEvent {}
+extension OutgoingEditOutboxFailure: OutgoingOutboxFailureEvent {}
+
 enum ChatPresentationMode {
     case normal
     case preview
@@ -50,6 +63,15 @@ final class ChatViewModel {
         }
     }
 
+    struct SendFailureNotice: Identifiable {
+        let id = UUID()
+        let context: OutgoingSendFailureContext
+
+        var reason: OutgoingSendFailureReason {
+            context.reason
+        }
+    }
+
     private struct RedactionTransitionCandidate {
         let message: StoredMessage
         let previous: StoredMessage
@@ -66,6 +88,11 @@ final class ChatViewModel {
     private struct PartialReflowPreview {
         let identity: String
         let imageData: Data
+    }
+
+    private struct PendingRedactionDisplayLookup {
+        let byMessageId: [String: PendingRedactionRecord]
+        let byIdentityKey: [String: PendingRedactionRecord]
     }
 
     private struct VisibleReadReceiptTarget: Equatable {
@@ -97,8 +124,10 @@ final class ChatViewModel {
     var sdkPaginationExhausted = false
     @Published private(set) var replyingTo: ChatMessage?
     @Published private(set) var editingMessage: ChatMessage?
-    @Published private(set) var pendingForwardContent: (preview: ChatMessage, content: RoomMessageEventContentWithoutRelation)?
+    @Published private(set) var pendingForwardContent: ChatMessage?
     @Published private(set) var isInvited: Bool = false
+    @Published private(set) var sendFailureNotice: SendFailureNotice?
+    @Published private(set) var isComposerSendBlocked: Bool = false
     private var editingDraftOverride: String?
     private var activeEditAttemptId: UUID?
     private var recentlySentTransactionIds: Set<String> = []
@@ -128,18 +157,20 @@ final class ChatViewModel {
     @Published private(set) var memberCount: Int?
     @Published private(set) var isGroupChat: Bool = false
     @Published private(set) var searchState: ChatSearchState?
+    @Published private(set) var connectionStatusText: String?
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
 
     // MARK: - Private
 
-    let timelineService: TimelineService
+    private(set) var timelineService: TimelineService?
     private let diffBatcher: TimelineDiffBatcher
     private let window: MessageWindow
     private let outgoingEnvelopes = OutgoingEnvelopeService.shared
     private let pendingRedactions = PendingRedactionService.shared
-    private let room: Room
+    private let pendingReactions = PendingReactionService.shared
+    private var room: Room?
     private let roomId: String
     private var hiddenMessageKeys = Set<String>()
     private var pendingPartialRedactions: [String: StoredMessage] = [:]
@@ -149,26 +180,37 @@ final class ChatViewModel {
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
     private var historySyncTask: Task<Void, Never>?
+    private var pendingRedactionPlaceholderWork: DispatchWorkItem?
     private var readReceiptWork: DispatchWorkItem?
     private var pendingReadReceiptSend: PendingReadReceiptSend?
     private var readReceiptBaselineTarget: VisibleReadReceiptTarget?
     private var lastBootstrapReadReceiptTarget: VisibleReadReceiptTarget?
     private var messageIndexByEventId: [String: Int] = [:]
     private var rowIndexByEventId: [String: Int] = [:]
+    private var didLoadInitialWindow = false
+    private var roomResolutionTask: Task<Void, Never>?
+    private var currentMatrixClientState = MatrixClientService.shared.state
+    private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
     var hasOlderInDB: Bool { window.hasOlderInDB }
     var roomIdentifier: String { roomId }
+    var liveRoom: Room? { room }
+    var liveTimelineService: TimelineService? { timelineService }
+    private static let pendingRedactionPlaceholderDelay: TimeInterval = 1.7
+    private var requiresVerifiedDeviceForSending: Bool {
+        guard let room else { return false }
+        return room.encryptionState() != .notEncrypted
+    }
 
     init(room: Room, mode: ChatPresentationMode = .normal) {
         let roomId = room.id()
-        self.room = room
+        self.room = nil
         self.roomId = roomId
         self.mode = mode
         self.roomName = room.displayName() ?? "Chat"
-        self.isInvited = room.membership() == .invited
-        self.timelineService = TimelineService(room: room)
+        self.timelineService = nil
         self.diffBatcher = TimelineDiffBatcher(
             roomId: roomId,
             dbQueue: DatabaseService.shared.dbQueue
@@ -180,11 +222,150 @@ final class ChatViewModel {
         self.pendingRedactionIds = pendingRedactions.pendingMessageIds(roomId: roomId)
         self.pendingRedactionKeys = pendingRedactions.pendingMessageIdentityKeys(roomId: roomId)
 
+        bindCommonServices()
+        attachLiveRoom(room)
+    }
+
+    init(cachedRoom: RoomModel, mode: ChatPresentationMode = .normal) {
+        self.room = nil
+        self.roomId = cachedRoom.id
+        self.mode = mode
+        self.roomName = cachedRoom.name.isEmpty ? "Chat" : cachedRoom.name
+        self.timelineService = nil
+        self.diffBatcher = TimelineDiffBatcher(
+            roomId: cachedRoom.id,
+            dbQueue: DatabaseService.shared.dbQueue
+        )
+        self.window = MessageWindow(
+            roomId: cachedRoom.id,
+            dbQueue: DatabaseService.shared.dbQueue
+        )
+        self.pendingRedactionIds = pendingRedactions.pendingMessageIds(roomId: cachedRoom.id)
+        self.pendingRedactionKeys = pendingRedactions.pendingMessageIdentityKeys(roomId: cachedRoom.id)
+        self.directUserId = cachedRoom.directUserId
+        self.partnerUserId = cachedRoom.directUserId
+        self.isGroupChat = cachedRoom.directUserId == nil
+
+        bindCommonServices()
+        loadInitialWindowIfNeeded()
+        scheduleLiveRoomResolution()
+    }
+
+    private func bindCommonServices() {
+        MatrixClientService.shared.verificationStateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshComposerSendPermission()
+            }
+            .store(in: &cancellables)
+
+        SessionVerificationService.shared.encryptionReadinessSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshComposerSendPermission()
+            }
+            .store(in: &cancellables)
+
+        MatrixClientService.shared.stateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.handleMatrixState(state)
+            }
+            .store(in: &cancellables)
+
+        MatrixClientService.shared.syncServiceStateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.handleSyncServiceState(state)
+            }
+            .store(in: &cancellables)
+
+        bindOutgoingUpdates()
+        bindWindow()
+        refreshComposerSendPermission()
+    }
+
+    private func bindOutgoingUpdates() {
+        bindRoomUpdate(OutgoingTextOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingTextOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingImageOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingImageOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingVideoOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingVideoOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingFileOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingFileOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingVoiceOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingVoiceOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingForwardedMediaOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingForwardedMediaOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingEditOutboxService.shared.roomDidUpdateSubject)
+        bindSendFailure(OutgoingEditOutboxService.shared.sendFailureSubject)
+        bindRoomUpdate(OutgoingRedactionOutboxService.shared.roomDidUpdateSubject)
+        bindRoomUpdate(OutgoingReactionOutboxService.shared.roomDidUpdateSubject)
+
+        OutgoingRedactionOutboxService.shared.redactionFailureSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.onRedactionFailed?(
+                    failure.messageId,
+                    failure.error,
+                    failure.disposition
+                )
+            }
+            .store(in: &cancellables)
+    }
+
+    private func bindRoomUpdate(_ publisher: PassthroughSubject<String, Never>) {
+        publisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] updatedRoomId in
+                guard let self,
+                      self.roomId == updatedRoomId else { return }
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func bindSendFailure<Failure: OutgoingOutboxFailureEvent>(
+        _ publisher: PassthroughSubject<Failure, Never>
+    ) {
+        publisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] failure in
+                guard let self,
+                      self.roomId == failure.roomId else { return }
+                self.sendFailureNotice = SendFailureNotice(context: failure.context)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func bindWindow() {
+        let win = window
+        diffBatcher.onFlush = { [weak win] summary in
+            win?.refresh(origin: .timelineFlush(summary))
+        }
+
+        window.onChange = { [weak self] newStored, prevStored, origin in
+            self?.handleObservationChange(
+                newStored: newStored,
+                prevStored: prevStored,
+                origin: origin
+            )
+        }
+    }
+
+    private func bindTimelineService(_ timelineService: TimelineService) {
         timelineService.isPaginatingSubject
             .receive(on: DispatchQueue.main)
-            .assign(to: &$isPaginating)
+            .sink { [weak self] isPaginating in
+                self?.isPaginating = isPaginating
+            }
+            .store(in: &cancellables)
 
-        // Write path: SDK diffs → GRDB
         let batcher = diffBatcher
         timelineService.onDiffs = { diffs in
             batcher.receive(diffs: diffs)
@@ -197,68 +378,30 @@ final class ChatViewModel {
                 self?.seedReadReceiptBaseline(eventId: eventId)
             }
         }
-        timelineService.onSendQueueUpdate = { [weak self] update, didMutateOutgoingEnvelopes in
-            Task { [weak self] in
-                guard let self else { return }
-                switch update {
-                case .sentEvent(let transactionId, _):
-                    await self.rememberSentTransaction(transactionId)
-                    let didClearPendingEdit = await self.clearPendingMessageEdit(
-                        transactionId: transactionId
-                    )
-                    if !didClearPendingEdit, didMutateOutgoingEnvelopes {
-                        await self.refreshWindow()
-                    }
-                case .sendError(let transactionId, _, let isRecoverable):
-                    guard !isRecoverable else {
-                        if didMutateOutgoingEnvelopes {
-                            await self.refreshWindow()
-                        }
-                        return
-                    }
-                    await self.rememberFailedTransaction(transactionId)
-                    let didFailPendingEdit = await self.failPendingMessageEdit(
-                        transactionId: transactionId
-                    )
-                    if !didFailPendingEdit, didMutateOutgoingEnvelopes {
-                        await self.refreshWindow()
-                    }
-                case .cancelledLocalEvent(let transactionId):
-                    await self.rememberFailedTransaction(transactionId)
-                    let didFailPendingEdit = await self.failPendingMessageEdit(
-                        transactionId: transactionId
-                    )
-                    if !didFailPendingEdit, didMutateOutgoingEnvelopes {
-                        await self.refreshWindow()
-                    }
-                default:
-                    if didMutateOutgoingEnvelopes {
-                        await self.refreshWindow()
-                    }
-                }
-            }
-        }
+    }
 
-        // Bridge: batcher flush → window refresh
-        let win = window
-        diffBatcher.onFlush = { [weak win] summary in
-            win?.refresh(origin: .timelineFlush(summary))
-        }
+    private func attachLiveRoom(_ room: Room) {
+        guard self.room == nil else { return }
 
-        // Read path: window changes → UI
-        window.onChange = { [weak self] newStored, prevStored, origin in
-            self?.handleObservationChange(
-                newStored: newStored,
-                prevStored: prevStored,
-                origin: origin
-            )
-        }
+        roomResolutionTask?.cancel()
+        roomResolutionTask = nil
+        self.room = room
+        isInvited = room.membership() == .invited
 
-        // Defer timeline setup until invite is accepted
+        let timelineService = TimelineService(room: room)
+        self.timelineService = timelineService
+        bindTimelineService(timelineService)
+        refreshComposerSendPermission()
+        updateConnectionStatus()
+        resolveRoomInfo(room)
+
+        // Defer timeline setup until invite is accepted.
         if !isInvited {
             startTimelineAndHistory()
         }
+    }
 
+    private func resolveRoomInfo(_ room: Room) {
         Task { [weak self] in
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
@@ -267,6 +410,8 @@ final class ChatViewModel {
                 await MainActor.run {
                     self.directUserId = userId
                     self.partnerUserId = userId
+                    self.memberCount = nil
+                    self.isGroupChat = false
                 }
                 if !self.mode.isPreview {
                     PresenceTracker.shared.register(userIds: [userId], for: "chat")
@@ -278,6 +423,8 @@ final class ChatViewModel {
             } else {
                 let count = Int(info.joinedMembersCount)
                 await MainActor.run {
+                    self.partnerPresence = nil
+                    self.partnerUserId = nil
                     self.memberCount = count
                     self.isGroupChat = true
                 }
@@ -285,19 +432,104 @@ final class ChatViewModel {
         }
     }
 
+    private func handleMatrixState(_ state: MatrixClientState) {
+        currentMatrixClientState = state
+        updateConnectionStatus()
+        guard room == nil else { return }
+
+        switch state {
+        case .loggedIn, .syncing, .error:
+            scheduleLiveRoomResolution()
+        case .loggedOut, .loggingIn, .softLoggedOut, .sessionRecoveryRequired:
+            break
+        }
+    }
+
+    private func handleSyncServiceState(_ state: SyncServiceState) {
+        currentSyncServiceState = state
+        updateConnectionStatus()
+        guard room == nil else { return }
+        if state == .running {
+            scheduleLiveRoomResolution()
+        }
+    }
+
+    private func updateConnectionStatus() {
+        connectionStatusText = Self.connectionStatusText(
+            matrixState: currentMatrixClientState,
+            syncState: currentSyncServiceState,
+            hasLiveRoom: room != nil
+        )
+    }
+
+    private static func connectionStatusText(
+        matrixState: MatrixClientState,
+        syncState: SyncServiceState,
+        hasLiveRoom: Bool
+    ) -> String? {
+        switch matrixState {
+        case .softLoggedOut, .sessionRecoveryRequired:
+            return "Session locked"
+        default:
+            break
+        }
+
+        if case .syncing = matrixState,
+           syncState == .running,
+           hasLiveRoom {
+            return nil
+        }
+
+        return "Connecting..."
+    }
+
+    private func scheduleLiveRoomResolution() {
+        guard room == nil,
+              roomResolutionTask == nil else { return }
+
+        roomResolutionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled && self.room == nil {
+                if Task.isCancelled { return }
+                if let room = self.resolveLiveRoomFromClient() {
+                    self.attachLiveRoom(room)
+                    return
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+            self.roomResolutionTask = nil
+        }
+    }
+
+    private func resolveLiveRoomFromClient() -> Room? {
+        if let room = try? MatrixClientService.shared.client?.getRoom(roomId: roomId) {
+            return room
+        }
+        return MatrixClientService.shared.client?.rooms().first { $0.id() == roomId }
+    }
+
+    private func loadInitialWindowIfNeeded() {
+        guard !didLoadInitialWindow else { return }
+        didLoadInitialWindow = true
+        window.loadInitial()
+    }
+
     // MARK: - Timeline Bootstrap
 
     private func startTimelineAndHistory() {
+        guard let timelineService else {
+            loadInitialWindowIfNeeded()
+            return
+        }
         sdkPaginationExhausted = false
-        window.loadInitial()
+        loadInitialWindowIfNeeded()
 
         Task { [weak self] in
             guard let self else { return }
-            await self.timelineService.startListening(subscribeForSync: !self.mode.isPreview)
+            await timelineService.startListening(subscribeForSync: !self.mode.isPreview)
             guard !self.mode.isPreview else { return }
             let terminalFailures = await self.pendingRedactions.retryPendingRedactions(
-                roomId: self.roomId,
-                timelineService: self.timelineService
+                roomId: self.roomId
             )
             guard !terminalFailures.isEmpty else { return }
             await MainActor.run { [weak self] in
@@ -322,7 +554,7 @@ final class ChatViewModel {
     // MARK: - Invite
 
     func acceptInvite() {
-        guard isInvited else { return }
+        guard isInvited, let room else { return }
         Task {
             do {
                 try await room.join()
@@ -423,22 +655,25 @@ final class ChatViewModel {
         )
 
         // 2. Build display array: filter hidden and already-redacted (keep newly-redacted for animation)
-        let displayStored = newStored.compactMap { msg -> StoredMessage? in
-            if Self.hasAnyIdentityKey(hiddenMessageKeys, for: msg) { return nil }
-            if let pending = Self.pendingPartialRedaction(
+        let now = Date().timeIntervalSince1970
+        let pendingRedactionRecords = pendingRedactions.pendingRecords(roomId: roomId)
+        let pendingRedactionLookup = Self.pendingRedactionDisplayLookup(
+            for: pendingRedactionRecords
+        )
+        schedulePendingRedactionPlaceholderRefresh(
+            records: pendingRedactionRecords,
+            now: now
+        )
+        let pendingReactionRemovalsByEventId = pendingReactions
+            .pendingRemovalKeysByEventId(roomId: roomId)
+        let rawMessages = newStored.compactMap { msg -> ChatMessage? in
+            displayChatMessage(
                 for: msg,
-                in: pendingPartialRedactions
-            ) {
-                return pending
-            }
-            if Self.hasAnyIdentityKey(pendingRedactionKeys, for: msg) {
-                return nil
-            }
-            if msg.contentType == "redacted"
-                && msg.timelineIdentityKeys.isDisjoint(with: newlyRedactedIdentityKeys) {
-                return nil
-            }
-            return msg
+                pendingRedactionLookup: pendingRedactionLookup,
+                pendingReactionRemovalsByEventId: pendingReactionRemovalsByEventId,
+                now: now,
+                visibleRedactedKeys: newlyRedactedIdentityKeys
+            )
         }
 
         let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: newStored)
@@ -449,7 +684,6 @@ final class ChatViewModel {
         }
         let olderBoundary = window.peekOlderNeighbor()
         let newerBoundary = window.peekNewerNeighbor()
-        let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
@@ -670,24 +904,29 @@ final class ChatViewModel {
                 .filter { $0.content.isRedacted }
                 .flatMap(\.timelineIdentityKeys)
         )
-        let displayStored = storedMessages.compactMap { msg -> StoredMessage? in
-            if Self.hasAnyIdentityKey(hiddenMessageKeys, for: msg) { return nil }
-            if let pending = Self.pendingPartialRedaction(
+        let now = Date().timeIntervalSince1970
+        let pendingRedactionRecords = pendingRedactions.pendingRecords(roomId: roomId)
+        let pendingRedactionLookup = Self.pendingRedactionDisplayLookup(
+            for: pendingRedactionRecords
+        )
+        schedulePendingRedactionPlaceholderRefresh(
+            records: pendingRedactionRecords,
+            now: now
+        )
+        let pendingReactionRemovalsByEventId = pendingReactions
+            .pendingRemovalKeysByEventId(roomId: roomId)
+        let rawMessages = storedMessages.compactMap { msg -> ChatMessage? in
+            displayChatMessage(
                 for: msg,
-                in: pendingPartialRedactions
-            ) {
-                return pending
-            }
-            if Self.hasAnyIdentityKey(pendingRedactionKeys, for: msg) { return nil }
-            if msg.contentType == "redacted" {
-                return msg.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) ? nil : msg
-            }
-            return msg
+                pendingRedactionLookup: pendingRedactionLookup,
+                pendingReactionRemovalsByEventId: pendingReactionRemovalsByEventId,
+                now: now,
+                visibleRedactedKeys: visibleRedactedKeys
+            )
         }
 
         let olderBoundary = window.peekOlderNeighbor()
         let newerBoundary = window.peekNewerNeighbor()
-        let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: Self.redactedMediaGroupIds(in: storedMessages),
@@ -1279,7 +1518,52 @@ final class ChatViewModel {
 
         let primaryMessage = rawMessages[primaryMessageIndex]
         guard primaryMessage.eventId != nil else { return false }
+        if isExplicitlyBound(primaryMessage, to: envelope) {
+            return explicitlyBoundMessageIsRenderable(
+                primaryMessage,
+                envelopeKind: envelope.kind
+            )
+        }
         return hydratedMessage(primaryMessage, matches: envelope)
+    }
+
+    private static func isExplicitlyBound(
+        _ message: ChatMessage,
+        to envelope: OutgoingEnvelopeSnapshot
+    ) -> Bool {
+        let eventIds = Set(envelope.items.compactMap(\.eventId))
+        if let eventId = message.eventId,
+           eventIds.contains(eventId) {
+            return true
+        }
+
+        let transactionIds = Set(envelope.items.compactMap(\.transactionId))
+        if let transactionId = message.transactionId,
+           transactionIds.contains(transactionId) {
+            return true
+        }
+
+        return false
+    }
+
+    private static func explicitlyBoundMessageIsRenderable(
+        _ message: ChatMessage,
+        envelopeKind: OutgoingEnvelopeKind
+    ) -> Bool {
+        switch (envelopeKind, message.content) {
+        case (.text, .text):
+            return true
+        case (.image, .image(let source, _, _, _, _, _)):
+            return source != nil
+        case (.video, .video(let source, _, _, _, _, _, _, _, _, _)):
+            return source != nil
+        case (.voice, .voice(let source, _, _)):
+            return source != nil
+        case (.file, .file(let source, _, _, _, _)):
+            return source != nil
+        default:
+            return false
+        }
     }
 
     private static func hydratedMessage(
@@ -1490,7 +1774,7 @@ final class ChatViewModel {
         )
         message.outgoingEnvelopeId = envelope.id
         message.isStaleOutgoingEnvelope = isStaleSessionEnvelope
-        message.canRetryOutgoingEnvelope = isStaleSessionEnvelope
+        message.canRetryOutgoingEnvelope = (isStaleSessionEnvelope || envelope.primaryItem?.transportState == .failed)
             && envelope.isRetryableAfterSessionChange
 
         logMediaGroup(
@@ -1509,7 +1793,8 @@ final class ChatViewModel {
         transportState: OutgoingTransportState?,
         hydratedMessage: ChatMessage?
     ) -> String {
-        if hydratedMessage?.sendStatus == "read" {
+        if hydratedMessage?.eventId != nil,
+           hydratedMessage?.sendStatus == "read" {
             return "read"
         }
         return transportState?.messageSendStatus ?? "queued"
@@ -1738,7 +2023,8 @@ final class ChatViewModel {
 
     /// Paginate from server when GRDB is exhausted.
     func loadOlderFromServer() {
-        guard !isPaginating else { return }
+        guard !isPaginating,
+              let timelineService else { return }
         Task {
             await timelineService.paginateBackwards(numEvents: 50)
         }
@@ -1810,12 +2096,13 @@ final class ChatViewModel {
         to target: VisibleReadReceiptTarget,
         mode: PendingReadReceiptSend
     ) {
+        guard let timelineService else { return }
         readReceiptWork?.cancel()
         pendingReadReceiptSend = mode
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             Task {
-                let didSend = await self.timelineService.sendReadReceipt(for: target.eventId)
+                let didSend = await timelineService.sendReadReceipt(for: target.eventId)
                 await MainActor.run {
                     self.finishReadReceiptSend(mode, didSend: didSend)
                 }
@@ -1989,12 +2276,12 @@ final class ChatViewModel {
         editingMessage = message
     }
 
-    func setPendingForward(preview: ChatMessage, content: RoomMessageEventContentWithoutRelation) {
+    func setPendingForward(_ preview: ChatMessage) {
         activeEditAttemptId = nil
         editingDraftOverride = nil
         replyingTo = nil
         editingMessage = nil
-        pendingForwardContent = (preview, content)
+        pendingForwardContent = preview
     }
 
     func editingInputText(for message: ChatMessage) -> String? {
@@ -2068,7 +2355,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 1,
                             isEditFailed = 0,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
                           AND (isEditPending = 0
@@ -2129,7 +2418,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 0,
                             isEditFailed = 0,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND editTransactionId = ?
                     """,
@@ -2157,7 +2448,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 0,
                             isEditFailed = 0,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
                     """,
@@ -2185,7 +2478,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 0,
                             isEditFailed = 1,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND editTransactionId = ?
                     """,
@@ -2213,7 +2508,9 @@ final class ChatViewModel {
                         UPDATE storedMessage
                         SET isEditPending = 0,
                             isEditFailed = 1,
-                            editTransactionId = NULL
+                            editTransactionId = NULL,
+                            pendingEditBody = NULL,
+                            pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
                     """,
@@ -2245,39 +2542,54 @@ final class ChatViewModel {
         )
     }
 
-    private func completeOutgoingDispatch(
-        envelopeId: String,
-        itemIndex: Int = 0,
-        receipt: OutgoingDispatchReceipt
-    ) async {
-        if !receipt.acceptedByTransport {
-            guard outgoingEnvelopes.markDispatchFailed(
-                envelopeId: envelopeId,
-                itemIndex: itemIndex
-            ) else {
-                return
-            }
-            await refreshWindow()
-            return
+    private func publishSendFailureNotice(context: OutgoingSendFailureContext?) {
+        guard let context else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.sendFailureNotice = SendFailureNotice(context: context)
         }
+    }
 
-        let didMarkStarted = outgoingEnvelopes.markDispatchStarted(
-            envelopeId: envelopeId,
-            itemIndex: itemIndex
-        )
+    private func publishSendFailureNotice(reason: OutgoingSendFailureReason?) {
+        guard let reason else { return }
+        publishSendFailureNotice(context: .reasonOnly(reason))
+    }
 
-        guard let transactionId = receipt.transactionId,
-              outgoingEnvelopes.bindTransaction(
-                envelopeId: envelopeId,
-                itemIndex: itemIndex,
-                transactionId: transactionId
-              ) else {
-            if didMarkStarted {
-                await refreshWindow()
+    private func refreshComposerSendPermission() {
+        let blocked = composerSendBlockedValue()
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isComposerSendBlocked != blocked else { return }
+                self.isComposerSendBlocked = blocked
             }
             return
         }
-        await refreshWindow()
+        guard isComposerSendBlocked != blocked else { return }
+        isComposerSendBlocked = blocked
+    }
+
+    private func composerSendBlockedValue() -> Bool {
+        guard !mode.isPreview else { return false }
+        guard room != nil else { return true }
+        return requiresVerifiedDeviceForSending
+            && !SessionVerificationService.shared.canSendEncryptedMessages
+    }
+
+    @discardableResult
+    private func guardCanCreateOutgoingEnvelope() -> Bool {
+        let blocked = composerSendBlockedValue()
+        if Thread.isMainThread {
+            if blocked != isComposerSendBlocked {
+                isComposerSendBlocked = blocked
+            }
+        } else {
+            refreshComposerSendPermission()
+        }
+        guard !blocked else {
+            guard room != nil else { return false }
+            publishSendFailureNotice(reason: .ownDeviceVerificationRequired)
+            return false
+        }
+        return true
     }
 
     private func sendOutgoingText(
@@ -2286,37 +2598,63 @@ final class ChatViewModel {
         replyInfo: ReplyInfo? = nil,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
     ) async {
+        guard let timelineService else { return }
         let envelopeId = UUID().uuidString
-        let bindingToken = outgoingEnvelopes.createOutgoingText(
+        let transactionId = timelineService.prepareDirectRawTextTransactionId(
+            replyEventId: replyEventId
+        )
+        outgoingEnvelopes.createOutgoingText(
             roomId: roomId,
             envelopeId: envelopeId,
             body: body,
             replyInfo: replyInfo,
-            zynaAttributes: zynaAttributes
+            zynaAttributes: zynaAttributes,
+            transactionId: transactionId
         )
         await refreshWindow()
 
-        let receipt: OutgoingDispatchReceipt
-        if let replyEventId {
-            receipt = await timelineService.sendReply(
-                body,
-                to: replyEventId,
-                bindingToken: bindingToken
-            )
-        } else if zynaAttributes.isEmpty {
-            receipt = await timelineService.sendMessage(
-                body,
-                bindingToken: bindingToken
-            )
-        } else {
-            receipt = await timelineService.sendMessage(
-                body,
-                zynaAttributes: zynaAttributes,
-                bindingToken: bindingToken
-            )
+        guard transactionId != nil else {
+            if outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: 0
+            ) {
+                await refreshWindow()
+            }
+            return
         }
 
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        OutgoingTextOutboxService.shared.kick(
+            reason: "new-envelope",
+            envelopeId: envelopeId
+        )
+    }
+
+    private func failOutgoingEnvelope(
+        envelopeId: String,
+        itemIndex: Int = 0
+    ) async {
+        if outgoingEnvelopes.markDispatchFailed(
+            envelopeId: envelopeId,
+            itemIndex: itemIndex
+        ) {
+            await refreshWindow()
+        }
+    }
+
+    private func failOutgoingEnvelopeItems(
+        envelopeId: String,
+        itemIndices: Range<Int>
+    ) async {
+        var didChange = false
+        for index in itemIndices {
+            didChange = outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: index
+            ) || didChange
+        }
+        if didChange {
+            await refreshWindow()
+        }
     }
 
     private func sendOutgoingVoice(
@@ -2325,32 +2663,57 @@ final class ChatViewModel {
         waveform: [Float]
     ) async {
         let envelopeId = UUID().uuidString
+        let mimetype = "audio/mp4"
         let storedVoice = try? outgoingEnvelopes.storeOutgoingVoiceFile(
             sourceURL: fileURL,
             envelopeId: envelopeId
         )
+        let transactionId = storedVoice == nil
+            ? nil
+            : DirectRawMediaSender.prepareVoiceTransactionId()
         let waveformPayload = waveform.map { sample -> UInt16 in
             let normalized = max(0, min(1, sample))
             return UInt16((normalized * 1024).rounded())
         }
-        let bindingToken = outgoingEnvelopes.createOutgoingVoice(
+        outgoingEnvelopes.createOutgoingVoice(
             roomId: roomId,
             envelopeId: envelopeId,
             duration: duration,
             waveform: waveformPayload,
             localFileName: storedVoice?.fileName,
-            replyInfo: nil
+            replyInfo: nil,
+            transactionId: transactionId
         )
         await refreshWindow()
 
-        let receipt = await timelineService.sendVoiceMessage(
-            url: storedVoice?.url ?? fileURL,
-            duration: duration,
-            waveform: waveform,
-            bindingToken: bindingToken
-        )
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        guard transactionId != nil,
+              let storedVoice else {
+            await failOutgoingEnvelope(envelopeId: envelopeId)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+            return
+        }
 
+        let didPrepare = PendingDirectVoiceService.shared.prepareVoice(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            mimetype: mimetype
+        )
+        if didPrepare {
+            OutgoingVoiceOutboxService.shared.kick(
+                reason: "new-voice",
+                envelopeId: envelopeId
+            )
+        } else {
+            _ = outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: 0
+            )
+            await refreshWindow()
+        }
+        _ = storedVoice
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) {
             try? FileManager.default.removeItem(at: fileURL)
         }
@@ -2375,120 +2738,213 @@ final class ChatViewModel {
         }
 
         let envelopeId = UUID().uuidString
-        let bindingToken = outgoingEnvelopes.createOutgoingFile(
+        let transactionId = DirectRawMediaSender.prepareFileTransactionId()
+        outgoingEnvelopes.createOutgoingFile(
             roomId: roomId,
             envelopeId: envelopeId,
             filename: filename,
             mimetype: mimetype,
             size: fileSize,
             caption: caption,
-            replyInfo: replyInfo
+            replyInfo: replyInfo,
+            transactionId: transactionId
         )
         await refreshWindow()
 
-        let receipt = await timelineService.sendFile(
-            url: url,
-            caption: caption,
-            replyEventId: replyEventId,
-            bindingToken: bindingToken
+        guard transactionId != nil else {
+            await failOutgoingEnvelope(envelopeId: envelopeId)
+            return
+        }
+
+        let didPrepare = PendingDirectFileService.shared.prepareFile(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            sourceURL: url,
+            filename: filename,
+            mimetype: mimetype ?? "application/octet-stream",
+            size: fileSize
         )
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        if didPrepare {
+            OutgoingFileOutboxService.shared.kick(
+                reason: "new-file",
+                envelopeId: envelopeId
+            )
+        } else {
+            _ = outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: 0
+            )
+            await refreshWindow()
+        }
     }
 
     private func sendOutgoingForwardedMedia(
         preview: ChatMessage,
-        fallbackContent: RoomMessageEventContentWithoutRelation,
         attrs: ZynaMessageAttributes,
         caption: String?
     ) async {
         let envelopeId = UUID().uuidString
+        guard let draft = forwardedMediaDraft(from: preview),
+              let transactionId = DirectRawMediaSender.prepareForwardedMediaTransactionId()
+        else {
+            return
+        }
 
-        switch preview.content {
-        case .image(let source, _, let width, let height, _, let previewImageData):
-            guard let source,
-                  let mediaInfo = preview.content.mediaForwardInfo else {
-                await timelineService.sendForwardedContent(fallbackContent)
+        switch draft.kind {
+        case .image:
+            guard case .image(_, _, let width, let height, _, let previewImageData) = preview.content else {
                 return
             }
-            let bindingToken = outgoingEnvelopes.createOutgoingImage(
+            _ = outgoingEnvelopes.createOutgoingImage(
                 roomId: roomId,
                 envelopeId: envelopeId,
                 caption: caption,
                 width: width,
                 height: height,
                 previewImageData: previewImageData,
-                previewSource: source,
+                previewSource: draft.source,
                 replyInfo: nil,
                 zynaAttributes: attrs
             )
-            await refreshWindow()
-            let receipt = await timelineService.forwardMedia(
-                source: source,
-                mimetype: mediaInfo.mimetype,
-                attrs: attrs,
-                caption: caption,
-                bindingToken: bindingToken
-            )
-            await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
-        case .voice(let source, let duration, let waveform):
-            guard let source,
-                  let mediaInfo = preview.content.mediaForwardInfo else {
-                await timelineService.sendForwardedContent(fallbackContent)
+        case .video:
+            guard case .video(_, _, let width, let height, let duration, let filename, let mimetype, let size, _, let previewThumbnailData) = preview.content else {
                 return
             }
-            let bindingToken = outgoingEnvelopes.createOutgoingVoice(
+            _ = outgoingEnvelopes.createOutgoingVideo(
+                roomId: roomId,
+                envelopeId: envelopeId,
+                filename: filename,
+                caption: caption,
+                width: width,
+                height: height,
+                duration: duration,
+                mimetype: mimetype,
+                size: size,
+                previewThumbnailData: previewThumbnailData,
+                previewSource: draft.source,
+                replyInfo: nil,
+                zynaAttributes: attrs
+            )
+        case .voice:
+            guard case .voice(_, let duration, let waveform) = preview.content else {
+                return
+            }
+            _ = outgoingEnvelopes.createOutgoingVoice(
                 roomId: roomId,
                 envelopeId: envelopeId,
                 duration: duration,
                 waveform: waveform,
+                previewSource: draft.source,
                 replyInfo: nil,
                 zynaAttributes: attrs
             )
-            await refreshWindow()
-            let receipt = await timelineService.forwardVoiceMessage(
-                source: source,
-                mimetype: mediaInfo.mimetype,
-                duration: duration,
-                waveform: waveform,
-                attrs: attrs,
-                caption: caption,
-                bindingToken: bindingToken
-            )
-            await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
-        case .file(let source, let filename, let mimetype, let size, _):
-            guard let source,
-                  let mediaInfo = preview.content.mediaForwardInfo else {
-                await timelineService.sendForwardedContent(fallbackContent)
+        case .file:
+            guard case .file(_, let filename, let mimetype, let size, _) = preview.content else {
                 return
             }
-            let bindingToken = outgoingEnvelopes.createOutgoingFile(
+            _ = outgoingEnvelopes.createOutgoingFile(
                 roomId: roomId,
                 envelopeId: envelopeId,
                 filename: filename,
                 mimetype: mimetype,
                 size: size,
                 caption: caption,
+                previewSource: draft.source,
                 replyInfo: nil,
                 zynaAttributes: attrs
             )
-            await refreshWindow()
-            let receipt = await timelineService.forwardMedia(
-                source: source,
-                mimetype: mediaInfo.mimetype,
-                attrs: attrs,
-                caption: caption,
-                bindingToken: bindingToken
+        }
+        await refreshWindow()
+
+        let didPrepare = PendingForwardedMediaService.shared.prepareForwardedMedia(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            draft: draft,
+            caption: caption,
+            transactionId: transactionId
+        )
+        if didPrepare {
+            OutgoingForwardedMediaOutboxService.shared.kick(
+                reason: "new-forwarded-media",
+                envelopeId: envelopeId
             )
-            await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        } else {
+            _ = outgoingEnvelopes.markDispatchFailed(
+                envelopeId: envelopeId,
+                itemIndex: 0
+            )
+            await refreshWindow()
+        }
+    }
+
+    private func forwardedMediaDraft(
+        from message: ChatMessage
+    ) -> PendingForwardedMediaDraft? {
+        switch message.content {
+        case .image(let source?, let thumbnailSource, let width, let height, _, _):
+            return PendingForwardedMediaDraft(
+                kind: .image,
+                source: source,
+                thumbnailSource: thumbnailSource,
+                filename: "image.jpg",
+                mimetype: "image/jpeg",
+                size: nil,
+                width: width,
+                height: height,
+                duration: nil,
+                waveform: []
+            )
+        case .video(let source?, let thumbnailSource, let width, let height, let duration, let filename, let mimetype, let size, _, _):
+            return PendingForwardedMediaDraft(
+                kind: .video,
+                source: source,
+                thumbnailSource: thumbnailSource,
+                filename: filename,
+                mimetype: mimetype ?? "video/mp4",
+                size: size,
+                width: width,
+                height: height,
+                duration: duration,
+                waveform: []
+            )
+        case .voice(let source?, let duration, let waveform):
+            return PendingForwardedMediaDraft(
+                kind: .voice,
+                source: source,
+                thumbnailSource: nil,
+                filename: "voice.m4a",
+                mimetype: "audio/mp4",
+                size: nil,
+                width: nil,
+                height: nil,
+                duration: duration,
+                waveform: waveform
+            )
+        case .file(let source?, let filename, let mimetype, let size, _):
+            return PendingForwardedMediaDraft(
+                kind: .file,
+                source: source,
+                thumbnailSource: nil,
+                filename: filename,
+                mimetype: mimetype ?? "application/octet-stream",
+                size: size,
+                width: nil,
+                height: nil,
+                duration: nil,
+                waveform: []
+            )
         default:
-            await timelineService.sendForwardedContent(fallbackContent)
+            return nil
         }
     }
 
     func sendMessage(_ text: String, color: UIColor? = nil) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         if let editing = editingMessage {
-            guard let itemId = editing.itemIdentifier,
-                  let originalBody = editing.content.textBody
+            guard let originalBody = editing.content.textBody
             else {
                 setEditingTarget(nil)
                 return
@@ -2509,39 +2965,27 @@ final class ChatViewModel {
             activeEditAttemptId = attemptId
             Task { [weak self] in
                 guard let self else { return }
-                if let eventId = editing.eventId {
-                    await self.markMessageEditPending(eventId: eventId)
-                }
-
-                let receipt = await self.timelineService.editMessage(
-                    editedText,
-                    itemId: itemId,
-                    zynaAttributes: editing.zynaAttributes
-                )
-
-                if let eventId = editing.eventId {
-                    if receipt.acceptedByTransport {
-                        if let transactionId = receipt.transactionId,
-                           await self.hasRecentlySentTransaction(transactionId) {
-                            await self.clearPendingMessageEdit(eventId: eventId)
-                        } else if let transactionId = receipt.transactionId,
-                                  await self.hasRecentlyFailedTransaction(transactionId) {
-                            await self.failPendingMessageEdit(eventId: eventId)
-                        } else if let transactionId = receipt.transactionId {
-                            await self.bindPendingMessageEditTransaction(
-                                eventId: eventId,
-                                transactionId: transactionId
-                            )
-                        }
-                    } else {
-                        await self.clearPendingMessageEdit(eventId: eventId)
+                if let eventId = editing.eventId,
+                   let transactionId = DirectRawTextSender.prepareEditTransactionId(),
+                   PendingMessageEditService.shared.prepareDirectRawEdit(
+                       roomId: self.roomId,
+                       eventId: eventId,
+                       body: editedText,
+                       zynaAttributes: editing.zynaAttributes,
+                       transactionId: transactionId
+                   ) {
+                    await self.refreshWindow()
+                    OutgoingEditOutboxService.shared.kick(reason: "new-edit")
+                    await MainActor.run {
+                        guard self.activeEditAttemptId == attemptId else { return }
+                        self.activeEditAttemptId = nil
                     }
+                    return
                 }
 
                 await MainActor.run {
                     guard self.activeEditAttemptId == attemptId else { return }
                     self.activeEditAttemptId = nil
-                    guard !receipt.acceptedByTransport else { return }
                     guard self.canRestoreFailedEditDraft?() ?? true else { return }
                     self.editingDraftOverride = editedText
                     self.replyingTo = nil
@@ -2558,26 +3002,22 @@ final class ChatViewModel {
         // Forward takes priority
         if let forward = pendingForwardContent {
             pendingForwardContent = nil
-            let senderName = forward.preview.senderDisplayName ?? forward.preview.senderId
+            let senderName = forward.senderDisplayName ?? forward.senderId
             let attrs = ZynaMessageAttributes(forwardedFrom: senderName)
 
-            if let body = forward.preview.content.textBody {
+            if let body = forward.content.textBody {
                 Task { [weak self] in
                     await self?.sendOutgoingText(body: body, zynaAttributes: attrs)
                 }
-            } else if forward.preview.content.mediaForwardInfo != nil {
+            } else if forward.content.mediaForwardInfo != nil {
                 let caption = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
                 Task { [weak self] in
                     await self?.sendOutgoingForwardedMedia(
-                        preview: forward.preview,
-                        fallbackContent: forward.content,
+                        preview: forward,
                         attrs: attrs,
                         caption: caption
                     )
                 }
-            } else {
-                // Fallback: send without attributes
-                Task { await timelineService.sendForwardedContent(forward.content) }
             }
             return
         }
@@ -2585,11 +3025,14 @@ final class ChatViewModel {
         if let replyTarget = replyingTo, let eventId = replyTarget.eventId {
             replyingTo = nil
             let replyInfo = replyInfo(from: replyTarget)
+            let attrs = color.map { ZynaMessageAttributes(color: $0) }
+                ?? ZynaMessageAttributes()
             Task { [weak self] in
                 await self?.sendOutgoingText(
                     body: text,
                     replyEventId: eventId,
-                    replyInfo: replyInfo
+                    replyInfo: replyInfo,
+                    zynaAttributes: attrs
                 )
             }
             return
@@ -2609,6 +3052,8 @@ final class ChatViewModel {
     }
 
     func sendVoiceMessage(fileURL: URL, duration: TimeInterval, waveform: [Float]) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         Task { [weak self] in
             await self?.sendOutgoingVoice(
                 fileURL: fileURL,
@@ -2619,6 +3064,8 @@ final class ChatViewModel {
     }
 
     func sendFile(url: URL) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         Task { [weak self] in
             await self?.sendOutgoingFile(
                 url: url,
@@ -2635,6 +3082,8 @@ final class ChatViewModel {
         captionPlacement: CaptionPlacement = .bottom,
         layoutOverride: MediaGroupLayoutOverride? = nil
     ) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         Task { [weak self] in
             guard let self else { return }
             await self.sendImageBatch(
@@ -2655,6 +3104,8 @@ final class ChatViewModel {
         layoutOverride: MediaGroupLayoutOverride? = nil
     ) {
         guard !attachments.isEmpty else { return }
+        guard guardCanCreateOutgoingEnvelope() else { return }
+
         let videoCount = attachments.filter(\.isVideo).count
         if videoCount > 0 {
             logVideoSend(
@@ -2733,7 +3184,8 @@ final class ChatViewModel {
         zynaAttributes: ZynaMessageAttributes
     ) async {
         let envelopeId = UUID().uuidString
-        let bindingToken = outgoingEnvelopes.createOutgoingImage(
+        let transactionId = DirectRawMediaSender.prepareImageTransactionId()
+        outgoingEnvelopes.createOutgoingImage(
             roomId: roomId,
             envelopeId: envelopeId,
             caption: caption,
@@ -2741,18 +3193,30 @@ final class ChatViewModel {
             height: image.height,
             previewImageData: image.thumbnailData,
             replyInfo: replyInfo,
-            zynaAttributes: zynaAttributes
+            zynaAttributes: zynaAttributes,
+            transactionId: transactionId
         )
         await refreshWindow()
 
-        let receipt = await timelineService.sendImage(
-            image: image,
-            caption: caption,
-            zynaAttributes: zynaAttributes,
-            replyEventId: replyEventId,
-            bindingToken: bindingToken
+        guard transactionId != nil else {
+            await failOutgoingEnvelope(envelopeId: envelopeId)
+            return
+        }
+
+        let didPrepare = PendingDirectImageService.shared.prepareImage(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            image: image
         )
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        if didPrepare {
+            OutgoingImageOutboxService.shared.kick(
+                reason: "new-image",
+                envelopeId: envelopeId
+            )
+        } else {
+            await failOutgoingEnvelope(envelopeId: envelopeId)
+        }
     }
 
     private func sendSingleVideo(
@@ -2763,10 +3227,11 @@ final class ChatViewModel {
         zynaAttributes: ZynaMessageAttributes
     ) async {
         let envelopeId = UUID().uuidString
+        let transactionId = DirectRawMediaSender.prepareVideoTransactionId()
         logVideoSend(
             "singleVideo start envelope=\(envelopeId) filename=\(video.filename) bytes=\(video.size) size=\(video.width)x\(video.height) duration=\(String(format: "%.3f", video.duration)) caption=\(caption ?? "<nil>") reply=\(replyEventId ?? "<nil>") attrsEmpty=\(zynaAttributes.isEmpty)"
         )
-        let bindingToken = outgoingEnvelopes.createOutgoingVideo(
+        outgoingEnvelopes.createOutgoingVideo(
             roomId: roomId,
             envelopeId: envelopeId,
             filename: video.filename,
@@ -2778,26 +3243,53 @@ final class ChatViewModel {
             size: video.size,
             previewThumbnailData: video.thumbnailData,
             replyInfo: replyInfo,
-            zynaAttributes: zynaAttributes
+            zynaAttributes: zynaAttributes,
+            transactionId: transactionId
         )
         logVideoSend(
-            "singleVideo envelopeCreated envelope=\(envelopeId) bindingToken=\(bindingToken.isEmpty ? "<empty>" : bindingToken) thumbBytes=\(video.thumbnailSize)"
+            "singleVideo envelopeCreated envelope=\(envelopeId) tx=\(transactionId ?? "<nil>") thumbBytes=\(video.thumbnailSize)"
         )
         await refreshWindow()
 
-        // TODO(video): Surface upload progress, retry, and terminal errors in
-        // the timeline UI once the basic send/receive path is stable.
-        let receipt = await timelineService.sendVideo(
-            video: video,
-            caption: caption,
-            zynaAttributes: zynaAttributes,
-            replyEventId: replyEventId,
-            bindingToken: bindingToken
+        guard transactionId != nil else {
+            cleanupProcessedVideoFiles(video)
+            await failOutgoingEnvelope(envelopeId: envelopeId)
+            return
+        }
+
+        let didPrepare = PendingDirectVideoService.shared.prepareVideo(
+            envelopeId: envelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            video: video
         )
-        logVideoSend(
-            "singleVideo receipt envelope=\(envelopeId) accepted=\(receipt.acceptedByTransport) tx=\(receipt.transactionId ?? "<nil>")"
-        )
-        await completeOutgoingDispatch(envelopeId: envelopeId, receipt: receipt)
+        if didPrepare {
+            OutgoingVideoOutboxService.shared.kick(
+                reason: "new-video",
+                envelopeId: envelopeId
+            )
+            cleanupProcessedVideoFiles(video, delay: 10)
+        } else {
+            cleanupProcessedVideoFiles(video)
+            await failOutgoingEnvelope(envelopeId: envelopeId)
+        }
+    }
+
+    private func cleanupProcessedVideoFiles(_ video: ProcessedVideo, delay: TimeInterval = 0) {
+        let videoURL = video.videoURL
+        let thumbnailURL = video.thumbnailURL
+        let workingDirectoryURL = video.videoURL.deletingLastPathComponent()
+        let cleanup = {
+            try? FileManager.default.removeItem(at: videoURL)
+            try? FileManager.default.removeItem(at: thumbnailURL)
+            try? FileManager.default.removeItem(at: workingDirectoryURL)
+        }
+
+        if delay > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay, execute: cleanup)
+        } else {
+            DispatchQueue.global(qos: .utility).async(execute: cleanup)
+        }
     }
 
     private func normalizedCaption(_ caption: String?) -> String? {
@@ -2920,55 +3412,93 @@ final class ChatViewModel {
             images: images,
             layoutOverride: layoutOverride
         )
-        let bindingTokens = outgoingEnvelopes.createOutgoingMediaBatch(
+        let directTransactionIds: [String]? = {
+            guard DirectRawMediaSender.isImageEnabled else { return nil }
+            var transactionIds: [String] = []
+            transactionIds.reserveCapacity(images.count)
+            for _ in images {
+                guard let transactionId = DirectRawMediaSender.prepareImageTransactionId() else {
+                    return nil
+                }
+                transactionIds.append(transactionId)
+            }
+            return transactionIds
+        }()
+        outgoingEnvelopes.createOutgoingMediaBatch(
             roomId: roomId,
             envelopeId: mediaGroupId,
             caption: normalizedCaption,
             captionPlacement: captionPlacement,
             layoutOverride: layoutOverride,
-            items: images.map {
+            items: images.enumerated().map { index, image in
                 OutgoingMediaDraftItem(
-                    previewImageData: $0.thumbnailData,
-                    width: $0.width,
-                    height: $0.height
+                    previewImageData: image.thumbnailData,
+                    width: image.width,
+                    height: image.height,
+                    transactionId: directTransactionIds?[index]
                 )
             },
             replyInfo: replyInfo
         )
         await refreshWindow()
 
-        for (index, image) in images.enumerated() {
-            guard bindingTokens.indices.contains(index) else { continue }
-            let attrs = ZynaMessageAttributes(
-                mediaGroup: MediaGroupInfo(
-                    id: mediaGroupId,
-                    index: index,
-                    total: images.count,
-                    captionMode: .replicated,
-                    captionPlacement: captionPlacement,
-                    layoutOverride: layoutOverride
-                )
+        guard directTransactionIds != nil else {
+            await failOutgoingEnvelopeItems(
+                envelopeId: mediaGroupId,
+                itemIndices: images.indices
             )
+            return
+        }
 
-            let receipt = await timelineService.sendImage(
-                image: image,
-                caption: normalizedCaption,
-                zynaAttributes: attrs,
-                replyEventId: replyEventId,
-                bindingToken: bindingTokens[index]
-            )
-            await completeOutgoingDispatch(
+        var didPrepareAll = true
+        for (index, image) in images.enumerated() {
+            let didPrepare = PendingDirectImageService.shared.prepareImage(
                 envelopeId: mediaGroupId,
                 itemIndex: index,
-                receipt: receipt
+                roomId: roomId,
+                image: image
+            )
+            didPrepareAll = didPrepareAll && didPrepare
+        }
+
+        if didPrepareAll {
+            OutgoingImageOutboxService.shared.kick(
+                reason: "new-image-batch",
+                envelopeId: mediaGroupId
+            )
+        } else {
+            await failOutgoingEnvelopeItems(
+                envelopeId: mediaGroupId,
+                itemIndices: images.indices
             )
         }
     }
 
     func toggleReaction(_ key: String, for message: ChatMessage) {
-        guard let itemId = message.itemIdentifier else { return }
-        Task {
-            await timelineService.toggleReaction(key, to: itemId)
+        guard guardCanCreateOutgoingEnvelope() else { return }
+        if let targetEventId = message.eventId,
+           !targetEventId.isEmpty {
+            let hasOwnReaction = message.reactions.contains {
+                $0.key == key && $0.isOwn
+            }
+            let didPrepare = hasOwnReaction
+                ? pendingReactions.prepareDirectRawRemoval(
+                    roomId: roomId,
+                    targetEventId: targetEventId,
+                    key: key
+                )
+                : pendingReactions.prepareDirectRawAdd(
+                    roomId: roomId,
+                    targetEventId: targetEventId,
+                    key: key
+                )
+            if didPrepare {
+                Task { [weak self] in
+                    await self?.refreshWindow()
+                }
+                OutgoingReactionOutboxService.shared.kick(reason: "new-reaction")
+                return
+            }
         }
     }
 
@@ -2979,6 +3509,23 @@ final class ChatViewModel {
         }
     }
 
+    func clearSendFailureNotice(id: UUID) {
+        guard sendFailureNotice?.id == id else { return }
+        sendFailureNotice = nil
+    }
+
+    @MainActor
+    func makeRoomSendSecurityViewModel(
+        context: OutgoingSendFailureContext
+    ) -> RoomSendSecurityViewModel? {
+        guard let room else { return nil }
+        return RoomSendSecurityViewModel(room: room, context: context)
+    }
+
+    func handleBlockedComposerInteraction() {
+        guard guardCanCreateOutgoingEnvelope() == false else { return }
+    }
+
     func retryOutgoingEnvelope(id envelopeId: String) {
         Task { [weak self] in
             await self?.retryOutgoingEnvelopeNow(id: envelopeId)
@@ -2987,10 +3534,11 @@ final class ChatViewModel {
 
     private func retryOutgoingEnvelopeNow(id envelopeId: String) async {
         guard let envelope = outgoingEnvelopes.envelope(id: envelopeId, roomId: roomId),
-              envelope.isStaleSession(currentSessionId: MatrixClientService.shared.currentLocalSessionId)
+              envelope.isRetryableAfterSessionChange
         else {
             return
         }
+        guard guardCanCreateOutgoingEnvelope() else { return }
 
         switch envelope.payload {
         case .text(let payload):
@@ -3006,38 +3554,32 @@ final class ChatViewModel {
         _ envelope: OutgoingEnvelopeSnapshot,
         body: String
     ) async {
+        guard let timelineService else { return }
         let retryEnvelopeId = UUID().uuidString
-        let bindingToken = outgoingEnvelopes.createOutgoingText(
+        let transactionId = timelineService.prepareDirectRawTextTransactionId(
+            replyEventId: envelope.replyInfo?.eventId,
+            existingTransactionId: envelope.items.first?.transactionId
+        )
+        outgoingEnvelopes.createOutgoingText(
             roomId: roomId,
             envelopeId: retryEnvelopeId,
             body: body,
             replyInfo: envelope.replyInfo,
-            zynaAttributes: envelope.zynaAttributes
+            zynaAttributes: envelope.zynaAttributes,
+            transactionId: transactionId
         )
         outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
         await refreshWindow()
 
-        let receipt: OutgoingDispatchReceipt
-        if let replyEventId = envelope.replyInfo?.eventId {
-            receipt = await timelineService.sendReply(
-                body,
-                to: replyEventId,
-                bindingToken: bindingToken
-            )
-        } else if envelope.zynaAttributes.isEmpty {
-            receipt = await timelineService.sendMessage(
-                body,
-                bindingToken: bindingToken
-            )
-        } else {
-            receipt = await timelineService.sendMessage(
-                body,
-                zynaAttributes: envelope.zynaAttributes,
-                bindingToken: bindingToken
-            )
+        guard transactionId != nil else {
+            await failOutgoingEnvelope(envelopeId: retryEnvelopeId)
+            return
         }
 
-        await completeOutgoingDispatch(envelopeId: retryEnvelopeId, receipt: receipt)
+        OutgoingTextOutboxService.shared.kick(
+            reason: "manual-retry",
+            envelopeId: retryEnvelopeId
+        )
     }
 
     private func retryVoiceEnvelope(
@@ -3054,29 +3596,39 @@ final class ChatViewModel {
             return
         }
 
-        let bindingToken = outgoingEnvelopes.createOutgoingVoice(
+        let transactionId = DirectRawMediaSender.prepareVoiceTransactionId()
+        outgoingEnvelopes.createOutgoingVoice(
             roomId: roomId,
             envelopeId: retryEnvelopeId,
             duration: payload.duration,
             waveform: payload.waveform,
             localFileName: storedVoice.fileName,
             replyInfo: envelope.replyInfo,
-            zynaAttributes: envelope.zynaAttributes
+            zynaAttributes: envelope.zynaAttributes,
+            transactionId: transactionId
         )
         outgoingEnvelopes.deleteEnvelopes(ids: [envelope.id])
         await refreshWindow()
 
-        let waveform = payload.waveform.map { sample in
-            Float(sample) / 1024
+        guard transactionId != nil else {
+            await failOutgoingEnvelope(envelopeId: retryEnvelopeId)
+            return
         }
-        let receipt = await timelineService.sendVoiceMessage(
-            url: storedVoice.url,
-            duration: payload.duration,
-            waveform: waveform,
-            zynaAttributes: envelope.zynaAttributes,
-            bindingToken: bindingToken
+
+        let didPrepare = PendingDirectVoiceService.shared.prepareVoice(
+            envelopeId: retryEnvelopeId,
+            itemIndex: 0,
+            roomId: roomId,
+            mimetype: "audio/mp4"
         )
-        await completeOutgoingDispatch(envelopeId: retryEnvelopeId, receipt: receipt)
+        if didPrepare {
+            OutgoingVoiceOutboxService.shared.kick(
+                reason: "retry-voice",
+                envelopeId: retryEnvelopeId
+            )
+        } else {
+            await failOutgoingEnvelope(envelopeId: retryEnvelopeId)
+        }
     }
 
     func reactionSummaryEntries(for message: ChatMessage) async -> [ReactionSummaryEntry] {
@@ -3102,9 +3654,11 @@ final class ChatViewModel {
         var displayNames: [String: String] = [:]
         displayNames.reserveCapacity(uniqueIds.count)
 
-        for userId in uniqueIds {
-            let member = try? await room.member(userId: userId)
-            displayNames[userId] = member?.displayName ?? userId
+        if let room {
+            for userId in uniqueIds {
+                let member = try? await room.member(userId: userId)
+                displayNames[userId] = member?.displayName ?? userId
+            }
         }
 
         return flattened.map {
@@ -3139,6 +3693,7 @@ final class ChatViewModel {
             )
         }
         guard !intents.isEmpty else { return }
+        guard guardCanCreateOutgoingEnvelope() else { return }
         pendingRedactions.register(intents)
         pendingRedactionIds.formUnion(intents.map(\.messageId))
         pendingRedactionKeys.formUnion(
@@ -3149,6 +3704,8 @@ final class ChatViewModel {
                 ).key
             }
         )
+        schedulePendingRedactionPlaceholderRefresh()
+        OutgoingRedactionOutboxService.shared.kick(reason: "new-redaction")
         Task { [weak self] in
             guard let self else { return }
             await withTaskGroup(of: Void.self) { group in
@@ -3157,8 +3714,7 @@ final class ChatViewModel {
                         guard let self else { return }
                         do {
                             try await self.pendingRedactions.attempt(
-                                intent,
-                                timelineService: self.timelineService
+                                intent
                             )
                         } catch {
                             await MainActor.run {
@@ -3177,6 +3733,7 @@ final class ChatViewModel {
     }
 
     private func redactItemIdentifier(_ itemId: ChatItemIdentifier, messageId: String) {
+        guard guardCanCreateOutgoingEnvelope() else { return }
         let intent = PendingRedactionIntent(
             messageId: messageId,
             roomId: roomId,
@@ -3187,11 +3744,12 @@ final class ChatViewModel {
         pendingRedactionKeys.insert(
             MessageIdentity.from(messageId: messageId, itemIdentifier: itemId).key
         )
+        schedulePendingRedactionPlaceholderRefresh()
+        OutgoingRedactionOutboxService.shared.kick(reason: "new-redaction")
         Task {
             do {
                 try await pendingRedactions.attempt(
-                    intent,
-                    timelineService: timelineService
+                    intent
                 )
             } catch {
                 await MainActor.run {
@@ -3231,19 +3789,25 @@ final class ChatViewModel {
                 .flatMap(\.timelineIdentityKeys)
         )
         visibleRedactedKeys.subtract(keysToHide)
-        let displayStored = storedMessages.compactMap { msg -> StoredMessage? in
-            if Self.hasAnyIdentityKey(hiddenMessageKeys, for: msg) { return nil }
-            if let pending = Self.pendingPartialRedaction(
+        let now = Date().timeIntervalSince1970
+        let pendingRedactionRecords = pendingRedactions.pendingRecords(roomId: roomId)
+        let pendingRedactionLookup = Self.pendingRedactionDisplayLookup(
+            for: pendingRedactionRecords
+        )
+        schedulePendingRedactionPlaceholderRefresh(
+            records: pendingRedactionRecords,
+            now: now
+        )
+        let pendingReactionRemovalsByEventId = pendingReactions
+            .pendingRemovalKeysByEventId(roomId: roomId)
+        let rawMessages = storedMessages.compactMap { msg -> ChatMessage? in
+            displayChatMessage(
                 for: msg,
-                in: pendingPartialRedactions
-            ) {
-                return pending
-            }
-            if Self.hasAnyIdentityKey(pendingRedactionKeys, for: msg) { return nil }
-            if msg.contentType == "redacted" {
-                return msg.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) ? nil : msg
-            }
-            return msg
+                pendingRedactionLookup: pendingRedactionLookup,
+                pendingReactionRemovalsByEventId: pendingReactionRemovalsByEventId,
+                now: now,
+                visibleRedactedKeys: visibleRedactedKeys
+            )
         }
         let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: storedMessages)
         logMediaGroup(
@@ -3251,7 +3815,6 @@ final class ChatViewModel {
         )
         let olderBoundary = window.peekOlderNeighbor()
         let newerBoundary = window.peekNewerNeighbor()
-        let rawMessages = displayStored.compactMap { $0.toChatMessage() }
         let newMessages = buildRenderableMessages(
             from: rawMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
@@ -3320,21 +3883,25 @@ final class ChatViewModel {
 
     func cleanup() {
         historySyncTask?.cancel()
+        pendingRedactionPlaceholderWork?.cancel()
         readReceiptWork?.cancel()
         pendingReadReceiptSend = nil
         if !mode.isPreview {
             PresenceTracker.shared.unregister(for: "chat")
         }
-        timelineService.onDiffs = nil
-        timelineService.onOwnFullyReadMarker = nil
-        timelineService.onSendQueueUpdate = nil
+        roomResolutionTask?.cancel()
+        roomResolutionTask = nil
+        timelineService?.onDiffs = nil
+        timelineService?.onReadCursor = nil
+        timelineService?.onOwnFullyReadMarker = nil
         diffBatcher.onFlush = nil
-        timelineService.stopListening()
+        timelineService?.stopListening()
     }
 
     // MARK: - Background History Sync
 
     private func syncFullHistory() async {
+        guard let timelineService else { return }
         var stagnantBatchCount = 0
         while !Task.isCancelled {
             let countBefore = storedMessageCount()
@@ -3781,6 +4348,182 @@ final class ChatViewModel {
 
     func timelineIdentityKeys(for messageIds: Set<String>) -> Set<String> {
         Self.identityKeys(for: messageIds, in: window.currentStoredMessages())
+    }
+
+    private func displayChatMessage(
+        for message: StoredMessage,
+        pendingRedactionLookup: PendingRedactionDisplayLookup,
+        pendingReactionRemovalsByEventId: [String: Set<String>],
+        now: TimeInterval,
+        visibleRedactedKeys: Set<String>
+    ) -> ChatMessage? {
+        if Self.hasAnyIdentityKey(hiddenMessageKeys, for: message) { return nil }
+        if let pendingPlaceholder = pendingRedactionPlaceholder(
+            for: message,
+            lookup: pendingRedactionLookup,
+            now: now
+        ) {
+            return pendingPlaceholder
+        }
+        if let pending = Self.pendingPartialRedaction(
+            for: message,
+            in: pendingPartialRedactions
+        ) {
+            return pending.toChatMessage().map {
+                Self.markPendingReactionRemovals(
+                    in: $0,
+                    removalsByEventId: pendingReactionRemovalsByEventId
+                )
+            }
+        }
+        if Self.hasAnyIdentityKey(pendingRedactionKeys, for: message) { return nil }
+        if message.contentType == "redacted",
+           message.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) {
+            return nil
+        }
+        return message.toChatMessage().map {
+            Self.markPendingReactionRemovals(
+                in: $0,
+                removalsByEventId: pendingReactionRemovalsByEventId
+            )
+        }
+    }
+
+    private static func markPendingReactionRemovals(
+        in message: ChatMessage,
+        removalsByEventId: [String: Set<String>]
+    ) -> ChatMessage {
+        guard let eventId = message.eventId,
+              let keys = removalsByEventId[eventId],
+              !keys.isEmpty else {
+            return message
+        }
+
+        var didChange = false
+        let reactions = message.reactions.map { reaction in
+            guard reaction.isOwn,
+                  keys.contains(reaction.key),
+                  !reaction.isPendingRemoval else {
+                return reaction
+            }
+            didChange = true
+            return MessageReaction(
+                key: reaction.key,
+                senders: reaction.senders,
+                isOwn: reaction.isOwn,
+                isPendingRemoval: true,
+                legacyCount: reaction.legacyCount
+            )
+        }
+
+        return didChange ? message.applyingReactions(reactions) : message
+    }
+
+    private func pendingRedactionPlaceholder(
+        for message: StoredMessage,
+        lookup: PendingRedactionDisplayLookup,
+        now: TimeInterval
+    ) -> ChatMessage? {
+        guard let record = Self.pendingRedactionRecord(for: message, in: lookup),
+              now - record.createdAt >= Self.pendingRedactionPlaceholderDelay
+        else {
+            return nil
+        }
+
+        return ChatMessage(
+            id: "pending-redaction:\(record.messageId)",
+            eventId: nil,
+            transactionId: nil,
+            itemIdentifier: nil,
+            senderId: message.senderId,
+            senderDisplayName: nil,
+            senderAvatarUrl: nil,
+            isOutgoing: false,
+            timestamp: Date(timeIntervalSince1970: message.timestamp),
+            content: .systemEvent(
+                text: String(localized: "Deleting message..."),
+                kind: .roomState
+            ),
+            reactions: [],
+            replyInfo: nil,
+            isEditable: false,
+            isEdited: false,
+            isEditPending: false,
+            isEditFailed: false,
+            latestEditEventId: nil,
+            zynaAttributes: ZynaMessageAttributes(),
+            sendStatus: "sent"
+        )
+    }
+
+    private static func pendingRedactionRecord(
+        for message: StoredMessage,
+        in lookup: PendingRedactionDisplayLookup
+    ) -> PendingRedactionRecord? {
+        if let record = lookup.byMessageId[message.id] {
+            return record
+        }
+
+        for identityKey in message.timelineIdentityKeys {
+            if let record = lookup.byIdentityKey[identityKey] {
+                return record
+            }
+        }
+        return nil
+    }
+
+    private static func pendingRedactionDisplayLookup(
+        for records: [PendingRedactionRecord]
+    ) -> PendingRedactionDisplayLookup {
+        var byMessageId: [String: PendingRedactionRecord] = [:]
+        var byIdentityKey: [String: PendingRedactionRecord] = [:]
+
+        for record in records {
+            byMessageId[record.messageId] = record
+            byIdentityKey[MessageIdentity.local(record.messageId).key] = record
+            if let itemIdentifier = record.itemIdentifier {
+                byIdentityKey[
+                    MessageIdentity.from(
+                        messageId: record.messageId,
+                        itemIdentifier: itemIdentifier
+                    ).key
+                ] = record
+            }
+        }
+
+        return PendingRedactionDisplayLookup(
+            byMessageId: byMessageId,
+            byIdentityKey: byIdentityKey
+        )
+    }
+
+    private func schedulePendingRedactionPlaceholderRefresh(
+        records: [PendingRedactionRecord]? = nil,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) {
+        pendingRedactionPlaceholderWork?.cancel()
+
+        let records = records ?? pendingRedactions.pendingRecords(roomId: roomId)
+        let nextDelay = records
+            .map { $0.createdAt + Self.pendingRedactionPlaceholderDelay - now }
+            .filter { $0 > 0 }
+            .min()
+
+        guard let nextDelay else {
+            pendingRedactionPlaceholderWork = nil
+            return
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            Task { [weak self] in
+                await self?.refreshWindow()
+            }
+        }
+        pendingRedactionPlaceholderWork = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0.05, nextDelay),
+            execute: work
+        )
     }
 
     private static func hasAnyIdentityKey(

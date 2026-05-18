@@ -41,15 +41,19 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
     var onBack: (() -> Void)?
     var onThemeTapped: (() -> Void)?
     var onNameColorTapped: (() -> Void)?
+    var onDevicesTapped: (() -> Void)?
 
     private enum Section: Int, CaseIterable {
         case appearance
+        case security
         case diagnostics
 
         var title: String {
             switch self {
             case .appearance:
                 return String(localized: "Appearance")
+            case .security:
+                return String(localized: "Security")
             case .diagnostics:
                 return String(localized: "Diagnostics")
             }
@@ -59,8 +63,10 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
             switch self {
             case .appearance:
                 return [.chatTheme, .nameColor]
+            case .security:
+                return [.devices]
             case .diagnostics:
-                return [.repairLocalMessageCache]
+                return [.repairLocalMessageCache, .simulateSoftLogout]
             }
         }
     }
@@ -68,7 +74,20 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
     private enum Row {
         case chatTheme
         case nameColor
+        case devices
         case repairLocalMessageCache
+        case simulateSoftLogout
+
+        var usesSubtitleCell: Bool {
+            switch self {
+            case .repairLocalMessageCache:
+                return true
+            case .simulateSoftLogout:
+                return true
+            default:
+                return false
+            }
+        }
     }
 
     private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
@@ -202,10 +221,10 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let section = Section(rawValue: indexPath.section) ?? .appearance
         let row = section.rows[indexPath.row]
-        let identifier = row == .repairLocalMessageCache ? "subtitleCell" : "valueCell"
+        let identifier = row.usesSubtitleCell ? "subtitleCell" : "valueCell"
         let cell = tableView.dequeueReusableCell(withIdentifier: identifier)
             ?? UITableViewCell(
-                style: row == .repairLocalMessageCache ? .subtitle : .value1,
+                style: row.usesSubtitleCell ? .subtitle : .value1,
                 reuseIdentifier: identifier
             )
         switch row {
@@ -217,9 +236,17 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             cell.textLabel?.text = String(localized: "Name Color")
             cell.detailTextLabel?.text = nameColorSummary
             cell.accessoryType = .disclosureIndicator
+        case .devices:
+            cell.textLabel?.text = String(localized: "Devices")
+            cell.detailTextLabel?.text = String(localized: "Manage sessions")
+            cell.accessoryType = .disclosureIndicator
         case .repairLocalMessageCache:
             cell.textLabel?.text = String(localized: "Repair Local Message Cache")
             cell.detailTextLabel?.text = String(localized: "Fix duplicate or stuck local timeline rows")
+            cell.accessoryType = .none
+        case .simulateSoftLogout:
+            cell.textLabel?.text = String(localized: "Simulate Soft Logout")
+            cell.detailTextLabel?.text = String(localized: "Preserve keys and show re-login")
             cell.accessoryType = .none
         }
         cell.selectionStyle = .default
@@ -236,8 +263,12 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             onThemeTapped?()
         case .nameColor:
             onNameColorTapped?()
+        case .devices:
+            onDevicesTapped?()
         case .repairLocalMessageCache:
             confirmRepairLocalMessageCache()
+        case .simulateSoftLogout:
+            confirmSimulateSoftLogout()
         }
     }
 
@@ -317,6 +348,37 @@ private extension SettingsViewController {
     func presentRepairError(_ error: Error) {
         let alert = UIAlertController(
             title: String(localized: "Repair Failed"),
+            message: String(describing: error),
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+        present(alert, animated: true)
+    }
+
+    func confirmSimulateSoftLogout() {
+        let alert = UIAlertController(
+            title: String(localized: "Simulate Soft Logout"),
+            message: String(localized: "This stops sync and shows the soft logout re-login screen without clearing encrypted message keys."),
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        alert.addAction(UIAlertAction(title: String(localized: "Simulate"), style: .default) { [weak self] _ in
+            Task { [weak self] in
+                do {
+                    try await MatrixClientService.shared.simulateSoftLogoutForDiagnostics()
+                } catch {
+                    await MainActor.run {
+                        self?.presentSoftLogoutSimulationError(error)
+                    }
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+
+    func presentSoftLogoutSimulationError(_ error: Error) {
+        let alert = UIAlertController(
+            title: String(localized: "Could Not Simulate Soft Logout"),
             message: String(describing: error),
             preferredStyle: .alert
         )

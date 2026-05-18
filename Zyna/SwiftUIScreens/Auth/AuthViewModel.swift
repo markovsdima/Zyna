@@ -16,11 +16,13 @@ final class AuthViewModel: ObservableObject {
     @Published var isSigningIn = false
     @Published var errorMessage: String?
     @Published var serverSupportsPassword = true
-    @Published var serverSupportsOIDC = false
+    @Published var serverSupportsOAuth = false
 
     private let matrixService = MatrixClientService.shared
-    private var oidcClient: Client?
-    private var oidcAuthData: OAuthAuthorizationData?
+    private var oauthClient: Client?
+    private var oauthAuthData: OAuthAuthorizationData?
+    private var oauthWebSession: ASWebAuthenticationSession?
+    private var oauthPresentationContext: OAuthPresentationContext?
 
     // MARK: - Password Login
 
@@ -58,7 +60,7 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Registration (OIDC)
+    // MARK: - Registration (OAuth)
 
     func register(homeserver: String) {
         guard !isLoading else { return }
@@ -71,7 +73,7 @@ final class AuthViewModel: ObservableObject {
                 let client = try await matrixService.buildUnauthenticatedClient(homeserver: homeserver)
                 let details = await client.homeserverLoginDetails()
 
-                guard details.supportsOidcLogin() else {
+                guard details.supportsOauthLogin() else {
                     await MainActor.run {
                         isLoading = false
                         errorMessage = "This server does not support registration from the app"
@@ -79,13 +81,13 @@ final class AuthViewModel: ObservableObject {
                     return
                 }
 
-                let (loginURL, authData) = try await matrixService.startOIDCFlow(client: client)
-                self.oidcClient = client
-                self.oidcAuthData = authData
+                let (loginURL, authData) = try await matrixService.startOAuthFlow(client: client)
+                self.oauthClient = client
+                self.oauthAuthData = authData
 
                 await MainActor.run {
                     isLoading = false
-                    presentOIDCSession(url: loginURL)
+                    presentOAuthSession(url: loginURL)
                 }
             } catch {
                 await MainActor.run {
@@ -96,9 +98,9 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    // MARK: - OIDC Login (for servers that only support OIDC)
+    // MARK: - OAuth Login
 
-    func loginWithOIDC(homeserver: String) {
+    func loginWithOAuth(homeserver: String) {
         guard !isLoading else { return }
 
         isLoading = true
@@ -107,13 +109,13 @@ final class AuthViewModel: ObservableObject {
         Task {
             do {
                 let client = try await matrixService.buildUnauthenticatedClient(homeserver: homeserver)
-                let (loginURL, authData) = try await matrixService.startOIDCFlow(client: client)
-                self.oidcClient = client
-                self.oidcAuthData = authData
+                let (loginURL, authData) = try await matrixService.startOAuthFlow(client: client)
+                self.oauthClient = client
+                self.oauthAuthData = authData
 
                 await MainActor.run {
                     isLoading = false
-                    presentOIDCSession(url: loginURL)
+                    presentOAuthSession(url: loginURL)
                 }
             } catch {
                 await MainActor.run {
@@ -137,20 +139,20 @@ final class AuthViewModel: ObservableObject {
 
                 await MainActor.run {
                     serverSupportsPassword = details.supportsPasswordLogin()
-                    serverSupportsOIDC = details.supportsOidcLogin()
+                    serverSupportsOAuth = details.supportsOauthLogin()
                 }
             } catch {
                 await MainActor.run {
                     serverSupportsPassword = true
-                    serverSupportsOIDC = false
+                    serverSupportsOAuth = false
                 }
             }
         }
     }
 
-    // MARK: - OIDC Browser Session
+    // MARK: - OAuth Browser Session
 
-    private func presentOIDCSession(url: URL) {
+    private func presentOAuthSession(url: URL) {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
               let window = scene.windows.first else { return }
 
@@ -162,7 +164,8 @@ final class AuthViewModel: ObservableObject {
 
             if let error {
                 DispatchQueue.main.async {
-                    // User cancelled — not an error
+                    self.abortOAuthSessionIfNeeded()
+                    // User cancelled -- not an error
                     if (error as NSError).code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
                         return
                     }
@@ -176,18 +179,18 @@ final class AuthViewModel: ObservableObject {
             self.isLoading = true
             Task {
                 do {
-                    guard let client = self.oidcClient else { return }
-                    try await self.matrixService.completeOIDCFlow(
+                    guard let client = self.oauthClient else { return }
+                    try await self.matrixService.completeOAuthFlow(
                         client: client,
                         callbackURL: callbackURL.absoluteString
                     )
                     await MainActor.run {
                         self.isLoading = false
-                        self.oidcClient = nil
-                        self.oidcAuthData = nil
+                        self.clearOAuthSessionState()
                         self.onAuthenticated?()
                     }
                 } catch {
+                    self.abortOAuthSessionIfNeeded()
                     await MainActor.run {
                         self.isLoading = false
                         self.errorMessage = error.localizedDescription
@@ -197,16 +200,43 @@ final class AuthViewModel: ObservableObject {
         }
 
         // Use the window as presentation context
-        let contextProvider = OIDCPresentationContext(window: window)
+        let contextProvider = OAuthPresentationContext(window: window)
         session.presentationContextProvider = contextProvider
         session.prefersEphemeralWebBrowserSession = false
-        session.start()
+        oauthWebSession = session
+        oauthPresentationContext = contextProvider
+
+        if !session.start() {
+            abortOAuthSessionIfNeeded()
+            errorMessage = "Unable to start browser authentication"
+        }
+    }
+
+    private func abortOAuthSessionIfNeeded() {
+        guard let client = oauthClient,
+              let authData = oauthAuthData else {
+            clearOAuthSessionState()
+            return
+        }
+
+        clearOAuthSessionState()
+
+        Task {
+            await client.abortOauthAuth(authorizationData: authData)
+        }
+    }
+
+    private func clearOAuthSessionState() {
+        oauthClient = nil
+        oauthAuthData = nil
+        oauthWebSession = nil
+        oauthPresentationContext = nil
     }
 }
 
-// MARK: - OIDC Presentation Context
+// MARK: - OAuth Presentation Context
 
-private final class OIDCPresentationContext: NSObject, ASWebAuthenticationPresentationContextProviding {
+private final class OAuthPresentationContext: NSObject, ASWebAuthenticationPresentationContextProviding {
     private let window: UIWindow
 
     init(window: UIWindow) {

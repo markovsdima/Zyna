@@ -39,6 +39,10 @@ Matrix does not give us a real album or grouped-media API here, so
 every photo is still sent as its own normal event. The grouping is a
 Zyna presentation layer on top of that.
 
+Matrix gallery events are being explored separately through MSC4274, but they
+are not the production path Zyna uses today. See
+[MEDIA_GALLERY_MSC4274.md](./MEDIA_GALLERY_MSC4274.md).
+
 The important decision is this:
 
 - the visible caption is stored as a normal Matrix caption on every
@@ -89,21 +93,21 @@ because grouping metadata is missing or partially wrong.
 More detail about receiver-side grouped media presentation lives in
 [INCOMING_ASSEMBLY.md](./INCOMING_ASSEMBLY.md).
 
-## Local Echo And Sync
+## Outgoing And Sync
 
 Grouped photos are slightly harder than normal messages because the
-Matrix SDK gives us local echo and synced events as separate stages.
+user sees one visual bubble while Matrix still stores and syncs separate
+image events.
 
 To keep the sender UI stable, Zyna now uses a dedicated outgoing layer
-instead of rendering photo groups directly from transient Matrix local
-echo rows.
+instead of rendering photo groups from transient SDK local echo rows.
 
 In practice this means:
 
 - the sender bubble is rendered from Zyna's persistent local outgoing
   state
-- Matrix send queue is still used for transport state such as
-  `transactionId`, upload progress, retries, and final `eventId`
+- the direct image outbox owns transaction ids, upload/send retry, and
+  returned event-id binding
 - the outgoing bubble retires only after the final timeline messages
   are matched and hydrated
 
