@@ -1986,6 +1986,16 @@
         }
       }
     },
+    "Loading permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузка прав"
+          }
+        }
+      }
+    },
     "Loading Devices" : {
       "localizations" : {
         "ru" : {
@@ -2250,6 +2260,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не зашифровано"
+          }
+        }
+      }
+    },
+    "Not enough permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недостаточно прав"
           }
         }
       }
@@ -2896,6 +2916,366 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Адрес комнаты"
+          }
+        }
+      }
+    },
+    "A room address is required before the room can be shown in the public room directory." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чтобы показывать комнату в публичном каталоге, нужен адрес комнаты."
+          }
+        }
+      }
+    },
+    "Add a room address before showing the room in the directory." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавьте адрес комнаты перед публикацией в каталоге."
+          }
+        }
+      }
+    },
+    "Anyone" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Кто угодно"
+          }
+        }
+      }
+    },
+    "Anyone can join this room without an invite." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Любой сможет войти без приглашения."
+          }
+        }
+      }
+    },
+    "Could Not Save Room Settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить настройки комнаты"
+          }
+        }
+      }
+    },
+    "Could not publish this room address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось опубликовать этот адрес комнаты."
+          }
+        }
+      }
+    },
+    "Directory visibility controls whether this room can be found in public room search." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видимость в каталоге определяет, будет ли комната находиться в публичном поиске."
+          }
+        }
+      }
+    },
+    "Enable" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включить"
+          }
+        }
+      }
+    },
+    "Enable End-to-End Encryption?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включить сквозное шифрование?"
+          }
+        }
+      }
+    },
+    "Encryption" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Шифрование"
+          }
+        }
+      }
+    },
+    "End-to-End Encryption" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сквозное шифрование"
+          }
+        }
+      }
+    },
+    "End-to-end encryption cannot be disabled after it is enabled." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "После включения сквозное шифрование нельзя отключить."
+          }
+        }
+      }
+    },
+    "From invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "С приглашения"
+          }
+        }
+      }
+    },
+    "From joining" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Со входа"
+          }
+        }
+      }
+    },
+    "History can be read without joining the room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Историю можно читать без входа в комнату."
+          }
+        }
+      }
+    },
+    "Invite Only" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "По приглашению"
+          }
+        }
+      }
+    },
+    "Members can see history from the moment they joined." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники видят историю с момента входа."
+          }
+        }
+      }
+    },
+    "Members can see history from the moment they were invited." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники видят историю с момента приглашения."
+          }
+        }
+      }
+    },
+    "New members can see messages sent before they joined." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новые участники видят сообщения, отправленные до их входа."
+          }
+        }
+      }
+    },
+    "New members can see previous history" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новые участники видят прошлую историю"
+          }
+        }
+      }
+    },
+    "Not Set" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не задан"
+          }
+        }
+      }
+    },
+    "Only invited people can join this room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Войти смогут только приглашённые участники."
+          }
+        }
+      }
+    },
+    "Opens room security and privacy settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает настройки безопасности и конфиденциальности комнаты"
+          }
+        }
+      }
+    },
+    "Room Access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступ к комнате"
+          }
+        }
+      }
+    },
+    "Room Directory" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Каталог комнат"
+          }
+        }
+      }
+    },
+    "Room History" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История комнаты"
+          }
+        }
+      }
+    },
+    "Room address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес комнаты"
+          }
+        }
+      }
+    },
+    "Room address is required." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Укажите адрес комнаты."
+          }
+        }
+      }
+    },
+    "Room address required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужен адрес комнаты"
+          }
+        }
+      }
+    },
+    "Saving" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранение"
+          }
+        }
+      }
+    },
+    "Security and Privacy" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Безопасность и конфиденциальность"
+          }
+        }
+      }
+    },
+    "This cannot be turned off later for this room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Потом его нельзя будет отключить для этой комнаты."
+          }
+        }
+      }
+    },
+    "This room currently uses an access rule Zyna cannot edit directly. Choosing an option will replace it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сейчас в комнате используется правило доступа, которое Zyna не редактирует напрямую. Выбор варианта заменит его."
+          }
+        }
+      }
+    },
+    "Use only the local part before the server name." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Укажите только часть адреса до имени сервера."
+          }
+        }
+      }
+    },
+    "Visible in Room Directory" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видна в каталоге комнат"
+          }
+        }
+      }
+    },
+    "World-readable history is available only for public unencrypted rooms." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История для всех доступна только в публичных незашифрованных комнатах."
           }
         }
       }

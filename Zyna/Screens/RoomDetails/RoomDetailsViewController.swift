@@ -19,6 +19,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     var onSearchTapped: (() -> Void)?
     var onInviteMembersTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
+    var onSecurityPrivacyTapped: (() -> Void)?
 
     private let room: Room
     private let memberCount: Int?
@@ -70,6 +71,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
         node.onMembersTapped = { [weak self] in
             self?.onMembersTapped?()
+        }
+
+        node.onSecurityPrivacyTapped = { [weak self] in
+            self?.onSecurityPrivacyTapped?()
         }
 
         node.setEditing(false)

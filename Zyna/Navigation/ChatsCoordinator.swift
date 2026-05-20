@@ -283,6 +283,17 @@ final class ChatsCoordinator {
         vc.onMembersTapped = { [weak self] in
             self?.showMembersList(room: room)
         }
+        vc.onSecurityPrivacyTapped = { [weak self] in
+            self?.showRoomSecurityPrivacy(room: room)
+        }
+        navigationController.push(vc)
+    }
+
+    private func showRoomSecurityPrivacy(room: Room) {
+        let vc = RoomSecurityPrivacyViewController(room: room, audioPlayer: audioPlayer)
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
         navigationController.push(vc)
     }
 

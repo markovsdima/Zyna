@@ -24,6 +24,7 @@ final class RoomDetailsNode: ScreenNode {
     var onSearchTapped: (() -> Void)?
     var onInviteTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
+    var onSecurityPrivacyTapped: (() -> Void)?
 
     /// Set by the VC after the bar is configured. Lets us put the bar
     /// first in the a11y tree — otherwise VO walks subview order and
@@ -57,6 +58,11 @@ final class RoomDetailsNode: ScreenNode {
     private let membersRow = TappableNode()
     private let membersRowText = ASTextNode()
     private let membersRowChevron = ASImageNode()
+    private let securityRowBackground = RoundedBackgroundNode()
+    private let securityRow = TappableNode()
+    private let securityRowIcon = ASImageNode()
+    private let securityRowText = ASTextNode()
+    private let securityRowChevron = ASImageNode()
 
     private let inviteButtonNode = AccessibleButtonNode()
     private let searchButtonNode = AccessibleButtonNode()
@@ -145,6 +151,27 @@ final class RoomDetailsNode: ScreenNode {
         membersRow.accessibilityTraits = .button
         membersRowText.maximumNumberOfLines = 1
         membersRowChevron.style.preferredSize = CGSize(width: 12, height: 12)
+
+        securityRowBackground.fillColor = .secondarySystemBackground
+        securityRowBackground.radius = 12
+        securityRow.backgroundColor = .clear
+        securityRow.onTap = { [weak self] in self?.onSecurityPrivacyTapped?() }
+        securityRow.isAccessibilityElement = true
+        securityRow.accessibilityTraits = .button
+        securityRow.accessibilityLabel = String(localized: "Security and Privacy")
+        securityRow.accessibilityHint = String(localized: "Opens room security and privacy settings")
+        securityRowText.attributedText = NSAttributedString(
+            string: String(localized: "Security and Privacy"),
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 17),
+                .foregroundColor: UIColor.label
+            ]
+        )
+        securityRowText.maximumNumberOfLines = 1
+        securityRowText.truncationMode = .byTruncatingTail
+        securityRowText.style.flexShrink = 1
+        securityRowIcon.style.preferredSize = CGSize(width: 18, height: 18)
+        securityRowChevron.style.preferredSize = CGSize(width: 12, height: 12)
     }
 
     // MARK: - Update
@@ -355,10 +382,31 @@ final class RoomDetailsNode: ScreenNode {
         let membersRowSpec = ASOverlayLayoutSpec(child: membersRowWithBg, overlay: membersRow)
         membersRowSpec.style.alignSelf = .stretch
 
+        let securitySpacer = ASLayoutSpec()
+        securitySpacer.style.flexGrow = 1
+        let securityRowContent = ASStackLayoutSpec(
+            direction: .horizontal,
+            spacing: 10,
+            justifyContent: .start,
+            alignItems: .center,
+            children: [securityRowIcon, securityRowText, securitySpacer, securityRowChevron]
+        )
+        let securityRowPadded = ASInsetLayoutSpec(
+            insets: UIEdgeInsets(top: 14, left: 16, bottom: 14, right: 16),
+            child: securityRowContent
+        )
+        let securityRowWithBg = ASBackgroundLayoutSpec(
+            child: securityRowPadded,
+            background: securityRowBackground
+        )
+        let securityRowSpec = ASOverlayLayoutSpec(child: securityRowWithBg, overlay: securityRow)
+        securityRowSpec.style.alignSelf = .stretch
+
         var buttonsChildren: [ASLayoutElement] = []
         if membersRowText.attributedText != nil {
             buttonsChildren.append(membersRowSpec)
         }
+        buttonsChildren.append(securityRowSpec)
         buttonsChildren.append(contentsOf: [inviteButtonNode, searchButtonNode])
 
         let buttonsStack = ASStackLayoutSpec(
@@ -418,6 +466,16 @@ final class RoomDetailsNode: ScreenNode {
         )
         membersRowChevron.image = AppIcon.chevronForward.rendered(
             size: 12, weight: .semibold, color: .tertiaryLabel
+        )
+        securityRowIcon.image = AppIcon.lockClosed.rendered(
+            size: 16,
+            weight: .medium,
+            color: AppColor.accent
+        )
+        securityRowChevron.image = AppIcon.chevronForward.rendered(
+            size: 12,
+            weight: .semibold,
+            color: .tertiaryLabel
         )
     }
 
