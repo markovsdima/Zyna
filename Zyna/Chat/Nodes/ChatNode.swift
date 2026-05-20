@@ -62,11 +62,19 @@ final class ChatNode: ASDisplayNode {
 
     override func layout() {
         super.layout()
-        tableNode.frame = bounds
-        bubbleGradientHostView.frame = bounds
-        paintSplashHostView.frame = bounds
+        if tableNode.frame != bounds {
+            tableNode.frame = bounds
+        }
+        if bubbleGradientHostView.frame != bounds {
+            bubbleGradientHostView.frame = bounds
+        }
+        if paintSplashHostView.frame != bounds {
+            paintSplashHostView.frame = bounds
+        }
         for source in bubbleGradientSources.values {
-            source.frame = bubbleGradientHostView.bounds
+            if source.frame != bubbleGradientHostView.bounds {
+                source.frame = bubbleGradientHostView.bounds
+            }
         }
     }
 
