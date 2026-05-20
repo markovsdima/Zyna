@@ -2243,6 +2243,10 @@ final class ChatViewModel {
         rowIndexByEventId[eventId]
     }
 
+    func messageWindowPosition(eventId: String) -> MessageWindowPosition {
+        window.position(of: eventId)
+    }
+
     private func messageIndex(eventId: String) -> Int? {
         messageIndexByEventId[eventId]
     }

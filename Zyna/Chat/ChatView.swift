@@ -28,6 +28,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let teleportDistanceScreens: CGFloat = 1.5
     }
 
+    private enum MessageNavigation {
+        static let journeyDistanceScreens: CGFloat = 1.5
+        static let readinessRetryDelay: TimeInterval = 0.05
+        static let maxReadinessRetries = 4
+        static let liveEdgeNudgeDelay: TimeInterval = 0.03
+        static let pinnedAdvanceDelay: TimeInterval = 0.30
+    }
+
     private enum ContentUpdates {
         static let liveEdgeTolerance: CGFloat = 24
     }
@@ -526,8 +534,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let liveEdgeDistance = tableDistanceToLiveEdge()
         let wasPinnedToLiveEdge = liveEdgeDistance <= InputBarInsetCompensation.liveEdgeTolerance
 
-        node.tableNode.contentInset.top = newCoveredHeight
-        tableView.verticalScrollIndicatorInsets.top = newCoveredHeight
+        if node.tableNode.contentInset.top != newCoveredHeight {
+            node.tableNode.contentInset.top = newCoveredHeight
+        }
+        if tableView.verticalScrollIndicatorInsets.top != newCoveredHeight {
+            tableView.verticalScrollIndicatorInsets.top = newCoveredHeight
+        }
 
         // Don't fight UIKit's rubber-band or active user scroll. Snapping the
         // inverted table back to the live edge during an elastic pull is what
@@ -539,6 +551,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         if let previousCoveredHeight {
             let compensationDelta = newCoveredHeight - previousCoveredHeight
+            guard abs(compensationDelta) > 0.5 else {
+                previousInputCoveredHeight = newCoveredHeight
+                return
+            }
             let isInAutomaticZone = liveEdgeDistance
                 <= abs(compensationDelta) + InputBarInsetCompensation.automaticZoneTolerance
             if wasPinnedToLiveEdge {
@@ -562,8 +578,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let pinnedHeight = shouldShowPinnedMessagesBanner()
             ? PinnedMessagesBannerView.height + 16
             : 0
-        node.tableNode.contentInset.bottom = glassNavBar.coveredHeight + pinnedHeight
-        node.tableNode.view.verticalScrollIndicatorInsets.bottom = glassNavBar.coveredHeight + pinnedHeight
+        let bottom = glassNavBar.coveredHeight + pinnedHeight
+        if node.tableNode.contentInset.bottom != bottom {
+            node.tableNode.contentInset.bottom = bottom
+        }
+        if node.tableNode.view.verticalScrollIndicatorInsets.bottom != bottom {
+            node.tableNode.view.verticalScrollIndicatorInsets.bottom = bottom
+        }
     }
 
     private func activeComposerCoveredHeight() -> CGFloat {
@@ -703,11 +724,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         let eventId = eventIds[selectedPinnedMessageIndex]
-        navigateToMessage(eventId: eventId)
+        let didStartNavigation = navigateToMessage(eventId: eventId)
 
-        if eventIds.count > 1 {
-            selectedPinnedMessageIndex = (selectedPinnedMessageIndex + 1) % eventIds.count
-            updatePinnedMessagesBanner(animated: true)
+        if didStartNavigation && eventIds.count > 1 {
+            let nextIndex = (selectedPinnedMessageIndex + 1) % eventIds.count
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + MessageNavigation.pinnedAdvanceDelay
+            ) { [weak self] in
+                guard let self,
+                      self.viewModel.pinnedMessagesState.eventIds == eventIds,
+                      self.isPinnedMessagesBannerExpanded else {
+                    return
+                }
+                self.selectedPinnedMessageIndex = nextIndex
+                self.updatePinnedMessagesBanner(animated: true)
+            }
         } else {
             updatePinnedMessagesAutoCollapseTimer()
         }
@@ -2444,24 +2475,34 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     // MARK: - Smart Navigation (Journey / Teleportation)
 
-    private func navigateToMessage(eventId: String) {
-        // If message is visible on screen — smooth scroll (journey)
+    @discardableResult
+    private func navigateToMessage(eventId: String, attempt: Int = 0) -> Bool {
+        guard !isTeleporting else {
+            return false
+        }
+
         if let idx = viewModel.indexOfMessage(eventId: eventId) {
             let targetIP = IndexPath(row: idx, section: 0)
-            let visibleRect = node.tableNode.view.bounds
-            if let cellNode = node.tableNode.nodeForRow(at: targetIP),
-               visibleRect.intersects(cellNode.view.frame) {
-                print("[nav] journey — already visible at idx=\(idx)")
-                node.tableNode.scrollToRow(at: targetIP, at: .middle, animated: true)
+
+            guard tableCanNavigate(to: targetIP) else {
+                return scheduleMessageNavigationRetryIfNeeded(eventId: eventId, attempt: attempt)
+            }
+
+            if shouldJourneyToMessage(at: targetIP) {
+                scrollJourneyToMessage(at: targetIP, animated: true)
                 highlightMessage(eventId: eventId, delay: 0.3)
-                return
+                return true
             }
         }
+
+        guard viewModel.messageWindowPosition(eventId: eventId) != .missing else {
+            return false
+        }
+
         // Otherwise — teleport (Telegram-style snapshot slide)
         // Inverted table: higher row = older. Jumping to older → content slides down, to newer → up.
-        let currentFirst = node.tableNode.indexPathsForVisibleRows().first?.row ?? 0
         let targetIdx = viewModel.indexOfMessage(eventId: eventId)
-        let direction: TeleportDirection = (targetIdx ?? Int.max) > currentFirst ? .up : .down
+        let direction = teleportDirectionToMessage(eventId: eventId, targetIndex: targetIdx)
 
         teleport(direction: direction) {
             self.viewModel.jumpToMessage(eventId: eventId)
@@ -2471,6 +2512,141 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
             self.highlightMessage(eventId: eventId, delay: 0.1)
         }
+        return true
+    }
+
+    private func tableCanNavigate(to indexPath: IndexPath) -> Bool {
+        let tableView = node.tableNode.view
+        guard tableView.bounds.width > 0,
+              tableView.bounds.height > 0,
+              tableView.contentSize.height > 0,
+              indexPath.section < tableView.numberOfSections,
+              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
+        else {
+            return false
+        }
+        tableView.layoutIfNeeded()
+        return true
+    }
+
+    private func scheduleMessageNavigationRetryIfNeeded(eventId: String, attempt: Int) -> Bool {
+        guard attempt < MessageNavigation.maxReadinessRetries else {
+            return false
+        }
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + MessageNavigation.readinessRetryDelay
+        ) { [weak self] in
+            self?.navigateToMessage(eventId: eventId, attempt: attempt + 1)
+        }
+        return true
+    }
+
+    private func shouldJourneyToMessage(at indexPath: IndexPath) -> Bool {
+        let tableView = node.tableNode.view
+        let targetRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
+        guard targetRect.width > 0,
+              targetRect.height > 0 else {
+            return isMessageIndexNearVisibleRows(indexPath.row)
+        }
+
+        let viewport = unobscuredTableViewportInView()
+            ?? tableView.convert(tableView.bounds, to: view)
+        let verticalDistance: CGFloat
+        if targetRect.maxY < viewport.minY {
+            verticalDistance = viewport.minY - targetRect.maxY
+        } else if targetRect.minY > viewport.maxY {
+            verticalDistance = targetRect.minY - viewport.maxY
+        } else {
+            verticalDistance = 0
+        }
+
+        let threshold = max(viewport.height, tableView.bounds.height)
+            * MessageNavigation.journeyDistanceScreens
+        return verticalDistance <= threshold
+    }
+
+    private func scrollJourneyToMessage(at indexPath: IndexPath, animated: Bool) {
+        let tableView = node.tableNode.view
+        tableView.layoutIfNeeded()
+
+        let targetRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
+        guard targetRect.width > 0,
+              targetRect.height > 0 else {
+            node.tableNode.scrollToRow(at: indexPath, at: .middle, animated: animated)
+            return
+        }
+
+        let viewport = unobscuredTableViewportInView()
+            ?? tableView.convert(tableView.bounds, to: view)
+        let deltaY = targetRect.midY - viewport.midY
+        let offsetBounds = tableOffsetBounds(for: tableView)
+        let beforeOffset = node.tableNode.contentOffset
+        var targetOffset = node.tableNode.contentOffset
+        targetOffset.y = min(
+            max(targetOffset.y - deltaY, offsetBounds.minY),
+            offsetBounds.maxY
+        )
+
+        if abs(targetOffset.y - beforeOffset.y) <= 0.5 {
+            return
+        }
+
+        let isLeavingExactLiveEdge = beforeOffset.y <= offsetBounds.minY + 0.5
+            && targetOffset.y > offsetBounds.minY + 0.5
+        let applyTargetOffset = { [weak self] in
+            guard let self else { return }
+            self.node.tableNode.setContentOffset(targetOffset, animated: animated)
+        }
+        if isLeavingExactLiveEdge {
+            var nudgeOffset = beforeOffset
+            nudgeOffset.y = min(offsetBounds.minY + 1, offsetBounds.maxY)
+            node.tableNode.setContentOffset(nudgeOffset, animated: false)
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + MessageNavigation.liveEdgeNudgeDelay,
+                execute: applyTargetOffset
+            )
+        } else {
+            applyTargetOffset()
+        }
+    }
+
+    private func isMessageIndexNearVisibleRows(_ index: Int) -> Bool {
+        let visibleRows = node.tableNode.indexPathsForVisibleRows().map(\.row)
+        guard let minRow = visibleRows.min(),
+              let maxRow = visibleRows.max() else {
+            return false
+        }
+        if index < minRow {
+            return minRow - index <= visibleRows.count
+        }
+        if index > maxRow {
+            return index - maxRow <= visibleRows.count
+        }
+        return true
+    }
+
+    private func teleportDirectionToMessage(eventId: String, targetIndex: Int?) -> TeleportDirection {
+        switch viewModel.messageWindowPosition(eventId: eventId) {
+        case .newerThanCurrentWindow:
+            return .down
+        case .olderThanCurrentWindow:
+            return .up
+        case .inCurrentWindow:
+            return teleportDirectionWithinCurrentWindow(targetIndex: targetIndex)
+        case .missing:
+            return .up
+        }
+    }
+
+    private func teleportDirectionWithinCurrentWindow(targetIndex: Int?) -> TeleportDirection {
+        guard let targetIndex else { return .up }
+        let visibleRows = node.tableNode.indexPathsForVisibleRows().map(\.row)
+        guard let minRow = visibleRows.min(),
+              let maxRow = visibleRows.max() else {
+            return .up
+        }
+        let visibleMidpoint = (minRow + maxRow) / 2
+        return targetIndex > visibleMidpoint ? .up : .down
     }
 
     private func highlightMessage(eventId: String, delay: TimeInterval) {
@@ -2504,7 +2680,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func teleport(direction: TeleportDirection, swapData: () -> Void, scrollAfter: () -> Void) {
         let tableView = node.tableNode.view
         guard let snapshot = tableView.snapshotView(afterScreenUpdates: false) else {
-            swapData()
+            completeTeleportWithoutAnimation(
+                swapData: swapData,
+                scrollAfter: scrollAfter
+            )
             return
         }
 
@@ -2572,6 +2751,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         // Sustain glass capture for the full spring animation
         GlassService.shared.captureFor(duration: springTiming.settlingDuration)
+    }
+
+    private func completeTeleportWithoutAnimation(
+        swapData: () -> Void,
+        scrollAfter: () -> Void
+    ) {
+        swapData()
+        node.tableNode.reloadData()
+        node.tableNode.view.layoutIfNeeded()
+        scrollAfter()
+        updateDateHeaderOverlay()
+        scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
+        GlassService.shared.setNeedsCapture()
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
