@@ -25,6 +25,7 @@ final class RoomDetailsNode: ScreenNode {
     var onInviteTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
+    var onRolesPermissionsTapped: (() -> Void)?
 
     /// Set by the VC after the bar is configured. Lets us put the bar
     /// first in the a11y tree — otherwise VO walks subview order and
@@ -63,6 +64,11 @@ final class RoomDetailsNode: ScreenNode {
     private let securityRowIcon = ASImageNode()
     private let securityRowText = ASTextNode()
     private let securityRowChevron = ASImageNode()
+    private let rolesPermissionsRowBackground = RoundedBackgroundNode()
+    private let rolesPermissionsRow = TappableNode()
+    private let rolesPermissionsRowIcon = ASImageNode()
+    private let rolesPermissionsRowText = ASTextNode()
+    private let rolesPermissionsRowChevron = ASImageNode()
 
     private let inviteButtonNode = AccessibleButtonNode()
     private let searchButtonNode = AccessibleButtonNode()
@@ -172,6 +178,27 @@ final class RoomDetailsNode: ScreenNode {
         securityRowText.style.flexShrink = 1
         securityRowIcon.style.preferredSize = CGSize(width: 18, height: 18)
         securityRowChevron.style.preferredSize = CGSize(width: 12, height: 12)
+
+        rolesPermissionsRowBackground.fillColor = .secondarySystemBackground
+        rolesPermissionsRowBackground.radius = 12
+        rolesPermissionsRow.backgroundColor = .clear
+        rolesPermissionsRow.onTap = { [weak self] in self?.onRolesPermissionsTapped?() }
+        rolesPermissionsRow.isAccessibilityElement = true
+        rolesPermissionsRow.accessibilityTraits = .button
+        rolesPermissionsRow.accessibilityLabel = String(localized: "Roles and Permissions")
+        rolesPermissionsRow.accessibilityHint = String(localized: "Opens room roles and permissions settings")
+        rolesPermissionsRowText.attributedText = NSAttributedString(
+            string: String(localized: "Roles and Permissions"),
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 17),
+                .foregroundColor: UIColor.label
+            ]
+        )
+        rolesPermissionsRowText.maximumNumberOfLines = 1
+        rolesPermissionsRowText.truncationMode = .byTruncatingTail
+        rolesPermissionsRowText.style.flexShrink = 1
+        rolesPermissionsRowIcon.style.preferredSize = CGSize(width: 18, height: 18)
+        rolesPermissionsRowChevron.style.preferredSize = CGSize(width: 12, height: 12)
     }
 
     // MARK: - Update
@@ -402,11 +429,40 @@ final class RoomDetailsNode: ScreenNode {
         let securityRowSpec = ASOverlayLayoutSpec(child: securityRowWithBg, overlay: securityRow)
         securityRowSpec.style.alignSelf = .stretch
 
+        let rolesPermissionsSpacer = ASLayoutSpec()
+        rolesPermissionsSpacer.style.flexGrow = 1
+        let rolesPermissionsRowContent = ASStackLayoutSpec(
+            direction: .horizontal,
+            spacing: 10,
+            justifyContent: .start,
+            alignItems: .center,
+            children: [
+                rolesPermissionsRowIcon,
+                rolesPermissionsRowText,
+                rolesPermissionsSpacer,
+                rolesPermissionsRowChevron
+            ]
+        )
+        let rolesPermissionsRowPadded = ASInsetLayoutSpec(
+            insets: UIEdgeInsets(top: 14, left: 16, bottom: 14, right: 16),
+            child: rolesPermissionsRowContent
+        )
+        let rolesPermissionsRowWithBg = ASBackgroundLayoutSpec(
+            child: rolesPermissionsRowPadded,
+            background: rolesPermissionsRowBackground
+        )
+        let rolesPermissionsRowSpec = ASOverlayLayoutSpec(
+            child: rolesPermissionsRowWithBg,
+            overlay: rolesPermissionsRow
+        )
+        rolesPermissionsRowSpec.style.alignSelf = .stretch
+
         var buttonsChildren: [ASLayoutElement] = []
         if membersRowText.attributedText != nil {
             buttonsChildren.append(membersRowSpec)
         }
         buttonsChildren.append(securityRowSpec)
+        buttonsChildren.append(rolesPermissionsRowSpec)
         buttonsChildren.append(contentsOf: [inviteButtonNode, searchButtonNode])
 
         let buttonsStack = ASStackLayoutSpec(
@@ -473,6 +529,16 @@ final class RoomDetailsNode: ScreenNode {
             color: AppColor.accent
         )
         securityRowChevron.image = AppIcon.chevronForward.rendered(
+            size: 12,
+            weight: .semibold,
+            color: .tertiaryLabel
+        )
+        rolesPermissionsRowIcon.image = AppIcon.person2.rendered(
+            size: 16,
+            weight: .medium,
+            color: AppColor.accent
+        )
+        rolesPermissionsRowChevron.image = AppIcon.chevronForward.rendered(
             size: 12,
             weight: .semibold,
             color: .tertiaryLabel

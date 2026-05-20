@@ -2910,12 +2910,262 @@
         }
       }
     },
+    "%@ (Current)" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ (сейчас)"
+          }
+        }
+      }
+    },
+    "Administrators" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Администраторы"
+          }
+        }
+      }
+    },
+    "Ban People" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Банить участников"
+          }
+        }
+      }
+    },
+    "Could Not Save Room Permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить разрешения комнаты"
+          }
+        }
+      }
+    },
+    "Delete Messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалять сообщения"
+          }
+        }
+      }
+    },
+    "Everyone" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все"
+          }
+        }
+      }
+    },
+    "Invite People" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приглашать людей"
+          }
+        }
+      }
+    },
+    "Member Moderation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Модерация участников"
+          }
+        }
+      }
+    },
+    "Member roles are changed from each member profile." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Роли участников меняются из профиля конкретного участника."
+          }
+        }
+      }
+    },
+    "Messages and Content" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщения и контент"
+          }
+        }
+      }
+    },
+    "Moderators" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Модераторы"
+          }
+        }
+      }
+    },
+    "Only users who can edit room power levels can change these settings." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эти настройки могут менять только пользователи с правом редактировать power levels комнаты."
+          }
+        }
+      }
+    },
+    "Opens room roles and permissions settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает настройки ролей и разрешений комнаты"
+          }
+        }
+      }
+    },
+    "Remove People" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалять участников"
+          }
+        }
+      }
+    },
+    "Reset Permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сбросить разрешения"
+          }
+        }
+      }
+    },
+    "Reset Permissions?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сбросить разрешения?"
+          }
+        }
+      }
+    },
+    "Reset returns permissions to the default Matrix power levels." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сброс возвращает разрешения к стандартным Matrix power levels."
+          }
+        }
+      }
+    },
+    "Roles" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Роли"
+          }
+        }
+      }
+    },
+    "Roles and Permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Роли и разрешения"
+          }
+        }
+      }
+    },
     "Room Address" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Адрес комнаты"
+          }
+        }
+      }
+    },
+    "Room Avatar" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Аватар комнаты"
+          }
+        }
+      }
+    },
+    "Room Details" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Детали комнаты"
+          }
+        }
+      }
+    },
+    "Room Name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название комнаты"
+          }
+        }
+      }
+    },
+    "Room Topic" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Тема комнаты"
+          }
+        }
+      }
+    },
+    "Room permissions will be returned to the Matrix defaults." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Разрешения комнаты будут возвращены к стандартным значениям Matrix."
+          }
+        }
+      }
+    },
+    "Send Messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправлять сообщения"
           }
         }
       }
