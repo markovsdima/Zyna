@@ -2254,6 +2254,106 @@
         }
       }
     },
+    "Ask to join" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "По запросу"
+          }
+        }
+      }
+    },
+    "Custom access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Особый доступ"
+          }
+        }
+      }
+    },
+    "Custom history" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История: особая"
+          }
+        }
+      }
+    },
+    "Encrypted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Зашифровано"
+          }
+        }
+      }
+    },
+    "Encryption unknown" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Шифрование неизвестно"
+          }
+        }
+      }
+    },
+    "History from invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История с приглашения"
+          }
+        }
+      }
+    },
+    "History from joining" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История со входа"
+          }
+        }
+      }
+    },
+    "History visible to anyone" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История видна всем"
+          }
+        }
+      }
+    },
+    "New members can see history" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новым видна история"
+          }
+        }
+      }
+    },
+    "Restricted access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ограниченная"
+          }
+        }
+      }
+    },
     "No Specific Participant Found" : {
       "localizations" : {
         "ru" : {

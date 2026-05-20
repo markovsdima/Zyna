@@ -6,6 +6,17 @@
 import AsyncDisplayKit
 import Foundation
 
+struct RoomDetailsTag: Equatable {
+    enum Style {
+        case neutral
+        case positive
+        case warning
+    }
+
+    let title: String
+    let style: Style
+}
+
 final class RoomDetailsNode: ScreenNode {
 
     var onAvatarTapped: (() -> Void)?
@@ -36,6 +47,8 @@ final class RoomDetailsNode: ScreenNode {
 
     private let nameNode = ASTextNode()
     private let nameEditNode = ASEditableTextNode()
+    private var tags: [RoomDetailsTag] = []
+    private var tagNodes: [RoomDetailsTagNode] = []
 
     /// Tap target for the members list. Visible chevron + pill bg
     /// makes the affordance obvious — a plain text count looks like
@@ -190,6 +203,13 @@ final class RoomDetailsNode: ScreenNode {
         setNeedsLayout()
     }
 
+    func updateTags(_ tags: [RoomDetailsTag]) {
+        guard self.tags != tags else { return }
+        self.tags = tags
+        tagNodes = tags.map { RoomDetailsTagNode(tag: $0) }
+        setNeedsLayout()
+    }
+
     func setEditing(_ editing: Bool) {
         isEditing = editing
         editAvatarOverlayNode.isHidden = !editing
@@ -286,10 +306,29 @@ final class RoomDetailsNode: ScreenNode {
             nameSpec = ASWrapperLayoutSpec(layoutElement: nameNode)
         }
 
+        var profileChildren: [ASLayoutElement] = [avatarSpec, nameSpec]
+        if !tagNodes.isEmpty {
+            let tagsSpec = ASStackLayoutSpec(
+                direction: .horizontal,
+                spacing: 6,
+                justifyContent: .center,
+                alignItems: .center,
+                flexWrap: .wrap,
+                alignContent: .center,
+                lineSpacing: 6,
+                children: tagNodes
+            )
+            tagsSpec.style.maxWidth = ASDimension(
+                unit: .points,
+                value: max(0, constrainedSize.max.width - 48)
+            )
+            profileChildren.append(tagsSpec)
+        }
+
         let profileStack = ASStackLayoutSpec(
             direction: .vertical, spacing: 8,
             justifyContent: .start, alignItems: .center,
-            children: [avatarSpec, nameSpec]
+            children: profileChildren
         )
 
         let spacer = ASLayoutSpec()
@@ -405,5 +444,53 @@ final class RoomDetailsNode: ScreenNode {
             return elements
         }
         set { }
+    }
+}
+
+private final class RoomDetailsTagNode: ASDisplayNode {
+
+    private let textNode = ASTextNode()
+    private let backgroundNode = RoundedBackgroundNode()
+
+    init(tag: RoomDetailsTag) {
+        super.init()
+        automaticallyManagesSubnodes = true
+
+        let colors = Self.colors(for: tag.style)
+        backgroundNode.fillColor = colors.background
+        backgroundNode.radius = 11
+
+        textNode.attributedText = NSAttributedString(
+            string: tag.title,
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: colors.foreground
+            ]
+        )
+        textNode.maximumNumberOfLines = 1
+        textNode.truncationMode = .byTruncatingTail
+
+        isAccessibilityElement = true
+        accessibilityLabel = tag.title
+        accessibilityTraits = .staticText
+    }
+
+    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
+        let padded = ASInsetLayoutSpec(
+            insets: UIEdgeInsets(top: 4, left: 8, bottom: 4, right: 8),
+            child: textNode
+        )
+        return ASBackgroundLayoutSpec(child: padded, background: backgroundNode)
+    }
+
+    private static func colors(for style: RoomDetailsTag.Style) -> (foreground: UIColor, background: UIColor) {
+        switch style {
+        case .neutral:
+            return (.secondaryLabel, .secondarySystemBackground)
+        case .positive:
+            return (.systemGreen, UIColor.systemGreen.withAlphaComponent(0.14))
+        case .warning:
+            return (.systemOrange, UIColor.systemOrange.withAlphaComponent(0.16))
+        }
     }
 }

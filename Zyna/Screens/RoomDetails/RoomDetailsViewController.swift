@@ -30,6 +30,8 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private var loadedRoomName = "Group"
     private var loadedHasAvatar = false
     private var pendingAvatarChange: PendingAvatarChange = .none
+    private var roomInfoTask: Task<Void, Never>?
+    private var roomInfoSubscription: TaskHandle?
 
     init(room: Room, memberCount: Int?, audioPlayer: AudioPlayerService? = nil) {
         self.room = room
@@ -72,6 +74,13 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
         node.setEditing(false)
         applyRoomState()
+        loadRoomInfo()
+        subscribeToRoomInfoUpdates()
+    }
+
+    deinit {
+        roomInfoTask?.cancel()
+        roomInfoSubscription?.cancel()
     }
 
     override func viewDidLayoutSubviews() {
@@ -148,6 +157,96 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         loadedRoomName = name
         loadedHasAvatar = avatarUrl != nil
         node.update(name: name, memberCount: memberCount, avatarMxcUrl: avatarUrl)
+    }
+
+    private func loadRoomInfo() {
+        node.updateTags(Self.tags(encryptionState: room.encryptionState()))
+        roomInfoTask?.cancel()
+        roomInfoTask = Task { [weak self] in
+            guard let self else { return }
+            guard let info = try? await self.room.roomInfo() else { return }
+            await MainActor.run { [weak self] in
+                self?.applyRoomInfo(info)
+            }
+        }
+    }
+
+    private func subscribeToRoomInfoUpdates() {
+        let listener = RoomDetailsInfoListener { [weak self] info in
+            DispatchQueue.main.async { [weak self] in
+                self?.applyRoomInfo(info)
+            }
+        }
+        roomInfoSubscription = room.subscribeToRoomInfoUpdates(listener: listener)
+    }
+
+    private func applyRoomInfo(_ info: RoomInfo) {
+        node.updateTags(Self.tags(from: info))
+    }
+
+    private static func tags(from info: RoomInfo) -> [RoomDetailsTag] {
+        tags(
+            encryptionState: info.encryptionState,
+            joinRule: info.joinRule,
+            historyVisibility: info.historyVisibility
+        )
+    }
+
+    private static func tags(
+        encryptionState: EncryptionState,
+        joinRule: JoinRule? = nil,
+        historyVisibility: RoomHistoryVisibility? = nil
+    ) -> [RoomDetailsTag] {
+        var tags: [RoomDetailsTag] = [encryptionTag(encryptionState)]
+        if let accessTag = accessTag(joinRule: joinRule) {
+            tags.append(accessTag)
+        }
+        if let historyVisibility {
+            tags.append(historyTag(historyVisibility))
+        }
+        return tags
+    }
+
+    private static func encryptionTag(_ state: EncryptionState) -> RoomDetailsTag {
+        switch state {
+        case .encrypted:
+            return RoomDetailsTag(title: String(localized: "Encrypted"), style: .positive)
+        case .notEncrypted:
+            return RoomDetailsTag(title: String(localized: "Not encrypted"), style: .warning)
+        case .unknown:
+            return RoomDetailsTag(title: String(localized: "Encryption unknown"), style: .neutral)
+        }
+    }
+
+    private static func accessTag(joinRule: JoinRule?) -> RoomDetailsTag? {
+        guard let joinRule else { return nil }
+        switch joinRule {
+        case .public:
+            return RoomDetailsTag(title: String(localized: "Public"), style: .positive)
+        case .invite, .private:
+            return RoomDetailsTag(title: String(localized: "Private"), style: .neutral)
+        case .knock, .knockRestricted(rules: _):
+            return RoomDetailsTag(title: String(localized: "Ask to join"), style: .neutral)
+        case .restricted(rules: _):
+            return RoomDetailsTag(title: String(localized: "Restricted access"), style: .neutral)
+        case .custom(repr: _):
+            return RoomDetailsTag(title: String(localized: "Custom access"), style: .neutral)
+        }
+    }
+
+    private static func historyTag(_ visibility: RoomHistoryVisibility) -> RoomDetailsTag {
+        switch visibility {
+        case .shared:
+            return RoomDetailsTag(title: String(localized: "New members can see history"), style: .neutral)
+        case .invited:
+            return RoomDetailsTag(title: String(localized: "History from invite"), style: .neutral)
+        case .joined:
+            return RoomDetailsTag(title: String(localized: "History from joining"), style: .neutral)
+        case .worldReadable:
+            return RoomDetailsTag(title: String(localized: "History visible to anyone"), style: .warning)
+        case .custom(value: _):
+            return RoomDetailsTag(title: String(localized: "Custom history"), style: .neutral)
+        }
     }
 
     private func setEditing(_ editing: Bool) {
@@ -342,5 +441,17 @@ extension RoomDetailsViewController: PHPickerViewControllerDelegate {
                 self?.node.updateAvatarLocally(image: image)
             }
         }
+    }
+}
+
+private final class RoomDetailsInfoListener: RoomInfoListener {
+    private let callback: @Sendable (RoomInfo) -> Void
+
+    init(callback: @escaping @Sendable (RoomInfo) -> Void) {
+        self.callback = callback
+    }
+
+    func call(roomInfo: RoomInfo) {
+        callback(roomInfo)
     }
 }
