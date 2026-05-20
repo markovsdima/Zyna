@@ -18,6 +18,7 @@ final class ChatNode: ASDisplayNode {
     weak var glassInputBar: GlassInputBar?
     weak var readOnlyComposerView: UIView?
     weak var unencryptedNoticeView: UIView?
+    weak var pinnedMessagesBannerView: UIView?
 
     /// Set by ChatViewController. The scroll-to-live floating button lives
     /// at this node's view level (not inside the input bar) so its tap
@@ -91,6 +92,12 @@ final class ChatNode: ASDisplayNode {
                unencryptedNoticeView.superview === view,
                !unencryptedNoticeView.isHidden {
                 elements.append(unencryptedNoticeView)
+            }
+            if let pinnedMessagesBannerView,
+               pinnedMessagesBannerView.superview === view,
+               !pinnedMessagesBannerView.isHidden,
+               pinnedMessagesBannerView.alpha > 0.01 {
+                elements.append(pinnedMessagesBannerView)
             }
             if let inputBar = glassInputBar,
                inputBar.isNodeLoaded,

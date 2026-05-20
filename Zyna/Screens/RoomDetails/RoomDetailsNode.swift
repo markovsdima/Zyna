@@ -24,6 +24,7 @@ final class RoomDetailsNode: ScreenNode {
     var onSearchTapped: (() -> Void)?
     var onInviteTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
+    var onPinnedMessagesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
 
@@ -52,23 +53,10 @@ final class RoomDetailsNode: ScreenNode {
     private var tags: [RoomDetailsTag] = []
     private var tagNodes: [RoomDetailsTagNode] = []
 
-    /// Tap target for the members list. Visible chevron + pill bg
-    /// makes the affordance obvious — a plain text count looks like
-    /// a label, not a button.
-    private let membersRowBackground = RoundedBackgroundNode()
-    private let membersRow = TappableNode()
-    private let membersRowText = ASTextNode()
-    private let membersRowChevron = ASImageNode()
-    private let securityRowBackground = RoundedBackgroundNode()
-    private let securityRow = TappableNode()
-    private let securityRowIcon = ASImageNode()
-    private let securityRowText = ASTextNode()
-    private let securityRowChevron = ASImageNode()
-    private let rolesPermissionsRowBackground = RoundedBackgroundNode()
-    private let rolesPermissionsRow = TappableNode()
-    private let rolesPermissionsRowIcon = ASImageNode()
-    private let rolesPermissionsRowText = ASTextNode()
-    private let rolesPermissionsRowChevron = ASImageNode()
+    private let membersRow = ActionRowNode()
+    private let pinnedMessagesRow = ActionRowNode()
+    private let securityRow = ActionRowNode()
+    private let rolesPermissionsRow = ActionRowNode()
 
     private let inviteButtonNode = AccessibleButtonNode()
     private let searchButtonNode = AccessibleButtonNode()
@@ -80,6 +68,7 @@ final class RoomDetailsNode: ScreenNode {
 
     private var isEditing = false
     private var hasAvatar = false
+    private var hasMembersRow = false
     private var avatarLoadRevision: UInt64 = 0
 
     var editingName: String? {
@@ -149,56 +138,33 @@ final class RoomDetailsNode: ScreenNode {
         inviteButtonNode.contentHorizontalAlignment = .middle
         inviteButtonNode.addTarget(self, action: #selector(inviteTapped), forControlEvents: .touchUpInside)
 
-        membersRowBackground.fillColor = .secondarySystemBackground
-        membersRowBackground.radius = 12
-        membersRow.backgroundColor = .clear
         membersRow.onTap = { [weak self] in self?.onMembersTapped?() }
-        membersRow.isAccessibilityElement = true
-        membersRow.accessibilityTraits = .button
-        membersRowText.maximumNumberOfLines = 1
-        membersRowChevron.style.preferredSize = CGSize(width: 12, height: 12)
+        membersRow.style.alignSelf = .stretch
 
-        securityRowBackground.fillColor = .secondarySystemBackground
-        securityRowBackground.radius = 12
-        securityRow.backgroundColor = .clear
+        pinnedMessagesRow.onTap = { [weak self] in self?.onPinnedMessagesTapped?() }
+        pinnedMessagesRow.style.alignSelf = .stretch
+        pinnedMessagesRow.apply(ActionRowNode.Configuration(
+            title: String(localized: "Pinned Messages"),
+            leadingIcon: AppIcon.pin.rendered(size: 17, weight: .medium, color: AppColor.accent),
+            trailingText: "0",
+            accessibilityHint: String(localized: "Opens pinned messages")
+        ))
+
         securityRow.onTap = { [weak self] in self?.onSecurityPrivacyTapped?() }
-        securityRow.isAccessibilityElement = true
-        securityRow.accessibilityTraits = .button
-        securityRow.accessibilityLabel = String(localized: "Security and Privacy")
-        securityRow.accessibilityHint = String(localized: "Opens room security and privacy settings")
-        securityRowText.attributedText = NSAttributedString(
-            string: String(localized: "Security and Privacy"),
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 17),
-                .foregroundColor: UIColor.label
-            ]
-        )
-        securityRowText.maximumNumberOfLines = 1
-        securityRowText.truncationMode = .byTruncatingTail
-        securityRowText.style.flexShrink = 1
-        securityRowIcon.style.preferredSize = CGSize(width: 18, height: 18)
-        securityRowChevron.style.preferredSize = CGSize(width: 12, height: 12)
+        securityRow.style.alignSelf = .stretch
+        securityRow.apply(ActionRowNode.Configuration(
+            title: String(localized: "Security and Privacy"),
+            leadingIcon: AppIcon.lockClosed.rendered(size: 16, weight: .medium, color: AppColor.accent),
+            accessibilityHint: String(localized: "Opens room security and privacy settings")
+        ))
 
-        rolesPermissionsRowBackground.fillColor = .secondarySystemBackground
-        rolesPermissionsRowBackground.radius = 12
-        rolesPermissionsRow.backgroundColor = .clear
         rolesPermissionsRow.onTap = { [weak self] in self?.onRolesPermissionsTapped?() }
-        rolesPermissionsRow.isAccessibilityElement = true
-        rolesPermissionsRow.accessibilityTraits = .button
-        rolesPermissionsRow.accessibilityLabel = String(localized: "Roles and Permissions")
-        rolesPermissionsRow.accessibilityHint = String(localized: "Opens room roles and permissions settings")
-        rolesPermissionsRowText.attributedText = NSAttributedString(
-            string: String(localized: "Roles and Permissions"),
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 17),
-                .foregroundColor: UIColor.label
-            ]
-        )
-        rolesPermissionsRowText.maximumNumberOfLines = 1
-        rolesPermissionsRowText.truncationMode = .byTruncatingTail
-        rolesPermissionsRowText.style.flexShrink = 1
-        rolesPermissionsRowIcon.style.preferredSize = CGSize(width: 18, height: 18)
-        rolesPermissionsRowChevron.style.preferredSize = CGSize(width: 12, height: 12)
+        rolesPermissionsRow.style.alignSelf = .stretch
+        rolesPermissionsRow.apply(ActionRowNode.Configuration(
+            title: String(localized: "Roles and Permissions"),
+            leadingIcon: AppIcon.person2.rendered(size: 16, weight: .medium, color: AppColor.accent),
+            accessibilityHint: String(localized: "Opens room roles and permissions settings")
+        ))
     }
 
     // MARK: - Update
@@ -210,15 +176,15 @@ final class RoomDetailsNode: ScreenNode {
         applyName(name)
 
         if let count = memberCount {
-            membersRowText.attributedText = NSAttributedString(
-                string: String(localized: "\(count) members"),
-                attributes: [
-                    .font: UIFont.systemFont(ofSize: 17),
-                    .foregroundColor: UIColor.label
-                ]
-            )
-            membersRow.accessibilityLabel = String(localized: "\(count) members")
-            membersRow.accessibilityHint = String(localized: "Opens the member list")
+            hasMembersRow = true
+            let title = String(localized: "\(count) members")
+            membersRow.apply(ActionRowNode.Configuration(
+                title: title,
+                accessibilityLabel: title,
+                accessibilityHint: String(localized: "Opens the member list")
+            ))
+        } else {
+            hasMembersRow = false
         }
 
         if let mxcUrl = avatarMxcUrl {
@@ -261,6 +227,11 @@ final class RoomDetailsNode: ScreenNode {
         guard self.tags != tags else { return }
         self.tags = tags
         tagNodes = tags.map { RoomDetailsTagNode(tag: $0) }
+        setNeedsLayout()
+    }
+
+    func updatePinnedMessagesCount(_ count: Int) {
+        pinnedMessagesRow.updateTrailingText("\(count)")
         setNeedsLayout()
     }
 
@@ -391,78 +362,13 @@ final class RoomDetailsNode: ScreenNode {
         inviteButtonNode.style.alignSelf = .stretch
         searchButtonNode.style.alignSelf = .stretch
 
-        var membersRowChildren: [ASLayoutElement] = [membersRowText]
-        let pushChevron = ASLayoutSpec()
-        pushChevron.style.flexGrow = 1
-        membersRowChildren.append(pushChevron)
-        membersRowChildren.append(membersRowChevron)
-        let membersRowContent = ASStackLayoutSpec(
-            direction: .horizontal, spacing: 8,
-            justifyContent: .start, alignItems: .center,
-            children: membersRowChildren
-        )
-        let membersRowPadded = ASInsetLayoutSpec(
-            insets: UIEdgeInsets(top: 14, left: 16, bottom: 14, right: 16),
-            child: membersRowContent
-        )
-        let membersRowWithBg = ASBackgroundLayoutSpec(child: membersRowPadded, background: membersRowBackground)
-        let membersRowSpec = ASOverlayLayoutSpec(child: membersRowWithBg, overlay: membersRow)
-        membersRowSpec.style.alignSelf = .stretch
-
-        let securitySpacer = ASLayoutSpec()
-        securitySpacer.style.flexGrow = 1
-        let securityRowContent = ASStackLayoutSpec(
-            direction: .horizontal,
-            spacing: 10,
-            justifyContent: .start,
-            alignItems: .center,
-            children: [securityRowIcon, securityRowText, securitySpacer, securityRowChevron]
-        )
-        let securityRowPadded = ASInsetLayoutSpec(
-            insets: UIEdgeInsets(top: 14, left: 16, bottom: 14, right: 16),
-            child: securityRowContent
-        )
-        let securityRowWithBg = ASBackgroundLayoutSpec(
-            child: securityRowPadded,
-            background: securityRowBackground
-        )
-        let securityRowSpec = ASOverlayLayoutSpec(child: securityRowWithBg, overlay: securityRow)
-        securityRowSpec.style.alignSelf = .stretch
-
-        let rolesPermissionsSpacer = ASLayoutSpec()
-        rolesPermissionsSpacer.style.flexGrow = 1
-        let rolesPermissionsRowContent = ASStackLayoutSpec(
-            direction: .horizontal,
-            spacing: 10,
-            justifyContent: .start,
-            alignItems: .center,
-            children: [
-                rolesPermissionsRowIcon,
-                rolesPermissionsRowText,
-                rolesPermissionsSpacer,
-                rolesPermissionsRowChevron
-            ]
-        )
-        let rolesPermissionsRowPadded = ASInsetLayoutSpec(
-            insets: UIEdgeInsets(top: 14, left: 16, bottom: 14, right: 16),
-            child: rolesPermissionsRowContent
-        )
-        let rolesPermissionsRowWithBg = ASBackgroundLayoutSpec(
-            child: rolesPermissionsRowPadded,
-            background: rolesPermissionsRowBackground
-        )
-        let rolesPermissionsRowSpec = ASOverlayLayoutSpec(
-            child: rolesPermissionsRowWithBg,
-            overlay: rolesPermissionsRow
-        )
-        rolesPermissionsRowSpec.style.alignSelf = .stretch
-
         var buttonsChildren: [ASLayoutElement] = []
-        if membersRowText.attributedText != nil {
-            buttonsChildren.append(membersRowSpec)
+        if hasMembersRow {
+            buttonsChildren.append(membersRow)
         }
-        buttonsChildren.append(securityRowSpec)
-        buttonsChildren.append(rolesPermissionsRowSpec)
+        buttonsChildren.append(pinnedMessagesRow)
+        buttonsChildren.append(securityRow)
+        buttonsChildren.append(rolesPermissionsRow)
         buttonsChildren.append(contentsOf: [inviteButtonNode, searchButtonNode])
 
         let buttonsStack = ASStackLayoutSpec(
@@ -519,29 +425,6 @@ final class RoomDetailsNode: ScreenNode {
         inviteButtonNode.setImage(
             AppIcon.personBadgePlus.rendered(size: 16, weight: .medium, color: AppColor.accent),
             for: .normal
-        )
-        membersRowChevron.image = AppIcon.chevronForward.rendered(
-            size: 12, weight: .semibold, color: .tertiaryLabel
-        )
-        securityRowIcon.image = AppIcon.lockClosed.rendered(
-            size: 16,
-            weight: .medium,
-            color: AppColor.accent
-        )
-        securityRowChevron.image = AppIcon.chevronForward.rendered(
-            size: 12,
-            weight: .semibold,
-            color: .tertiaryLabel
-        )
-        rolesPermissionsRowIcon.image = AppIcon.person2.rendered(
-            size: 16,
-            weight: .medium,
-            color: AppColor.accent
-        )
-        rolesPermissionsRowChevron.image = AppIcon.chevronForward.rendered(
-            size: 12,
-            weight: .semibold,
-            color: .tertiaryLabel
         )
     }
 

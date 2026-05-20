@@ -33,6 +33,8 @@ enum AppIcon {
     case circle
     case xmarkCircleFill
     case bubbleLeft
+    case pin
+    case pinSlash
     case personBadgeMinus
     case personBadgePlus
     case personSlash
@@ -69,6 +71,8 @@ enum AppIcon {
         case .circle:              return "circle"
         case .xmarkCircleFill:     return "xmark.circle.fill"
         case .bubbleLeft:       return "bubble.left.fill"
+        case .pin:              return "pin.fill"
+        case .pinSlash:         return "pin.slash.fill"
         case .personBadgeMinus: return "person.badge.minus"
         case .personBadgePlus:  return "person.badge.plus"
         case .personSlash:      return "person.slash"

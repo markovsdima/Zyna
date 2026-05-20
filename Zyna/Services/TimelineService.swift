@@ -182,6 +182,9 @@ final class TimelineService {
     /// Room encryption state changed while the timeline is open.
     var onRoomEncryptionChanged: (() -> Void)?
 
+    /// Pinned event IDs changed while the timeline is open.
+    var onRoomPinnedEventsChanged: (() -> Void)?
+
     private let room: Room
     private var timeline: Timeline?
     private var listenerHandle: TaskHandle?
@@ -267,6 +270,7 @@ final class TimelineService {
 
         var didReceivePowerLevels = false
         var didReceiveEncryption = false
+        var didReceivePinnedEvents = false
 
         // Extract read cursor: the timestamp of the newest own message
         // that has a read receipt from someone else.
@@ -288,6 +292,8 @@ final class TimelineService {
                     didReceivePowerLevels = true
                 case .roomEncryption:
                     didReceiveEncryption = true
+                case .roomPinnedEvents(change: _):
+                    didReceivePinnedEvents = true
                 default:
                     break
                 }
@@ -313,6 +319,9 @@ final class TimelineService {
         }
         if didReceiveEncryption {
             onRoomEncryptionChanged?()
+        }
+        if didReceivePinnedEvents {
+            onRoomPinnedEventsChanged?()
         }
 
         logTimeline("Timeline diffs forwarded: \(diffs.count) diffs")
@@ -1002,6 +1011,32 @@ final class TimelineService {
             logTimeline("Call signaling sent via span")
         } catch {
             logTimeline("Call signaling send failed: \(error)")
+            await handleMatrixTransportError(error)
+            throw error
+        }
+    }
+
+    // MARK: - Pinned Messages
+
+    @discardableResult
+    func pinEvent(eventId: String) async throws -> Bool {
+        guard let timeline else { return false }
+        do {
+            return try await timeline.pinEvent(eventId: eventId)
+        } catch {
+            logTimeline("pinEvent failed event=\(eventId): \(error)")
+            await handleMatrixTransportError(error)
+            throw error
+        }
+    }
+
+    @discardableResult
+    func unpinEvent(eventId: String) async throws -> Bool {
+        guard let timeline else { return false }
+        do {
+            return try await timeline.unpinEvent(eventId: eventId)
+        } catch {
+            logTimeline("unpinEvent failed event=\(eventId): \(error)")
             await handleMatrixTransportError(error)
             throw error
         }

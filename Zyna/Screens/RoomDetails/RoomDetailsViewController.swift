@@ -19,6 +19,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     var onSearchTapped: (() -> Void)?
     var onInviteMembersTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
+    var onPinnedMessagesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
 
@@ -72,6 +73,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
         node.onMembersTapped = { [weak self] in
             self?.onMembersTapped?()
+        }
+
+        node.onPinnedMessagesTapped = { [weak self] in
+            self?.onPinnedMessagesTapped?()
         }
 
         node.onSecurityPrivacyTapped = { [weak self] in
@@ -192,6 +197,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
     private func applyRoomInfo(_ info: RoomInfo) {
         node.updateTags(Self.tags(from: info))
+        node.updatePinnedMessagesCount(info.pinnedEventIds.count)
     }
 
     private static func tags(from info: RoomInfo) -> [RoomDetailsTag] {

@@ -283,6 +283,9 @@ final class ChatsCoordinator {
         vc.onMembersTapped = { [weak self] in
             self?.showMembersList(room: room)
         }
+        vc.onPinnedMessagesTapped = { [weak self] in
+            self?.showPinnedMessages(room: room)
+        }
         vc.onSecurityPrivacyTapped = { [weak self] in
             self?.showRoomSecurityPrivacy(room: room)
         }
@@ -290,6 +293,32 @@ final class ChatsCoordinator {
             self?.showRoomRolesPermissions(room: room)
         }
         navigationController.push(vc)
+    }
+
+    private func showPinnedMessages(room: Room) {
+        let vc = PinnedMessagesViewController(room: room, audioPlayer: audioPlayer)
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
+        vc.onSelectEvent = { [weak self] eventId in
+            self?.openPinnedEvent(eventId)
+        }
+        navigationController.push(vc)
+    }
+
+    private func openPinnedEvent(_ eventId: String) {
+        guard let index = navigationController.stack.lastIndex(where: { $0 is ChatViewController }),
+              let chatVC = navigationController.stack[index] as? ChatViewController
+        else {
+            navigationController.pop()
+            return
+        }
+
+        let targetStack = Array(navigationController.stack.prefix(index + 1))
+        navigationController.setStack(targetStack, animated: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            chatVC.navigateToEvent(eventId: eventId)
+        }
     }
 
     private func showRoomSecurityPrivacy(room: Room) {

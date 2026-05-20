@@ -72,6 +72,14 @@ final class ChatViewModel {
         }
     }
 
+    struct PinnedMessagesState: Equatable {
+        var eventIds: [String] = []
+        var canPin: Bool = false
+
+        var count: Int { eventIds.count }
+        var hasPinnedMessages: Bool { !eventIds.isEmpty }
+    }
+
     private struct RedactionTransitionCandidate {
         let message: StoredMessage
         let previous: StoredMessage
@@ -160,6 +168,7 @@ final class ChatViewModel {
     @Published private(set) var connectionStatusText: String?
     @Published private(set) var composerSendRestrictionReason: OutgoingSendFailureReason?
     @Published private(set) var isRoomEncrypted: Bool = true
+    @Published private(set) var pinnedMessagesState = PinnedMessagesState()
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -192,9 +201,13 @@ final class ChatViewModel {
     private var didLoadInitialWindow = false
     private var roomResolutionTask: Task<Void, Never>?
     private var sendPermissionTask: Task<Void, Never>?
+    private var pinnedMessagesTask: Task<Void, Never>?
     private var currentMatrixClientState = MatrixClientService.shared.state
     private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
     private var canSendRoomMessages = true
+    private var pinnedEventIdSet = Set<String>()
+
+    var onPinnedMessagesError: ((Error) -> Void)?
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
@@ -259,6 +272,7 @@ final class ChatViewModel {
     deinit {
         roomResolutionTask?.cancel()
         sendPermissionTask?.cancel()
+        pinnedMessagesTask?.cancel()
     }
 
     private func bindCommonServices() {
@@ -392,6 +406,7 @@ final class ChatViewModel {
             DispatchQueue.main.async { [weak self] in
                 guard let self, let room = self.room else { return }
                 self.refreshRoomSendPermission(room)
+                self.refreshPinnedMessages(room)
             }
         }
         timelineService.onRoomEncryptionChanged = { [weak self] in
@@ -399,6 +414,12 @@ final class ChatViewModel {
                 guard let self, let room = self.room else { return }
                 self.refreshRoomEncryptionState(room)
                 self.refreshComposerSendPermission()
+            }
+        }
+        timelineService.onRoomPinnedEventsChanged = { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let room = self.room else { return }
+                self.refreshPinnedMessages(room)
             }
         }
     }
@@ -417,6 +438,7 @@ final class ChatViewModel {
         bindTimelineService(timelineService)
         refreshComposerSendPermission()
         refreshRoomSendPermission(room)
+        refreshPinnedMessages(room)
         updateConnectionStatus()
         resolveRoomInfo(room)
 
@@ -434,6 +456,11 @@ final class ChatViewModel {
                 let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
                 await MainActor.run {
                     self.updateCanSendRoomMessages(canSendMessage)
+                    self.updatePinnedMessages(from: info)
+                }
+            } else {
+                await MainActor.run {
+                    self.updatePinnedMessages(from: info)
                 }
             }
 
@@ -479,6 +506,112 @@ final class ChatViewModel {
         guard canSendRoomMessages != canSend else { return }
         canSendRoomMessages = canSend
         refreshComposerSendPermission()
+    }
+
+    private func refreshPinnedMessages(_ room: Room) {
+        pinnedMessagesTask?.cancel()
+        pinnedMessagesTask = Task { [weak self, room] in
+            guard let info = try? await room.roomInfo() else { return }
+            let loadedPowerLevels: RoomPowerLevels?
+            if let infoPowerLevels = info.powerLevels {
+                loadedPowerLevels = infoPowerLevels
+            } else {
+                loadedPowerLevels = try? await room.getPowerLevels()
+            }
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                self.updatePinnedMessages(from: info, powerLevels: loadedPowerLevels)
+            }
+        }
+    }
+
+    private func updatePinnedMessages(
+        from info: RoomInfo,
+        powerLevels: RoomPowerLevels? = nil
+    ) {
+        let eventIds = info.pinnedEventIds.reduce(into: [String]()) { result, eventId in
+            guard !eventId.isEmpty, !result.contains(eventId) else { return }
+            result.append(eventId)
+        }
+        let canPin = (powerLevels ?? info.powerLevels)?.canOwnUserPinUnpin()
+            ?? pinnedMessagesState.canPin
+        applyPinnedMessages(eventIds: eventIds, canPin: canPin)
+    }
+
+    private func applyPinnedMessages(eventIds: [String], canPin: Bool) {
+        pinnedEventIdSet = Set(eventIds)
+        let next = PinnedMessagesState(eventIds: eventIds, canPin: canPin)
+        guard pinnedMessagesState != next else { return }
+        pinnedMessagesState = next
+    }
+
+    func isPinned(_ message: ChatMessage) -> Bool {
+        guard let eventId = message.eventId else { return false }
+        return pinnedEventIdSet.contains(eventId)
+    }
+
+    func canTogglePin(_ message: ChatMessage) -> Bool {
+        pinnedMessagesState.canPin
+            && message.eventId?.isEmpty == false
+            && !message.content.isRedacted
+            && !message.isSyntheticOutgoingEnvelope
+            && !message.isSyntheticIncomingAssembly
+    }
+
+    func togglePinned(_ message: ChatMessage) {
+        guard canTogglePin(message),
+              let eventId = message.eventId,
+              let timelineService
+        else { return }
+
+        let shouldUnpin = pinnedEventIdSet.contains(eventId)
+        Task { [weak self, weak timelineService] in
+            guard let timelineService else { return }
+            do {
+                if shouldUnpin {
+                    _ = try await timelineService.unpinEvent(eventId: eventId)
+                } else {
+                    _ = try await timelineService.pinEvent(eventId: eventId)
+                }
+
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    if shouldUnpin {
+                        self.applyPinnedMessages(
+                            eventIds: self.pinnedMessagesState.eventIds.filter { $0 != eventId },
+                            canPin: self.pinnedMessagesState.canPin
+                        )
+                    } else if !self.pinnedEventIdSet.contains(eventId) {
+                        self.applyPinnedMessages(
+                            eventIds: self.pinnedMessagesState.eventIds + [eventId],
+                            canPin: self.pinnedMessagesState.canPin
+                        )
+                    }
+                    if let room = self.room {
+                        self.refreshPinnedMessages(room)
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.onPinnedMessagesError?(error)
+                }
+            }
+        }
+    }
+
+    func pinnedPreview(eventId: String) -> String {
+        if let message = messages.first(where: { $0.eventId == eventId }) {
+            return message.content.textPreview
+        }
+
+        let stored = try? DatabaseService.shared.dbQueue.read { db in
+            try StoredMessage
+                .filter(Column("roomId") == roomId)
+                .filter(Column("eventId") == eventId)
+                .fetchOne(db)
+        }
+        return stored?.toChatMessage()?.content.textPreview
+            ?? String(localized: "Pinned message")
     }
 
     private func refreshRoomEncryptionState(_ room: Room) {
@@ -3971,11 +4104,14 @@ final class ChatViewModel {
         roomResolutionTask = nil
         sendPermissionTask?.cancel()
         sendPermissionTask = nil
+        pinnedMessagesTask?.cancel()
+        pinnedMessagesTask = nil
         timelineService?.onDiffs = nil
         timelineService?.onReadCursor = nil
         timelineService?.onOwnFullyReadMarker = nil
         timelineService?.onRoomPowerLevelsChanged = nil
         timelineService?.onRoomEncryptionChanged = nil
+        timelineService?.onRoomPinnedEventsChanged = nil
         diffBatcher.onFlush = nil
         timelineService?.stopListening()
     }

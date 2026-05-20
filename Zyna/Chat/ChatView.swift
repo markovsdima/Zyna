@@ -60,6 +60,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let contentUpdateDelay: TimeInterval = 0.05
     }
 
+    private enum PinnedMessagesChrome {
+        static let collapseDelay: TimeInterval = 4
+    }
+
     private enum RedactionAnimations {
         // Give bootstrap/pagination/reset-shaped SDK updates time to settle
         // before receiver-side redactions are allowed to animate.
@@ -116,6 +120,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let glassInputBar = GlassInputBar()
     private let readOnlyComposerView = ReadOnlyComposerPlaceholderView()
     private let unencryptedNoticeView = UnencryptedRoomNoticeView()
+    private let pinnedMessagesBannerView = PinnedMessagesBannerView()
     private let searchBar = SearchBarView()
     private let inviteBanner = InviteBannerView()
 
@@ -181,6 +186,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var redactionAnimationArmWork: DispatchWorkItem?
     private var didCleanupViewModel = false
     private var prefetchedAppearanceUserIds = Set<String>()
+    private var selectedPinnedMessageIndex = 0
+    private var isPinnedMessagesBannerExpanded = false
+    private var pinnedMessagesCollapseWorkItem: DispatchWorkItem?
 
     private var isPreviewMode: Bool {
         viewModel.mode.isPreview
@@ -192,6 +200,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     var canPresentVoicePlaybackIsland: Bool {
         !isPreviewMode
+    }
+
+    func navigateToEvent(eventId: String) {
+        guard !isPreviewMode else { return }
+        navigateToMessage(eventId: eventId)
     }
 
     // MARK: - Init
@@ -330,6 +343,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             unencryptedNoticeView.isHidden = true
             view.addSubview(unencryptedNoticeView)
             node.unencryptedNoticeView = unencryptedNoticeView
+
+            pinnedMessagesBannerView.isHidden = true
+            pinnedMessagesBannerView.alpha = 0
+            pinnedMessagesBannerView.addTarget(
+                self,
+                action: #selector(pinnedMessagesBannerTapped),
+                for: .touchUpInside
+            )
+            node.view.addSubview(pinnedMessagesBannerView)
+            node.pinnedMessagesBannerView = pinnedMessagesBannerView
         }
 
         // Scroll-to-live button — lives on node.view so its tap target
@@ -406,6 +429,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         glassNavBar.updateLayout(in: view)
+        updatePinnedMessagesBannerLayout()
         searchBar.frame = CGRect(
             x: 0, y: glassNavBar.coveredHeight,
             width: view.bounds.width, height: 44
@@ -423,7 +447,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 height: CGFloat(5 * 32 + 16)
             )
         }
-        node.tableNode.contentInset.bottom = glassNavBar.coveredHeight
+        updateTopChromeTableInset()
 
         readOnlyComposerView.updateLayout(in: view)
         glassInputBar.updateLayout(in: view)
@@ -479,6 +503,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func cleanupViewModelIfNeeded() {
         guard !didCleanupViewModel else { return }
         didCleanupViewModel = true
+        cancelPinnedMessagesAutoCollapseTimer()
         viewModel.cleanup()
     }
 
@@ -533,6 +558,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         previousInputCoveredHeight = newCoveredHeight
     }
 
+    private func updateTopChromeTableInset() {
+        let pinnedHeight = shouldShowPinnedMessagesBanner()
+            ? PinnedMessagesBannerView.height + 16
+            : 0
+        node.tableNode.contentInset.bottom = glassNavBar.coveredHeight + pinnedHeight
+        node.tableNode.view.verticalScrollIndicatorInsets.bottom = glassNavBar.coveredHeight + pinnedHeight
+    }
+
     private func activeComposerCoveredHeight() -> CGFloat {
         guard !viewModel.isInvited else { return 0 }
         let composerHeight: CGFloat
@@ -556,6 +589,152 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func updateUnencryptedNoticeLayout() {
         unencryptedNoticeView.updateLayout(in: view, aboveY: activeComposerTopY())
+    }
+
+    private func updatePinnedMessagesBannerLayout() {
+        guard !isPreviewMode else { return }
+        pinnedMessagesBannerView.frame = targetPinnedMessagesBannerFrame()
+    }
+
+    private func targetPinnedMessagesBannerFrame() -> CGRect {
+        guard isPinnedMessagesBannerExpanded else {
+            let size = PinnedMessagesBannerView.collapsedSize
+            let backFrame = glassNavBar.backButtonNode.isNodeLoaded
+                ? glassNavBar.backButtonNode.view.convert(
+                    glassNavBar.backButtonNode.view.bounds,
+                    to: view
+                )
+                : CGRect(x: 10, y: view.safeAreaInsets.top + 4, width: 36, height: 36)
+            return CGRect(
+                x: backFrame.midX - size.width / 2,
+                y: glassNavBar.frame.maxY + 8,
+                width: size.width,
+                height: size.height
+            )
+        }
+
+        let width = min(view.bounds.width - 24, 420)
+        return CGRect(
+            x: (view.bounds.width - width) / 2,
+            y: glassNavBar.frame.maxY + 8,
+            width: width,
+            height: PinnedMessagesBannerView.height
+        )
+    }
+
+    private func shouldShowPinnedMessagesBanner() -> Bool {
+        guard !isPreviewMode else { return false }
+        let state = viewModel.pinnedMessagesState
+        return state.hasPinnedMessages
+            && searchBar.isHidden
+            && inviteBanner.isHidden
+    }
+
+    private func updatePinnedMessagesBanner(animated: Bool) {
+        guard !isPreviewMode else { return }
+        let state = viewModel.pinnedMessagesState
+        let shouldShow = shouldShowPinnedMessagesBanner()
+
+        if !shouldShow {
+            isPinnedMessagesBannerExpanded = false
+        }
+
+        selectedPinnedMessageIndex = min(
+            selectedPinnedMessageIndex,
+            max(0, state.eventIds.count - 1)
+        )
+
+        let targetFrame = targetPinnedMessagesBannerFrame()
+        if shouldShow,
+           state.eventIds.indices.contains(selectedPinnedMessageIndex) {
+            let eventId = state.eventIds[selectedPinnedMessageIndex]
+            pinnedMessagesBannerView.configure(
+                index: selectedPinnedMessageIndex,
+                count: state.eventIds.count,
+                preview: viewModel.pinnedPreview(eventId: eventId),
+                mode: isPinnedMessagesBannerExpanded ? .expanded : .collapsed
+            )
+        }
+
+        let applyVisibility = {
+            self.pinnedMessagesBannerView.alpha = shouldShow ? 1 : 0
+            self.pinnedMessagesBannerView.frame = targetFrame
+            self.pinnedMessagesBannerView.layoutIfNeeded()
+        }
+
+        if shouldShow {
+            if pinnedMessagesBannerView.isHidden {
+                pinnedMessagesBannerView.frame = targetFrame
+                pinnedMessagesBannerView.layoutIfNeeded()
+            }
+            pinnedMessagesBannerView.isHidden = false
+        }
+
+        if animated {
+            UIView.animate(
+                withDuration: 0.18,
+                delay: 0,
+                options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseOut],
+                animations: applyVisibility
+            ) { _ in
+                self.pinnedMessagesBannerView.isHidden = !shouldShow
+            }
+        } else {
+            applyVisibility()
+            pinnedMessagesBannerView.isHidden = !shouldShow
+        }
+
+        updateTopChromeTableInset()
+        updateDateHeaderOverlay()
+        node.view.bringSubviewToFront(pinnedMessagesBannerView)
+        updatePinnedMessagesAutoCollapseTimer()
+    }
+
+    @objc private func pinnedMessagesBannerTapped() {
+        let eventIds = viewModel.pinnedMessagesState.eventIds
+        guard eventIds.indices.contains(selectedPinnedMessageIndex) else { return }
+
+        cancelPinnedMessagesAutoCollapseTimer()
+
+        guard isPinnedMessagesBannerExpanded else {
+            isPinnedMessagesBannerExpanded = true
+            updatePinnedMessagesBanner(animated: true)
+            return
+        }
+
+        let eventId = eventIds[selectedPinnedMessageIndex]
+        navigateToMessage(eventId: eventId)
+
+        if eventIds.count > 1 {
+            selectedPinnedMessageIndex = (selectedPinnedMessageIndex + 1) % eventIds.count
+            updatePinnedMessagesBanner(animated: true)
+        } else {
+            updatePinnedMessagesAutoCollapseTimer()
+        }
+    }
+
+    private func updatePinnedMessagesAutoCollapseTimer() {
+        cancelPinnedMessagesAutoCollapseTimer()
+        guard isPinnedMessagesBannerExpanded,
+              shouldShowPinnedMessagesBanner() else { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.isPinnedMessagesBannerExpanded,
+                  self.shouldShowPinnedMessagesBanner() else { return }
+            self.isPinnedMessagesBannerExpanded = false
+            self.updatePinnedMessagesBanner(animated: true)
+        }
+        pinnedMessagesCollapseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + PinnedMessagesChrome.collapseDelay,
+            execute: workItem
+        )
+    }
+
+    private func cancelPinnedMessagesAutoCollapseTimer() {
+        pinnedMessagesCollapseWorkItem?.cancel()
+        pinnedMessagesCollapseWorkItem = nil
     }
 
     private func updateComposerChrome() {
@@ -698,7 +877,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             tableFrame.minY,
             glassNavBar.frame.maxY,
             searchBar.isHidden ? tableFrame.minY : searchBar.frame.maxY,
-            inviteBanner.isHidden ? tableFrame.minY : inviteBanner.frame.maxY
+            inviteBanner.isHidden ? tableFrame.minY : inviteBanner.frame.maxY,
+            shouldShowPinnedMessagesBanner() ? pinnedMessagesBannerView.frame.maxY : tableFrame.minY
         )
         let bottomObstruction = min(
             tableFrame.maxY,
@@ -937,11 +1117,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.activateSearch()
         searchBar.isHidden = false
         searchBar.activate()
+        updatePinnedMessagesBanner(animated: true)
     }
 
     private func deactivateSearch() {
         viewModel.deactivateSearch()
         searchBar.isHidden = true
+        updatePinnedMessagesBanner(animated: true)
     }
 
     private func navigateToCurrentSearchResult() {
@@ -1068,6 +1250,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.handleRedactionFailure(for: messageId, disposition: disposition)
         }
 
+        viewModel.onPinnedMessagesError = { [weak self] error in
+            self?.presentPinnedMessagesError(error)
+        }
+
         viewModel.canRestoreFailedEditDraft = { [weak self] in
             guard let self else { return false }
             return self.glassInputBar.inputNode.currentText
@@ -1083,6 +1269,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self.updateComposerChrome()
                 GlassService.shared.setNeedsCapture()
                 self.updateTableInsetsForInputBar()
+                self.updatePinnedMessagesBanner(animated: true)
                 self.updateDateHeaderOverlay()
             }
             .store(in: &cancellables)
@@ -1173,6 +1360,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 GlassService.shared.setNeedsCapture()
                 self.updateTableInsetsForInputBar()
                 self.updateDateHeaderOverlay()
+            }
+            .store(in: &cancellables)
+
+        viewModel.$pinnedMessagesState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, !self.isPreviewMode else { return }
+                self.updatePinnedMessagesBanner(animated: true)
             }
             .store(in: &cancellables)
     }
@@ -1735,6 +1930,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             })
         }
 
+        if viewModel.canTogglePin(message) {
+            let title = viewModel.isPinned(message)
+                ? String(localized: "Unpin")
+                : String(localized: "Pin")
+            actions.append(UIAccessibilityCustomAction(name: title) { [weak self] _ in
+                self?.viewModel.togglePinned(message)
+                return true
+            })
+        }
+
         if message.itemIdentifier != nil && !message.content.isRedacted {
             actions.append(UIAccessibilityCustomAction(name: "Delete") { [weak self] _ in
                 self?.triggerPaintSplashDelete(for: message)
@@ -1896,6 +2101,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 image: UIImage(systemName: "arrowshape.turn.up.right"),
                 handler: { [weak self] in
                     self?.onForwardMessage?(message)
+                }
+            ))
+        }
+
+        if viewModel.canTogglePin(message) {
+            let isPinned = viewModel.isPinned(message)
+            actions.append(ContextMenuAction(
+                title: isPinned ? String(localized: "Unpin") : String(localized: "Pin"),
+                image: (isPinned ? AppIcon.pinSlash : AppIcon.pin)
+                    .rendered(size: 17, weight: .medium, color: .label),
+                handler: { [weak self] in
+                    self?.viewModel.togglePinned(message)
                 }
             ))
         }
@@ -3169,6 +3386,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         guard presentedViewController == nil else { return }
         let alert = UIAlertController(
             title: String(localized: "Scan Failed"),
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+        present(alert, animated: true)
+    }
+
+    private func presentPinnedMessagesError(_ error: Error) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(
+            title: String(localized: "Could Not Update Pinned Messages"),
             message: error.localizedDescription,
             preferredStyle: .alert
         )
