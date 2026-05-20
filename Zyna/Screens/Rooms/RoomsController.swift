@@ -269,9 +269,13 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     }
 
     private func configureHeaderBarItems() {
+        let searchIcon = AppIcon.magnifyingGlass.template(size: 17, weight: .medium)
         let composeIcon = AppIcon.compose.template(size: 17, weight: .medium)
 
         glassTopBar.items = [
+            .circleButton(icon: searchIcon, accessibilityLabel: "Search", action: { [weak self] in
+                self?.showSearchSheet()
+            }),
             .title(text: "Chats test", subtitle: glassTopBar.subtitle),
             .circleButton(icon: composeIcon, accessibilityLabel: "New chat", action: { [weak self] in
                 self?.onComposeTapped?()
@@ -308,6 +312,33 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
             tableNode.contentInset.bottom = bottom
             tableNode.view.verticalScrollIndicatorInsets.bottom = bottom
         }
+    }
+
+    private func showSearchSheet() {
+        let vc = RoomsSearchViewController(
+            roomListService: viewModel.roomListService,
+            localChatsProvider: { [weak self] query in
+                self?.viewModel.localChats(matching: query) ?? []
+            },
+            resolveLocalChat: { [weak self] chat, completion in
+                self?.viewModel.resolveChat(chat, completion: completion)
+            }
+        )
+        vc.onOpenTarget = { [weak self] target in
+            self?.onChatSelected?(target)
+        }
+
+        let nav = ZynaNavigationController(rootViewController: vc)
+        configureSearchSheet(nav)
+        present(nav, animated: true)
+    }
+
+    private func configureSearchSheet(_ controller: UIViewController) {
+        controller.modalPresentationStyle = .pageSheet
+        guard let sheet = controller.sheetPresentationController else { return }
+        sheet.detents = [.large()]
+        sheet.prefersGrabberVisible = true
+        sheet.prefersScrollingExpandsWhenScrolledToEdge = true
     }
 }
 
@@ -358,19 +389,23 @@ extension RoomsViewController {
 
 extension RoomsViewController {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        previewPressInteraction.cancelForScroll()
+        if scrollView === tableNode.view {
+            previewPressInteraction.cancelForScroll()
+            prefetchVisibleProfileAppearances()
+        }
         GlassService.shared.setNeedsCapture()
-        prefetchVisibleProfileAppearances()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if decelerate {
+        if scrollView === tableNode.view, decelerate {
             fpsBooster.start()
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        fpsBooster.stop()
+        if scrollView === tableNode.view {
+            fpsBooster.stop()
+        }
     }
 }
 

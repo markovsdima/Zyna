@@ -42,7 +42,7 @@ final class StartChatHeaderBar: UIView {
         addSubview(cancelButton)
 
         NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 6),
+            searchField.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 18),
             searchField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             searchField.trailingAnchor.constraint(equalTo: cancelButton.leadingAnchor, constant: -10),
             searchField.heightAnchor.constraint(equalToConstant: 36),
@@ -71,8 +71,7 @@ final class StartChatHeaderBar: UIView {
     }
 
     private func makeSearchIcon() -> UIView {
-        let config = UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        let icon = UIImageView(image: UIImage(systemName: "magnifyingglass", withConfiguration: config))
+        let icon = UIImageView(image: AppIcon.magnifyingGlass.template(size: 14, weight: .medium))
         icon.tintColor = .secondaryLabel
         icon.contentMode = .center
         let container = UIView(frame: CGRect(x: 0, y: 0, width: 32, height: 36))

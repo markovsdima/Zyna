@@ -34,8 +34,11 @@ final class SelectedUserChipNode: ASDisplayNode {
         )
         nameNode.maximumNumberOfLines = 1
 
-        removeNode.image = UIImage(systemName: "xmark.circle.fill")?
-            .withTintColor(.systemGray2, renderingMode: .alwaysOriginal)
+        removeNode.image = AppIcon.xmarkCircleFill.rendered(
+            size: 18,
+            weight: .regular,
+            color: .systemGray2
+        )
         removeNode.style.preferredSize = CGSize(width: 18, height: 18)
     }
 

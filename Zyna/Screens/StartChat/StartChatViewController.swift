@@ -95,7 +95,7 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
                 cell.automaticallyManagesSubnodes = true
 
                 let icon = ASImageNode()
-                icon.image = UIImage(systemName: "person.2.fill")?.withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
+                icon.image = AppIcon.person2.rendered(size: 24, weight: .regular, color: .systemBlue)
                 icon.style.preferredSize = CGSize(width: 24, height: 24)
 
                 let text = ASTextNode()

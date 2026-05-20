@@ -49,10 +49,19 @@ final class ChatsCoordinator {
             self?.dismissAndShowChat(room: room)
         }
         vm.onNewGroup = { [weak self] in
-            self?.showSelectMembers(in: nav)
+            self?.showCreateGroup(in: nav)
         }
 
+        configureComposeSheet(nav)
         navigationController.present(nav, animated: true)
+    }
+
+    private func configureComposeSheet(_ controller: UIViewController) {
+        controller.modalPresentationStyle = .pageSheet
+        guard let sheet = controller.sheetPresentationController else { return }
+        sheet.detents = [.large()]
+        sheet.prefersGrabberVisible = true
+        sheet.prefersScrollingExpandsWhenScrolledToEdge = true
     }
 
     private func showSelectMembers(in nav: ZynaNavigationController) {
@@ -60,17 +69,41 @@ final class ChatsCoordinator {
         let vc = SelectMembersViewController(viewModel: vm)
 
         vm.onNext = { [weak self] users in
-            self?.showCreateGroup(members: users, in: nav)
+            self?.showCreateGroup(members: users, in: nav, showsInviteStepAfterCreation: false)
         }
 
         nav.push(vc)
     }
 
-    private func showCreateGroup(members: [UserProfile], in nav: ZynaNavigationController) {
+    private func showCreateGroup(
+        members: [UserProfile] = [],
+        in nav: ZynaNavigationController,
+        showsInviteStepAfterCreation: Bool = true
+    ) {
         let vm = CreateGroupViewModel(members: members, roomListService: roomListService)
         let vc = CreateGroupViewController(viewModel: vm)
 
-        vm.onRoomCreated = { [weak self] room in
+        vm.onRoomCreated = { [weak self, weak nav] room in
+            if showsInviteStepAfterCreation, let nav {
+                self?.showPostCreateInviteMembers(room: room, in: nav)
+            } else {
+                self?.dismissAndShowChat(room: room)
+            }
+        }
+
+        nav.push(vc)
+    }
+
+    private func showPostCreateInviteMembers(room: Room, in nav: ZynaNavigationController) {
+        let vm = SelectMembersViewModel(allowsSkip: true)
+        let vc = SelectMembersViewController(viewModel: vm)
+        vc.title = String(localized: "Invite Members")
+
+        vm.onNext = { [weak self] users in
+            self?.inviteUsersInBackground(users, to: room)
+            self?.dismissAndShowChat(room: room)
+        }
+        vm.onSkip = { [weak self] in
             self?.dismissAndShowChat(room: room)
         }
 
@@ -326,6 +359,10 @@ final class ChatsCoordinator {
 
     private func inviteUsers(_ users: [UserProfile], to room: Room) {
         navigationController.pop()
+        inviteUsersInBackground(users, to: room)
+    }
+
+    private func inviteUsersInBackground(_ users: [UserProfile], to room: Room) {
         for user in users {
             let userId = user.userId
             Task {

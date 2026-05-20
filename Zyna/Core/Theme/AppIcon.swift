@@ -22,9 +22,15 @@ enum AppIcon {
     case chevronForward
     case phone
     case compose
+    case person2
+    case megaphone
+    case globe
     case xmark
     case pencil
     case checkmark
+    case checkmarkCircleFill
+    case circle
+    case xmarkCircleFill
     case bubbleLeft
     case personBadgeMinus
     case personBadgePlus
@@ -51,9 +57,15 @@ enum AppIcon {
         case .chevronForward:   return "chevron.forward"
         case .phone:            return "phone.fill"
         case .compose:          return "square.and.pencil"
+        case .person2:          return "person.2.fill"
+        case .megaphone:        return "megaphone.fill"
+        case .globe:            return "globe"
         case .xmark:            return "xmark"
         case .pencil:           return "pencil"
-        case .checkmark:        return "checkmark"
+        case .checkmark:           return "checkmark"
+        case .checkmarkCircleFill: return "checkmark.circle.fill"
+        case .circle:              return "circle"
+        case .xmarkCircleFill:     return "xmark.circle.fill"
         case .bubbleLeft:       return "bubble.left.fill"
         case .personBadgeMinus: return "person.badge.minus"
         case .personBadgePlus:  return "person.badge.plus"

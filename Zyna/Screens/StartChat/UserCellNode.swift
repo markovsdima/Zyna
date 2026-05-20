@@ -75,10 +75,9 @@ final class UserCellNode: ASCellNode {
     }
 
     private func applyCheckmark(isSelected: Bool) {
-        let imageName = isSelected ? "checkmark.circle.fill" : "circle"
+        let icon: AppIcon = isSelected ? .checkmarkCircleFill : .circle
         let color: UIColor = isSelected ? .systemBlue : .systemGray3
-        checkmarkNode.image = UIImage(systemName: imageName)?
-            .withTintColor(color, renderingMode: .alwaysOriginal)
+        checkmarkNode.image = icon.rendered(size: 24, weight: .regular, color: color)
     }
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {

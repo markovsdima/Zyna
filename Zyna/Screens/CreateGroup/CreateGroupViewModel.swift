@@ -6,54 +6,251 @@
 import Foundation
 import MatrixRustSDK
 
+enum CreateGroupPostingPermission: Equatable {
+    case allMembers
+    case moderatorsOnly
+
+    var restrictsRegularMembers: Bool {
+        self == .moderatorsOnly
+    }
+}
+
+enum CreateGroupAccess: Equatable {
+    case privateInviteOnly
+    case publicAnyone
+
+    var isPublic: Bool {
+        self == .publicAnyone
+    }
+}
+
 final class CreateGroupViewModel {
 
     let members: [UserProfile]
     var roomName = ""
     var roomTopic = ""
+    var postingPermission: CreateGroupPostingPermission = .allMembers
+    var roomAccess: CreateGroupAccess = .privateInviteOnly
+    private(set) var roomAliasLocalPart = ""
 
     var onRoomCreated: ((Room) -> Void)?
     var onError: ((String) -> Void)?
+    var onCreatingChanged: ((Bool) -> Void)?
 
     private let roomListService: ZynaRoomListService
+    private var isCreating = false
+    private var aliasWasEdited = false
 
-    init(members: [UserProfile], roomListService: ZynaRoomListService) {
+    init(members: [UserProfile] = [], roomListService: ZynaRoomListService) {
         self.members = members
         self.roomListService = roomListService
     }
 
+    var serverName: String? {
+        guard let userId = try? MatrixClientService.shared.client?.userId() else { return nil }
+        return Self.serverName(from: userId)
+    }
+
+    func updateRoomName(_ value: String) {
+        roomName = value
+        guard !aliasWasEdited else { return }
+        roomAliasLocalPart = Self.defaultAliasLocalPart(for: value)
+    }
+
+    func updateRoomTopic(_ value: String) {
+        roomTopic = value
+    }
+
+    func updatePostingPermission(_ permission: CreateGroupPostingPermission) {
+        postingPermission = permission
+    }
+
+    func updateRoomAccess(_ access: CreateGroupAccess) {
+        roomAccess = access
+        if access.isPublic, roomAliasLocalPart.isEmpty {
+            roomAliasLocalPart = Self.defaultAliasLocalPart(for: roomName)
+        }
+    }
+
+    func updateRoomAliasLocalPart(_ value: String) {
+        roomAliasLocalPart = Self.normalizedAliasLocalPart(value, serverName: serverName)
+        aliasWasEdited = true
+    }
+
     func createRoom() {
+        guard !isCreating else { return }
+
         let name = roomName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
-            onError?("Room name is required")
+            onError?(String(localized: "Room name is required"))
             return
         }
+        let topic = roomTopic
+        let postingPermission = postingPermission
+        let access = roomAccess
+        let aliasLocalPartSnapshot = roomAliasLocalPart
+        let aliasWasEditedSnapshot = aliasWasEdited
 
-        Task {
-            guard let client = MatrixClientService.shared.client else { return }
+        isCreating = true
+        onCreatingChanged?(true)
+
+        Task { [weak self] in
+            guard let self else { return }
+            guard let client = MatrixClientService.shared.client else {
+                await MainActor.run {
+                    self.isCreating = false
+                    self.onCreatingChanged?(false)
+                    self.onError?(String(localized: "Matrix client is not ready."))
+                }
+                return
+            }
             do {
+                let aliasLocalPart = try await aliasLocalPartIfNeeded(
+                    client: client,
+                    roomName: name,
+                    access: access,
+                    aliasLocalPart: aliasLocalPartSnapshot,
+                    aliasWasEdited: aliasWasEditedSnapshot
+                )
+                let isPublic = access.isPublic
                 let params = CreateRoomParameters(
                     name: name,
-                    topic: roomTopic.isEmpty ? nil : roomTopic,
-                    isEncrypted: true,
+                    topic: topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : topic,
+                    isEncrypted: !isPublic,
                     isDirect: false,
-                    visibility: .private,
-                    preset: .privateChat,
+                    visibility: isPublic ? .public : .private,
+                    preset: isPublic ? .publicChat : .privateChat,
                     invite: members.map(\.userId),
                     avatar: nil,
-                    powerLevelContentOverride: nil,
+                    powerLevelContentOverride: postingPermission.restrictsRegularMembers ? Self.restrictedPostingPowerLevels : nil,
                     joinRuleOverride: nil,
-                    historyVisibilityOverride: nil,
-                    canonicalAlias: nil
+                    historyVisibilityOverride: isPublic ? nil : .invited,
+                    canonicalAlias: aliasLocalPart
                 )
                 let roomId = try await client.createRoom(request: params)
 
-                if let room = roomListService.room(for: roomId) {
-                    await MainActor.run { onRoomCreated?(room) }
+                if let room = await waitForCreatedRoom(roomId: roomId) {
+                    await MainActor.run { self.onRoomCreated?(room) }
+                } else {
+                    await MainActor.run {
+                        self.onError?(String(localized: "Room was created, but it is not available locally yet. Please wait for sync and open it from the room list."))
+                    }
                 }
             } catch {
-                await MainActor.run { onError?("Failed to create room: \(error.localizedDescription)") }
+                await MainActor.run {
+                    self.onError?(String(localized: "Failed to create room: \(error.localizedDescription)"))
+                }
             }
+
+            await MainActor.run {
+                self.isCreating = false
+                self.onCreatingChanged?(false)
+            }
+        }
+    }
+
+    private func aliasLocalPartIfNeeded(
+        client: Client,
+        roomName: String,
+        access: CreateGroupAccess,
+        aliasLocalPart: String,
+        aliasWasEdited: Bool
+    ) async throws -> String? {
+        guard access.isPublic else { return nil }
+
+        guard let serverName = Self.serverName(from: try client.userId()) else {
+            throw RoomCreationValidationError.missingServerName
+        }
+
+        let localPart = aliasLocalPart.isEmpty && !aliasWasEdited
+            ? Self.defaultAliasLocalPart(for: roomName)
+            : aliasLocalPart
+
+        guard !localPart.isEmpty else {
+            throw RoomCreationValidationError.missingAlias
+        }
+
+        let canonicalAlias = "#\(localPart):\(serverName)"
+        guard isRoomAliasFormatValid(alias: canonicalAlias) else {
+            throw RoomCreationValidationError.invalidAlias
+        }
+
+        guard try await client.isRoomAliasAvailable(alias: canonicalAlias) else {
+            throw RoomCreationValidationError.aliasTaken
+        }
+
+        return localPart
+    }
+
+    private func waitForCreatedRoom(roomId: String) async -> Room? {
+        for _ in 0..<20 {
+            if let room = roomListService.room(for: roomId) {
+                return room
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return roomListService.room(for: roomId)
+    }
+
+    private static let restrictedPostingPowerLevels = PowerLevels(
+        usersDefault: 0,
+        eventsDefault: 50,
+        stateDefault: nil,
+        ban: nil,
+        kick: nil,
+        redact: nil,
+        invite: nil,
+        notifications: nil,
+        users: [:],
+        events: [:]
+    )
+
+    private static func defaultAliasLocalPart(for roomName: String) -> String {
+        roomAliasNameFromRoomDisplayName(roomName: roomName).lowercased()
+    }
+
+    private static func normalizedAliasLocalPart(_ value: String, serverName: String?) -> String {
+        var result = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if result.hasPrefix("#") {
+            result.removeFirst()
+        }
+
+        if let serverName,
+           result.hasSuffix(":\(serverName)"),
+           let colon = result.lastIndex(of: ":") {
+            result = String(result[..<colon])
+        }
+
+        return result
+    }
+
+    private static func serverName(from userId: String) -> String? {
+        guard let colonIndex = userId.firstIndex(of: ":") else { return nil }
+        let serverStart = userId.index(after: colonIndex)
+        guard serverStart < userId.endIndex else { return nil }
+        return String(userId[serverStart...])
+    }
+}
+
+private enum RoomCreationValidationError: LocalizedError {
+    case missingServerName
+    case missingAlias
+    case invalidAlias
+    case aliasTaken
+
+    var errorDescription: String? {
+        switch self {
+        case .missingServerName:
+            return String(localized: "Cannot determine the server name for the room address.")
+        case .missingAlias:
+            return String(localized: "Room address is required for public rooms.")
+        case .invalidAlias:
+            return String(localized: "Room address contains unsupported characters.")
+        case .aliasTaken:
+            return String(localized: "This room address is already taken.")
         }
     }
 }

@@ -16,6 +16,7 @@ final class ChatNode: ASDisplayNode {
     /// table cells visually behind them (the bars are transparent glass).
     weak var glassNavBar: GlassNavBar?
     weak var glassInputBar: GlassInputBar?
+    weak var readOnlyComposerView: UIView?
 
     /// Set by ChatViewController. The scroll-to-live floating button lives
     /// at this node's view level (not inside the input bar) so its tap
@@ -95,6 +96,11 @@ final class ChatNode: ASDisplayNode {
                 } else {
                     elements.append(contentsOf: inputElements)
                 }
+            }
+            if let readOnlyComposerView,
+               readOnlyComposerView.superview === view,
+               !readOnlyComposerView.isHidden {
+                elements.append(readOnlyComposerView)
             }
             if let tap = scrollButtonTap, tap.superview === view, tap.alpha > 0 {
                 elements.append(tap)

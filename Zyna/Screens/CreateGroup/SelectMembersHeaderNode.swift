@@ -26,18 +26,10 @@ final class SelectMembersHeaderNode: ASDisplayNode {
         backgroundNode.backgroundColor = .systemBackground
 
         searchFieldNode.style.flexGrow = 1
+        searchFieldNode.style.flexShrink = 1
         searchFieldNode.style.height = ASDimension(unit: .points, value: 36)
 
-        nextButtonNode.setAttributedTitle(
-            NSAttributedString(
-                string: String(localized: "Next"),
-                attributes: [
-                    .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
-                    .foregroundColor: AppColor.accent
-                ]
-            ),
-            for: .normal
-        )
+        setActionTitle(String(localized: "Next"))
         nextButtonNode.style.flexShrink = 0
         nextButtonNode.addTarget(self, action: #selector(nextTapped), forControlEvents: .touchUpInside)
     }
@@ -57,6 +49,19 @@ final class SelectMembersHeaderNode: ASDisplayNode {
         textField.addTarget(self, action: #selector(searchChanged), for: .editingChanged)
     }
 
+    func setActionTitle(_ title: String) {
+        nextButtonNode.setAttributedTitle(
+            NSAttributedString(
+                string: title,
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
+                    .foregroundColor: AppColor.accent
+                ]
+            ),
+            for: .normal
+        )
+    }
+
     @objc private func nextTapped() {
         onNextTapped?()
     }
@@ -66,8 +71,7 @@ final class SelectMembersHeaderNode: ASDisplayNode {
     }
 
     private func makeSearchIcon() -> UIView {
-        let config = UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        let icon = UIImageView(image: UIImage(systemName: "magnifyingglass", withConfiguration: config))
+        let icon = UIImageView(image: AppIcon.magnifyingGlass.template(size: 14, weight: .medium))
         icon.tintColor = .secondaryLabel
         icon.contentMode = .center
         let container = UIView(frame: CGRect(x: 0, y: 0, width: 32, height: 36))

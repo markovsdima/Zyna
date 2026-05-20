@@ -114,6 +114,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var batchFetchCancellable: AnyCancellable?
     private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
+    private let readOnlyComposerView = ReadOnlyComposerPlaceholderView()
     private let searchBar = SearchBarView()
     private let inviteBanner = InviteBannerView()
 
@@ -128,6 +129,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let scrollButtonBadgeLabel = UILabel()
     private let replySwipeIndicatorView = UIImageView()
     private let dateHeaderOverlayManager = DateHeaderOverlayManager()
+    private var showsReadOnlyComposerPlaceholder = false
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
@@ -319,6 +321,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             glassInputBar.isHidden = viewModel.isInvited
             node.addSubnode(glassInputBar)
             node.glassInputBar = glassInputBar
+
+            readOnlyComposerView.isHidden = true
+            view.addSubview(readOnlyComposerView)
+            node.readOnlyComposerView = readOnlyComposerView
         }
 
         // Scroll-to-live button — lives on node.view so its tap target
@@ -414,7 +420,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
         node.tableNode.contentInset.bottom = glassNavBar.coveredHeight
 
+        readOnlyComposerView.updateLayout(in: view)
         glassInputBar.updateLayout(in: view)
+        applyComposerContainerVisibility()
         updateTableInsetsForInputBar()
         updateDateHeaderOverlay()
     }
@@ -482,7 +490,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
 
-        let newCoveredHeight = glassInputBar.coveredHeight
+        let newCoveredHeight = activeComposerCoveredHeight()
         let previousCoveredHeight = previousInputCoveredHeight
         let tableView = node.tableNode.view
         let liveEdgeDistance = tableDistanceToLiveEdge()
@@ -518,6 +526,24 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         previousInputCoveredHeight = newCoveredHeight
+    }
+
+    private func activeComposerCoveredHeight() -> CGFloat {
+        guard !viewModel.isInvited else { return 0 }
+        if showsReadOnlyComposerPlaceholder {
+            return readOnlyComposerView.coveredHeight(in: view)
+        }
+        return glassInputBar.coveredHeight
+    }
+
+    private func applyComposerContainerVisibility() {
+        guard !isPreviewMode else { return }
+        let shouldShowReadOnly = !viewModel.isInvited && showsReadOnlyComposerPlaceholder
+        glassInputBar.isHidden = viewModel.isInvited || shouldShowReadOnly
+        readOnlyComposerView.isHidden = !shouldShowReadOnly
+        if shouldShowReadOnly {
+            glassInputBar.inputNode.textInputNode.resignFirstResponder()
+        }
     }
 
     private func tableOffsetBounds(for tableView: UIScrollView) -> (minY: CGFloat, maxY: CGFloat) {
@@ -634,7 +660,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         )
         let bottomObstruction = min(
             tableFrame.maxY,
-            glassInputBar.isHidden ? view.bounds.maxY : glassInputBar.frame.minY
+            composerTopObstructionY()
         )
 
         guard bottomObstruction > topObstruction else { return nil }
@@ -645,6 +671,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             width: tableFrame.width,
             height: bottomObstruction - topObstruction
         )
+    }
+
+    private func composerTopObstructionY() -> CGFloat {
+        if !readOnlyComposerView.isHidden {
+            return readOnlyComposerView.frame.minY
+        }
+        return glassInputBar.isHidden ? view.bounds.maxY : glassInputBar.frame.minY
     }
 
     private func updateDateHeaderOverlay(animated: Bool = false) {
@@ -1012,7 +1045,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .sink { [weak self] invited in
                 guard let self, !self.isPreviewMode else { return }
                 self.inviteBanner.isHidden = !invited
-                self.glassInputBar.isHidden = invited
+                self.applyComposerContainerVisibility()
+                self.updateTableInsetsForInputBar()
+                self.updateDateHeaderOverlay()
             }
             .store(in: &cancellables)
 
@@ -1076,7 +1111,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .receive(on: DispatchQueue.main)
             .sink { [weak self] blocked in
                 guard let self, !self.isPreviewMode else { return }
-                self.glassInputBar.inputNode.setComposerLocked(blocked)
+                let isRoomSendRestricted = self.viewModel.composerSendRestrictionReason == .roomSendNotAllowed
+                self.glassInputBar.inputNode.setComposerLocked(blocked && !isRoomSendRestricted)
+            }
+            .store(in: &cancellables)
+
+        viewModel.$composerSendRestrictionReason
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] reason in
+                guard let self, !self.isPreviewMode else { return }
+                self.showsReadOnlyComposerPlaceholder = reason == .roomSendNotAllowed
+                self.glassInputBar.inputNode.setComposerLocked(self.viewModel.isComposerSendBlocked && reason != .roomSendNotAllowed)
+                self.applyComposerContainerVisibility()
+                self.updateTableInsetsForInputBar()
+                self.updateDateHeaderOverlay()
             }
             .store(in: &cancellables)
     }
@@ -3098,6 +3146,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             present(alert, animated: true)
         case .recipientIdentityVerificationRequired:
             presentRoomSendSecurityIssue(context: notice.context)
+        case .roomSendNotAllowed:
+            let alert = UIAlertController(
+                title: String(localized: "Cannot Send Messages"),
+                message: String(localized: "Only people with posting permission can send messages in this room."),
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+            present(alert, animated: true)
         }
     }
 

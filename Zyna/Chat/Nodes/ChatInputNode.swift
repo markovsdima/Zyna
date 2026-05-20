@@ -1127,7 +1127,7 @@ extension ChatInputNode {
         micButtonNode.alpha = alpha
         textInputNode.alpha = isComposerLocked ? 0.65 : 1
         textInputNode.accessibilityHint = isComposerLocked
-            ? String(localized: "Verify this device to send encrypted messages")
+            ? String(localized: "Sending messages is currently unavailable")
             : nil
     }
 }

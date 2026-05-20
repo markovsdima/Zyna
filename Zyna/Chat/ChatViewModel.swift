@@ -158,6 +158,7 @@ final class ChatViewModel {
     @Published private(set) var isGroupChat: Bool = false
     @Published private(set) var searchState: ChatSearchState?
     @Published private(set) var connectionStatusText: String?
+    @Published private(set) var composerSendRestrictionReason: OutgoingSendFailureReason?
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -189,8 +190,10 @@ final class ChatViewModel {
     private var rowIndexByEventId: [String: Int] = [:]
     private var didLoadInitialWindow = false
     private var roomResolutionTask: Task<Void, Never>?
+    private var sendPermissionTask: Task<Void, Never>?
     private var currentMatrixClientState = MatrixClientService.shared.state
     private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
+    private var canSendRoomMessages = true
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
@@ -249,6 +252,11 @@ final class ChatViewModel {
         bindCommonServices()
         loadInitialWindowIfNeeded()
         scheduleLiveRoomResolution()
+    }
+
+    deinit {
+        roomResolutionTask?.cancel()
+        sendPermissionTask?.cancel()
     }
 
     private func bindCommonServices() {
@@ -378,6 +386,12 @@ final class ChatViewModel {
                 self?.seedReadReceiptBaseline(eventId: eventId)
             }
         }
+        timelineService.onRoomPowerLevelsChanged = { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let room = self.room else { return }
+                self.refreshRoomSendPermission(room)
+            }
+        }
     }
 
     private func attachLiveRoom(_ room: Room) {
@@ -392,6 +406,7 @@ final class ChatViewModel {
         self.timelineService = timelineService
         bindTimelineService(timelineService)
         refreshComposerSendPermission()
+        refreshRoomSendPermission(room)
         updateConnectionStatus()
         resolveRoomInfo(room)
 
@@ -405,6 +420,12 @@ final class ChatViewModel {
         Task { [weak self] in
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
+            if let powerLevels = info.powerLevels {
+                let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
+                await MainActor.run {
+                    self.updateCanSendRoomMessages(canSendMessage)
+                }
+            }
 
             if info.isDirect, let userId = info.heroes.first?.userId {
                 await MainActor.run {
@@ -430,6 +451,24 @@ final class ChatViewModel {
                 }
             }
         }
+    }
+
+    private func refreshRoomSendPermission(_ room: Room) {
+        sendPermissionTask?.cancel()
+        sendPermissionTask = Task { [weak self] in
+            guard let self else { return }
+            guard let powerLevels = try? await room.getPowerLevels() else { return }
+            let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
+            await MainActor.run {
+                self.updateCanSendRoomMessages(canSendMessage)
+            }
+        }
+    }
+
+    private func updateCanSendRoomMessages(_ canSend: Bool) {
+        guard canSendRoomMessages != canSend else { return }
+        canSendRoomMessages = canSend
+        refreshComposerSendPermission()
     }
 
     private func handleMatrixState(_ state: MatrixClientState) {
@@ -2555,23 +2594,46 @@ final class ChatViewModel {
     }
 
     private func refreshComposerSendPermission() {
-        let blocked = composerSendBlockedValue()
+        let reason = composerSendBlockReason()
+        let blocked = composerSendBlockedValue(reason: reason)
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.isComposerSendBlocked != blocked else { return }
-                self.isComposerSendBlocked = blocked
+                guard let self else { return }
+                if self.composerSendRestrictionReason != reason {
+                    self.composerSendRestrictionReason = reason
+                }
+                if self.isComposerSendBlocked != blocked {
+                    self.isComposerSendBlocked = blocked
+                }
             }
             return
         }
-        guard isComposerSendBlocked != blocked else { return }
-        isComposerSendBlocked = blocked
+        if composerSendRestrictionReason != reason {
+            composerSendRestrictionReason = reason
+        }
+        if isComposerSendBlocked != blocked {
+            isComposerSendBlocked = blocked
+        }
     }
 
     private func composerSendBlockedValue() -> Bool {
+        composerSendBlockedValue(reason: composerSendBlockReason())
+    }
+
+    private func composerSendBlockedValue(reason: OutgoingSendFailureReason?) -> Bool {
         guard !mode.isPreview else { return false }
         guard room != nil else { return true }
+        return reason != nil
+    }
+
+    private func composerSendBlockReason() -> OutgoingSendFailureReason? {
+        guard !mode.isPreview else { return nil }
+        guard room != nil else { return nil }
+        guard canSendRoomMessages else { return .roomSendNotAllowed }
         return requiresVerifiedDeviceForSending
             && !SessionVerificationService.shared.canSendEncryptedMessages
+            ? .ownDeviceVerificationRequired
+            : nil
     }
 
     @discardableResult
@@ -2586,7 +2648,7 @@ final class ChatViewModel {
         }
         guard !blocked else {
             guard room != nil else { return false }
-            publishSendFailureNotice(reason: .ownDeviceVerificationRequired)
+            publishSendFailureNotice(reason: composerSendBlockReason())
             return false
         }
         return true
@@ -3891,9 +3953,12 @@ final class ChatViewModel {
         }
         roomResolutionTask?.cancel()
         roomResolutionTask = nil
+        sendPermissionTask?.cancel()
+        sendPermissionTask = nil
         timelineService?.onDiffs = nil
         timelineService?.onReadCursor = nil
         timelineService?.onOwnFullyReadMarker = nil
+        timelineService?.onRoomPowerLevelsChanged = nil
         diffBatcher.onFlush = nil
         timelineService?.stopListening()
     }

@@ -478,6 +478,50 @@
         }
       }
     },
+    "%llu members" : {
+      "localizations" : {
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu участника"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu участников"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu участник"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu участников"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "1 member" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 участник"
+          }
+        }
+      }
+    },
     "A previous scan was interrupted. Pages: %d." : {
       "localizations" : {
         "ru" : {
@@ -528,6 +572,16 @@
         }
       }
     },
+    "Access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступ"
+          }
+        }
+      }
+    },
     "Add" : {
       "localizations" : {
         "ru" : {
@@ -551,6 +605,16 @@
         }
       }
     },
+    "All Members" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все участники"
+          }
+        }
+      }
+    },
     "All Set!" : {
       "localizations" : {
         "ru" : {
@@ -570,6 +634,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Другое устройство хочет верифицировать эту сессию."
+          }
+        }
+      }
+    },
+    "Anyone can find and join. Messages are not encrypted." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Любой сможет найти комнату и присоединиться. Сообщения не шифруются."
           }
         }
       }
@@ -774,6 +848,26 @@
         }
       }
     },
+    "Cannot Send Messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нельзя отправлять сообщения"
+          }
+        }
+      }
+    },
+    "Cannot determine the server name for the room address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось определить имя сервера для адреса комнаты."
+          }
+        }
+      }
+    },
     "Caption" : {
 
     },
@@ -893,6 +987,16 @@
         }
       }
     },
+    "Close Search" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрыть поиск"
+          }
+        }
+      }
+    },
     "Close voice player" : {
       "localizations" : {
         "ru" : {
@@ -1003,12 +1107,42 @@
         }
       }
     },
+    "Could not continue the secure call. Check participant verification and try again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось продолжить защищённый звонок. Проверьте подтверждение участника и попробуйте снова."
+          }
+        }
+      }
+    },
+    "Could not create room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать комнату"
+          }
+        }
+      }
+    },
     "Could Not Load Devices" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось загрузить устройства"
+          }
+        }
+      }
+    },
+    "Could not send encrypted call signaling. Try again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось отправить зашифрованный сигнал звонка. Попробуйте снова."
           }
         }
       }
@@ -1036,26 +1170,6 @@
         }
       }
     },
-    "Could not continue the secure call. Check participant verification and try again." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Не удалось продолжить защищённый звонок. Проверьте подтверждение участника и попробуйте снова."
-          }
-        }
-      }
-    },
-    "Could not send encrypted call signaling. Try again." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Не удалось отправить зашифрованный сигнал звонка. Попробуйте снова."
-          }
-        }
-      }
-    },
     "Create Account" : {
       "localizations" : {
         "ru" : {
@@ -1072,6 +1186,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Создать группу"
+          }
+        }
+      }
+    },
+    "Creating..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создаём..."
           }
         }
       }
@@ -1415,6 +1539,36 @@
         }
       }
     },
+    "Failed to create chat: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать чат: %@"
+          }
+        }
+      }
+    },
+    "Failed to create room: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать комнату: %@"
+          }
+        }
+      }
+    },
+    "Failed to join room: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось присоединиться к комнате: %@"
+          }
+        }
+      }
+    },
     "Fix duplicate or stuck local timeline rows" : {
 
     },
@@ -1584,6 +1738,16 @@
         }
       }
     },
+    "Invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пригласить"
+          }
+        }
+      }
+    },
     "Invite Members" : {
       "localizations" : {
         "ru" : {
@@ -1610,6 +1774,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ирис и мята"
+          }
+        }
+      }
+    },
+    "Join Room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Присоединиться"
+          }
+        }
+      }
+    },
+    "Joining..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Присоединяемся..."
           }
         }
       }
@@ -1842,6 +2026,16 @@
         }
       }
     },
+    "Matrix client is not ready." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Matrix-клиент ещё не готов."
+          }
+        }
+      }
+    },
     "Member" : {
       "localizations" : {
         "ru" : {
@@ -1862,6 +2056,16 @@
         }
       }
     },
+    "Members can send messages according to room permissions." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники смогут писать согласно правам комнаты."
+          }
+        }
+      }
+    },
     "Message" : {
       "localizations" : {
         "ru" : {
@@ -1872,22 +2076,22 @@
         }
       }
     },
-    "Message Not Sent" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сообщение не отправлено"
-          }
-        }
-      }
-    },
     "Message Keys Are Not Fully Saved" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ключи сообщений сохранены не полностью"
+          }
+        }
+      }
+    },
+    "Message Not Sent" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение не отправлено"
           }
         }
       }
@@ -1908,6 +2112,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Модератор"
+          }
+        }
+      }
+    },
+    "Moderators Only" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только модераторы"
           }
         }
       }
@@ -2020,6 +2234,16 @@
     "No reactions yet." : {
 
     },
+    "No results" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ничего не найдено"
+          }
+        }
+      }
+    },
     "No Specific Participant Found" : {
       "localizations" : {
         "ru" : {
@@ -2066,12 +2290,42 @@
     "Online" : {
 
     },
+    "Only invited people can join. Messages are encrypted." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Войти смогут только приглашённые. Сообщения шифруются."
+          }
+        }
+      }
+    },
+    "Only people with posting permission can send messages in this room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Писать в этой комнате могут только участники с правом отправки."
+          }
+        }
+      }
+    },
     "Open Profile" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Открыть профиль"
+          }
+        }
+      }
+    },
+    "Open Room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть комнату"
           }
         }
       }
@@ -2162,6 +2416,16 @@
         }
       }
     },
+    "People" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Люди"
+          }
+        }
+      }
+    },
     "Photos" : {
       "localizations" : {
         "ru" : {
@@ -2212,6 +2476,16 @@
         }
       }
     },
+    "Posting Permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Права на отправку"
+          }
+        }
+      }
+    },
     "Preserve keys and show re-login" : {
 
     },
@@ -2225,12 +2499,42 @@
         }
       }
     },
+    "Private" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приватная"
+          }
+        }
+      }
+    },
     "Profile" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Профиль"
+          }
+        }
+      }
+    },
+    "Public" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Публичная"
+          }
+        }
+      }
+    },
+    "Public Rooms" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Публичные комнаты"
           }
         }
       }
@@ -2318,12 +2622,42 @@
         }
       }
     },
+    "Regular members can read, but only moderators can post." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обычные участники смогут читать, но писать смогут только модераторы."
+          }
+        }
+      }
+    },
     "Remove" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Удалить"
+          }
+        }
+      }
+    },
+    "Room name is required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите название комнаты"
+          }
+        }
+      }
+    },
+    "Room was created, but it is not available locally yet. Please wait for sync and open it from the room list." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Комната создана, но пока недоступна локально. Дождитесь синхронизации и откройте её из списка чатов."
           }
         }
       }
@@ -2442,6 +2776,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Роль"
+          }
+        }
+      }
+    },
+    "Room Address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес комнаты"
+          }
+        }
+      }
+    },
+    "Room address contains unsupported characters." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес комнаты содержит неподдерживаемые символы."
+          }
+        }
+      }
+    },
+    "Room address is required for public rooms." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для публичной комнаты нужен адрес."
           }
         }
       }
@@ -2579,6 +2943,16 @@
         }
       }
     },
+    "Search Error" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ошибка поиска"
+          }
+        }
+      }
+    },
     "Search messages" : {
       "localizations" : {
         "ru" : {
@@ -2619,6 +2993,16 @@
         }
       }
     },
+    "Searching..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ищем..."
+          }
+        }
+      }
+    },
     "Security" : {
       "localizations" : {
         "ru" : {
@@ -2648,6 +3032,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Написать"
+          }
+        }
+      }
+    },
+    "Sending messages is currently unavailable" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправка сообщений сейчас недоступна"
           }
         }
       }
@@ -2890,6 +3284,16 @@
     "Simulate Soft Logout" : {
 
     },
+    "Skip" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пропустить"
+          }
+        }
+      }
+    },
     "Slide to cancel" : {
       "localizations" : {
         "ru" : {
@@ -3026,6 +3430,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Это принимает новую идентичность шифрования участника для отправки сообщений. Это не подтверждает, кто её контролирует. Используйте только после проверки изменения с участником по другому каналу."
+          }
+        }
+      }
+    },
+    "This room address is already taken." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот адрес комнаты уже занят."
           }
         }
       }
@@ -3167,22 +3581,22 @@
         }
       }
     },
-    "Unable to Save" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Не удалось сохранить"
-          }
-        }
-      }
-    },
     "Unable to decrypt message" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось расшифровать сообщение"
+          }
+        }
+      }
+    },
+    "Unable to Save" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить"
           }
         }
       }
@@ -3277,22 +3691,23 @@
         }
       }
     },
-    "Verify this device to send encrypted messages" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Подтвердите это устройство, чтобы отправлять зашифрованные сообщения"
-          }
-        }
-      }
-    },
     "Verify this device to make encrypted calls." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Подтвердите это устройство, чтобы совершать зашифрованные звонки."
+          }
+        }
+      }
+    },
+    "Verify this device to send encrypted messages" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подтвердите это устройство, чтобы отправлять зашифрованные сообщения"
           }
         }
       }
@@ -3483,6 +3898,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Вы отклонили заявку %@"
+          }
+        }
+      }
+    },
+    "You do not have permission to send call signaling in this room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет прав на отправку сигналов звонка в этой комнате."
           }
         }
       }
@@ -3776,6 +4201,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zyna не будет повторять отправку этого сообщения автоматически. После устранения проблемы доверия нажмите на неотправленное сообщение и повторите отправку вручную."
+          }
+        }
+      }
+    },
+    "Notifications toggle will appear here" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Здесь будет переключатель уведомлений"
           }
         }
       }
