@@ -179,6 +179,9 @@ final class TimelineService {
     /// Room power levels changed while the timeline is open.
     var onRoomPowerLevelsChanged: (() -> Void)?
 
+    /// Room encryption state changed while the timeline is open.
+    var onRoomEncryptionChanged: (() -> Void)?
+
     private let room: Room
     private var timeline: Timeline?
     private var listenerHandle: TaskHandle?
@@ -263,6 +266,7 @@ final class TimelineService {
         }
 
         var didReceivePowerLevels = false
+        var didReceiveEncryption = false
 
         // Extract read cursor: the timestamp of the newest own message
         // that has a read receipt from someone else.
@@ -271,16 +275,22 @@ final class TimelineService {
             guard let event = item.asEvent() else { continue }
             let timestamp = TimeInterval(event.timestamp) / 1000
 
-            if case .state(stateKey: _, content: let state) = event.content,
-               case .roomPowerLevels(
-                   events: _,
-                   previousEvents: _,
-                   users: _,
-                   previousUsers: _,
-                   thresholds: _,
-                   previousThresholds: _
-               ) = state {
-                didReceivePowerLevels = true
+            if case .state(stateKey: _, content: let state) = event.content {
+                switch state {
+                case .roomPowerLevels(
+                    events: _,
+                    previousEvents: _,
+                    users: _,
+                    previousUsers: _,
+                    thresholds: _,
+                    previousThresholds: _
+                ):
+                    didReceivePowerLevels = true
+                case .roomEncryption:
+                    didReceiveEncryption = true
+                default:
+                    break
+                }
             }
 
             if event.isOwn {
@@ -300,6 +310,9 @@ final class TimelineService {
         }
         if didReceivePowerLevels {
             onRoomPowerLevelsChanged?()
+        }
+        if didReceiveEncryption {
+            onRoomEncryptionChanged?()
         }
 
         logTimeline("Timeline diffs forwarded: \(diffs.count) diffs")

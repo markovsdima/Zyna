@@ -2244,6 +2244,16 @@
         }
       }
     },
+    "Not encrypted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не зашифровано"
+          }
+        }
+      }
+    },
     "No Specific Participant Found" : {
       "localizations" : {
         "ru" : {

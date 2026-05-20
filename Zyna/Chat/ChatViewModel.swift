@@ -159,6 +159,7 @@ final class ChatViewModel {
     @Published private(set) var searchState: ChatSearchState?
     @Published private(set) var connectionStatusText: String?
     @Published private(set) var composerSendRestrictionReason: OutgoingSendFailureReason?
+    @Published private(set) var isRoomEncrypted: Bool = true
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -248,6 +249,7 @@ final class ChatViewModel {
         self.directUserId = cachedRoom.directUserId
         self.partnerUserId = cachedRoom.directUserId
         self.isGroupChat = cachedRoom.directUserId == nil
+        self.isRoomEncrypted = cachedRoom.isEncrypted
 
         bindCommonServices()
         loadInitialWindowIfNeeded()
@@ -392,6 +394,13 @@ final class ChatViewModel {
                 self.refreshRoomSendPermission(room)
             }
         }
+        timelineService.onRoomEncryptionChanged = { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let room = self.room else { return }
+                self.refreshRoomEncryptionState(room)
+                self.refreshComposerSendPermission()
+            }
+        }
     }
 
     private func attachLiveRoom(_ room: Room) {
@@ -401,6 +410,7 @@ final class ChatViewModel {
         roomResolutionTask = nil
         self.room = room
         isInvited = room.membership() == .invited
+        refreshRoomEncryptionState(room)
 
         let timelineService = TimelineService(room: room)
         self.timelineService = timelineService
@@ -469,6 +479,12 @@ final class ChatViewModel {
         guard canSendRoomMessages != canSend else { return }
         canSendRoomMessages = canSend
         refreshComposerSendPermission()
+    }
+
+    private func refreshRoomEncryptionState(_ room: Room) {
+        let isEncrypted = room.encryptionState() != .notEncrypted
+        guard isRoomEncrypted != isEncrypted else { return }
+        isRoomEncrypted = isEncrypted
     }
 
     private func handleMatrixState(_ state: MatrixClientState) {
@@ -3959,6 +3975,7 @@ final class ChatViewModel {
         timelineService?.onReadCursor = nil
         timelineService?.onOwnFullyReadMarker = nil
         timelineService?.onRoomPowerLevelsChanged = nil
+        timelineService?.onRoomEncryptionChanged = nil
         diffBatcher.onFlush = nil
         timelineService?.stopListening()
     }

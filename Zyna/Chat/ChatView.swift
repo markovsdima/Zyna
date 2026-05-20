@@ -115,6 +115,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
     private let readOnlyComposerView = ReadOnlyComposerPlaceholderView()
+    private let unencryptedNoticeView = UnencryptedRoomNoticeView()
     private let searchBar = SearchBarView()
     private let inviteBanner = InviteBannerView()
 
@@ -325,6 +326,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             readOnlyComposerView.isHidden = true
             view.addSubview(readOnlyComposerView)
             node.readOnlyComposerView = readOnlyComposerView
+
+            unencryptedNoticeView.isHidden = true
+            view.addSubview(unencryptedNoticeView)
+            node.unencryptedNoticeView = unencryptedNoticeView
         }
 
         // Scroll-to-live button — lives on node.view so its tap target
@@ -422,7 +427,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         readOnlyComposerView.updateLayout(in: view)
         glassInputBar.updateLayout(in: view)
-        applyComposerContainerVisibility()
+        updateComposerChrome()
         updateTableInsetsForInputBar()
         updateDateHeaderOverlay()
     }
@@ -530,10 +535,36 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func activeComposerCoveredHeight() -> CGFloat {
         guard !viewModel.isInvited else { return 0 }
+        let composerHeight: CGFloat
         if showsReadOnlyComposerPlaceholder {
-            return readOnlyComposerView.coveredHeight(in: view)
+            composerHeight = readOnlyComposerView.coveredHeight(in: view)
+        } else {
+            composerHeight = glassInputBar.coveredHeight
         }
-        return glassInputBar.coveredHeight
+        return composerHeight + unencryptedNoticeView.additionalCoveredHeight
+    }
+
+    private func activeComposerTopY() -> CGFloat {
+        if !readOnlyComposerView.isHidden {
+            return readOnlyComposerView.frame.minY
+        }
+        if !glassInputBar.isHidden {
+            return glassInputBar.frame.minY
+        }
+        return view.bounds.maxY
+    }
+
+    private func updateUnencryptedNoticeLayout() {
+        unencryptedNoticeView.updateLayout(in: view, aboveY: activeComposerTopY())
+    }
+
+    private func updateComposerChrome() {
+        applyComposerContainerVisibility()
+        updateUnencryptedNoticeLayout()
+    }
+
+    private func shouldShowUnencryptedNotice() -> Bool {
+        !viewModel.isInvited && !viewModel.isRoomEncrypted
     }
 
     private func applyComposerContainerVisibility() {
@@ -541,9 +572,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let shouldShowReadOnly = !viewModel.isInvited && showsReadOnlyComposerPlaceholder
         glassInputBar.isHidden = viewModel.isInvited || shouldShowReadOnly
         readOnlyComposerView.isHidden = !shouldShowReadOnly
+        unencryptedNoticeView.isHidden = !shouldShowUnencryptedNotice()
         if shouldShowReadOnly {
             glassInputBar.inputNode.textInputNode.resignFirstResponder()
         }
+    }
+
+    private func composerTopObstructionY() -> CGFloat {
+        if !unencryptedNoticeView.isHidden {
+            return unencryptedNoticeView.frame.minY
+        }
+        if !readOnlyComposerView.isHidden {
+            return readOnlyComposerView.frame.minY
+        }
+        return glassInputBar.isHidden ? view.bounds.maxY : glassInputBar.frame.minY
     }
 
     private func tableOffsetBounds(for tableView: UIScrollView) -> (minY: CGFloat, maxY: CGFloat) {
@@ -671,13 +713,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             width: tableFrame.width,
             height: bottomObstruction - topObstruction
         )
-    }
-
-    private func composerTopObstructionY() -> CGFloat {
-        if !readOnlyComposerView.isHidden {
-            return readOnlyComposerView.frame.minY
-        }
-        return glassInputBar.isHidden ? view.bounds.maxY : glassInputBar.frame.minY
     }
 
     private func updateDateHeaderOverlay(animated: Bool = false) {
@@ -1045,7 +1080,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .sink { [weak self] invited in
                 guard let self, !self.isPreviewMode else { return }
                 self.inviteBanner.isHidden = !invited
-                self.applyComposerContainerVisibility()
+                self.updateComposerChrome()
+                GlassService.shared.setNeedsCapture()
                 self.updateTableInsetsForInputBar()
                 self.updateDateHeaderOverlay()
             }
@@ -1122,7 +1158,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 guard let self, !self.isPreviewMode else { return }
                 self.showsReadOnlyComposerPlaceholder = reason == .roomSendNotAllowed
                 self.glassInputBar.inputNode.setComposerLocked(self.viewModel.isComposerSendBlocked && reason != .roomSendNotAllowed)
-                self.applyComposerContainerVisibility()
+                self.updateComposerChrome()
+                GlassService.shared.setNeedsCapture()
+                self.updateTableInsetsForInputBar()
+                self.updateDateHeaderOverlay()
+            }
+            .store(in: &cancellables)
+
+        viewModel.$isRoomEncrypted
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, !self.isPreviewMode else { return }
+                self.updateComposerChrome()
+                GlassService.shared.setNeedsCapture()
                 self.updateTableInsetsForInputBar()
                 self.updateDateHeaderOverlay()
             }
@@ -2350,6 +2398,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let sourceView = node.tableNode.view
         glassNavBar.sourceView = sourceView
         glassInputBar.sourceView = sourceView
+        unencryptedNoticeView.sourceView = sourceView
         if Self.showGlassComparison {
             glassComparison.sourceView = sourceView
         }

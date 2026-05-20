@@ -15,6 +15,7 @@ enum AppIcon {
     case mic
     case lockOpen
     case lockClosed
+    case lockSlash
     case chevronLeft
     case chevronUp
     case chevronDown
@@ -50,6 +51,7 @@ enum AppIcon {
         case .mic:              return "mic.fill"
         case .lockOpen:         return "lock.open.fill"
         case .lockClosed:       return "lock.fill"
+        case .lockSlash:        return "lock.slash"
         case .chevronLeft:      return "chevron.left"
         case .chevronUp:        return "chevron.up"
         case .chevronDown:      return "chevron.down"

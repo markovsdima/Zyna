@@ -18,6 +18,7 @@ struct RoomModel: Equatable {
     let unreadCount: Int
     let unreadMentionCount: Int
     let isMarkedUnread: Bool
+    let isEncrypted: Bool
     let directUserId: String?
 }
 
@@ -47,6 +48,7 @@ extension RoomModel {
             unreadCount: Int(room.unreadCount),
             unreadMentionCount: Int(room.unreadMentionCount),
             isMarkedUnread: room.isMarkedUnread,
+            isEncrypted: room.isEncrypted,
             directUserId: room.directUserId
         )
     }
@@ -72,6 +74,7 @@ extension RoomModel {
             unreadCount: unreadCount,
             unreadMentionCount: unreadMentionCount,
             isMarkedUnread: isMarkedUnread,
+            isEncrypted: isEncrypted,
             directUserId: directUserId
         )
     }
