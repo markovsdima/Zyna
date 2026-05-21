@@ -28,6 +28,7 @@ final class RoomDetailsNode: ScreenNode {
     var onPinnedMessagesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
+    var onLeaveTapped: (() -> Void)?
 
     /// Set by the VC after the bar is configured. Lets us put the bar
     /// first in the a11y tree — otherwise VO walks subview order and
@@ -59,6 +60,7 @@ final class RoomDetailsNode: ScreenNode {
     private let pinnedMessagesRow = ActionRowNode()
     private let securityRow = ActionRowNode()
     private let rolesPermissionsRow = ActionRowNode()
+    private let leaveRoomRow = ActionRowNode()
 
     private let inviteButtonNode = AccessibleButtonNode()
     private let searchButtonNode = AccessibleButtonNode()
@@ -71,6 +73,7 @@ final class RoomDetailsNode: ScreenNode {
     private var isEditing = false
     private var isDirectRoom = false
     private var isDirectProfileAvailable = false
+    private var isLeavingRoom = false
     private var hasAvatar = false
     private var hasMembersRow = false
     private var avatarLoadRevision: UInt64 = 0
@@ -173,6 +176,10 @@ final class RoomDetailsNode: ScreenNode {
             leadingIcon: AppIcon.person2.rendered(size: 16, weight: .medium, color: AppColor.accent),
             accessibilityHint: String(localized: "Opens room roles and permissions settings")
         ))
+
+        leaveRoomRow.onTap = { [weak self] in self?.onLeaveTapped?() }
+        leaveRoomRow.style.alignSelf = .stretch
+        applyLeaveRoomRowConfiguration()
     }
 
     // MARK: - Update
@@ -254,6 +261,7 @@ final class RoomDetailsNode: ScreenNode {
         if isDirectRoom {
             hasMembersRow = false
         }
+        applyLeaveRoomRowConfiguration()
         setNeedsLayout()
     }
 
@@ -269,6 +277,14 @@ final class RoomDetailsNode: ScreenNode {
         editAvatarOverlayNode.isHidden = !effectiveEditing
         avatarTapNode.isAccessibilityElement = effectiveEditing
         removeAvatarButtonNode.isHidden = !(effectiveEditing && hasAvatar)
+        applyLeaveRoomRowConfiguration()
+        setNeedsLayout()
+    }
+
+    func setLeavingRoom(_ leaving: Bool) {
+        guard isLeavingRoom != leaving else { return }
+        isLeavingRoom = leaving
+        applyLeaveRoomRowConfiguration()
         setNeedsLayout()
     }
 
@@ -310,6 +326,33 @@ final class RoomDetailsNode: ScreenNode {
             leadingIcon: AppIcon.person.rendered(size: 17, weight: .medium, color: AppColor.accent),
             isEnabled: isDirectProfileAvailable,
             accessibilityHint: isDirectProfileAvailable ? String(localized: "Open Profile") : nil
+        ))
+    }
+
+    private func applyLeaveRoomRowConfiguration() {
+        let baseTitle = isDirectRoom
+            ? String(localized: "Leave Conversation")
+            : String(localized: "Leave Room")
+        let leavingTitle = isDirectRoom
+            ? String(localized: "Leaving Conversation")
+            : String(localized: "Leaving Room")
+        let title = isLeavingRoom ? leavingTitle : baseTitle
+        let isEnabled = !isLeavingRoom && !isEditing
+
+        leaveRoomRow.apply(ActionRowNode.Configuration(
+            title: title,
+            leadingIcon: AppIcon.personBadgeMinus.rendered(
+                size: 17,
+                weight: .medium,
+                color: AppColor.destructive
+            ),
+            accessory: .none,
+            isEnabled: isEnabled,
+            titleColor: AppColor.destructive,
+            accessibilityLabel: title,
+            accessibilityHint: isEnabled
+                ? String(localized: "Shows a confirmation before leaving")
+                : nil
         ))
     }
 
@@ -428,6 +471,7 @@ final class RoomDetailsNode: ScreenNode {
             buttonsChildren.append(rolesPermissionsRow)
             buttonsChildren.append(contentsOf: [inviteButtonNode, searchButtonNode])
         }
+        buttonsChildren.append(leaveRoomRow)
 
         let buttonsStack = ASStackLayoutSpec(
             direction: .vertical, spacing: 24,

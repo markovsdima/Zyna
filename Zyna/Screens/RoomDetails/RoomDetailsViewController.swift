@@ -37,6 +37,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     var onPinnedMessagesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
+    var onRoomLeft: ((String) -> Void)?
 
     private let room: Room
     private let memberCount: Int?
@@ -46,9 +47,12 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
     private var isEditingDetails = false
     private var isSavingChanges = false
+    private var isLeavingRoom = false
+    private var isPreparingLeaveConfirmation = false
     private var loadedRoomName = "Group"
     private var loadedHasAvatar = false
     private var pendingAvatarChange: PendingAvatarChange = .none
+    private var latestRoomInfo: RoomInfo?
     private var roomInfoTask: Task<Void, Never>?
     private var roomInfoSubscription: TaskHandle?
 
@@ -114,6 +118,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
         node.onRolesPermissionsTapped = { [weak self] in
             self?.onRolesPermissionsTapped?()
+        }
+
+        node.onLeaveTapped = { [weak self] in
+            self?.beginLeaveFlow()
         }
 
         node.setEditing(false)
@@ -253,6 +261,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func applyRoomInfo(_ info: RoomInfo) {
+        latestRoomInfo = info
         setDirectRoom(info.isDirect)
         updateDirectUserId(info.isDirect ? info.heroes.first?.userId : nil)
         node.updateTags(info.isDirect ? Self.directTags(from: info) : Self.tags(from: info))
@@ -384,7 +393,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func handleBackTapped() {
-        guard !isSavingChanges else { return }
+        guard !isSavingChanges, !isLeavingRoom else { return }
         if isEditingDetails {
             cancelEditing()
         } else {
@@ -393,7 +402,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func editTapped() {
-        guard !directState.isDirect, !isSavingChanges else { return }
+        guard !directState.isDirect, !isSavingChanges, !isLeavingRoom else { return }
         if isEditingDetails {
             saveEdits()
         } else {
@@ -409,7 +418,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func presentAvatarPicker() {
-        guard isEditingDetails, !isSavingChanges else { return }
+        guard isEditingDetails, !isSavingChanges, !isLeavingRoom else { return }
 
         var config = PHPickerConfiguration()
         config.selectionLimit = 1
@@ -421,7 +430,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func removeAvatarRequested() {
-        guard isEditingDetails, !isSavingChanges else { return }
+        guard isEditingDetails, !isSavingChanges, !isLeavingRoom else { return }
 
         switch pendingAvatarChange {
         case .remove:
@@ -538,6 +547,242 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+    }
+
+    private struct LeaveConfirmation {
+        let title: String
+        let message: String
+        let actionTitle: String
+    }
+
+    private enum LeaveAdministrationImpact: Hashable {
+        case invitePeople
+        case rolesAndPermissions
+    }
+
+    private struct LeaveAdministrationWarning {
+        let impacts: [LeaveAdministrationImpact]
+    }
+
+    private func beginLeaveFlow() {
+        guard !isLeavingRoom,
+              !isSavingChanges,
+              !isEditingDetails,
+              !isPreparingLeaveConfirmation
+        else { return }
+
+        isPreparingLeaveConfirmation = true
+
+        let room = room
+        let isDirect = directState.isDirect
+        let expectedJoinedCount = latestRoomInfo.map { Int($0.joinedMembersCount) }
+
+        Task { [weak self, room, isDirect, expectedJoinedCount] in
+            let warning = await Self.loadLeaveAdministrationWarning(
+                room: room,
+                isDirect: isDirect,
+                expectedJoinedCount: expectedJoinedCount
+            )
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.isPreparingLeaveConfirmation = false
+                guard self.view.window != nil,
+                      !self.isLeavingRoom,
+                      !self.isSavingChanges,
+                      !self.isEditingDetails else { return }
+
+                if let warning {
+                    self.presentLeaveAdministrationWarning(warning)
+                } else {
+                    self.presentLeaveConfirmation()
+                }
+            }
+        }
+    }
+
+    private func presentLeaveConfirmation() {
+        let confirmation = leaveConfirmation()
+        let alert = UIAlertController(
+            title: confirmation.title,
+            message: confirmation.message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        alert.addAction(UIAlertAction(
+            title: confirmation.actionTitle,
+            style: .destructive
+        ) { [weak self] _ in
+            self?.leaveRoom()
+        })
+        present(alert, animated: true)
+    }
+
+    private func presentLeaveAdministrationWarning(_ warning: LeaveAdministrationWarning) {
+        let alert = UIAlertController(
+            title: String(localized: "Leaving May Lock Room Management"),
+            message: administrationWarningMessage(for: warning),
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        alert.addAction(UIAlertAction(title: String(localized: "Review Members"), style: .default) { [weak self] _ in
+            self?.onMembersTapped?()
+        })
+        alert.addAction(UIAlertAction(
+            title: String(localized: "Leave Anyway"),
+            style: .destructive
+        ) { [weak self] _ in
+            self?.leaveRoom()
+        })
+        present(alert, animated: true)
+    }
+
+    private func administrationWarningMessage(for warning: LeaveAdministrationWarning) -> String {
+        let impacts = Set(warning.impacts)
+        if impacts.contains(.invitePeople), impacts.contains(.rolesAndPermissions) {
+            return String(localized: "You are the only member who can invite people and change roles or permissions. If you leave, remaining members may not be able to add people or recover room administration. Promote another member before leaving.")
+        }
+        if impacts.contains(.invitePeople) {
+            return String(localized: "You are the only member who can invite people. If you leave, remaining members may not be able to add anyone else. Promote another member or lower the invite requirement before leaving.")
+        }
+        return String(localized: "You are the only member who can change roles and permissions. If you leave, remaining members may not be able to recover room administration. Promote another member before leaving.")
+    }
+
+    private func leaveConfirmation() -> LeaveConfirmation {
+        let title = directState.isDirect
+            ? String(localized: "Leave Conversation")
+            : String(localized: "Leave Room")
+        let actionTitle = title
+
+        let message: String
+        if directState.isDirect {
+            message = String(localized: "This conversation will be removed from your chats. Other participants will still have access to it.")
+        } else if let joinedCount = latestRoomInfo.map({ Int($0.joinedMembersCount) }),
+                  joinedCount <= 1 {
+            message = String(localized: "You are the only joined member. If you leave, nobody may be able to join this room again.")
+        } else if isPublicRoom {
+            message = String(localized: "This room will be removed from your chats. You may be able to rejoin later if it stays public.")
+        } else {
+            message = String(localized: "This room will be removed from your chats. You will need another invite to rejoin.")
+        }
+
+        return LeaveConfirmation(title: title, message: message, actionTitle: actionTitle)
+    }
+
+    private var isPublicRoom: Bool {
+        guard let joinRule = latestRoomInfo?.joinRule else { return false }
+        if case .public = joinRule {
+            return true
+        }
+        return false
+    }
+
+    private static func loadLeaveAdministrationWarning(
+        room: Room,
+        isDirect: Bool,
+        expectedJoinedCount: Int?
+    ) async -> LeaveAdministrationWarning? {
+        guard !isDirect else { return nil }
+        if let expectedJoinedCount, expectedJoinedCount <= 1 {
+            return nil
+        }
+        guard let client = MatrixClientService.shared.client,
+              let ownUserId = try? client.userId()
+        else { return nil }
+
+        do {
+            async let loadedPowerLevels = room.getPowerLevels()
+            async let loadedMembers = loadJoinedMembers(
+                room: room,
+                expectedJoinedCount: expectedJoinedCount
+            )
+            let powerLevels = try await loadedPowerLevels
+            let members = try await loadedMembers
+            let remainingMembers = members.filter { $0.userId != ownUserId }
+            guard !remainingMembers.isEmpty else { return nil }
+
+            let ownCanInvite = (try? powerLevels.canUserInvite(userId: ownUserId))
+                ?? powerLevels.canOwnUserInvite()
+            let ownCanEditRoles = (try? powerLevels.canUserSendState(
+                userId: ownUserId,
+                stateEvent: .roomPowerLevels
+            )) ?? powerLevels.canOwnUserSendState(stateEvent: .roomPowerLevels)
+
+            guard ownCanInvite || ownCanEditRoles else { return nil }
+
+            let remainingCanInvite = remainingMembers.contains { member in
+                (try? powerLevels.canUserInvite(userId: member.userId)) == true
+            }
+            let remainingCanEditRoles = remainingMembers.contains { member in
+                (try? powerLevels.canUserSendState(
+                    userId: member.userId,
+                    stateEvent: .roomPowerLevels
+                )) == true
+            }
+
+            var impacts: [LeaveAdministrationImpact] = []
+            if ownCanInvite, !remainingCanInvite {
+                impacts.append(.invitePeople)
+            }
+            if ownCanEditRoles, !remainingCanEditRoles {
+                impacts.append(.rolesAndPermissions)
+            }
+
+            return impacts.isEmpty ? nil : LeaveAdministrationWarning(impacts: impacts)
+        } catch {
+            ScopedLog(.rooms)("Failed to evaluate leave administration warning: \(error)")
+            return nil
+        }
+    }
+
+    private static func loadJoinedMembers(
+        room: Room,
+        expectedJoinedCount: Int?
+    ) async throws -> [RoomMember] {
+        if let expectedJoinedCount,
+           let cached = try? await loadJoinedMembers(room: room, noSync: true),
+           !cached.isEmpty,
+           cached.count >= expectedJoinedCount {
+            return cached
+        }
+        return try await loadJoinedMembers(room: room, noSync: false)
+    }
+
+    private static func loadJoinedMembers(room: Room, noSync: Bool) async throws -> [RoomMember] {
+        let iterator = try await (noSync ? room.membersNoSync() : room.members())
+        var members: [RoomMember] = []
+        while let chunk = iterator.nextChunk(chunkSize: 512), !chunk.isEmpty {
+            members.append(contentsOf: chunk.filter { $0.membership == .join })
+        }
+        return members
+    }
+
+    private func leaveRoom() {
+        guard !isLeavingRoom else { return }
+
+        isLeavingRoom = true
+        node.setLeavingRoom(true)
+
+        let roomId = room.id()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.room.leave()
+                await MainActor.run { [weak self] in
+                    self?.onRoomLeft?(roomId)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.isLeavingRoom = false
+                    self.node.setLeavingRoom(false)
+                    self.showErrorAlert(
+                        title: String(localized: "Failed to leave room"),
+                        message: error.localizedDescription
+                    )
+                }
+            }
+        }
     }
 }
 

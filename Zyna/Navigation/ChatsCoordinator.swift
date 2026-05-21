@@ -19,7 +19,10 @@ final class ChatsCoordinator {
     }
 
     func start() {
-        let vc = RoomsViewController(audioPlayer: audioPlayer)
+        let vc = RoomsViewController(
+            audioPlayer: audioPlayer,
+            roomListService: roomListService
+        )
         vc.onChatSelected = { [weak self] target in
             self?.showChat(target)
         }
@@ -304,7 +307,15 @@ final class ChatsCoordinator {
         vc.onRolesPermissionsTapped = { [weak self] in
             self?.showRoomRolesPermissions(room: room)
         }
+        vc.onRoomLeft = { [weak self] roomId in
+            self?.handleRoomLeft(roomId: roomId)
+        }
         navigationController.push(vc)
+    }
+
+    private func handleRoomLeft(roomId: String) {
+        roomListService.removeRoomLocally(roomId: roomId)
+        navigationController.popToRoot(animated: true)
     }
 
     private func showPinnedMessages(room: Room) {

@@ -19,6 +19,7 @@ final class ActionRowNode: ASDisplayNode {
         var trailingText: String?
         var accessory: Accessory
         var isEnabled: Bool
+        var titleColor: UIColor?
         var accessibilityLabel: String?
         var accessibilityHint: String?
 
@@ -28,6 +29,7 @@ final class ActionRowNode: ASDisplayNode {
             trailingText: String? = nil,
             accessory: Accessory = .chevronForward,
             isEnabled: Bool = true,
+            titleColor: UIColor? = nil,
             accessibilityLabel: String? = nil,
             accessibilityHint: String? = nil
         ) {
@@ -36,6 +38,7 @@ final class ActionRowNode: ASDisplayNode {
             self.trailingText = trailingText
             self.accessory = accessory
             self.isEnabled = isEnabled
+            self.titleColor = titleColor
             self.accessibilityLabel = accessibilityLabel
             self.accessibilityHint = accessibilityHint
         }
@@ -93,7 +96,9 @@ final class ActionRowNode: ASDisplayNode {
             string: configuration.title,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 17),
-                .foregroundColor: configuration.isEnabled ? UIColor.label : UIColor.secondaryLabel
+                .foregroundColor: configuration.isEnabled
+                    ? (configuration.titleColor ?? UIColor.label)
+                    : UIColor.secondaryLabel
             ]
         )
 

@@ -9,7 +9,7 @@ import MatrixRustSDK
 
 class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
-    private let viewModel = RoomsViewModel()
+    private let viewModel: RoomsViewModel
     private let tableNode = ASTableNode()
     private let audioPlayer: AudioPlayerService
     private var cancellables = Set<AnyCancellable>()
@@ -33,8 +33,12 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     private var previewResolutionGeneration = 0
     private var pendingPreviewResolutionGeneration: Int?
 
-    init(audioPlayer: AudioPlayerService) {
+    init(
+        audioPlayer: AudioPlayerService,
+        roomListService: ZynaRoomListService = ZynaRoomListService()
+    ) {
         self.audioPlayer = audioPlayer
+        self.viewModel = RoomsViewModel(roomListService: roomListService)
         super.init(node: RoomsScreenNode())
 
         setupTableNode()

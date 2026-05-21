@@ -22,11 +22,13 @@ final class RoomsViewModel {
     /// re-created (that would flicker during presence bursts).
     var onInPlacePresence: (([(IndexPath, Bool)]) -> Void)?
 
-    let roomListService = ZynaRoomListService()
+    let roomListService: ZynaRoomListService
     private var cancellables = Set<AnyCancellable>()
     private var prefetchedVisibleAppearanceUserIds = Set<String>()
 
-    init() {
+    init(roomListService: ZynaRoomListService = ZynaRoomListService()) {
+        self.roomListService = roomListService
+
         roomListService.roomsSubject
             .map { summaries in
                 ScopedLog(.ui)("Received \(summaries.count) rooms in UI")

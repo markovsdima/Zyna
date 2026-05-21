@@ -1569,6 +1569,16 @@
         }
       }
     },
+    "Failed to leave room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось покинуть комнату"
+          }
+        }
+      }
+    },
     "Fix duplicate or stuck local timeline rows" : {
 
     },
@@ -1962,6 +1972,66 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "был(а) вчера в %@"
+          }
+        }
+      }
+    },
+    "Leave Anyway" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Всё равно выйти"
+          }
+        }
+      }
+    },
+    "Leave Conversation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Покинуть переписку"
+          }
+        }
+      }
+    },
+    "Leave Room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Покинуть комнату"
+          }
+        }
+      }
+    },
+    "Leaving Conversation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выходим из переписки"
+          }
+        }
+      }
+    },
+    "Leaving May Lock Room Management" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выход может заблокировать управление комнатой"
+          }
+        }
+      }
+    },
+    "Leaving Room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выходим из комнаты"
           }
         }
       }
@@ -2896,6 +2966,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Восстановление из ключа…"
+          }
+        }
+      }
+    },
+    "Review Members" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Посмотреть участников"
           }
         }
       }
@@ -3908,6 +3988,16 @@
         }
       }
     },
+    "Shows a confirmation before leaving" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывает подтверждение перед выходом"
+          }
+        }
+      }
+    },
     "Sign In" : {
       "localizations" : {
         "ru" : {
@@ -4174,12 +4264,42 @@
         }
       }
     },
+    "This conversation will be removed from your chats. Other participants will still have access to it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эта переписка исчезнет из вашего списка чатов. У других участников она останется доступной."
+          }
+        }
+      }
+    },
     "This room address is already taken." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Этот адрес комнаты уже занят."
+          }
+        }
+      }
+    },
+    "This room will be removed from your chats. You may be able to rejoin later if it stays public." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Комната исчезнет из вашего списка чатов. Если она останется публичной, вы сможете войти снова."
+          }
+        }
+      }
+    },
+    "This room will be removed from your chats. You will need another invite to rejoin." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Комната исчезнет из вашего списка чатов. Чтобы вернуться, понадобится новое приглашение."
           }
         }
       }
@@ -4528,6 +4648,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Вы"
+          }
+        }
+      }
+    },
+    "You are the only joined member. If you leave, nobody may be able to join this room again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы единственный участник в комнате. Если вы выйдете, возможно, никто больше не сможет в неё войти."
+          }
+        }
+      }
+    },
+    "You are the only member who can change roles and permissions. If you leave, remaining members may not be able to recover room administration. Promote another member before leaving." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы единственный участник, который может менять роли и разрешения. Если вы выйдете, оставшиеся участники могут потерять возможность восстановить управление комнатой. Перед выходом повысьте другого участника."
+          }
+        }
+      }
+    },
+    "You are the only member who can invite people and change roles or permissions. If you leave, remaining members may not be able to add people or recover room administration. Promote another member before leaving." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы единственный участник, который может приглашать людей и менять роли или разрешения. Если вы выйдете, оставшиеся участники могут потерять возможность добавлять людей и восстановить управление комнатой. Перед выходом повысьте другого участника."
+          }
+        }
+      }
+    },
+    "You are the only member who can invite people. If you leave, remaining members may not be able to add anyone else. Promote another member or lower the invite requirement before leaving." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы единственный участник, который может приглашать людей. Если вы выйдете, оставшиеся участники могут потерять возможность добавлять кого-либо ещё. Перед выходом повысьте другого участника или снизьте требование для приглашений."
           }
         }
       }

@@ -40,6 +40,7 @@ final class ZynaRoomListService: NSObject {
     private var serviceStateHandle: TaskHandle?
     private var rooms: [Room] = []
     private var publishedSummariesByRoomId: [String: RoomSummary] = [:]
+    private var locallyHiddenRoomIds = Set<String>()
     private var rebuildTask: Task<Void, Never>?
     private var rebuildRevision: UInt64 = 0
     private var isListening = false
@@ -54,6 +55,21 @@ final class ZynaRoomListService: NSObject {
             return room
         }
         return MatrixClientService.shared.client?.rooms().first { $0.id() == id }
+    }
+
+    func removeRoomLocally(roomId: String, purgeTimeline: Bool = true) {
+        locallyHiddenRoomIds.insert(roomId)
+        rebuildRevision &+= 1
+        rebuildTask?.cancel()
+
+        let summaries = roomsSubject.value.filter { $0.id != roomId }
+        publishedSummariesByRoomId = Dictionary(
+            summaries.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        roomsSubject.send(summaries)
+
+        Self.removeRoomFromGRDB(roomId: roomId, purgeTimeline: purgeTimeline)
     }
     private var cancellables = Set<AnyCancellable>()
 
@@ -167,6 +183,8 @@ final class ZynaRoomListService: NSObject {
         switch update {
         case .reset(let values):
             rooms = values
+            let valueIds = Set(values.map { $0.id() })
+            locallyHiddenRoomIds.formIntersection(valueIds)
             impactedRoomIds.formUnion(values.map { $0.id() })
         case .append(let values):
             rooms.append(contentsOf: values)
@@ -182,21 +200,39 @@ final class ZynaRoomListService: NSObject {
             impactedRoomIds.insert(value.id())
         case .set(let index, let value):
             if Int(index) < rooms.count {
+                let oldRoomId = rooms[Int(index)].id()
                 rooms[Int(index)] = value
+                if oldRoomId != value.id() {
+                    locallyHiddenRoomIds.remove(oldRoomId)
+                }
                 impactedRoomIds.insert(value.id())
             }
         case .remove(let index):
             if Int(index) < rooms.count {
-                rooms.remove(at: Int(index))
+                let removed = rooms.remove(at: Int(index))
+                locallyHiddenRoomIds.remove(removed.id())
             }
         case .popBack:
-            if !rooms.isEmpty { rooms.removeLast() }
+            if !rooms.isEmpty {
+                let removed = rooms.removeLast()
+                locallyHiddenRoomIds.remove(removed.id())
+            }
         case .popFront:
-            if !rooms.isEmpty { rooms.removeFirst() }
+            if !rooms.isEmpty {
+                let removed = rooms.removeFirst()
+                locallyHiddenRoomIds.remove(removed.id())
+            }
         case .truncate(let length):
+            if Int(length) < rooms.count {
+                let removed = rooms.dropFirst(Int(length))
+                for room in removed {
+                    locallyHiddenRoomIds.remove(room.id())
+                }
+            }
             rooms = Array(rooms.prefix(Int(length)))
         case .clear:
             rooms = []
+            locallyHiddenRoomIds.removeAll()
         }
     }
 
@@ -207,14 +243,15 @@ final class ZynaRoomListService: NSObject {
         rebuildRevision &+= 1
         let revision = rebuildRevision
         let previousSummaries = publishedSummariesByRoomId
+        let hiddenRoomIds = locallyHiddenRoomIds
 
         rebuildTask?.cancel()
         rebuildTask = Task { [weak self] in
             guard let self else { return }
 
             let summaries = await Self.buildSummaries(
-                from: roomsSnapshot,
-                impactedRoomIds: impactedRoomIds,
+                from: roomsSnapshot.filter { !hiddenRoomIds.contains($0.id()) },
+                impactedRoomIds: impactedRoomIds.subtracting(hiddenRoomIds),
                 previousSummaries: previousSummaries
             )
 
@@ -299,6 +336,32 @@ final class ZynaRoomListService: NSObject {
                 logRooms("Persisted \(summaries.count) rooms to GRDB")
             } catch {
                 logRooms("Failed to persist rooms: \(error)")
+            }
+        }
+    }
+
+    private static func removeRoomFromGRDB(roomId: String, purgeTimeline: Bool) {
+        if purgeTimeline {
+            let envelopeIds = Set(OutgoingEnvelopeService.shared
+                .envelopes(roomId: roomId)
+                .map(\.id))
+            OutgoingEnvelopeService.shared.deleteEnvelopes(ids: envelopeIds)
+        }
+
+        let dbQueue = DatabaseService.shared.dbQueue
+        writeQueue.async {
+            do {
+                try dbQueue.write { db in
+                    _ = try StoredRoom.deleteOne(db, key: roomId)
+                    if purgeTimeline {
+                        _ = try StoredMessage
+                            .filter(Column("roomId") == roomId)
+                            .deleteAll(db)
+                    }
+                }
+                logRooms("Removed room \(roomId) from local cache")
+            } catch {
+                logRooms("Failed to remove room \(roomId) from local cache: \(error)")
             }
         }
     }
