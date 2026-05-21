@@ -274,7 +274,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             glassNavBar.onCall = { [weak self] in self?.onCallTapped?() }
             glassNavBar.onTitleTapped = { [weak self] in
                 guard let self else { return }
-                if let userId = self.viewModel.partnerUserId {
+                if self.viewModel.liveRoom != nil {
+                    self.onRoomDetailsTapped?()
+                } else if let userId = self.viewModel.partnerUserId {
                     self.onTitleTapped?(userId)
                 } else {
                     self.onRoomDetailsTapped?()

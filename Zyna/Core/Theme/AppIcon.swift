@@ -23,6 +23,7 @@ enum AppIcon {
     case chevronForward
     case phone
     case compose
+    case person
     case person2
     case megaphone
     case globe
@@ -61,6 +62,7 @@ enum AppIcon {
         case .chevronForward:   return "chevron.forward"
         case .phone:            return "phone.fill"
         case .compose:          return "square.and.pencil"
+        case .person:           return "person.crop.circle.fill"
         case .person2:          return "person.2.fill"
         case .megaphone:        return "megaphone.fill"
         case .globe:            return "globe"

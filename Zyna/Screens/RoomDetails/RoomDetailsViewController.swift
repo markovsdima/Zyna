@@ -15,16 +15,32 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         case remove
     }
 
+    private struct DirectRoomState {
+        var isDirect: Bool
+        var userId: String?
+        var displayName: String?
+        var avatarMxcUrl: String?
+        var profileTask: Task<Void, Never>?
+        var profileRevision: UInt64 = 0
+
+        init(userId: String?) {
+            self.isDirect = userId != nil
+            self.userId = userId
+        }
+    }
+
     var onBack: (() -> Void)?
     var onSearchTapped: (() -> Void)?
     var onInviteMembersTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
+    var onProfileTapped: ((String) -> Void)?
     var onPinnedMessagesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
 
     private let room: Room
     private let memberCount: Int?
+    private var directState: DirectRoomState
     private let glassTopBar = GlassTopBar()
     private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
 
@@ -36,10 +52,18 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private var roomInfoTask: Task<Void, Never>?
     private var roomInfoSubscription: TaskHandle?
 
-    init(room: Room, memberCount: Int?, audioPlayer: AudioPlayerService? = nil) {
+    init(
+        room: Room,
+        memberCount: Int?,
+        directUserId: String? = nil,
+        audioPlayer: AudioPlayerService? = nil
+    ) {
         self.room = room
         self.memberCount = memberCount
+        self.directState = DirectRoomState(userId: directUserId)
         super.init(node: RoomDetailsNode())
+        node.setDirectRoom(directState.isDirect)
+        node.setDirectProfileAvailable(directUserId != nil)
         self.voicePlayerHost = audioPlayer.map {
             EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
         }
@@ -75,6 +99,11 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
             self?.onMembersTapped?()
         }
 
+        node.onProfileTapped = { [weak self] in
+            guard let self, let userId = self.directState.userId else { return }
+            self.onProfileTapped?(userId)
+        }
+
         node.onPinnedMessagesTapped = { [weak self] in
             self?.onPinnedMessagesTapped?()
         }
@@ -89,12 +118,14 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
         node.setEditing(false)
         applyRoomState()
+        loadDirectProfileIfNeeded()
         loadRoomInfo()
         subscribeToRoomInfoUpdates()
     }
 
     deinit {
         roomInfoTask?.cancel()
+        directState.profileTask?.cancel()
         roomInfoSubscription?.cancel()
     }
 
@@ -140,38 +171,64 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
     private func rebuildGlassItems(editing: Bool) {
         let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
-        let trailingIcon: UIImage
-        let trailingLabel: String
 
-        if editing {
-            trailingIcon = AppIcon.checkmark.template(size: 17, weight: .semibold)
-            trailingLabel = String(localized: "Done")
-        } else {
-            trailingIcon = AppIcon.pencil.template(size: 17, weight: .medium)
-            trailingLabel = String(localized: "Edit")
-        }
-
-        glassTopBar.items = [
+        var items: [GlassTopBar.Item] = [
             .circleButton(
                 icon: backIcon,
                 accessibilityLabel: String(localized: "Back"),
                 action: { [weak self] in self?.handleBackTapped() }
             ),
-            .flexibleSpace,
-            .circleButton(
+            .flexibleSpace
+        ]
+
+        if !directState.isDirect {
+            let trailingIcon: UIImage
+            let trailingLabel: String
+
+            if editing {
+                trailingIcon = AppIcon.checkmark.template(size: 17, weight: .semibold)
+                trailingLabel = String(localized: "Done")
+            } else {
+                trailingIcon = AppIcon.pencil.template(size: 17, weight: .medium)
+                trailingLabel = String(localized: "Edit")
+            }
+
+            items.append(.circleButton(
                 icon: trailingIcon,
                 accessibilityLabel: trailingLabel,
                 action: { [weak self] in self?.editTapped() }
-            )
-        ]
+            ))
+        }
+
+        glassTopBar.items = items
     }
 
     private func applyRoomState() {
-        let name = room.displayName() ?? "Group"
-        let avatarUrl = room.avatarUrl()
+        let name: String
+        let avatarUrl: String?
+        let fallbackUserId: String?
+
+        if directState.isDirect {
+            name = room.displayName()?.nilIfEmpty
+                ?? directState.displayName?.nilIfEmpty
+                ?? directState.userId
+                ?? "Chat"
+            avatarUrl = room.avatarUrl() ?? directState.avatarMxcUrl
+            fallbackUserId = directState.userId
+        } else {
+            name = room.displayName() ?? "Group"
+            avatarUrl = room.avatarUrl()
+            fallbackUserId = nil
+        }
+
         loadedRoomName = name
         loadedHasAvatar = avatarUrl != nil
-        node.update(name: name, memberCount: memberCount, avatarMxcUrl: avatarUrl)
+        node.update(
+            name: name,
+            memberCount: directState.isDirect ? nil : memberCount,
+            avatarMxcUrl: avatarUrl,
+            fallbackUserId: fallbackUserId
+        )
     }
 
     private func loadRoomInfo() {
@@ -196,8 +253,58 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func applyRoomInfo(_ info: RoomInfo) {
-        node.updateTags(Self.tags(from: info))
+        setDirectRoom(info.isDirect)
+        updateDirectUserId(info.isDirect ? info.heroes.first?.userId : nil)
+        node.updateTags(info.isDirect ? Self.directTags(from: info) : Self.tags(from: info))
         node.updatePinnedMessagesCount(info.pinnedEventIds.count)
+    }
+
+    private func setDirectRoom(_ isDirectRoom: Bool) {
+        guard directState.isDirect != isDirectRoom else { return }
+
+        directState.isDirect = isDirectRoom
+        if isDirectRoom {
+            pendingAvatarChange = .none
+            isEditingDetails = false
+            node.setEditing(false)
+        }
+        node.setDirectRoom(isDirectRoom)
+        rebuildGlassItems(editing: isEditingDetails)
+        applyRoomState()
+    }
+
+    private func updateDirectUserId(_ userId: String?) {
+        guard directState.userId != userId else { return }
+
+        directState.userId = userId
+        directState.displayName = nil
+        directState.avatarMxcUrl = nil
+        node.setDirectProfileAvailable(userId != nil)
+        applyRoomState()
+        loadDirectProfileIfNeeded()
+    }
+
+    private func loadDirectProfileIfNeeded() {
+        directState.profileTask?.cancel()
+        directState.profileRevision &+= 1
+        let revision = directState.profileRevision
+
+        guard directState.isDirect,
+              let userId = directState.userId,
+              let client = MatrixClientService.shared.client
+        else { return }
+
+        directState.profileTask = Task { [weak self] in
+            let profile = try? await client.getProfile(userId: userId)
+            await MainActor.run { [weak self] in
+                guard let self,
+                      self.directState.profileRevision == revision,
+                      self.directState.userId == userId else { return }
+                self.directState.displayName = profile?.displayName
+                self.directState.avatarMxcUrl = profile?.avatarUrl
+                self.applyRoomState()
+            }
+        }
     }
 
     private static func tags(from info: RoomInfo) -> [RoomDetailsTag] {
@@ -206,6 +313,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
             joinRule: info.joinRule,
             historyVisibility: info.historyVisibility
         )
+    }
+
+    private static func directTags(from info: RoomInfo) -> [RoomDetailsTag] {
+        [encryptionTag(info.encryptionState)]
     }
 
     private static func tags(
@@ -266,9 +377,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func setEditing(_ editing: Bool) {
-        isEditingDetails = editing
-        node.setEditing(editing)
-        rebuildGlassItems(editing: editing)
+        let effectiveEditing = editing && !directState.isDirect
+        isEditingDetails = effectiveEditing
+        node.setEditing(effectiveEditing)
+        rebuildGlassItems(editing: effectiveEditing)
     }
 
     private func handleBackTapped() {
@@ -281,7 +393,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func editTapped() {
-        guard !isSavingChanges else { return }
+        guard !directState.isDirect, !isSavingChanges else { return }
         if isEditingDetails {
             saveEdits()
         } else {
@@ -469,5 +581,11 @@ private final class RoomDetailsInfoListener: RoomInfoListener {
 
     func call(roomInfo: RoomInfo) {
         callback(roomInfo)
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

@@ -224,7 +224,11 @@ final class ChatsCoordinator {
         }
         vc.onRoomDetailsTapped = { [weak self] in
             guard let room = viewModel.liveRoom else { return }
-            self?.showRoomDetails(room: room, memberCount: viewModel.memberCount)
+            self?.showRoomDetails(
+                room: room,
+                memberCount: viewModel.memberCount,
+                directUserId: viewModel.partnerUserId
+            )
         }
         vc.onForwardMessage = { [weak self] message in
             self?.showForwardPicker(message: message)
@@ -265,10 +269,15 @@ final class ChatsCoordinator {
         navigationController.push(vc)
     }
 
-    private func showRoomDetails(room: Room, memberCount: Int?) {
+    private func showRoomDetails(
+        room: Room,
+        memberCount: Int?,
+        directUserId: String? = nil
+    ) {
         let vc = RoomDetailsViewController(
             room: room,
             memberCount: memberCount,
+            directUserId: directUserId,
             audioPlayer: audioPlayer
         )
         vc.onBack = { [weak self] in
@@ -282,6 +291,9 @@ final class ChatsCoordinator {
         }
         vc.onMembersTapped = { [weak self] in
             self?.showMembersList(room: room)
+        }
+        vc.onProfileTapped = { [weak self] userId in
+            self?.showProfile(userId: userId)
         }
         vc.onPinnedMessagesTapped = { [weak self] in
             self?.showPinnedMessages(room: room)

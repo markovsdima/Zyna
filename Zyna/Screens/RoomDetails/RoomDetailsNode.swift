@@ -24,6 +24,7 @@ final class RoomDetailsNode: ScreenNode {
     var onSearchTapped: (() -> Void)?
     var onInviteTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
+    var onProfileTapped: (() -> Void)?
     var onPinnedMessagesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
@@ -54,6 +55,7 @@ final class RoomDetailsNode: ScreenNode {
     private var tagNodes: [RoomDetailsTagNode] = []
 
     private let membersRow = ActionRowNode()
+    private let profileRow = ActionRowNode()
     private let pinnedMessagesRow = ActionRowNode()
     private let securityRow = ActionRowNode()
     private let rolesPermissionsRow = ActionRowNode()
@@ -67,6 +69,8 @@ final class RoomDetailsNode: ScreenNode {
     var bottomInset: CGFloat = 16
 
     private var isEditing = false
+    private var isDirectRoom = false
+    private var isDirectProfileAvailable = false
     private var hasAvatar = false
     private var hasMembersRow = false
     private var avatarLoadRevision: UInt64 = 0
@@ -141,6 +145,10 @@ final class RoomDetailsNode: ScreenNode {
         membersRow.onTap = { [weak self] in self?.onMembersTapped?() }
         membersRow.style.alignSelf = .stretch
 
+        profileRow.onTap = { [weak self] in self?.onProfileTapped?() }
+        profileRow.style.alignSelf = .stretch
+        applyProfileRowConfiguration()
+
         pinnedMessagesRow.onTap = { [weak self] in self?.onPinnedMessagesTapped?() }
         pinnedMessagesRow.style.alignSelf = .stretch
         pinnedMessagesRow.apply(ActionRowNode.Configuration(
@@ -169,13 +177,18 @@ final class RoomDetailsNode: ScreenNode {
 
     // MARK: - Update
 
-    func update(name: String, memberCount: Int?, avatarMxcUrl: String?) {
+    func update(
+        name: String,
+        memberCount: Int?,
+        avatarMxcUrl: String?,
+        fallbackUserId: String? = nil
+    ) {
         hasAvatar = avatarMxcUrl != nil
         avatarLoadRevision &+= 1
         let loadRevision = avatarLoadRevision
-        applyName(name)
+        applyName(name, fallbackUserId: fallbackUserId)
 
-        if let count = memberCount {
+        if !isDirectRoom, let count = memberCount {
             hasMembersRow = true
             let title = String(localized: "\(count) members")
             membersRow.apply(ActionRowNode.Configuration(
@@ -219,7 +232,7 @@ final class RoomDetailsNode: ScreenNode {
     }
 
     func updateNameLocally(_ name: String) {
-        applyName(name)
+        applyName(name, fallbackUserId: nil)
         setNeedsLayout()
     }
 
@@ -235,15 +248,45 @@ final class RoomDetailsNode: ScreenNode {
         setNeedsLayout()
     }
 
-    func setEditing(_ editing: Bool) {
-        isEditing = editing
-        editAvatarOverlayNode.isHidden = !editing
-        avatarTapNode.isAccessibilityElement = editing
-        removeAvatarButtonNode.isHidden = !(editing && hasAvatar)
+    func setDirectRoom(_ isDirectRoom: Bool) {
+        guard self.isDirectRoom != isDirectRoom else { return }
+        self.isDirectRoom = isDirectRoom
+        if isDirectRoom {
+            hasMembersRow = false
+        }
         setNeedsLayout()
     }
 
-    private func applyName(_ name: String) {
+    func setDirectProfileAvailable(_ available: Bool) {
+        guard isDirectProfileAvailable != available else { return }
+        isDirectProfileAvailable = available
+        applyProfileRowConfiguration()
+    }
+
+    func setEditing(_ editing: Bool) {
+        let effectiveEditing = editing && !isDirectRoom
+        isEditing = effectiveEditing
+        editAvatarOverlayNode.isHidden = !effectiveEditing
+        avatarTapNode.isAccessibilityElement = effectiveEditing
+        removeAvatarButtonNode.isHidden = !(effectiveEditing && hasAvatar)
+        setNeedsLayout()
+    }
+
+    private func applyName(_ name: String, fallbackUserId: String?) {
+        if let fallbackUserId {
+            let colorOverrideHex = ProfileAppearanceService.shared
+                .cachedAppearance(userId: fallbackUserId)?
+                .nameColorHex
+            avatarBackgroundNode.backgroundColor = AvatarViewModel(
+                userId: fallbackUserId,
+                displayName: name,
+                mxcAvatarURL: nil,
+                colorOverrideHex: colorOverrideHex
+            ).color
+        } else {
+            avatarBackgroundNode.backgroundColor = .systemGray4
+        }
+
         let initials = String(name.prefix(1)).uppercased()
         avatarInitialsNode.attributedText = NSAttributedString(
             string: initials,
@@ -259,6 +302,15 @@ final class RoomDetailsNode: ScreenNode {
         ]
         nameNode.attributedText = NSAttributedString(string: name, attributes: attrs)
         nameEditNode.attributedText = NSAttributedString(string: name, attributes: attrs)
+    }
+
+    private func applyProfileRowConfiguration() {
+        profileRow.apply(ActionRowNode.Configuration(
+            title: String(localized: "Profile"),
+            leadingIcon: AppIcon.person.rendered(size: 17, weight: .medium, color: AppColor.accent),
+            isEnabled: isDirectProfileAvailable,
+            accessibilityHint: isDirectProfileAvailable ? String(localized: "Open Profile") : nil
+        ))
     }
 
     private func loadAvatarImage(mxcUrl: String, revision: UInt64) {
@@ -366,10 +418,16 @@ final class RoomDetailsNode: ScreenNode {
         if hasMembersRow {
             buttonsChildren.append(membersRow)
         }
-        buttonsChildren.append(pinnedMessagesRow)
-        buttonsChildren.append(securityRow)
-        buttonsChildren.append(rolesPermissionsRow)
-        buttonsChildren.append(contentsOf: [inviteButtonNode, searchButtonNode])
+        if isDirectRoom {
+            buttonsChildren.append(profileRow)
+            buttonsChildren.append(pinnedMessagesRow)
+            buttonsChildren.append(searchButtonNode)
+        } else {
+            buttonsChildren.append(pinnedMessagesRow)
+            buttonsChildren.append(securityRow)
+            buttonsChildren.append(rolesPermissionsRow)
+            buttonsChildren.append(contentsOf: [inviteButtonNode, searchButtonNode])
+        }
 
         let buttonsStack = ASStackLayoutSpec(
             direction: .vertical, spacing: 24,
