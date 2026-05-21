@@ -2744,6 +2744,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         tableAnim.delegate = TeleportAnimationDelegate { [weak self, weak snapshotContainer] in
             snapshotContainer?.removeFromSuperview()
             self?.isTeleporting = false
+            self?.updateScrollToLiveVisibility()
             self?.updateDateHeaderOverlay()
             self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         }
@@ -2761,6 +2762,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         node.tableNode.reloadData()
         node.tableNode.view.layoutIfNeeded()
         scrollAfter()
+        updateScrollToLiveVisibility()
         updateDateHeaderOverlay()
         scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         GlassService.shared.setNeedsCapture()
