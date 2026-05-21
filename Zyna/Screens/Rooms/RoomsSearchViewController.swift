@@ -115,7 +115,9 @@ final class RoomsSearchViewController: ASDKViewController<RoomsSearchOverlayNode
 
         if items.isEmpty {
             guard snapshot.query.count >= RoomsUnifiedSearchViewModel.minimumRemoteQueryLength else {
-                return []
+                return [
+                    .status(String(localized: "Type 3 or more characters to search people and public rooms."))
+                ]
             }
             items.append(.status(snapshot.errorMessage ?? String(localized: "No results")))
         }

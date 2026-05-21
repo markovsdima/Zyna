@@ -3750,6 +3750,16 @@
         }
       }
     },
+    "Search chats, people, rooms" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чаты, люди, комнаты"
+          }
+        }
+      }
+    },
     "Search emoji" : {
 
     },
@@ -3819,6 +3829,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ищем..."
+          }
+        }
+      }
+    },
+    "Type 3 or more characters to search people and public rooms." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите 3 или больше символов, чтобы искать людей и публичные комнаты."
           }
         }
       }

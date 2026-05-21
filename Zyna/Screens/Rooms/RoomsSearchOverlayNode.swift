@@ -87,7 +87,7 @@ private final class RoomsSearchHeaderView: UIView {
         iconView.tintColor = .secondaryLabel
         iconView.contentMode = .center
 
-        textField.placeholder = String(localized: "Search")
+        textField.placeholder = String(localized: "Search chats, people, rooms")
         textField.font = .systemFont(ofSize: 16)
         textField.returnKeyType = .search
         textField.clearButtonMode = .whileEditing
