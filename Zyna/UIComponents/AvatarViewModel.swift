@@ -94,6 +94,50 @@ struct AvatarViewModel: Equatable {
         return image
     }
 
+    /// Pre-rendered rounded rectangle used for space avatars.
+    func roundedRectImage(size: CGSize, cornerRadius: CGFloat, fontSize: CGFloat) -> UIImage {
+        let key = "\(userId):rect:\(Int(size.width))x\(Int(size.height)):\(Int(cornerRadius)):\(colorOverrideHex ?? "")" as NSString
+        if let cached = Self.imageCache.object(forKey: key) {
+            return cached
+        }
+
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        let renderer = UIGraphicsImageRenderer(size: size, format: format)
+        let image = renderer.image { _ in
+            let rect = CGRect(origin: .zero, size: size)
+
+            color.setFill()
+            UIBezierPath(roundedRect: rect, cornerRadius: cornerRadius).fill()
+
+            UIColor.separator.withAlphaComponent(0.65).setStroke()
+            let borderPath = UIBezierPath(
+                roundedRect: rect.insetBy(dx: 0.25, dy: 0.25),
+                cornerRadius: max(0, cornerRadius - 0.25)
+            )
+            borderPath.lineWidth = 0.5
+            borderPath.stroke()
+
+            let font = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: UIColor.white
+            ]
+            let text = initials as NSString
+            let textSize = text.size(withAttributes: attrs)
+            let textRect = CGRect(
+                x: (size.width - textSize.width) / 2,
+                y: (size.height - textSize.height) / 2,
+                width: textSize.width,
+                height: textSize.height
+            )
+            text.draw(in: textRect, withAttributes: attrs)
+        }
+
+        Self.imageCache.setObject(image, forKey: key)
+        return image
+    }
+
     private static let imageCache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
         cache.countLimit = 200

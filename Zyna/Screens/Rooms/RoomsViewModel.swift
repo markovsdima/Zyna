@@ -10,6 +10,7 @@ import MatrixRustSDK
 enum ChatOpenTarget {
     case live(Room)
     case cached(RoomModel)
+    case space(RoomModel)
 }
 
 final class RoomsViewModel {
@@ -221,6 +222,11 @@ final class RoomsViewModel {
     }
 
     func resolveChat(_ chat: RoomModel, completion: @escaping (ChatOpenTarget) -> Void) {
+        if chat.isSpace {
+            completion(.space(chat))
+            return
+        }
+
         if let room = roomListService.room(for: chat.id) {
             completion(.live(room))
         } else {

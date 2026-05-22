@@ -7,10 +7,17 @@
 
 import UIKit
 
+struct SpaceChildModel: Equatable {
+    let id: String
+    let name: String
+    let avatar: AvatarViewModel
+}
+
 struct RoomModel: Equatable {
     let id: String
     let name: String
     let lastMessage: String
+    let lastMessageSenderName: String?
     let timestamp: String
     let avatar: AvatarViewModel
     var isOnline: Bool
@@ -19,7 +26,11 @@ struct RoomModel: Equatable {
     let unreadMentionCount: Int
     let isMarkedUnread: Bool
     let isEncrypted: Bool
+    let isSpace: Bool
     let directUserId: String?
+    let spaceChildRoomCount: Int
+    let spaceChildSpaceCount: Int
+    let spaceRecentRooms: [SpaceChildModel]
 }
 
 extension RoomModel {
@@ -41,6 +52,7 @@ extension RoomModel {
             id: room.id,
             name: room.displayName,
             lastMessage: room.lastMessage ?? "",
+            lastMessageSenderName: room.lastMessageSenderName,
             timestamp: room.lastMessageTimestamp.map { Self.formatTimestamp($0) } ?? "",
             avatar: avatar,
             isOnline: false,
@@ -49,7 +61,22 @@ extension RoomModel {
             unreadMentionCount: Int(room.unreadMentionCount),
             isMarkedUnread: room.isMarkedUnread,
             isEncrypted: room.isEncrypted,
-            directUserId: room.directUserId
+            isSpace: room.isSpace,
+            directUserId: room.directUserId,
+            spaceChildRoomCount: room.spaceChildRoomCount,
+            spaceChildSpaceCount: room.spaceChildSpaceCount,
+            spaceRecentRooms: room.spaceRecentRooms.map { child in
+                let avatarId = child.directUserId ?? child.id
+                return SpaceChildModel(
+                    id: child.id,
+                    name: child.displayName,
+                    avatar: AvatarViewModel(
+                        userId: avatarId,
+                        displayName: child.displayName,
+                        mxcAvatarURL: child.avatarURL
+                    )
+                )
+            }
         )
     }
 
@@ -67,6 +94,7 @@ extension RoomModel {
             id: id,
             name: name,
             lastMessage: lastMessage,
+            lastMessageSenderName: lastMessageSenderName,
             timestamp: timestamp,
             avatar: updatedAvatar,
             isOnline: isOnline,
@@ -75,7 +103,11 @@ extension RoomModel {
             unreadMentionCount: unreadMentionCount,
             isMarkedUnread: isMarkedUnread,
             isEncrypted: isEncrypted,
-            directUserId: directUserId
+            isSpace: isSpace,
+            directUserId: directUserId,
+            spaceChildRoomCount: spaceChildRoomCount,
+            spaceChildSpaceCount: spaceChildSpaceCount,
+            spaceRecentRooms: spaceRecentRooms
         )
     }
 

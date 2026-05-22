@@ -7,6 +7,11 @@ import AsyncDisplayKit
 import Combine
 import MatrixRustSDK
 
+private enum ChatScreenTarget {
+    case live(Room)
+    case cached(RoomModel)
+}
+
 final class ChatsCoordinator {
 
     let navigationController = ZynaNavigationController()
@@ -136,7 +141,7 @@ final class ChatsCoordinator {
     }
 
     func showChat(_ room: Room, animated: Bool) {
-        showChat(.live(room), animated: animated)
+        showChatScreen(.live(room), animated: animated)
     }
 
     private func showChat(_ target: ChatOpenTarget) {
@@ -144,7 +149,26 @@ final class ChatsCoordinator {
     }
 
     private func showChat(_ target: ChatOpenTarget, animated: Bool) {
+        switch target {
+        case .live(let room):
+            showChatScreen(.live(room), animated: animated)
+        case .cached(let room):
+            showChatScreen(.cached(room), animated: animated)
+        case .space(let space):
+            showSpace(space, animated: animated)
+        }
+    }
+
+    private func showChatScreen(_ target: ChatScreenTarget, animated: Bool) {
         let (vc, _) = makeChatScreen(target: target)
+        navigationController.push(vc, animated: animated)
+    }
+
+    private func showSpace(_ space: RoomModel, animated: Bool) {
+        let vc = SpacePlaceholderViewController(space: space)
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
         navigationController.push(vc, animated: animated)
     }
 
@@ -161,6 +185,8 @@ final class ChatsCoordinator {
             viewModel = ChatViewModel(room: room, mode: .preview)
         case .cached(let room):
             viewModel = ChatViewModel(cachedRoom: room, mode: .preview)
+        case .space:
+            return
         }
         let chatController = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
         let resolvedBackgroundSourceView = navigationController.parent?.view
@@ -200,7 +226,7 @@ final class ChatsCoordinator {
     }
 
     private func makeChatScreen(
-        target: ChatOpenTarget
+        target: ChatScreenTarget
     ) -> (controller: ChatViewController, viewModel: ChatViewModel) {
         let viewModel: ChatViewModel
         switch target {
@@ -246,7 +272,7 @@ final class ChatsCoordinator {
         // Pop back to root, then open the target chat
         navigationController.popToRoot(animated: false)
 
-        let target: ChatOpenTarget
+        let target: ChatScreenTarget
         if let room = roomListService.room(for: roomModel.id)
             ?? (try? MatrixClientService.shared.client?.getRoom(roomId: roomModel.id)) {
             target = .live(room)

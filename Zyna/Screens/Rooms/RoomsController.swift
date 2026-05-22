@@ -212,6 +212,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
     private func activateChatPreview(at indexPath: IndexPath, sourceFrame: CGRect?) {
         guard viewModel.chats.indices.contains(indexPath.row) else { return }
+        guard !viewModel.chats[indexPath.row].isSpace else { return }
 
         previewResolutionGeneration += 1
         let generation = previewResolutionGeneration
@@ -361,6 +362,9 @@ extension RoomsViewController: ASTableDataSource, ASTableDelegate {
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
         let chat = viewModel.chats[indexPath.row]
         return {
+            if chat.isSpace {
+                return SpaceCellNode(space: chat)
+            }
             return RoomsCellNode(chat: chat)
         }
     }
@@ -378,7 +382,8 @@ extension RoomsViewController: ASTableDataSource, ASTableDelegate {
 
 extension RoomsViewController {
     func tableNode(_ tableNode: ASTableNode, canEditRowAt indexPath: IndexPath) -> Bool {
-        return true
+        guard viewModel.chats.indices.contains(indexPath.row) else { return false }
+        return !viewModel.chats[indexPath.row].isSpace
     }
 
     func tableNode(_ tableNode: ASTableNode, commitEditingStyle editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
@@ -423,7 +428,7 @@ extension RoomsViewController: UIGestureRecognizerDelegate {
               viewModel.chats.indices.contains(indexPath.row)
         else { return false }
 
-        return true
+        return !viewModel.chats[indexPath.row].isSpace
     }
 
     func gestureRecognizer(

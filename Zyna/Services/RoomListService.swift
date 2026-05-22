@@ -15,12 +15,25 @@ struct RoomSummary: Identifiable {
     let displayName: String
     let avatarURL: String?
     let lastMessage: String?
+    let lastMessageSenderName: String?
     let lastMessageTimestamp: Date?
     let unreadCount: UInt64
     let unreadMentionCount: UInt64
     let isMarkedUnread: Bool
     let isEncrypted: Bool
+    let isSpace: Bool
+    let isMuted: Bool
     /// Matrix user ID of the other person in a DM room, nil for group rooms.
+    let directUserId: String?
+    let spaceChildRoomCount: Int
+    let spaceChildSpaceCount: Int
+    let spaceRecentRooms: [SpaceChildSummary]
+}
+
+struct SpaceChildSummary: Codable, Equatable {
+    let id: String
+    let displayName: String
+    let avatarURL: String?
     let directUserId: String?
 }
 
@@ -75,6 +88,7 @@ final class ZynaRoomListService: NSObject {
 
     private static let writeQueue = DispatchQueue(label: "com.zyna.db.rooms", qos: .userInitiated)
     private static let latestEventSettleDelay: Duration = .milliseconds(150)
+    private static let spaceRecentRoomLimit = 4
 
     override init() {
         super.init()
@@ -306,19 +320,155 @@ final class ZynaRoomListService: NSObject {
 
             summaries.append(RoomSummary(
                 id: roomId,
-                displayName: room.displayName() ?? "Unknown",
+                displayName: room.displayName() ?? (info.isSpace ? String(localized: "Untitled") : "Unknown"),
                 avatarURL: avatarURL,
-                lastMessage: lastPreview.0,
-                lastMessageTimestamp: lastPreview.1,
+                lastMessage: lastPreview.body,
+                lastMessageSenderName: lastPreview.senderName,
+                lastMessageTimestamp: lastPreview.timestamp,
                 unreadCount: info.numUnreadMessages,
                 unreadMentionCount: info.numUnreadMentions,
                 isMarkedUnread: info.isMarkedUnread,
                 isEncrypted: room.encryptionState() != .notEncrypted,
-                directUserId: directUserId
+                isSpace: info.isSpace,
+                isMuted: info.cachedUserDefinedNotificationMode == .mute,
+                directUserId: directUserId,
+                spaceChildRoomCount: 0,
+                spaceChildSpaceCount: 0,
+                spaceRecentRooms: []
             ))
         }
 
-        return summaries
+        return await enrichSpaceSummaries(summaries)
+    }
+
+    private struct SpaceGraphEntry {
+        let childRoomIds: [String]
+        let childSpaceIds: [String]
+    }
+
+    private static func enrichSpaceSummaries(_ summaries: [RoomSummary]) async -> [RoomSummary] {
+        guard summaries.contains(where: \.isSpace),
+              let client = MatrixClientService.shared.client else {
+            return summaries
+        }
+
+        let summariesById = Dictionary(
+            summaries.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        var graph: [String: SpaceGraphEntry] = [:]
+
+        let spaceService = await client.spaceService()
+        for space in summaries where space.isSpace {
+            if Task.isCancelled { break }
+            guard let list = try? await spaceService.spaceRoomList(spaceId: space.id) else { continue }
+            try? await list.paginate()
+            let children = await list.rooms()
+
+            var childRoomIds: [String] = []
+            var childSpaceIds: [String] = []
+            for child in children {
+                switch child.roomType {
+                case .space:
+                    childSpaceIds.append(child.roomId)
+                case .room, .custom:
+                    childRoomIds.append(child.roomId)
+                }
+            }
+
+            graph[space.id] = SpaceGraphEntry(
+                childRoomIds: childRoomIds,
+                childSpaceIds: childSpaceIds
+            )
+        }
+
+        guard !graph.isEmpty else { return summaries }
+
+        var childIds = Set<String>()
+        for entry in graph.values {
+            childIds.formUnion(entry.childRoomIds)
+            childIds.formUnion(entry.childSpaceIds)
+        }
+
+        let enriched: [RoomSummary] = summaries.compactMap { summary -> RoomSummary? in
+            if childIds.contains(summary.id) {
+                return nil
+            }
+
+            guard summary.isSpace, let entry = graph[summary.id] else {
+                return summary
+            }
+
+            let childSummaries = entry.childRoomIds.compactMap { summariesById[$0] }
+            let visibleChildren = childSummaries.filter { !$0.isMuted }
+            let previewSource = visibleChildren.isEmpty ? childSummaries : visibleChildren
+            let previewChildren = previewSource.sorted(by: spaceActivitySort)
+            let latestChild = previewChildren.first
+
+            return RoomSummary(
+                id: summary.id,
+                displayName: summary.displayName,
+                avatarURL: summary.avatarURL,
+                lastMessage: latestChild?.lastMessage,
+                lastMessageSenderName: latestChild?.lastMessageSenderName,
+                lastMessageTimestamp: visibleChildren.sorted(by: spaceActivitySort).first?.lastMessageTimestamp,
+                unreadCount: UInt64(visibleChildren.reduce(0) { $0 + Int($1.unreadCount) }),
+                unreadMentionCount: UInt64(visibleChildren.reduce(0) { $0 + Int($1.unreadMentionCount) }),
+                isMarkedUnread: visibleChildren.contains(where: \.isMarkedUnread),
+                isEncrypted: summary.isEncrypted,
+                isSpace: true,
+                isMuted: summary.isMuted,
+                directUserId: nil,
+                spaceChildRoomCount: entry.childRoomIds.count,
+                spaceChildSpaceCount: entry.childSpaceIds.count,
+                spaceRecentRooms: Array(previewChildren.prefix(spaceRecentRoomLimit)).map {
+                    SpaceChildSummary(
+                        id: $0.id,
+                        displayName: $0.displayName,
+                        avatarURL: $0.avatarURL,
+                        directUserId: $0.directUserId
+                    )
+                }
+            )
+        }
+
+        return enriched.enumerated()
+            .sorted { lhs, rhs in
+                spaceListSort(lhs.element, rhs.element, leftIndex: lhs.offset, rightIndex: rhs.offset)
+            }
+            .map { $0.element }
+    }
+
+    private static func spaceActivitySort(_ lhs: RoomSummary, _ rhs: RoomSummary) -> Bool {
+        switch (lhs.lastMessageTimestamp, rhs.lastMessageTimestamp) {
+        case let (left?, right?):
+            return left > right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        case (nil, nil):
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+    }
+
+    private static func spaceListSort(
+        _ lhs: RoomSummary,
+        _ rhs: RoomSummary,
+        leftIndex: Int,
+        rightIndex: Int
+    ) -> Bool {
+        switch (lhs.lastMessageTimestamp, rhs.lastMessageTimestamp) {
+        case let (left?, right?):
+            guard left != right else { return leftIndex < rightIndex }
+            return left > right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        case (nil, nil):
+            return leftIndex < rightIndex
+        }
     }
 
     // MARK: - GRDB Persistence
@@ -369,32 +519,47 @@ final class ZynaRoomListService: NSObject {
     // MARK: - Last Message Extraction
 
     private static func shouldRetryLatestEvent(
-        currentPreview: (String?, Date?),
+        currentPreview: LatestMessagePreview,
         previousSummary: RoomSummary?
     ) -> Bool {
         guard let previousSummary else { return false }
-        return currentPreview.0 == previousSummary.lastMessage &&
-            currentPreview.1 == previousSummary.lastMessageTimestamp
+        return currentPreview.body == previousSummary.lastMessage &&
+            currentPreview.timestamp == previousSummary.lastMessageTimestamp
     }
 
-    private static func extractLastMessage(from value: LatestEventValue) -> (String?, Date?) {
+    private struct LatestMessagePreview {
+        let body: String?
+        let senderName: String?
+        let timestamp: Date?
+    }
+
+    private static func extractLastMessage(from value: LatestEventValue) -> LatestMessagePreview {
         let timestamp: Date
         let content: TimelineItemContent
+        let senderName: String?
 
         switch value {
         case .none:
-            return (nil, nil)
-        case .remote(let ts, _, _, _, let c):
+            return LatestMessagePreview(body: nil, senderName: nil, timestamp: nil)
+        case .remote(let ts, let sender, let isOwn, let profile, let c):
             timestamp = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
             content = c
-        case .local(let ts, _, _, let c, _):
+            senderName = Self.senderDisplayName(sender: sender, isOwn: isOwn, profile: profile)
+        case .local(let ts, let sender, let profile, let c, _):
             timestamp = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
             content = c
+            senderName = Self.senderDisplayName(sender: sender, isOwn: true, profile: profile)
         case .remoteInvite(let ts, _, _):
-            return (nil, Date(timeIntervalSince1970: TimeInterval(ts) / 1000))
+            return LatestMessagePreview(
+                body: nil,
+                senderName: nil,
+                timestamp: Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
+            )
         }
 
-        guard case .msgLike(let msgContent) = content else { return (nil, timestamp) }
+        guard case .msgLike(let msgContent) = content else {
+            return LatestMessagePreview(body: nil, senderName: senderName, timestamp: timestamp)
+        }
 
         let text: String
         switch msgContent.kind {
@@ -411,12 +576,30 @@ final class ZynaRoomListService: NSObject {
         case .liveLocation:
             text = "Live location"
         case .other:
-            return (nil, timestamp)
+            return LatestMessagePreview(body: nil, senderName: senderName, timestamp: timestamp)
         @unknown default:
-            return (nil, timestamp)
+            return LatestMessagePreview(body: nil, senderName: senderName, timestamp: timestamp)
         }
 
-        return (text, timestamp)
+        return LatestMessagePreview(body: text, senderName: senderName, timestamp: timestamp)
+    }
+
+    private static func senderDisplayName(
+        sender: String,
+        isOwn: Bool,
+        profile: ProfileDetails
+    ) -> String {
+        if isOwn {
+            return String(localized: "You")
+        }
+
+        if case .ready(let displayName, _, _) = profile,
+           let displayName,
+           !displayName.isEmpty {
+            return displayName
+        }
+
+        return sender
     }
 
     private static func textForMessageType(_ msgType: MessageType) -> String {

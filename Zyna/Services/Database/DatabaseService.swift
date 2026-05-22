@@ -746,6 +746,17 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v22_roomSpaces") { db in
+            try db.alter(table: "storedRoom") { t in
+                t.add(column: "lastMessageSenderName", .text)
+                t.add(column: "isSpace", .boolean).notNull().defaults(to: false)
+                t.add(column: "isMuted", .boolean).notNull().defaults(to: false)
+                t.add(column: "spaceChildRoomCount", .integer).notNull().defaults(to: 0)
+                t.add(column: "spaceChildSpaceCount", .integer).notNull().defaults(to: 0)
+                t.add(column: "spaceRecentRoomsJSON", .text)
+            }
+        }
+
         return migrator
     }
 
