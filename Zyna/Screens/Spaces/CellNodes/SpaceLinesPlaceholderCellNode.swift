@@ -9,13 +9,13 @@ final class SpaceLinesPlaceholderCellNode: ZynaCellNode {
     private let textNode = ASTextNode()
     private let separatorNode = ASDisplayNode()
 
-    override init() {
+    init(presentation: SpacePresentationKind) {
         super.init()
         automaticallyManagesSubnodes = true
         backgroundColor = .systemBackground
 
         textNode.attributedText = NSAttributedString(
-            string: String(localized: "Directions within this Storyline will appear here."),
+            string: presentation.linesPlaceholderText,
             attributes: [
                 .font: UIFont.systemFont(ofSize: 13, weight: .regular),
                 .foregroundColor: UIColor.secondaryLabel

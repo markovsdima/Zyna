@@ -608,25 +608,12 @@ final class RoomSecurityPrivacyViewController: ASDKViewController<SettingsScreen
     }
 
     private static func defaultAliasLocalPart(for roomName: String) -> String? {
-        let localPart = roomAliasNameFromRoomDisplayName(roomName: roomName).lowercased()
+        let localPart = MatrixAliasLocalPart.generated(from: roomName)
         return localPart.isEmpty ? nil : localPart
     }
 
     private static func normalizedAliasLocalPart(_ value: String, serverName: String) -> String {
-        var result = value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-
-        if result.hasPrefix("#") {
-            result.removeFirst()
-        }
-
-        if result.hasSuffix(":\(serverName)"),
-           let colon = result.lastIndex(of: ":") {
-            result = String(result[..<colon])
-        }
-
-        return result
+        MatrixAliasLocalPart.normalizedUserInput(value, serverName: serverName)
     }
 
     private static func aliasLocalPart(_ alias: String) -> String {

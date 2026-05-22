@@ -5,21 +5,23 @@
 
 import AsyncDisplayKit
 
-final class SpaceHeaderCellNode: ZynaCellNode {
+final class SpaceLineCellNode: ZynaCellNode {
     private enum Metrics {
-        static let avatarSize = CGSize(width: 50, height: 50)
-        static let avatarCornerRadius: CGFloat = 12
+        static let avatarSize = CGSize(width: 38, height: 38)
+        static let avatarCornerRadius: CGFloat = 9
         static let avatarThumbSize = Int(avatarSize.width * ScreenConstants.scale)
     }
 
-    private let space: RoomModel
+    private let line: RoomModel
     private let avatarBackgroundNode = ASImageNode()
     private let avatarImageNode = ASImageNode()
+    private let titleNode = ASTextNode()
     private let metaNode = ASTextNode()
+    private let chevronNode = ASImageNode()
     private let separatorNode = ASDisplayNode()
 
-    init(space: RoomModel) {
-        self.space = space
+    init(line: RoomModel) {
+        self.line = line
         super.init()
         automaticallyManagesSubnodes = true
         setupNodes()
@@ -28,16 +30,16 @@ final class SpaceHeaderCellNode: ZynaCellNode {
     private func setupNodes() {
         backgroundColor = .systemBackground
 
-        avatarBackgroundNode.image = space.avatar.roundedRectImage(
+        avatarBackgroundNode.image = line.avatar.roundedRectImage(
             size: Metrics.avatarSize,
             cornerRadius: Metrics.avatarCornerRadius,
-            fontSize: 17
+            fontSize: 14
         )
         avatarBackgroundNode.isLayerBacked = true
 
         avatarImageNode.contentMode = .scaleAspectFill
         avatarImageNode.isLayerBacked = true
-        if let mxc = space.avatar.mxcAvatarURL {
+        if let mxc = line.avatar.mxcAvatarURL {
             if let cached = MediaCache.shared.cachedImage(forUrl: mxc, size: Metrics.avatarThumbSize) {
                 avatarImageNode.image = Self.roundedAvatarImage(cached, cacheKey: mxc)
             } else {
@@ -45,21 +47,35 @@ final class SpaceHeaderCellNode: ZynaCellNode {
             }
         }
 
-        metaNode.attributedText = NSAttributedString(
-            string: space.spaceMetaText,
+        titleNode.attributedText = NSAttributedString(
+            string: line.name.isEmpty ? String(localized: "Untitled") : line.name,
             attributes: [
-                .font: UIFont.systemFont(ofSize: 14, weight: .medium),
-                .foregroundColor: UIColor.secondaryLabel
+                .font: UIFont.systemFont(ofSize: 15, weight: .semibold),
+                .foregroundColor: UIColor.label
+            ]
+        )
+        titleNode.maximumNumberOfLines = 1
+        titleNode.truncationMode = .byTruncatingTail
+
+        metaNode.attributedText = NSAttributedString(
+            string: line.spaceMetaText,
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: UIColor.tertiaryLabel
             ]
         )
         metaNode.maximumNumberOfLines = 1
         metaNode.truncationMode = .byTruncatingTail
 
+        chevronNode.image = AppIcon.chevronForward.template(size: 13, weight: .semibold)
+        chevronNode.tintColor = .tertiaryLabel
+        chevronNode.style.preferredSize = CGSize(width: 13, height: 13)
+
         separatorNode.backgroundColor = UIColor.separator
     }
 
     private func loadAvatarImage() {
-        guard let mxc = space.avatar.mxcAvatarURL else { return }
+        guard let mxc = line.avatar.mxcAvatarURL else { return }
         let size = Metrics.avatarThumbSize
         Task { [weak self] in
             if let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: size) {
@@ -86,19 +102,31 @@ final class SpaceHeaderCellNode: ZynaCellNode {
         avatarImageNode.style.preferredSize = Metrics.avatarSize
         let avatar = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: avatarImageNode)
 
+        titleNode.style.flexGrow = 1
+        titleNode.style.flexShrink = 1
         metaNode.style.flexGrow = 1
         metaNode.style.flexShrink = 1
 
+        let textStack = ASStackLayoutSpec(
+            direction: .vertical,
+            spacing: 2,
+            justifyContent: .center,
+            alignItems: .stretch,
+            children: [titleNode, metaNode]
+        )
+        textStack.style.flexGrow = 1
+        textStack.style.flexShrink = 1
+
         let row = ASStackLayoutSpec(
             direction: .horizontal,
-            spacing: 12,
+            spacing: 11,
             justifyContent: .start,
             alignItems: .center,
-            children: [avatar, metaNode]
+            children: [avatar, textStack, chevronNode]
         )
 
         let content = ASInsetLayoutSpec(
-            insets: UIEdgeInsets(top: 10, left: 16, bottom: 10, right: 16),
+            insets: UIEdgeInsets(top: 9, left: 16, bottom: 9, right: 16),
             child: row
         )
 

@@ -777,7 +777,14 @@
       }
     },
     "Adds this reaction" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавляет эту реакцию"
+          }
+        }
+      }
     },
     "Admin" : {
       "localizations" : {
@@ -810,7 +817,14 @@
       }
     },
     "Already applied" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уже применено"
+          }
+        }
+      }
     },
     "Another device wants to verify this session." : {
       "localizations" : {
@@ -1053,7 +1067,14 @@
       }
     },
     "Caption" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подпись"
+          }
+        }
+      }
     },
     "Change" : {
       "localizations" : {
@@ -1076,7 +1097,14 @@
       }
     },
     "Changes member role" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Меняет роль участника"
+          }
+        }
+      }
     },
     "Chat Theme" : {
       "localizations" : {
@@ -1159,7 +1187,14 @@
       }
     },
     "Close" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрыть"
+          }
+        }
+      }
     },
     "Close preview" : {
       "localizations" : {
@@ -1342,7 +1377,14 @@
       }
     },
     "Could Not Simulate Soft Logout" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось симулировать мягкий выход"
+          }
+        }
+      }
     },
     "Could Not Update Trust" : {
       "localizations" : {
@@ -1505,10 +1547,24 @@
       }
     },
     "Diagnostics" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Диагностика"
+          }
+        }
+      }
     },
     "Discard" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить изменения"
+          }
+        }
+      }
     },
     "Dismisses this preview" : {
       "localizations" : {
@@ -1591,7 +1647,14 @@
       }
     },
     "emoji" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "эмодзи"
+          }
+        }
+      }
     },
     "Encrypted Key Backup Is Off" : {
       "localizations" : {
@@ -1764,7 +1827,14 @@
       }
     },
     "Fix duplicate or stuck local timeline rows" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправить дубли или зависшие локальные строки таймлайна"
+          }
+        }
+      }
     },
     "Forest" : {
       "localizations" : {
@@ -2391,7 +2461,14 @@
       }
     },
     "More Emoji" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ещё эмодзи"
+          }
+        }
+      }
     },
     "My Colors" : {
       "localizations" : {
@@ -2490,13 +2567,34 @@
       }
     },
     "No emoji found." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эмодзи не найдены."
+          }
+        }
+      }
     },
     "No local timeline issues found." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Локальных проблем таймлайна не найдено."
+          }
+        }
+      }
     },
     "No reactions yet." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Реакций пока нет."
+          }
+        }
+      }
     },
     "No results" : {
       "localizations" : {
@@ -2649,7 +2747,14 @@
       }
     },
     "Offline" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не в сети"
+          }
+        }
+      }
     },
     "OK" : {
       "localizations" : {
@@ -2672,7 +2777,14 @@
       }
     },
     "Online" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В сети"
+          }
+        }
+      }
     },
     "Only invited people can join. Messages are encrypted." : {
       "localizations" : {
@@ -2715,10 +2827,24 @@
       }
     },
     "Opens the member list" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает список участников"
+          }
+        }
+      }
     },
     "Opens this emoji category" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает эту категорию эмодзи"
+          }
+        }
+      }
     },
     "Orange" : {
       "localizations" : {
@@ -2871,7 +2997,14 @@
       }
     },
     "Preserve keys and show re-login" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранить ключи и показать повторный вход"
+          }
+        }
+      }
     },
     "Previous Theme" : {
       "localizations" : {
@@ -2944,7 +3077,14 @@
       }
     },
     "Reactions" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Реакции"
+          }
+        }
+      }
     },
     "Reason (optional)" : {
       "localizations" : {
@@ -3077,7 +3217,14 @@
       }
     },
     "Remove reaction" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить реакцию"
+          }
+        }
+      }
     },
     "Rename" : {
       "localizations" : {
@@ -3100,19 +3247,54 @@
       }
     },
     "Repair" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправить"
+          }
+        }
+      }
     },
     "Repair Complete" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправление завершено"
+          }
+        }
+      }
     },
     "Repair Failed" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправление не удалось"
+          }
+        }
+      }
     },
     "Repair Local Message Cache" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправить локальный кэш сообщений"
+          }
+        }
+      }
     },
     "Repairing" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправляем"
+          }
+        }
+      }
     },
     "Reset" : {
       "localizations" : {
@@ -3945,7 +4127,14 @@
       }
     },
     "Search emoji" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поиск эмодзи"
+          }
+        }
+      }
     },
     "Search employees" : {
       "localizations" : {
@@ -4048,7 +4237,14 @@
       }
     },
     "Send" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить"
+          }
+        }
+      }
     },
     "Send Message" : {
       "localizations" : {
@@ -4313,10 +4509,24 @@
       }
     },
     "Simulate" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Симулировать"
+          }
+        }
+      }
     },
     "Simulate Soft Logout" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Симулировать мягкий выход"
+          }
+        }
+      }
     },
     "Skip" : {
       "localizations" : {
@@ -4550,7 +4760,14 @@
       }
     },
     "This fixes local duplicate or stuck timeline rows. It does not delete messages from Matrix." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправляет локальные дубли или зависшие строки таймлайна. Сообщения из Matrix не удаляются."
+          }
+        }
+      }
     },
     "This is how it looks in groups." : {
       "localizations" : {
@@ -4603,7 +4820,14 @@
       }
     },
     "This stops sync and shows the soft logout re-login screen without clearing encrypted message keys." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Останавливает синхронизацию и показывает экран повторного входа после мягкого выхода, не очищая ключи зашифрованных сообщений."
+          }
+        }
+      }
     },
     "This will permanently destroy your current key backup. All previously encrypted messages that haven't been decrypted on this device will become unreadable forever.\n\nOnly do this if you've lost your recovery key and have no other verified devices." : {
       "localizations" : {
@@ -4691,6 +4915,12 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "Updated messages: %1$lld\nDeleted local duplicates: %2$lld\nUpdated envelope items: %3$lld\nRetired envelopes: %4$lld"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обновлено сообщений: %1$lld\nУдалено локальных дублей: %2$lld\nОбновлено элементов оболочки: %3$lld\nСписано оболочек: %4$lld"
           }
         }
       }
@@ -5217,7 +5447,14 @@
       }
     },
     "Zyna" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zyna"
+          }
+        }
+      }
     },
     "Zyna Blue" : {
       "localizations" : {
@@ -5415,6 +5652,342 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Здесь будет переключатель уведомлений"
+          }
+        }
+      }
+    },
+    "Add to %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить в «%@»"
+          }
+        }
+      }
+    },
+    "Address contains unsupported characters." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес содержит неподдерживаемые символы."
+          }
+        }
+      }
+    },
+    "Address is required for public Storyline." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для публичного сюжета нужен адрес."
+          }
+        }
+      }
+    },
+    "Address is required for public Track." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для публичной линии нужен адрес."
+          }
+        }
+      }
+    },
+    "Anyone can find and join." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Любой сможет найти и присоединиться."
+          }
+        }
+      }
+    },
+    "Cannot determine the server name for the address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось определить имя сервера для адреса."
+          }
+        }
+      }
+    },
+    "Chat Name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название чата"
+          }
+        }
+      }
+    },
+    "Child room is not available locally." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дочерний чат пока недоступен локально."
+          }
+        }
+      }
+    },
+    "Choose what to create inside %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выберите, что создать внутри «%@»."
+          }
+        }
+      }
+    },
+    "Could not create Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать сюжет"
+          }
+        }
+      }
+    },
+    "Could not create Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать линию"
+          }
+        }
+      }
+    },
+    "Could not encode Matrix state event content." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось закодировать содержимое Matrix state event."
+          }
+        }
+      }
+    },
+    "Create Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать чат"
+          }
+        }
+      }
+    },
+    "Create Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать сюжет"
+          }
+        }
+      }
+    },
+    "Create Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать линию"
+          }
+        }
+      }
+    },
+    "Create a Track inside %@ for a focused direction." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создайте линию внутри «%@» для отдельного направления."
+          }
+        }
+      }
+    },
+    "Create a nested direction for related chats." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать вложенное направление для связанных чатов."
+          }
+        }
+      }
+    },
+    "Create a regular chat and place it inside this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать обычный чат и поместить его в «%@»."
+          }
+        }
+      }
+    },
+    "Description (optional)" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Описание (необязательно)"
+          }
+        }
+      }
+    },
+    "Directions within this Track will appear here." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Здесь появятся направления внутри линии."
+          }
+        }
+      }
+    },
+    "Failed to create %@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Failed to create %1$@: %2$@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать «%1$@»: %2$@"
+          }
+        }
+      }
+    },
+    "Gather related chats and tracks into one Storyline." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Соберите связанные чаты и линии в один сюжет."
+          }
+        }
+      }
+    },
+    "Name is required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите название"
+          }
+        }
+      }
+    },
+    "New Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новый сюжет"
+          }
+        }
+      }
+    },
+    "New Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новая линия"
+          }
+        }
+      }
+    },
+    "Only invited people can find and join." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Найти и присоединиться смогут только приглашённые."
+          }
+        }
+      }
+    },
+    "Parent Storyline is not available locally." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Родительский сюжет пока недоступен локально."
+          }
+        }
+      }
+    },
+    "Storyline Address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес сюжета"
+          }
+        }
+      }
+    },
+    "Storyline Name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название сюжета"
+          }
+        }
+      }
+    },
+    "This address is already taken." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот адрес уже занят."
+          }
+        }
+      }
+    },
+    "Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Линия"
+          }
+        }
+      }
+    },
+    "Track Address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес линии"
+          }
+        }
+      }
+    },
+    "Track Name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название линии"
           }
         }
       }

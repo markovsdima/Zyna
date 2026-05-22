@@ -37,6 +37,11 @@ struct SpaceChildSummary: Codable, Equatable {
     let directUserId: String?
 }
 
+struct SpaceChildrenSummary {
+    let rooms: [RoomSummary]
+    let spaces: [RoomSummary]
+}
+
 private let logRooms = ScopedLog(.rooms)
 
 // MARK: - Room List Service
@@ -54,6 +59,7 @@ final class ZynaRoomListService: NSObject {
     private var rooms: [Room] = []
     private var publishedSummariesByRoomId: [String: RoomSummary] = [:]
     private var spaceChildSummariesBySpaceId: [String: [RoomSummary]] = [:]
+    private var spaceChildSpaceSummariesBySpaceId: [String: [RoomSummary]] = [:]
     private var locallyHiddenRoomIds = Set<String>()
     private var rebuildTask: Task<Void, Never>?
     private var rebuildRevision: UInt64 = 0
@@ -80,33 +86,130 @@ final class ZynaRoomListService: NSObject {
         spaceChildSummariesBySpaceId[spaceId] ?? []
     }
 
-    func refreshSpaceChildRooms(for spaceId: String) async -> [RoomSummary] {
-        let summaries = await loadSpaceChildRooms(for: spaceId)
-        spaceChildSummariesBySpaceId[spaceId] = summaries
-        return summaries
+    func cachedSpaceChildSpaces(for spaceId: String) -> [RoomSummary] {
+        spaceChildSpaceSummariesBySpaceId[spaceId] ?? []
     }
 
-    private func loadSpaceChildRooms(for spaceId: String) async -> [RoomSummary] {
-        guard let client = MatrixClientService.shared.client else { return [] }
-        let spaceService = await client.spaceService()
-        guard let list = try? await spaceService.spaceRoomList(spaceId: spaceId) else { return [] }
+    func refreshSpaceChildRooms(for spaceId: String) async -> [RoomSummary] {
+        let children = await refreshSpaceChildren(for: spaceId)
+        return children.rooms
+    }
 
-        try? await list.paginate()
-        let children = await list.rooms()
-        let childRoomIds = children.compactMap { child -> String? in
-            switch child.roomType {
-            case .space:
-                return nil
-            case .room, .custom:
-                return child.roomId
+    func refreshSpaceChildren(for spaceId: String) async -> SpaceChildrenSummary {
+        let children = await loadSpaceChildren(for: spaceId)
+        spaceChildSummariesBySpaceId[spaceId] = children.rooms
+        spaceChildSpaceSummariesBySpaceId[spaceId] = children.spaces
+        return children
+    }
+
+    func addChild(_ childId: String, toSpace spaceId: String, context: String) async throws {
+        guard let client = MatrixClientService.shared.client else {
+            throw spaceRelationshipError(String(localized: "Matrix client is not ready."))
+        }
+
+        let spaceService = await client.spaceService()
+        var lastError: Error?
+
+        for attempt in 1...10 {
+            _ = await waitForLocalRoom(roomId: childId)
+            _ = await spaceService.topLevelJoinedSpaces()
+            _ = try? await spaceService.getSpaceRoom(roomId: spaceId)
+            _ = try? await spaceService.getSpaceRoom(roomId: childId)
+
+            do {
+                try await spaceService.addChildToSpace(childId: childId, spaceId: spaceId)
+                if attempt > 1 {
+                    logSpaceRelationship(
+                        "Linked child after retry",
+                        stage: "addChildToSpace",
+                        context: context,
+                        spaceId: spaceId,
+                        childId: childId,
+                        attempt: attempt
+                    )
+                }
+                _ = await refreshSpaceChildren(for: spaceId)
+                return
+            } catch {
+                lastError = error
+                logSpaceRelationship(
+                    "Space relationship retry scheduled",
+                    stage: "addChildToSpace",
+                    context: context,
+                    spaceId: spaceId,
+                    childId: childId,
+                    attempt: attempt,
+                    error: error
+                )
+                if attempt < 10 {
+                    try? await Task.sleep(for: .milliseconds(350 + attempt * 250))
+                }
             }
         }
 
+        do {
+            logSpaceRelationship(
+                "Falling back to raw space state events",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId,
+                error: lastError
+            )
+            try await addChildWithRawStateEvents(childId: childId, spaceId: spaceId)
+            logSpaceRelationship(
+                "Linked child with raw state events",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId
+            )
+            _ = await refreshSpaceChildren(for: spaceId)
+        } catch {
+            logSpaceRelationship(
+                "Raw space state event fallback failed",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId,
+                error: error
+            )
+            throw error
+        }
+    }
+
+    private func loadSpaceChildren(for spaceId: String) async -> SpaceChildrenSummary {
+        guard let client = MatrixClientService.shared.client else {
+            return SpaceChildrenSummary(rooms: [], spaces: [])
+        }
+        let spaceService = await client.spaceService()
+        guard let list = try? await spaceService.spaceRoomList(spaceId: spaceId) else {
+            return SpaceChildrenSummary(rooms: [], spaces: [])
+        }
+
+        try? await list.paginate()
+        let children = await list.rooms()
+
+        let childRooms = children.filter { child in
+            switch child.roomType {
+            case .space:
+                return false
+            case .room, .custom:
+                return true
+            }
+        }
+        let childSpaces = children.filter { child in
+            if case .space = child.roomType { return true }
+            return false
+        }
+        let childRoomIds = childRooms.map(\.roomId)
+        let childSpaceIds = childSpaces.map(\.roomId)
+
         let previousSummaries = publishedSummariesByRoomId
-        let childRooms = childRoomIds.compactMap { room(for: $0) }
+        let localChildRooms = (childRoomIds + childSpaceIds).compactMap { room(for: $0) }
         let summaries = await Self.buildBaseSummaries(
-            from: childRooms,
-            impactedRoomIds: Set(childRoomIds),
+            from: localChildRooms,
+            impactedRoomIds: Set(childRoomIds + childSpaceIds),
             previousSummaries: previousSummaries
         )
         let summariesById = Dictionary(
@@ -114,9 +217,17 @@ final class ZynaRoomListService: NSObject {
             uniquingKeysWith: { _, latest in latest }
         )
 
-        return childRoomIds
-            .compactMap { summariesById[$0] }
+        let roomSummaries = childRooms
+            .map { summariesById[$0.roomId] ?? Self.previewSummary(from: $0) }
             .sorted(by: Self.spaceActivitySort)
+        let spaceSummaries = childSpaces
+            .map { summariesById[$0.roomId] ?? Self.previewSummary(from: $0) }
+            .sorted(by: Self.spaceActivitySort)
+
+        return SpaceChildrenSummary(
+            rooms: roomSummaries,
+            spaces: spaceSummaries
+        )
     }
 
     func removeRoomLocally(roomId: String, purgeTimeline: Bool = true) {
@@ -321,6 +432,7 @@ final class ZynaRoomListService: NSObject {
                 uniquingKeysWith: { _, latest in latest }
             )
             self.spaceChildSummariesBySpaceId = buildResult.spaceChildSummariesBySpaceId
+            self.spaceChildSpaceSummariesBySpaceId = buildResult.spaceChildSpaceSummariesBySpaceId
             Self.writeRoomsToGRDB(summaries)
 
             await MainActor.run { [weak self] in
@@ -403,11 +515,15 @@ final class ZynaRoomListService: NSObject {
     private struct RoomListBuildResult {
         let summaries: [RoomSummary]
         let spaceChildSummariesBySpaceId: [String: [RoomSummary]]
+        let spaceChildSpaceSummariesBySpaceId: [String: [RoomSummary]]
     }
 
     private struct SpaceGraphEntry {
-        let childRoomIds: [String]
-        let childSpaceIds: [String]
+        let childRooms: [SpaceRoom]
+        let childSpaces: [SpaceRoom]
+
+        var childRoomIds: [String] { childRooms.map(\.roomId) }
+        var childSpaceIds: [String] { childSpaces.map(\.roomId) }
     }
 
     private static func enrichSpaceSummaries(_ summaries: [RoomSummary]) async -> RoomListBuildResult {
@@ -415,7 +531,8 @@ final class ZynaRoomListService: NSObject {
               let client = MatrixClientService.shared.client else {
             return RoomListBuildResult(
                 summaries: summaries,
-                spaceChildSummariesBySpaceId: [:]
+                spaceChildSummariesBySpaceId: [:],
+                spaceChildSpaceSummariesBySpaceId: [:]
             )
         }
 
@@ -432,27 +549,28 @@ final class ZynaRoomListService: NSObject {
             try? await list.paginate()
             let children = await list.rooms()
 
-            var childRoomIds: [String] = []
-            var childSpaceIds: [String] = []
+            var childRooms: [SpaceRoom] = []
+            var childSpaces: [SpaceRoom] = []
             for child in children {
                 switch child.roomType {
                 case .space:
-                    childSpaceIds.append(child.roomId)
+                    childSpaces.append(child)
                 case .room, .custom:
-                    childRoomIds.append(child.roomId)
+                    childRooms.append(child)
                 }
             }
 
             graph[space.id] = SpaceGraphEntry(
-                childRoomIds: childRoomIds,
-                childSpaceIds: childSpaceIds
+                childRooms: childRooms,
+                childSpaces: childSpaces
             )
         }
 
         guard !graph.isEmpty else {
             return RoomListBuildResult(
                 summaries: summaries,
-                spaceChildSummariesBySpaceId: [:]
+                spaceChildSummariesBySpaceId: [:],
+                spaceChildSpaceSummariesBySpaceId: [:]
             )
         }
 
@@ -463,6 +581,25 @@ final class ZynaRoomListService: NSObject {
         }
 
         var spaceChildSummariesBySpaceId: [String: [RoomSummary]] = [:]
+        var spaceChildSpaceSummariesBySpaceId: [String: [RoomSummary]] = [:]
+
+        for (spaceId, entry) in graph {
+            let childSummaries = entry.childRooms.map {
+                summariesById[$0.roomId] ?? previewSummary(from: $0)
+            }
+            spaceChildSummariesBySpaceId[spaceId] = childSummaries.sorted(by: spaceActivitySort)
+            spaceChildSpaceSummariesBySpaceId[spaceId] = entry.childSpaces
+                .map { child in
+                    let base = summariesById[child.roomId] ?? previewSummary(from: child)
+                    guard let childEntry = graph[base.id] else { return base }
+                    return enrichedSpaceSummary(
+                        base,
+                        entry: childEntry,
+                        summariesById: summariesById
+                    )
+                }
+                .sorted(by: spaceActivitySort)
+        }
 
         let enriched: [RoomSummary] = summaries.compactMap { summary -> RoomSummary? in
             if childIds.contains(summary.id) {
@@ -473,37 +610,10 @@ final class ZynaRoomListService: NSObject {
                 return summary
             }
 
-            let childSummaries = entry.childRoomIds.compactMap { summariesById[$0] }
-            spaceChildSummariesBySpaceId[summary.id] = childSummaries.sorted(by: spaceActivitySort)
-            let visibleChildren = childSummaries.filter { !$0.isMuted }
-            let previewSource = visibleChildren.isEmpty ? childSummaries : visibleChildren
-            let previewChildren = previewSource.sorted(by: spaceActivitySort)
-            let latestChild = previewChildren.first
-
-            return RoomSummary(
-                id: summary.id,
-                displayName: summary.displayName,
-                avatarURL: summary.avatarURL,
-                lastMessage: latestChild?.lastMessage,
-                lastMessageSenderName: latestChild?.lastMessageSenderName,
-                lastMessageTimestamp: visibleChildren.sorted(by: spaceActivitySort).first?.lastMessageTimestamp,
-                unreadCount: UInt64(visibleChildren.reduce(0) { $0 + Int($1.unreadCount) }),
-                unreadMentionCount: UInt64(visibleChildren.reduce(0) { $0 + Int($1.unreadMentionCount) }),
-                isMarkedUnread: visibleChildren.contains(where: \.isMarkedUnread),
-                isEncrypted: summary.isEncrypted,
-                isSpace: true,
-                isMuted: summary.isMuted,
-                directUserId: nil,
-                spaceChildRoomCount: entry.childRoomIds.count,
-                spaceChildSpaceCount: entry.childSpaceIds.count,
-                spaceRecentRooms: Array(previewChildren.prefix(spaceRecentRoomLimit)).map {
-                    SpaceChildSummary(
-                        id: $0.id,
-                        displayName: $0.displayName,
-                        avatarURL: $0.avatarURL,
-                        directUserId: $0.directUserId
-                    )
-                }
+            return enrichedSpaceSummary(
+                summary,
+                entry: entry,
+                summariesById: summariesById
             )
         }
 
@@ -515,8 +625,167 @@ final class ZynaRoomListService: NSObject {
 
         return RoomListBuildResult(
             summaries: sortedSummaries,
-            spaceChildSummariesBySpaceId: spaceChildSummariesBySpaceId
+            spaceChildSummariesBySpaceId: spaceChildSummariesBySpaceId,
+            spaceChildSpaceSummariesBySpaceId: spaceChildSpaceSummariesBySpaceId
         )
+    }
+
+    private static func enrichedSpaceSummary(
+        _ summary: RoomSummary,
+        entry: SpaceGraphEntry,
+        summariesById: [String: RoomSummary]
+    ) -> RoomSummary {
+        let childSummaries = entry.childRooms.map {
+            summariesById[$0.roomId] ?? previewSummary(from: $0)
+        }
+        let visibleChildren = childSummaries.filter { !$0.isMuted }
+        let previewSource = visibleChildren.isEmpty ? childSummaries : visibleChildren
+        let previewChildren = previewSource.sorted(by: spaceActivitySort)
+        let latestChild = previewChildren.first
+
+        return RoomSummary(
+            id: summary.id,
+            displayName: summary.displayName,
+            avatarURL: summary.avatarURL,
+            lastMessage: latestChild?.lastMessage,
+            lastMessageSenderName: latestChild?.lastMessageSenderName,
+            lastMessageTimestamp: visibleChildren.sorted(by: spaceActivitySort).first?.lastMessageTimestamp,
+            unreadCount: UInt64(visibleChildren.reduce(0) { $0 + Int($1.unreadCount) }),
+            unreadMentionCount: UInt64(visibleChildren.reduce(0) { $0 + Int($1.unreadMentionCount) }),
+            isMarkedUnread: visibleChildren.contains(where: \.isMarkedUnread),
+            isEncrypted: summary.isEncrypted,
+            isSpace: true,
+            isMuted: summary.isMuted,
+            directUserId: nil,
+            spaceChildRoomCount: entry.childRoomIds.count,
+            spaceChildSpaceCount: entry.childSpaceIds.count,
+            spaceRecentRooms: Array(previewChildren.prefix(spaceRecentRoomLimit)).map {
+                SpaceChildSummary(
+                    id: $0.id,
+                    displayName: $0.displayName,
+                    avatarURL: $0.avatarURL,
+                    directUserId: $0.directUserId
+                )
+            }
+        )
+    }
+
+    private static func previewSummary(from preview: SpaceRoom) -> RoomSummary {
+        let displayName = preview.displayName.isEmpty
+            ? (preview.canonicalAlias ?? String(localized: "Untitled"))
+            : preview.displayName
+
+        return RoomSummary(
+            id: preview.roomId,
+            displayName: displayName,
+            avatarURL: preview.avatarUrl,
+            lastMessage: nil,
+            lastMessageSenderName: nil,
+            lastMessageTimestamp: nil,
+            unreadCount: 0,
+            unreadMentionCount: 0,
+            isMarkedUnread: false,
+            isEncrypted: false,
+            isSpace: preview.roomType == .space,
+            isMuted: false,
+            directUserId: nil,
+            spaceChildRoomCount: 0,
+            spaceChildSpaceCount: 0,
+            spaceRecentRooms: []
+        )
+    }
+
+    private func waitForLocalRoom(roomId: String) async -> Room? {
+        for _ in 0..<20 {
+            if let room = room(for: roomId) {
+                return room
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return room(for: roomId)
+    }
+
+    private func addChildWithRawStateEvents(childId: String, spaceId: String) async throws {
+        guard let spaceRoom = room(for: spaceId) else {
+            throw spaceRelationshipError(String(localized: "Parent Storyline is not available locally."))
+        }
+        guard let childRoom = await waitForLocalRoom(roomId: childId) else {
+            throw spaceRelationshipError(String(localized: "Child room is not available locally."))
+        }
+
+        let childContent = try jsonString([
+            "via": viaServers(for: childId),
+            "suggested": false
+        ])
+        _ = try await spaceRoom.sendStateEventRaw(
+            eventType: "m.space.child",
+            stateKey: childId,
+            content: childContent
+        )
+
+        let parentContent = try jsonString([
+            "via": viaServers(for: spaceId),
+            "canonical": true
+        ])
+        _ = try await childRoom.sendStateEventRaw(
+            eventType: "m.space.parent",
+            stateKey: spaceId,
+            content: parentContent
+        )
+    }
+
+    private func viaServers(for roomId: String) -> [String] {
+        guard let serverName = roomId.split(separator: ":", maxSplits: 1).last,
+              !serverName.isEmpty
+        else {
+            return []
+        }
+        return [String(serverName)]
+    }
+
+    private func jsonString(_ value: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: value, options: [])
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw spaceRelationshipError(String(localized: "Could not encode Matrix state event content."))
+        }
+        return string
+    }
+
+    private func spaceRelationshipError(_ message: String) -> Error {
+        NSError(
+            domain: "Zyna.SpaceRelationship",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+    }
+
+    private func logSpaceRelationship(
+        _ title: String,
+        stage: String,
+        context: String,
+        spaceId: String,
+        childId: String,
+        attempt: Int? = nil,
+        error: Error? = nil
+    ) {
+        var parts = [
+            title,
+            "stage=\(stage)",
+            "context=\(context)",
+            "spaceId=\(spaceId)",
+            "childId=\(childId)"
+        ]
+        if let attempt {
+            parts.append("attempt=\(attempt)")
+        }
+        if let error {
+            parts.append("localized=\(error.localizedDescription)")
+            parts.append("reflected=\(String(reflecting: error))")
+        }
+
+        let message = "[SpaceRelationship] " + parts.joined(separator: " ")
+        print(message)
+        logRooms(message)
     }
 
     private static func spaceActivitySort(_ lhs: RoomSummary, _ rhs: RoomSummary) -> Bool {

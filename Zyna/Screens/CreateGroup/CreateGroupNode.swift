@@ -5,6 +5,38 @@
 
 import AsyncDisplayKit
 
+enum CreateRoomPresentation {
+    case groupRoom
+    case spaceChildChat
+
+    var screenTitle: String {
+        switch self {
+        case .groupRoom:
+            return String(localized: "New Group")
+        case .spaceChildChat:
+            return String(localized: "New Chat")
+        }
+    }
+
+    var nameLabel: String {
+        switch self {
+        case .groupRoom:
+            return String(localized: "Group Name")
+        case .spaceChildChat:
+            return String(localized: "Chat Name")
+        }
+    }
+
+    var createButtonTitle: String {
+        switch self {
+        case .groupRoom:
+            return String(localized: "Create Group")
+        case .spaceChildChat:
+            return String(localized: "Create Chat")
+        }
+    }
+}
+
 final class CreateGroupNode: ScreenNode {
 
     let nameInputNode = ASEditableTextNode()
@@ -54,12 +86,14 @@ final class CreateGroupNode: ScreenNode {
     private var aliasServerName: String?
     private var isCreating = false
     private var membersCount = 0
+    private let presentation: CreateRoomPresentation
 
-    override init() {
+    init(presentation: CreateRoomPresentation = .groupRoom) {
+        self.presentation = presentation
         super.init()
 
         nameLabel.attributedText = NSAttributedString(
-            string: String(localized: "Group Name"),
+            string: presentation.nameLabel,
             attributes: [.font: UIFont.systemFont(ofSize: 13), .foregroundColor: UIColor.secondaryLabel]
         )
 
@@ -114,7 +148,7 @@ final class CreateGroupNode: ScreenNode {
             attributes: [.font: UIFont.systemFont(ofSize: 13), .foregroundColor: UIColor.secondaryLabel]
         )
 
-        createButtonNode.setTitle(String(localized: "Create Group"), with: UIFont.systemFont(ofSize: 17, weight: .semibold), with: .white, for: .normal)
+        createButtonNode.setTitle(presentation.createButtonTitle, with: UIFont.systemFont(ofSize: 17, weight: .semibold), with: .white, for: .normal)
         createButtonNode.backgroundColor = .systemBlue
         createButtonNode.cornerRadius = 12
         createButtonNode.style.height = ASDimension(unit: .points, value: 50)
@@ -151,7 +185,7 @@ final class CreateGroupNode: ScreenNode {
         createButtonNode.alpha = isCreating ? 0.55 : 1
         let title = isCreating
             ? String(localized: "Creating...")
-            : String(localized: "Create Group")
+            : presentation.createButtonTitle
         createButtonNode.setTitle(title, with: UIFont.systemFont(ofSize: 17, weight: .semibold), with: .white, for: .normal)
     }
 

@@ -45,14 +45,11 @@ final class SpaceCellNode: ZynaCellNode {
         )
         avatarBackgroundNode.isLayerBacked = true
 
-        avatarImageNode.cornerRoundingType = .precomposited
-        avatarImageNode.cornerRadius = Metrics.avatarCornerRadius
-        avatarImageNode.clipsToBounds = true
         avatarImageNode.contentMode = .scaleAspectFill
         avatarImageNode.isLayerBacked = true
         if let mxc = space.avatar.mxcAvatarURL {
             if let cached = MediaCache.shared.cachedImage(forUrl: mxc, size: Metrics.avatarThumbSize) {
-                avatarImageNode.image = cached
+                avatarImageNode.image = Self.roundedAvatarImage(cached, cacheKey: mxc)
             } else {
                 loadAvatarImage()
             }
@@ -111,13 +108,22 @@ final class SpaceCellNode: ZynaCellNode {
         let size = Metrics.avatarThumbSize
         Task { [weak self] in
             if let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: size) {
-                self?.avatarImageNode.image = image
+                self?.avatarImageNode.image = Self.roundedAvatarImage(image, cacheKey: mxc)
                 return
             }
             try? await Task.sleep(for: .seconds(1))
             guard let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: size) else { return }
-            self?.avatarImageNode.image = image
+            self?.avatarImageNode.image = Self.roundedAvatarImage(image, cacheKey: mxc)
         }
+    }
+
+    private static func roundedAvatarImage(_ image: UIImage, cacheKey: String) -> UIImage {
+        RoundedImageCache.roundedImage(
+            source: image,
+            size: Metrics.avatarSize,
+            cornerRadius: Metrics.avatarCornerRadius,
+            cacheKey: cacheKey
+        )
     }
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {

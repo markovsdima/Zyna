@@ -85,22 +85,26 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
     func numberOfSections(in tableNode: ASTableNode) -> Int { 2 }
 
     func tableNode(_ tableNode: ASTableNode, numberOfRowsInSection section: Int) -> Int {
-        section == 0 ? 1 : viewModel.users.count
+        section == 0 ? 2 : viewModel.users.count
     }
 
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
         if indexPath.section == 0 {
+            let isStorylineRow = indexPath.row == 1
             return {
                 let cell = ASCellNode()
                 cell.automaticallyManagesSubnodes = true
 
                 let icon = ASImageNode()
-                icon.image = AppIcon.person2.rendered(size: 24, weight: .regular, color: .systemBlue)
+                icon.image = (isStorylineRow ? AppIcon.compose : AppIcon.person2)
+                    .rendered(size: 24, weight: .regular, color: .systemBlue)
                 icon.style.preferredSize = CGSize(width: 24, height: 24)
 
                 let text = ASTextNode()
                 text.attributedText = NSAttributedString(
-                    string: String(localized: "New Group"),
+                    string: isStorylineRow
+                        ? String(localized: "New Storyline")
+                        : String(localized: "New Group"),
                     attributes: [
                         .font: UIFont.systemFont(ofSize: 16, weight: .medium),
                         .foregroundColor: UIColor.systemBlue
@@ -144,7 +148,11 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
     func tableNode(_ tableNode: ASTableNode, didSelectRowAt indexPath: IndexPath) {
         tableNode.deselectRow(at: indexPath, animated: true)
         if indexPath.section == 0 {
-            viewModel.newGroupTapped()
+            if indexPath.row == 1 {
+                viewModel.newStorylineTapped()
+            } else {
+                viewModel.newGroupTapped()
+            }
         } else {
             guard indexPath.row < viewModel.users.count else { return }
             viewModel.selectUser(viewModel.users[indexPath.row])

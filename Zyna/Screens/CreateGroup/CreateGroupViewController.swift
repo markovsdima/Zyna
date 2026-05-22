@@ -10,10 +10,13 @@ final class CreateGroupViewController: ASDKViewController<CreateGroupNode> {
     private let viewModel: CreateGroupViewModel
     private var isUpdatingAliasProgrammatically = false
 
-    init(viewModel: CreateGroupViewModel) {
+    init(
+        viewModel: CreateGroupViewModel,
+        presentation: CreateRoomPresentation = .groupRoom
+    ) {
         self.viewModel = viewModel
-        super.init(node: CreateGroupNode())
-        title = String(localized: "New Group")
+        super.init(node: CreateGroupNode(presentation: presentation))
+        title = presentation.screenTitle
     }
 
     required init?(coder: NSCoder) {
@@ -100,6 +103,7 @@ extension CreateGroupViewController: ASEditableTextNodeDelegate {
             viewModel.updateRoomTopic(editableTextNode.textView.text ?? "")
         } else if editableTextNode === node.aliasInputNode, !isUpdatingAliasProgrammatically {
             viewModel.updateRoomAliasLocalPart(editableTextNode.textView.text ?? "")
+            updateAliasInput(viewModel.roomAliasLocalPart)
         }
     }
 }

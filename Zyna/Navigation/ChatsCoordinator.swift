@@ -59,6 +59,9 @@ final class ChatsCoordinator {
         vm.onNewGroup = { [weak self] in
             self?.showCreateGroup(in: nav)
         }
+        vm.onNewStoryline = { [weak self] in
+            self?.showCreateSpace(mode: .storyline, in: nav)
+        }
 
         configureComposeSheet(nav)
         navigationController.present(nav, animated: true)
@@ -164,8 +167,16 @@ final class ChatsCoordinator {
         navigationController.push(vc, animated: animated)
     }
 
-    private func showSpace(_ space: RoomModel, animated: Bool) {
-        let vc = SpaceViewController(space: space, roomListService: roomListService)
+    private func showSpace(
+        _ space: RoomModel,
+        animated: Bool,
+        presentation: SpacePresentationKind = .storyline
+    ) {
+        let vc = SpaceViewController(
+            space: space,
+            presentation: presentation,
+            roomListService: roomListService
+        )
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -179,7 +190,77 @@ final class ChatsCoordinator {
                 self?.showChat(.cached(chat))
             }
         }
+        vc.onSpaceSelected = { [weak self] space in
+            self?.showSpace(space, animated: true, presentation: .track)
+        }
+        vc.onCreateContent = { [weak self] parent, presentation in
+            self?.showSpaceComposeSheet(parent: parent, presentation: presentation)
+        }
         navigationController.push(vc, animated: animated)
+    }
+
+    private func showSpaceComposeSheet(parent: RoomModel, presentation: SpacePresentationKind) {
+        let vc = SpaceComposeChoiceViewController(parent: parent, presentation: presentation)
+        let nav = ZynaNavigationController(rootViewController: vc)
+
+        vc.onCancel = { [weak nav] in
+            nav?.dismiss(animated: true)
+        }
+        vc.onNewChat = { [weak self, weak nav] in
+            guard let self, let nav else { return }
+            self.showCreateChat(parent: parent, in: nav)
+        }
+        vc.onNewTrack = { [weak self, weak nav] in
+            guard let self, let nav else { return }
+            self.showCreateSpace(mode: .track(parent: parent), in: nav)
+        }
+
+        configureComposeSheet(nav)
+        navigationController.present(nav, animated: true)
+    }
+
+    private func showCreateChat(parent: RoomModel, in nav: ZynaNavigationController) {
+        let vm = CreateGroupViewModel(
+            roomListService: roomListService,
+            parentSpaceId: parent.id
+        )
+        let vc = CreateGroupViewController(viewModel: vm, presentation: .spaceChildChat)
+
+        vm.onRoomCreated = { [weak self, weak nav] room in
+            guard let self, let flowNav = nav else { return }
+            if flowNav === self.navigationController {
+                flowNav.pop(animated: false)
+                self.showChat(room)
+            } else {
+                self.navigationController.dismiss(animated: true) { [weak self] in
+                    self?.showChat(room)
+                }
+            }
+        }
+
+        nav.push(vc)
+    }
+
+    private func showCreateSpace(mode: SpaceCreationMode, in nav: ZynaNavigationController) {
+        let vm = SpaceCreationViewModel(mode: mode, roomListService: roomListService)
+        let vc = SpaceCreationViewController(viewModel: vm)
+
+        vc.onBack = { [weak nav] in
+            nav?.pop()
+        }
+        vm.onSpaceCreated = { [weak self, weak nav] space in
+            guard let self, let flowNav = nav else { return }
+            if flowNav === self.navigationController {
+                flowNav.pop(animated: false)
+                self.showSpace(space, animated: true, presentation: mode.presentationKind)
+            } else {
+                self.navigationController.dismiss(animated: true) { [weak self] in
+                    self?.showSpace(space, animated: true, presentation: mode.presentationKind)
+                }
+            }
+        }
+
+        nav.push(vc)
     }
 
     private func showChatPreview(

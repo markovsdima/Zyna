@@ -38,12 +38,18 @@ final class CreateGroupViewModel {
     var onCreatingChanged: ((Bool) -> Void)?
 
     private let roomListService: ZynaRoomListService
+    private let parentSpaceId: String?
     private var isCreating = false
     private var aliasWasEdited = false
 
-    init(members: [UserProfile] = [], roomListService: ZynaRoomListService) {
+    init(
+        members: [UserProfile] = [],
+        roomListService: ZynaRoomListService,
+        parentSpaceId: String? = nil
+    ) {
         self.members = members
         self.roomListService = roomListService
+        self.parentSpaceId = parentSpaceId
     }
 
     var serverName: String? {
@@ -128,6 +134,9 @@ final class CreateGroupViewModel {
                     canonicalAlias: aliasLocalPart
                 )
                 let roomId = try await client.createRoom(request: params)
+                if let parentSpaceId {
+                    try await roomListService.addChild(roomId, toSpace: parentSpaceId, context: "chat")
+                }
 
                 if let room = await waitForCreatedRoom(roomId: roomId) {
                     await MainActor.run { self.onRoomCreated?(room) }
@@ -206,25 +215,11 @@ final class CreateGroupViewModel {
     )
 
     private static func defaultAliasLocalPart(for roomName: String) -> String {
-        roomAliasNameFromRoomDisplayName(roomName: roomName).lowercased()
+        MatrixAliasLocalPart.generated(from: roomName)
     }
 
     private static func normalizedAliasLocalPart(_ value: String, serverName: String?) -> String {
-        var result = value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-
-        if result.hasPrefix("#") {
-            result.removeFirst()
-        }
-
-        if let serverName,
-           result.hasSuffix(":\(serverName)"),
-           let colon = result.lastIndex(of: ":") {
-            result = String(result[..<colon])
-        }
-
-        return result
+        MatrixAliasLocalPart.normalizedUserInput(value, serverName: serverName)
     }
 
     private static func serverName(from userId: String) -> String? {
