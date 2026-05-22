@@ -233,7 +233,7 @@ final class SpaceCellNode: ZynaCellNode {
         isAccessibilityElement = true
         accessibilityTraits = .button
 
-        var label = "\(space.name), \(String(localized: "storyline")), \(Self.metaText(for: space))"
+        var label = "\(space.name), \(String(localized: "storyline")), \(space.spaceMetaText)"
         if space.unreadCount > 0 {
             label += ", \(space.unreadCount) unread"
         } else if space.isMarkedUnread {
@@ -256,15 +256,7 @@ final class SpaceCellNode: ZynaCellNode {
     }
 
     private static func metaText(for space: RoomModel) -> String {
-        let chats = String.localizedStringWithFormat(
-            String(localized: "%lld chats"),
-            Int64(space.spaceChildRoomCount)
-        )
-        let tracks = String.localizedStringWithFormat(
-            String(localized: "%lld tracks"),
-            Int64(space.spaceChildSpaceCount)
-        )
-        return "\(chats) · \(tracks)"
+        space.spaceMetaText
     }
 
     private static func latestMessageText(for space: RoomModel) -> String {

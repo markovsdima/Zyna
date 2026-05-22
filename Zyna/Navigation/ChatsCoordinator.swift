@@ -165,9 +165,19 @@ final class ChatsCoordinator {
     }
 
     private func showSpace(_ space: RoomModel, animated: Bool) {
-        let vc = SpacePlaceholderViewController(space: space)
+        let vc = SpaceViewController(space: space, roomListService: roomListService)
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
+        }
+        vc.onSettings = {
+            ScopedLog(.rooms)("Storyline title tapped: \(space.id)")
+        }
+        vc.onChatSelected = { [weak self] chat in
+            if let room = self?.roomListService.room(for: chat.id) {
+                self?.showChat(room)
+            } else {
+                self?.showChat(.cached(chat))
+            }
         }
         navigationController.push(vc, animated: animated)
     }

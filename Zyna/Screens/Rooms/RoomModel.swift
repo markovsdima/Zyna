@@ -34,6 +34,17 @@ struct RoomModel: Equatable {
 }
 
 extension RoomModel {
+    var spaceMetaText: String {
+        let chats = String.localizedStringWithFormat(
+            String(localized: "%lld chats"),
+            Int64(spaceChildRoomCount)
+        )
+        let tracks = String.localizedStringWithFormat(
+            String(localized: "%lld tracks"),
+            Int64(spaceChildSpaceCount)
+        )
+        return "\(chats) · \(tracks)"
+    }
 
     init(from room: RoomSummary) {
         let avatarId = room.directUserId ?? room.id

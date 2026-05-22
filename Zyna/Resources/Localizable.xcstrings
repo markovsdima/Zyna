@@ -4,6 +4,16 @@
     "" : {
 
     },
+    "Add to Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить в сюжет"
+          }
+        }
+      }
+    },
     "Add the first chat" : {
       "localizations" : {
         "ru" : {
@@ -14,12 +24,12 @@
         }
       }
     },
-    "Chats and tracks will appear here." : {
+    "Directions within this Storyline will appear here." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Здесь появятся чаты и линии сюжета."
+            "value" : "Здесь появятся направления внутри сюжета."
           }
         }
       }
