@@ -5,7 +5,6 @@
 
     },
     "Add to Storyline" : {
-      "extractionState" : "stale",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
@@ -6089,6 +6088,296 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Выберите чат, который добавить в «%@»."
+          }
+        }
+      }
+    },
+    "Both sides recognize this link." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обе стороны подтверждают эту связь."
+          }
+        }
+      }
+    },
+    "Chat is not available locally." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат пока недоступен локально."
+          }
+        }
+      }
+    },
+    "Chat side" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сторона чата"
+          }
+        }
+      }
+    },
+    "Confirm in Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подтвердить в чате"
+          }
+        }
+      }
+    },
+    "Could Not Load Storylines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить сюжеты"
+          }
+        }
+      }
+    },
+    "Could Not Update Storyline Link" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось обновить связь с сюжетом"
+          }
+        }
+      }
+    },
+    "Declared by Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Указан в чате"
+          }
+        }
+      }
+    },
+    "Invalid Matrix response." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Некорректный ответ Matrix."
+          }
+        }
+      }
+    },
+    "Linked" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Связано"
+          }
+        }
+      }
+    },
+    "Listed by Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавлен в сюжет"
+          }
+        }
+      }
+    },
+    "Loading Storylines..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загружаем сюжеты..."
+          }
+        }
+      }
+    },
+    "Matrix request failed with HTTP %lld." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запрос Matrix завершился с HTTP %lld."
+          }
+        }
+      }
+    },
+    "Matrix state event was not found." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "State event Matrix не найден."
+          }
+        }
+      }
+    },
+    "Matrix stores this as two independent links. They can disagree, so Zyna lets you edit each side explicitly." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Matrix хранит это как две независимые связи. Они могут расходиться, поэтому Zyna даёт явно менять каждую сторону."
+          }
+        }
+      }
+    },
+    "Missing" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет"
+          }
+        }
+      }
+    },
+    "No Storylines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет сюжетов"
+          }
+        }
+      }
+    },
+    "None" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет"
+          }
+        }
+      }
+    },
+    "Opens Storyline links" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает связи с сюжетами"
+          }
+        }
+      }
+    },
+    "Present" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Есть"
+          }
+        }
+      }
+    },
+    "Remove Chat Link" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать связь в чате"
+          }
+        }
+      }
+    },
+    "Remove from Storyline List" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать из списка сюжета"
+          }
+        }
+      }
+    },
+    "Shows Storyline link details" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывает детали связи с сюжетом"
+          }
+        }
+      }
+    },
+    "Storyline side" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сторона сюжета"
+          }
+        }
+      }
+    },
+    "Storylines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжеты"
+          }
+        }
+      }
+    },
+    "The chat points back to the Storyline with m.space.parent." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат ссылается обратно на сюжет через m.space.parent."
+          }
+        }
+      }
+    },
+    "The chat points to this Storyline, but the Storyline does not show it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат ссылается на этот сюжет, но сюжет не показывает чат."
+          }
+        }
+      }
+    },
+    "The Storyline lists this chat with m.space.child." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет перечисляет этот чат через m.space.child."
+          }
+        }
+      }
+    },
+    "The Storyline shows this chat, but the chat does not confirm it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет показывает этот чат, но чат не подтверждает связь."
+          }
+        }
+      }
+    },
+    "You do not have permission to edit this side." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет прав менять эту сторону."
           }
         }
       }

@@ -277,6 +277,52 @@ final class ZynaRoomListService: NSObject {
         }
     }
 
+    func setChildLink(_ childId: String, toSpace spaceId: String, context: String) async throws {
+        logSpaceRelationship(
+            "Setting space child state event",
+            stage: "sendStateEventRaw",
+            context: context,
+            spaceId: spaceId,
+            childId: childId
+        )
+        try await sendSpaceChildState(childId: childId, spaceId: spaceId)
+        _ = await refreshSpaceChildren(for: spaceId)
+    }
+
+    func removeChildLink(_ childId: String, fromSpace spaceId: String, context: String) async throws {
+        logSpaceRelationship(
+            "Removing space child state event",
+            stage: "sendStateEventRaw",
+            context: context,
+            spaceId: spaceId,
+            childId: childId
+        )
+        try await sendEmptySpaceChildState(childId: childId, spaceId: spaceId)
+        _ = await refreshSpaceChildren(for: spaceId)
+    }
+
+    func setParentLink(_ spaceId: String, forChild childId: String, context: String) async throws {
+        logSpaceRelationship(
+            "Setting space parent state event",
+            stage: "sendStateEventRaw",
+            context: context,
+            spaceId: spaceId,
+            childId: childId
+        )
+        try await sendSpaceParentState(spaceId: spaceId, childId: childId)
+    }
+
+    func removeParentLink(_ spaceId: String, fromChild childId: String, context: String) async throws {
+        logSpaceRelationship(
+            "Removing space parent state event",
+            stage: "sendStateEventRaw",
+            context: context,
+            spaceId: spaceId,
+            childId: childId
+        )
+        try await sendEmptySpaceParentState(spaceId: spaceId, childId: childId)
+    }
+
     private func loadSpaceChildren(for spaceId: String) async -> SpaceChildrenSummary {
         guard let client = MatrixClientService.shared.client else {
             return SpaceChildrenSummary(rooms: [], spaces: [])
@@ -805,36 +851,32 @@ final class ZynaRoomListService: NSObject {
     }
 
     private func addChildWithRawStateEvents(childId: String, spaceId: String) async throws {
+        try await sendSpaceChildState(childId: childId, spaceId: spaceId)
+        try? await sendSpaceParentState(spaceId: spaceId, childId: childId)
+    }
+
+    private func removeChildWithRawStateEvents(childId: String, spaceId: String) async throws {
+        try await sendEmptySpaceChildState(childId: childId, spaceId: spaceId)
+        try? await sendEmptySpaceParentState(spaceId: spaceId, childId: childId)
+    }
+
+    private func sendSpaceChildState(childId: String, spaceId: String) async throws {
         guard let spaceRoom = room(for: spaceId) else {
             throw spaceRelationshipError(String(localized: "Parent Storyline is not available locally."))
         }
 
-        let childContent = try jsonString([
+        let content = try jsonString([
             "via": viaServers(for: childId),
             "suggested": false
         ])
         _ = try await spaceRoom.sendStateEventRaw(
             eventType: "m.space.child",
             stateKey: childId,
-            content: childContent
-        )
-
-        guard let childRoom = await waitForLocalRoom(roomId: childId) else {
-            return
-        }
-
-        let parentContent = try jsonString([
-            "via": viaServers(for: spaceId),
-            "canonical": true
-        ])
-        _ = try? await childRoom.sendStateEventRaw(
-            eventType: "m.space.parent",
-            stateKey: spaceId,
-            content: parentContent
+            content: content
         )
     }
 
-    private func removeChildWithRawStateEvents(childId: String, spaceId: String) async throws {
+    private func sendEmptySpaceChildState(childId: String, spaceId: String) async throws {
         guard let spaceRoom = room(for: spaceId) else {
             throw spaceRelationshipError(String(localized: "Parent Storyline is not available locally."))
         }
@@ -844,12 +886,30 @@ final class ZynaRoomListService: NSObject {
             stateKey: childId,
             content: "{}"
         )
+    }
 
+    private func sendSpaceParentState(spaceId: String, childId: String) async throws {
         guard let childRoom = await waitForLocalRoom(roomId: childId) else {
-            return
+            throw spaceRelationshipError(String(localized: "Chat is not available locally."))
         }
 
-        _ = try? await childRoom.sendStateEventRaw(
+        let content = try jsonString([
+            "via": viaServers(for: spaceId),
+            "canonical": true
+        ])
+        _ = try await childRoom.sendStateEventRaw(
+            eventType: "m.space.parent",
+            stateKey: spaceId,
+            content: content
+        )
+    }
+
+    private func sendEmptySpaceParentState(spaceId: String, childId: String) async throws {
+        guard let childRoom = await waitForLocalRoom(roomId: childId) else {
+            throw spaceRelationshipError(String(localized: "Chat is not available locally."))
+        }
+
+        _ = try await childRoom.sendStateEventRaw(
             eventType: "m.space.parent",
             stateKey: spaceId,
             content: "{}"

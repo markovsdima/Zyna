@@ -26,6 +26,7 @@ final class RoomDetailsNode: ScreenNode {
     var onMembersTapped: (() -> Void)?
     var onProfileTapped: (() -> Void)?
     var onPinnedMessagesTapped: (() -> Void)?
+    var onStorylinesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
     var onLeaveTapped: (() -> Void)?
@@ -58,6 +59,7 @@ final class RoomDetailsNode: ScreenNode {
     private let membersRow = ActionRowNode()
     private let profileRow = ActionRowNode()
     private let pinnedMessagesRow = ActionRowNode()
+    private let storylinesRow = ActionRowNode()
     private let securityRow = ActionRowNode()
     private let rolesPermissionsRow = ActionRowNode()
     private let leaveRoomRow = ActionRowNode()
@@ -76,6 +78,8 @@ final class RoomDetailsNode: ScreenNode {
     private var isLeavingRoom = false
     private var hasAvatar = false
     private var hasMembersRow = false
+    private var storylinesTrailingText: String?
+    private var storylinesNeedsAttention = false
     private var avatarLoadRevision: UInt64 = 0
 
     var editingName: String? {
@@ -160,6 +164,10 @@ final class RoomDetailsNode: ScreenNode {
             trailingText: "0",
             accessibilityHint: String(localized: "Opens pinned messages")
         ))
+
+        storylinesRow.onTap = { [weak self] in self?.onStorylinesTapped?() }
+        storylinesRow.style.alignSelf = .stretch
+        applyStorylinesRowConfiguration()
 
         securityRow.onTap = { [weak self] in self?.onSecurityPrivacyTapped?() }
         securityRow.style.alignSelf = .stretch
@@ -255,6 +263,22 @@ final class RoomDetailsNode: ScreenNode {
         setNeedsLayout()
     }
 
+    func updateSpaceMembershipSummary(_ summary: RoomSpaceMembershipSummary?) {
+        if let summary {
+            if summary.count == 0 {
+                storylinesTrailingText = String(localized: "None")
+            } else {
+                storylinesTrailingText = "\(summary.count)"
+            }
+            storylinesNeedsAttention = summary.attentionCount > 0
+        } else {
+            storylinesTrailingText = nil
+            storylinesNeedsAttention = false
+        }
+        applyStorylinesRowConfiguration()
+        setNeedsLayout()
+    }
+
     func setDirectRoom(_ isDirectRoom: Bool) {
         guard self.isDirectRoom != isDirectRoom else { return }
         self.isDirectRoom = isDirectRoom
@@ -326,6 +350,19 @@ final class RoomDetailsNode: ScreenNode {
             leadingIcon: AppIcon.person.rendered(size: 17, weight: .medium, color: AppColor.accent),
             isEnabled: isDirectProfileAvailable,
             accessibilityHint: isDirectProfileAvailable ? String(localized: "Open Profile") : nil
+        ))
+    }
+
+    private func applyStorylinesRowConfiguration() {
+        storylinesRow.apply(ActionRowNode.Configuration(
+            title: String(localized: "Storylines"),
+            leadingIcon: AppIcon.link.rendered(
+                size: 17,
+                weight: .medium,
+                color: storylinesNeedsAttention ? .systemOrange : AppColor.accent
+            ),
+            trailingText: storylinesTrailingText,
+            accessibilityHint: String(localized: "Opens Storyline links")
         ))
     }
 
@@ -467,6 +504,7 @@ final class RoomDetailsNode: ScreenNode {
             buttonsChildren.append(searchButtonNode)
         } else {
             buttonsChildren.append(pinnedMessagesRow)
+            buttonsChildren.append(storylinesRow)
             buttonsChildren.append(securityRow)
             buttonsChildren.append(rolesPermissionsRow)
             buttonsChildren.append(contentsOf: [inviteButtonNode, searchButtonNode])

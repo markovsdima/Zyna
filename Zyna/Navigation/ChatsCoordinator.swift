@@ -438,6 +438,7 @@ final class ChatsCoordinator {
             room: room,
             memberCount: memberCount,
             directUserId: directUserId,
+            roomListService: roomListService,
             audioPlayer: audioPlayer
         )
         vc.onBack = { [weak self] in
@@ -458,6 +459,9 @@ final class ChatsCoordinator {
         vc.onPinnedMessagesTapped = { [weak self] in
             self?.showPinnedMessages(room: room)
         }
+        vc.onStorylinesTapped = { [weak self] in
+            self?.showRoomSpaceMembership(room: room)
+        }
         vc.onSecurityPrivacyTapped = { [weak self] in
             self?.showRoomSecurityPrivacy(room: room)
         }
@@ -466,6 +470,18 @@ final class ChatsCoordinator {
         }
         vc.onRoomLeft = { [weak self] roomId in
             self?.handleRoomLeft(roomId: roomId)
+        }
+        navigationController.push(vc)
+    }
+
+    private func showRoomSpaceMembership(room: Room) {
+        let vc = RoomSpaceMembershipViewController(
+            room: room,
+            roomListService: roomListService,
+            audioPlayer: audioPlayer
+        )
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
         }
         navigationController.push(vc)
     }

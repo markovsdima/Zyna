@@ -35,11 +35,13 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     var onMembersTapped: (() -> Void)?
     var onProfileTapped: ((String) -> Void)?
     var onPinnedMessagesTapped: (() -> Void)?
+    var onStorylinesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
     var onRoomLeft: ((String) -> Void)?
 
     private let room: Room
+    private let spaceMembershipService: RoomSpaceMembershipService
     private let memberCount: Int?
     private var directState: DirectRoomState
     private let glassTopBar = GlassTopBar()
@@ -54,15 +56,18 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private var pendingAvatarChange: PendingAvatarChange = .none
     private var latestRoomInfo: RoomInfo?
     private var roomInfoTask: Task<Void, Never>?
+    private var spaceMembershipSummaryTask: Task<Void, Never>?
     private var roomInfoSubscription: TaskHandle?
 
     init(
         room: Room,
         memberCount: Int?,
         directUserId: String? = nil,
+        roomListService: ZynaRoomListService,
         audioPlayer: AudioPlayerService? = nil
     ) {
         self.room = room
+        self.spaceMembershipService = RoomSpaceMembershipService(roomListService: roomListService)
         self.memberCount = memberCount
         self.directState = DirectRoomState(userId: directUserId)
         super.init(node: RoomDetailsNode())
@@ -112,6 +117,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
             self?.onPinnedMessagesTapped?()
         }
 
+        node.onStorylinesTapped = { [weak self] in
+            self?.onStorylinesTapped?()
+        }
+
         node.onSecurityPrivacyTapped = { [weak self] in
             self?.onSecurityPrivacyTapped?()
         }
@@ -133,6 +142,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
     deinit {
         roomInfoTask?.cancel()
+        spaceMembershipSummaryTask?.cancel()
         directState.profileTask?.cancel()
         roomInfoSubscription?.cancel()
     }
@@ -151,6 +161,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         voicePlayerHost?.refresh()
+        loadSpaceMembershipSummary()
         GlassService.shared.setNeedsCapture()
     }
 
@@ -280,6 +291,27 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         node.setDirectRoom(isDirectRoom)
         rebuildGlassItems(editing: isEditingDetails)
         applyRoomState()
+        loadSpaceMembershipSummary()
+    }
+
+    private func loadSpaceMembershipSummary() {
+        spaceMembershipSummaryTask?.cancel()
+
+        guard !directState.isDirect else {
+            node.updateSpaceMembershipSummary(nil)
+            return
+        }
+
+        node.updateSpaceMembershipSummary(nil)
+        let roomId = room.id()
+        spaceMembershipSummaryTask = Task { [weak self] in
+            guard let self else { return }
+            let summary = try? await self.spaceMembershipService.loadSummary(for: roomId)
+            await MainActor.run { [weak self] in
+                guard let self, !self.directState.isDirect else { return }
+                self.node.updateSpaceMembershipSummary(summary)
+            }
+        }
     }
 
     private func updateDirectUserId(_ userId: String?) {
