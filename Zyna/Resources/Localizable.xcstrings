@@ -5747,6 +5747,26 @@
         }
       }
     },
+    "Could not remove from Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось убрать из сюжета"
+          }
+        }
+      }
+    },
+    "Could not remove from Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось убрать из линии"
+          }
+        }
+      }
+    },
     "Could not encode Matrix state event content." : {
       "localizations" : {
         "ru" : {
@@ -5909,6 +5929,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Родительский сюжет пока недоступен локально."
+          }
+        }
+      }
+    },
+    "Remove from Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать из сюжета"
+          }
+        }
+      }
+    },
+    "Remove from Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать из линии"
           }
         }
       }

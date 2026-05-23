@@ -201,6 +201,82 @@ final class ZynaRoomListService: NSObject {
         }
     }
 
+    func removeChild(_ childId: String, fromSpace spaceId: String, context: String) async throws {
+        guard let client = MatrixClientService.shared.client else {
+            throw spaceRelationshipError(String(localized: "Matrix client is not ready."))
+        }
+
+        let spaceService = await client.spaceService()
+        var lastError: Error?
+
+        for attempt in 1...10 {
+            _ = await waitForLocalRoom(roomId: childId)
+            _ = await spaceService.topLevelJoinedSpaces()
+            _ = try? await spaceService.getSpaceRoom(roomId: spaceId)
+            _ = try? await spaceService.getSpaceRoom(roomId: childId)
+
+            do {
+                try await spaceService.removeChildFromSpace(childId: childId, spaceId: spaceId)
+                if attempt > 1 {
+                    logSpaceRelationship(
+                        "Removed child after retry",
+                        stage: "removeChildFromSpace",
+                        context: context,
+                        spaceId: spaceId,
+                        childId: childId,
+                        attempt: attempt
+                    )
+                }
+                _ = await refreshSpaceChildren(for: spaceId)
+                return
+            } catch {
+                lastError = error
+                logSpaceRelationship(
+                    "Space relationship removal retry scheduled",
+                    stage: "removeChildFromSpace",
+                    context: context,
+                    spaceId: spaceId,
+                    childId: childId,
+                    attempt: attempt,
+                    error: error
+                )
+                if attempt < 10 {
+                    try? await Task.sleep(for: .milliseconds(350 + attempt * 250))
+                }
+            }
+        }
+
+        do {
+            logSpaceRelationship(
+                "Falling back to raw removal state events",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId,
+                error: lastError
+            )
+            try await removeChildWithRawStateEvents(childId: childId, spaceId: spaceId)
+            logSpaceRelationship(
+                "Removed child with raw state events",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId
+            )
+            _ = await refreshSpaceChildren(for: spaceId)
+        } catch {
+            logSpaceRelationship(
+                "Raw removal state event fallback failed",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId,
+                error: error
+            )
+            throw error
+        }
+    }
+
     private func loadSpaceChildren(for spaceId: String) async -> SpaceChildrenSummary {
         guard let client = MatrixClientService.shared.client else {
             return SpaceChildrenSummary(rooms: [], spaces: [])
@@ -755,6 +831,28 @@ final class ZynaRoomListService: NSObject {
             eventType: "m.space.parent",
             stateKey: spaceId,
             content: parentContent
+        )
+    }
+
+    private func removeChildWithRawStateEvents(childId: String, spaceId: String) async throws {
+        guard let spaceRoom = room(for: spaceId) else {
+            throw spaceRelationshipError(String(localized: "Parent Storyline is not available locally."))
+        }
+
+        _ = try await spaceRoom.sendStateEventRaw(
+            eventType: "m.space.child",
+            stateKey: childId,
+            content: "{}"
+        )
+
+        guard let childRoom = await waitForLocalRoom(roomId: childId) else {
+            return
+        }
+
+        _ = try? await childRoom.sendStateEventRaw(
+            eventType: "m.space.parent",
+            stateKey: spaceId,
+            content: "{}"
         )
     }
 

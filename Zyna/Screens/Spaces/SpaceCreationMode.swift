@@ -115,4 +115,22 @@ enum SpacePresentationKind: Equatable {
             return String(localized: "Directions within this Track will appear here.")
         }
     }
+
+    var removeActionTitle: String {
+        switch self {
+        case .storyline:
+            return String(localized: "Remove from Storyline")
+        case .track:
+            return String(localized: "Remove from Track")
+        }
+    }
+
+    var removeErrorTitle: String {
+        switch self {
+        case .storyline:
+            return String(localized: "Could not remove from Storyline")
+        case .track:
+            return String(localized: "Could not remove from Track")
+        }
+    }
 }
