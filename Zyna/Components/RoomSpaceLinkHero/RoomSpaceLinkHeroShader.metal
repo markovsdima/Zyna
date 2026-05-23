@@ -137,6 +137,24 @@ inline float metallicBand(float sdf, float radius, float angle, float time, floa
         + glint * gaussianCentered(sdf, 2.0 * px, 4.0 * px) * radius;
 }
 
+inline float flatOrbitArc(
+    float sdf,
+    float angle,
+    float center,
+    float halfWidth,
+    float time,
+    float speed,
+    float seed,
+    float length,
+    float px
+) {
+    float band = 1.0 - smoothstep(halfWidth, halfWidth + 1.4 * px, abs(sdf - center));
+    float phase = fract((angle + M_PI_F) / (2.0 * M_PI_F) + time * speed + seed);
+    float edge = 0.018;
+    float arc = smoothstep(0.0, edge, phase) * (1.0 - smoothstep(length, length + edge, phase));
+    return band * arc;
+}
+
 inline float movingBeads(float t, float time, float speed, float density, float seed) {
     float lane = fract(t * density - time * speed + seed);
     float bead = gaussianCentered(lane, 0.20, 0.045)
@@ -230,7 +248,8 @@ inline float4 sampleMedallion(
     float2 axis,
     bool roundedSquare,
     float time,
-    float px
+    float px,
+    float darkMode
 ) {
     float2 local = (uv - center) * axis;
     float sdf;
@@ -252,7 +271,9 @@ inline float4 sampleMedallion(
     float3 color = avatar.rgb * light;
 
     float shade = smoothstep(radius * 0.80, radius * 0.08, length(local));
-    color *= 0.86 + shade * 0.18;
+    float edgeShade = 0.97 - darkMode * 0.11;
+    float centerLift = 0.06 + darkMode * 0.12;
+    color *= edgeShade + shade * centerLift;
     return float4(color, mask * avatar.a);
 }
 
@@ -267,6 +288,10 @@ fragment float4 roomSpaceLinkHeroFragment(
     float aspect = resolution.x / max(resolution.y, 1.0);
     float time = u.appearance.y > 0.5 ? 0.0 : u.resolutionTimeScale.z;
     float darkMode = u.appearance.x;
+    float lightMode = 1.0 - darkMode;
+    float glowScale = 0.18 + darkMode * 0.82;
+    float coreBoost = 1.0 + lightMode * 0.36;
+    float outlineStrength = lightMode;
     float transitionProgress = clamp(u.appearance.z, 0.0, 1.0);
     float transition = transitionProgress * transitionProgress * (3.0 - 2.0 * transitionProgress);
     float px = 1.0 / max(resolution.y, 1.0);
@@ -300,8 +325,9 @@ fragment float4 roomSpaceLinkHeroFragment(
     float3 spaceColor = float3(0.08, 0.88, 1.00);
     float3 roomColor = float3(0.80, 0.28, 1.00);
     float3 linkedColor = float3(0.68, 0.96, 1.00);
-    float3 metalLight = darkMode > 0.5 ? float3(0.88, 0.93, 1.0) : float3(0.42, 0.46, 0.54);
-    float3 metalDark = darkMode > 0.5 ? float3(0.12, 0.15, 0.20) : float3(0.82, 0.86, 0.92);
+    float3 metalLight = darkMode > 0.5 ? float3(0.88, 0.93, 1.0) : float3(0.76, 0.88, 0.96);
+    float3 metalDark = darkMode > 0.5 ? float3(0.12, 0.15, 0.20) : float3(0.48, 0.55, 0.65);
+    float3 lightInkColor = float3(0.20, 0.24, 0.32);
 
     float3 color = float3(0.0);
     float alpha = 0.0;
@@ -309,7 +335,7 @@ fragment float4 roomSpaceLinkHeroFragment(
     float broadBackdrop = gaussian(spaceToGroup.distance, 0.060) * hasSpaceSide
         + gaussian(groupToSpace.distance, 0.060) * hasRoomSide;
     float radialVignette = 1.0 - smoothstep(0.34, 0.74, distance(uv, float2(0.5, 0.52)));
-    float backdrop = max(broadBackdrop * 0.18, radialVignette * 0.10);
+    float backdrop = max(broadBackdrop * 0.18, radialVignette * 0.10) * (0.55 + darkMode * 0.45);
     color += mix(float3(0.08, 0.12, 0.20), float3(0.78, 0.88, 1.0), 1.0 - darkMode) * backdrop;
     alpha += backdrop;
 
@@ -317,7 +343,7 @@ fragment float4 roomSpaceLinkHeroFragment(
     float spaceFlow = curveEnergy(spaceToGroup, 0.0085, time, 0.46, 0.13) * hasSpaceSide;
     float roomFlow = curveEnergy(groupToSpace, 0.0085, time, 0.54, 0.57) * hasRoomSide;
     float bridgeBloom = (gaussian(spaceToGroup.distance, 0.028) * hasSpaceSide
-        + gaussian(groupToSpace.distance, 0.028) * hasRoomSide) * 0.22;
+        + gaussian(groupToSpace.distance, 0.028) * hasRoomSide) * 0.22 * glowScale;
     float transitionEnvelope = sin(transitionProgress * M_PI_F);
     float spaceChanging = abs(stateDelta.x);
     float roomChanging = abs(stateDelta.y);
@@ -334,31 +360,60 @@ fragment float4 roomSpaceLinkHeroFragment(
         * roomChanging
         * transitionEnvelope;
 
-    color += spaceColor * spaceFlow;
-    color += roomColor * roomFlow;
+    float spaceCoreInk = gaussian(spaceToGroup.distance, 0.0105) * hasSpaceSide * outlineStrength;
+    float roomCoreInk = gaussian(groupToSpace.distance, 0.0105) * hasRoomSide * outlineStrength;
+    float spaceCoreLine = gaussian(spaceToGroup.distance, 0.0068) * hasSpaceSide * outlineStrength;
+    float roomCoreLine = gaussian(groupToSpace.distance, 0.0068) * hasRoomSide * outlineStrength;
+    float spaceContourRail = gaussian(spaceToGroup.distance, 0.0095) * hasSpaceSide * outlineStrength;
+    float roomContourRail = gaussian(groupToSpace.distance, 0.0095) * hasRoomSide * outlineStrength;
+    float spaceContourCore = gaussian(spaceToGroup.distance, 0.0048) * hasSpaceSide * outlineStrength;
+    float roomContourCore = gaussian(groupToSpace.distance, 0.0048) * hasRoomSide * outlineStrength;
+    float spaceContourBeads = movingBeads(spaceToGroup.t, time, 0.46, 5.6, 0.13)
+        * gaussian(spaceToGroup.distance, 0.0049)
+        * hasSpaceSide
+        * outlineStrength;
+    float roomContourBeads = movingBeads(groupToSpace.t, time, 0.54, 5.6, 0.57)
+        * gaussian(groupToSpace.distance, 0.0049)
+        * hasRoomSide
+        * outlineStrength;
+    color += lightInkColor * (spaceCoreInk + roomCoreInk) * 0.12;
+    alpha += (spaceCoreInk + roomCoreInk) * 0.16;
+
+    float spaceLightContour = spaceContourRail * 0.20 + spaceContourCore * 0.64 + spaceContourBeads * 1.35;
+    float roomLightContour = roomContourRail * 0.20 + roomContourCore * 0.64 + roomContourBeads * 1.35;
+    color += spaceColor * (spaceFlow * darkMode + spaceLightContour + spaceCoreLine * 0.18 * coreBoost);
+    color += roomColor * (roomFlow * darkMode + roomLightContour + roomCoreLine * 0.18 * coreBoost);
     color += (spaceColor + roomColor) * bridgeBloom * 0.5;
     color += linkedColor * fullyLinked * linkedPulse * (
         gaussian(spaceToGroup.distance, 0.017) + gaussian(groupToSpace.distance, 0.017)
-    ) * 0.45;
+    ) * 0.45 * glowScale;
     color += spaceColor * spaceTransitionWave * (1.10 + 0.35 * spaceAdding);
     color += roomColor * roomTransitionWave * (1.10 + 0.35 * roomAdding);
+    float lightFlowAlpha = max(
+        max(spaceContourCore, roomContourCore),
+        max(spaceContourBeads, roomContourBeads)
+    ) * 0.92 + max(spaceContourRail, roomContourRail) * 0.20;
+    float flowAlpha = max(spaceFlow, roomFlow) * darkMode + lightFlowAlpha;
     alpha += max(
-        max(max(spaceFlow, roomFlow), bridgeBloom),
+        max(flowAlpha, bridgeBloom),
         max(spaceTransitionWave, roomTransitionWave) * 0.95
     );
 
     float2 ghostSpace = ghostPathEnergy(spaceToGroup, time, 0.19) * readySpaceSide;
     float2 ghostRoom = ghostPathEnergy(groupToSpace, time, 0.61) * readyRoomSide;
-    float ghostSpaceEnergy = ghostSpace.x * 0.55 + ghostSpace.y * 1.35;
-    float ghostRoomEnergy = ghostRoom.x * 0.55 + ghostRoom.y * 1.35;
+    float ghostSpaceEnergy = ghostSpace.x * (0.92 - darkMode * 0.37) + ghostSpace.y * (0.92 + darkMode * 0.43);
+    float ghostRoomEnergy = ghostRoom.x * (0.92 - darkMode * 0.37) + ghostRoom.y * (0.92 + darkMode * 0.43);
+    color += lightInkColor * (ghostSpace.x + ghostRoom.x) * outlineStrength * 0.24;
     color += spaceColor * ghostSpaceEnergy;
     color += roomColor * ghostRoomEnergy;
-    alpha += max(ghostSpaceEnergy, ghostRoomEnergy) * 0.82;
+    alpha += max(ghostSpaceEnergy, ghostRoomEnergy) * (0.68 + darkMode * 0.14);
 
     float2 groupLocal = (uv - groupCenter) * axis;
     float2 spaceLocal = (uv - spaceCenter) * axis;
     float2 spaceHalfSize = float2(radius * 0.90, radius * 0.90);
     float spaceCornerRadius = radius * 0.20;
+    float groupAngle = atan2(groupLocal.y, groupLocal.x);
+    float spaceAngle = atan2(spaceLocal.y, spaceLocal.x);
     float readyGroup = orbitEnergy(groupLocal, radius, time, 0.0, 0.3, px) * readyRoomSide;
     float readySpace = roundedRectOrbitEnergy(
         spaceLocal,
@@ -380,11 +435,14 @@ fragment float4 roomSpaceLinkHeroFragment(
         px
     ) * fullyLinked * 0.55;
 
-    color += roomColor * readyGroup;
-    color += spaceColor * readySpace;
-    color += (roomColor * 0.52 + linkedColor * 0.48) * linkedGroupOrbit;
-    color += (spaceColor * 0.56 + linkedColor * 0.44) * linkedSpaceOrbit;
-    alpha += max(max(readyGroup, readySpace), max(linkedGroupOrbit, linkedSpaceOrbit));
+    float orbitScale = darkMode;
+    color += roomColor * readyGroup * orbitScale;
+    color += spaceColor * readySpace * orbitScale;
+    color += (roomColor * 0.52 + linkedColor * 0.48) * linkedGroupOrbit * orbitScale;
+    color += (spaceColor * 0.56 + linkedColor * 0.44) * linkedSpaceOrbit * orbitScale;
+    alpha += max(max(readyGroup, readySpace), max(linkedGroupOrbit, linkedSpaceOrbit))
+        * (0.74 + darkMode * 0.26)
+        * orbitScale;
 
     float groupSDF = length(groupLocal) - radius;
     float spaceSDF = sdRoundedRect(spaceLocal, spaceHalfSize, spaceCornerRadius);
@@ -399,13 +457,59 @@ fragment float4 roomSpaceLinkHeroFragment(
     float spaceShadow = 1.0 - smoothstep(-0.018, 0.062, spaceShadowSDF);
     float shadow = max(groupShadow, spaceShadow);
     float3 shadowColor = darkMode > 0.5 ? float3(0.0, 0.0, 0.0) : float3(0.04, 0.055, 0.085);
-    color += shadowColor * shadow * (darkMode > 0.5 ? 0.18 : 0.12);
-    alpha += shadow * (darkMode > 0.5 ? 0.18 : 0.12);
+    color += shadowColor * shadow * (darkMode > 0.5 ? 0.18 : 0.025);
+    alpha += shadow * (darkMode > 0.5 ? 0.18 : 0.035);
+
+    float groupRingPresence = clamp(readyRoomSide + hasRoomSide * 0.72 + fullyLinked * 0.18, 0.0, 1.0);
+    float spaceRingPresence = clamp(readySpaceSide + hasSpaceSide * 0.72 + fullyLinked * 0.18, 0.0, 1.0);
+    float groupFlowA = flatOrbitArc(groupSDF, groupAngle, 4.6 * px, 3.15 * px, time, -0.24, 0.08, 0.36, px);
+    float groupFlowB = flatOrbitArc(groupSDF, groupAngle, 11.0 * px, 2.75 * px, time, 0.31, 0.42, 0.27, px);
+    float groupFlowC = flatOrbitArc(groupSDF, groupAngle, 18.0 * px, 2.35 * px, time, -0.18, 0.70, 0.20, px);
+    float spaceFlowA = flatOrbitArc(spaceSDF, spaceAngle, 4.6 * px, 3.15 * px, time, 0.25, 0.23, 0.36, px);
+    float spaceFlowB = flatOrbitArc(spaceSDF, spaceAngle, 11.0 * px, 2.75 * px, time, -0.32, 0.61, 0.27, px);
+    float spaceFlowC = flatOrbitArc(spaceSDF, spaceAngle, 18.0 * px, 2.35 * px, time, 0.19, 0.86, 0.20, px);
+    float3 groupFlowColorA = mix(roomColor, linkedColor, 0.10);
+    float3 groupFlowColorB = mix(roomColor, linkedColor, 0.24);
+    float3 groupFlowColorC = mix(roomColor, linkedColor, 0.40);
+    float3 spaceFlowColorA = mix(spaceColor, linkedColor, 0.08);
+    float3 spaceFlowColorB = mix(spaceColor, linkedColor, 0.22);
+    float3 spaceFlowColorC = mix(spaceColor, linkedColor, 0.40);
+    color += groupFlowColorA * groupFlowA * groupRingPresence * outlineStrength * 0.46;
+    color += groupFlowColorB * groupFlowB * groupRingPresence * outlineStrength * 0.34;
+    color += groupFlowColorC * groupFlowC * groupRingPresence * outlineStrength * 0.24;
+    color += spaceFlowColorA * spaceFlowA * spaceRingPresence * outlineStrength * 0.46;
+    color += spaceFlowColorB * spaceFlowB * spaceRingPresence * outlineStrength * 0.34;
+    color += spaceFlowColorC * spaceFlowC * spaceRingPresence * outlineStrength * 0.24;
+    float medallionFlowAlpha = max(
+        max(max(groupFlowA, groupFlowB), groupFlowC),
+        max(max(spaceFlowA, spaceFlowB), spaceFlowC)
+    );
+    alpha += medallionFlowAlpha
+        * max(groupRingPresence, spaceRingPresence)
+        * outlineStrength
+        * 0.20;
 
     float groupLift = gaussianCentered(groupSDF, 20.0 * px, 17.0 * px);
     float spaceLift = gaussianCentered(spaceSDF, 20.0 * px, 17.0 * px);
-    color += (roomColor * groupLift + spaceColor * spaceLift) * (0.08 + 0.09 * editableMissing);
-    alpha += max(groupLift, spaceLift) * (0.07 + 0.06 * editableMissing);
+    color += (roomColor * groupLift + spaceColor * spaceLift) * (darkMode * 0.08 + 0.018 * editableMissing);
+    alpha += max(groupLift, spaceLift) * (darkMode * 0.07 + 0.014 * editableMissing);
+    float groupEnergyFill = (
+        gaussianCentered(groupSDF, 5.5 * px, 5.8 * px) * 0.54
+            + gaussianCentered(groupSDF, 12.0 * px, 9.5 * px) * 0.46
+    ) * outlineStrength * clamp(readyRoomSide + fullyLinked * 0.72, 0.0, 1.0);
+    float spaceEnergyFill = (
+        gaussianCentered(spaceSDF, 5.5 * px, 5.8 * px) * 0.54
+            + gaussianCentered(spaceSDF, 12.0 * px, 9.5 * px) * 0.46
+    ) * outlineStrength * clamp(readySpaceSide + fullyLinked * 0.72, 0.0, 1.0);
+    color += (roomColor * 0.58 + linkedColor * 0.42) * groupEnergyFill * 0.018;
+    color += (spaceColor * 0.62 + linkedColor * 0.38) * spaceEnergyFill * 0.018;
+    alpha += max(groupEnergyFill, spaceEnergyFill) * 0.012;
+    float medallionInk = (
+        gaussianCentered(groupSDF, 8.0 * px, 7.0 * px)
+            + gaussianCentered(spaceSDF, 8.0 * px, 7.0 * px)
+    ) * outlineStrength;
+    color += lightInkColor * medallionInk * 0.025;
+    alpha += medallionInk * 0.018;
 
     float2 nexusCenter = float2(0.5 * aspect, 0.52);
     float2 nexusLocal = p - nexusCenter;
@@ -490,26 +594,42 @@ fragment float4 roomSpaceLinkHeroFragment(
     float3 nodeGlowColor = mix(float3(0.10, 0.12, 0.18), float3(0.76, 0.92, 1.0), 1.0 - darkMode);
     float nodeGlow = gaussian(nexusDistance, 0.086)
         * (0.07 + anyLink * 0.10 + editableMissing * 0.10 + fullyLinked * 0.11 + centerCharge * 0.18);
+    nodeGlow *= glowScale;
+    centerSpark *= 0.55 + darkMode * 0.45;
+
+    float roomLinkPresence = clamp(roomLinkActive + roomLinkGhost, 0.0, 1.0);
+    float spaceLinkPresence = clamp(spaceLinkActive + spaceLinkGhost, 0.0, 1.0);
+    float linkEdgeInk = (
+        gaussianCentered(roomLinkSDF, 1.8 * px, 2.2 * px) * roomLinkPresence * roomKeep
+            + gaussianCentered(spaceLinkSDF, 1.8 * px, 2.2 * px) * spaceLinkPresence * spaceKeep
+    ) * outlineStrength;
+    color += lightInkColor * linkEdgeInk * 0.015;
+    alpha += linkEdgeInk * 0.035;
 
     color += nodeGlowColor * nodeGlow;
-    color += roomColor * (roomVisibleGlow * 0.52 + roomVisibleCore * (0.58 + roomLinkSheen * 0.28));
-    color += spaceColor * (spaceVisibleGlow * 0.52 + spaceVisibleCore * (0.58 + spaceLinkSheen * 0.28));
-    color += metalLight * (roomVisibleCore * roomLinkSheen + spaceVisibleCore * spaceLinkSheen) * 0.12;
+    float linkGlowMix = 0.16 + darkMode * 0.36;
+    float linkCoreMix = 0.80 - darkMode * 0.22;
+    float linkSheenMix = 0.42 - darkMode * 0.14;
+    color += roomColor * (roomVisibleGlow * linkGlowMix + roomVisibleCore * (linkCoreMix + roomLinkSheen * linkSheenMix));
+    color += spaceColor * (spaceVisibleGlow * linkGlowMix + spaceVisibleCore * (linkCoreMix + spaceLinkSheen * linkSheenMix));
+    float3 lightLinkSheen = float3(0.74, 0.97, 1.00);
+    float3 linkSheenColor = mix(lightLinkSheen, metalLight, darkMode);
+    float lightLinkLift = (roomVisibleCore + spaceVisibleCore) * outlineStrength;
+    color += linkedColor * lightLinkLift * 0.20;
+    color += linkSheenColor * (roomVisibleCore * roomLinkSheen + spaceVisibleCore * spaceLinkSheen) * (0.24 - darkMode * 0.12);
     color += roomColor * (roomGhostCore * (0.30 + 0.18 * nodePulse) + roomAttemptGlow);
     color += spaceColor * (spaceGhostCore * (0.30 + 0.18 * nodePulse) + spaceAttemptGlow);
     color += linkedColor * linkIntersection * fullyLinked * 0.035;
     color += linkedColor * centerSpark * 0.36;
-    color -= nodeGlowColor * weaveShadow * 0.44;
+    color -= nodeGlowColor * weaveShadow * (0.03 + darkMode * 0.41);
     color += metalLight * crossingRelief * fullyLinked * 0.020;
     color -= nodeGlowColor * disconnectedGap * 0.20;
     alpha += max(
         max(nodeGlow, max(roomVisibleCore, spaceVisibleCore)),
         max(max(roomGhostCore, spaceGhostCore) * 0.74, centerSpark * 0.72)
     );
-    alpha = max(alpha, weaveShadow * 0.48);
+    alpha = max(alpha, weaveShadow * (0.20 + darkMode * 0.28));
 
-    float groupAngle = atan2(groupLocal.y, groupLocal.x);
-    float spaceAngle = atan2(spaceLocal.y, spaceLocal.x);
     float groupMetal = metallicBand(groupSDF, 1.0, groupAngle, time, px);
     float spaceMetal = metallicBand(spaceSDF, 1.0, spaceAngle + 0.8, time, px);
 
@@ -517,12 +637,83 @@ fragment float4 roomSpaceLinkHeroFragment(
     float3 spaceMetalColor = mix(metalDark, metalLight, clamp(spaceMetal * 0.8, 0.0, 1.0));
     float groupMetalAlpha = min(groupMetal, 1.0);
     float spaceMetalAlpha = min(spaceMetal, 1.0);
-    color = mix(color, groupMetalColor + roomColor * readyRoomSide * 0.25, groupMetalAlpha);
-    color = mix(color, spaceMetalColor + spaceColor * readySpaceSide * 0.25, spaceMetalAlpha);
-    alpha = max(alpha, max(groupMetalAlpha, spaceMetalAlpha));
 
-    float4 groupAvatar = sampleMedallion(groupTexture, uv, groupCenter, radius - 7.0 * px, axis, false, time, px);
-    float4 spaceAvatar = sampleMedallion(spaceTexture, uv, spaceCenter, radius - 9.0 * px, axis, true, time, px);
+    float groupLightCore = gaussian(groupSDF, 1.55 * px) * outlineStrength;
+    float spaceLightCore = gaussian(spaceSDF, 1.55 * px) * outlineStrength;
+    float groupLightOuter = gaussianCentered(groupSDF, 5.2 * px, 2.9 * px) * outlineStrength;
+    float spaceLightOuter = gaussianCentered(spaceSDF, 5.2 * px, 2.9 * px) * outlineStrength;
+    float groupLightInner = gaussianCentered(groupSDF, -4.0 * px, 2.7 * px) * outlineStrength;
+    float spaceLightInner = gaussianCentered(spaceSDF, -4.0 * px, 2.7 * px) * outlineStrength;
+    float groupLightSweep = 0.5 + 0.5 * sin(groupAngle * 2.0 - time * 0.85);
+    float spaceLightSweep = 0.5 + 0.5 * sin((spaceAngle + 0.8) * 2.0 - time * 0.85);
+    float groupLightSpecular = gaussianCentered(groupSDF, -1.8 * px, 3.2 * px)
+        * (0.36 + 0.64 * groupLightSweep)
+        * outlineStrength;
+    float spaceLightSpecular = gaussianCentered(spaceSDF, -1.8 * px, 3.2 * px)
+        * (0.36 + 0.64 * spaceLightSweep)
+        * outlineStrength;
+    float3 groupRimHue = mix(roomColor, linkedColor, 0.22);
+    float3 spaceRimHue = mix(spaceColor, linkedColor, 0.18);
+    float3 groupLightRimShade = mix(float3(0.62, 0.68, 0.76), groupRimHue, 0.08);
+    float3 spaceLightRimShade = mix(float3(0.62, 0.69, 0.76), spaceRimHue, 0.08);
+    float3 groupLightRimBase = mix(float3(0.80, 0.86, 0.93), groupRimHue, 0.10);
+    float3 spaceLightRimBase = mix(float3(0.80, 0.87, 0.93), spaceRimHue, 0.10);
+    float3 groupLightRimBright = mix(float3(0.94, 0.98, 1.00), groupRimHue, 0.08);
+    float3 spaceLightRimBright = mix(float3(0.94, 0.99, 1.00), spaceRimHue, 0.08);
+    float3 groupLightMetal = mix(
+        groupLightRimShade,
+        groupLightRimBase,
+        clamp(0.36 + groupLightInner * 0.12 + groupLightOuter * 0.08, 0.0, 1.0)
+    );
+    float3 spaceLightMetal = mix(
+        spaceLightRimShade,
+        spaceLightRimBase,
+        clamp(0.36 + spaceLightInner * 0.12 + spaceLightOuter * 0.08, 0.0, 1.0)
+    );
+    groupLightMetal = mix(groupLightMetal, groupLightRimBright, clamp(groupLightSpecular * 0.11, 0.0, 1.0));
+    spaceLightMetal = mix(spaceLightMetal, spaceLightRimBright, clamp(spaceLightSpecular * 0.11, 0.0, 1.0));
+
+    float groupMetalCoverage = mix(
+        groupMetalAlpha,
+        clamp(groupLightCore * 0.58 + groupLightOuter * 0.11 + groupLightInner * 0.09, 0.0, 0.68),
+        outlineStrength
+    );
+    float spaceMetalCoverage = mix(
+        spaceMetalAlpha,
+        clamp(spaceLightCore * 0.58 + spaceLightOuter * 0.11 + spaceLightInner * 0.09, 0.0, 0.68),
+        outlineStrength
+    );
+    color += roomColor * groupLightOuter * (0.006 + readyRoomSide * 0.012 + fullyLinked * 0.006);
+    color += spaceColor * spaceLightOuter * (0.006 + readySpaceSide * 0.012 + fullyLinked * 0.006);
+    alpha += max(groupLightOuter, spaceLightOuter) * 0.006;
+    float3 groupResolvedMetal = mix(
+        groupMetalColor + roomColor * readyRoomSide * 0.25,
+        groupLightMetal + roomColor * readyRoomSide * 0.08,
+        outlineStrength
+    );
+    float3 spaceResolvedMetal = mix(
+        spaceMetalColor + spaceColor * readySpaceSide * 0.25,
+        spaceLightMetal + spaceColor * readySpaceSide * 0.08,
+        outlineStrength
+    );
+    color = mix(color, groupResolvedMetal, groupMetalCoverage);
+    color = mix(color, spaceResolvedMetal, spaceMetalCoverage);
+    alpha = max(alpha, max(groupMetalCoverage, spaceMetalCoverage));
+
+    float4 groupAvatar = sampleMedallion(groupTexture, uv, groupCenter, radius - 7.0 * px, axis, false, time, px, darkMode);
+    float4 spaceAvatar = sampleMedallion(spaceTexture, uv, spaceCenter, radius - 9.0 * px, axis, true, time, px, darkMode);
+    float groupAvatarLuma = dot(groupAvatar.rgb, float3(0.2126, 0.7152, 0.0722));
+    float spaceAvatarLuma = dot(spaceAvatar.rgb, float3(0.2126, 0.7152, 0.0722));
+    groupAvatar.rgb = mix(
+        groupAvatar.rgb,
+        clamp(mix(float3(groupAvatarLuma), groupAvatar.rgb, 1.12) * 1.16 + 0.032, 0.0, 1.24),
+        lightMode
+    );
+    spaceAvatar.rgb = mix(
+        spaceAvatar.rgb,
+        clamp(mix(float3(spaceAvatarLuma), spaceAvatar.rgb, 1.12) * 1.16 + 0.032, 0.0, 1.24),
+        lightMode
+    );
     color = mix(color, groupAvatar.rgb, groupAvatar.a);
     alpha = max(alpha, groupAvatar.a);
     color = mix(color, spaceAvatar.rgb, spaceAvatar.a);
@@ -530,8 +721,8 @@ fragment float4 roomSpaceLinkHeroFragment(
 
     float centerNexus = gaussian(distance(uv * axis, float2(0.5 * aspect, 0.52)), 0.040)
         * max(fullyLinked, max(hasSpaceSide, hasRoomSide) * 0.45);
-    color += (spaceColor + roomColor + linkedColor) * centerNexus * 0.055;
-    alpha += centerNexus * 0.12;
+    color += (spaceColor + roomColor + linkedColor) * centerNexus * 0.055 * glowScale;
+    alpha += centerNexus * 0.12 * (0.58 + darkMode * 0.42);
 
     alpha = clamp(alpha, 0.0, 1.0);
     color = clamp(color, 0.0, 1.35);
