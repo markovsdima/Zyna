@@ -11,6 +11,8 @@ final class RoomSpaceMembershipViewController: ASDKViewController<SettingsScreen
     var onBack: (() -> Void)?
 
     private let roomId: String
+    private let roomName: String
+    private let roomAvatarURL: String?
     private let service: RoomSpaceMembershipService
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let glassTopBar = GlassTopBar()
@@ -29,6 +31,10 @@ final class RoomSpaceMembershipViewController: ASDKViewController<SettingsScreen
         audioPlayer: AudioPlayerService? = nil
     ) {
         self.roomId = room.id()
+        self.roomName = room.displayName()?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmptyRoomSpaceLinkName ?? String(localized: "Group")
+        self.roomAvatarURL = room.avatarUrl()
         self.service = RoomSpaceMembershipService(roomListService: roomListService)
         super.init(node: SettingsScreenNode())
         self.voicePlayerHost = audioPlayer.map {
@@ -148,23 +154,31 @@ final class RoomSpaceMembershipViewController: ASDKViewController<SettingsScreen
 
     private func presentActions(for membership: RoomSpaceMembership) {
         guard operatingSpaceId == nil else { return }
-        let controller = RoomSpaceRelationshipActionsViewController(membership: membership)
-        controller.onActionSelected = { [weak self, weak controller] action, membership in
-            controller?.dismiss(animated: true) {
-                self?.perform(action, membership: membership)
-            }
+        let controller = RoomSpaceRelationshipActionsViewController(
+            membership: membership,
+            roomId: roomId,
+            roomName: roomName,
+            roomAvatarURL: roomAvatarURL
+        )
+        controller.onActionSelected = { [weak self] action, membership, completion in
+            self?.perform(action, membership: membership, completion: completion)
         }
 
         controller.modalPresentationStyle = .pageSheet
         if let sheet = controller.sheetPresentationController {
-            sheet.detents = [.medium()]
+            sheet.detents = [.large()]
+            sheet.selectedDetentIdentifier = .large
             sheet.prefersGrabberVisible = true
             sheet.prefersScrollingExpandsWhenScrolledToEdge = false
         }
         present(controller, animated: true)
     }
 
-    private func perform(_ action: RoomSpaceMembershipAction, membership: RoomSpaceMembership) {
+    private func perform(
+        _ action: RoomSpaceMembershipAction,
+        membership: RoomSpaceMembership,
+        completion: ((Result<Void, Error>) -> Void)? = nil
+    ) {
         operationTask?.cancel()
         operatingSpaceId = membership.id
         reloadTableAndRefreshGlass()
@@ -177,13 +191,18 @@ final class RoomSpaceMembershipViewController: ASDKViewController<SettingsScreen
                     guard let self else { return }
                     self.operatingSpaceId = nil
                     self.loadMemberships()
+                    completion?(.success(()))
                 }
             } catch {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.operatingSpaceId = nil
                     self.reloadTableAndRefreshGlass()
-                    self.showOperationError(error)
+                    if let completion {
+                        completion(.failure(error))
+                    } else {
+                        self.showOperationError(error)
+                    }
                 }
             }
         }
@@ -228,20 +247,58 @@ private final class RoomSpaceRelationshipActionsViewController: UIViewController
                 return String(localized: "The chat points back to the Storyline with m.space.parent.")
             }
         }
+
+        static func side(for action: RoomSpaceMembershipAction) -> Side {
+            switch action {
+            case .setSpaceSideLink, .removeSpaceSideLink:
+                return .space
+            case .setRoomSideLink, .removeRoomSideLink:
+                return .chat
+            }
+        }
     }
 
     struct SideState {
         let isLinked: Bool
         let canEdit: Bool
         let action: RoomSpaceMembershipAction
+        let isOperating: Bool
+        let errorMessage: String?
     }
 
-    var onActionSelected: ((RoomSpaceMembershipAction, RoomSpaceMembership) -> Void)?
+    var onActionSelected: ((
+        RoomSpaceMembershipAction,
+        RoomSpaceMembership,
+        @escaping (Result<Void, Error>) -> Void
+    ) -> Void)?
 
     private let membership: RoomSpaceMembership
+    private let roomId: String
+    private let roomName: String
+    private let roomAvatarURL: String?
+    private let heroView = RoomSpaceLinkHeroView()
+    private weak var contentStack: UIStackView?
+    private var didInstallHeroHeightConstraint = false
+    private var visibleSpaceSideLinked: Bool
+    private var visibleRoomSideLinked: Bool
+    private var previousVisibleLinks: (space: Bool, room: Bool)?
+    private var operatingAction: RoomSpaceMembershipAction?
+    private var operatingSide: Side?
+    private var failedSide: Side?
+    private var operationErrorMessage: String?
 
-    init(membership: RoomSpaceMembership) {
+    init(
+        membership: RoomSpaceMembership,
+        roomId: String,
+        roomName: String,
+        roomAvatarURL: String?
+    ) {
         self.membership = membership
+        self.roomId = roomId
+        self.roomName = roomName
+        self.roomAvatarURL = roomAvatarURL
+        self.visibleSpaceSideLinked = membership.status.hasSpaceSide
+        self.visibleRoomSideLinked = membership.status.hasRoomSide
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -280,9 +337,105 @@ private final class RoomSpaceRelationshipActionsViewController: UIViewController
             stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -24)
         ])
 
+        contentStack = stack
+        reloadContent()
+    }
+
+    private func reloadContent() {
+        guard let stack = contentStack else { return }
+        for view in stack.arrangedSubviews {
+            stack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+
+        let heroView = linkHeroView()
         stack.addArrangedSubview(headerView())
+        stack.addArrangedSubview(heroView)
+        stack.setCustomSpacing(18, after: heroView)
         stack.addArrangedSubview(sideCard(side: .space, state: state(for: .space)))
         stack.addArrangedSubview(sideCard(side: .chat, state: state(for: .chat)))
+    }
+
+    private func linkHeroView() -> UIView {
+        heroView.translatesAutoresizingMaskIntoConstraints = false
+        heroView.apply(RoomSpaceLinkHeroView.Configuration(
+            groupId: roomId,
+            groupName: roomName,
+            groupAvatarMxcURL: roomAvatarURL,
+            spaceId: membership.id,
+            spaceName: membership.displayName,
+            spaceAvatarMxcURL: membership.avatarURL,
+            hasSpaceSideLink: visibleSpaceSideLinked,
+            hasRoomSideLink: visibleRoomSideLinked,
+            canEditSpaceSide: membership.canEditSpaceSide,
+            canEditRoomSide: membership.canEditRoomSide
+        ))
+        heroView.isAccessibilityElement = true
+        heroView.accessibilityLabel = accessibilityLabelForHero()
+
+        if !didInstallHeroHeightConstraint {
+            heroView.heightAnchor.constraint(equalToConstant: 232).isActive = true
+            didInstallHeroHeightConstraint = true
+        }
+        return heroView
+    }
+
+    private func accessibilityLabelForHero() -> String {
+        switch (visibleSpaceSideLinked, visibleRoomSideLinked) {
+        case (true, true):
+            return String(localized: "Storyline and chat are linked in both directions.")
+        case (true, false):
+            if membership.canEditRoomSide {
+                return String(localized: "Storyline links to this chat. The chat can confirm the return link.")
+            }
+            return String(localized: "Storyline links to this chat. The chat cannot confirm the return link.")
+        case (false, true):
+            if membership.canEditSpaceSide {
+                return String(localized: "Chat links to this Storyline. The Storyline can add this chat.")
+            }
+            return String(localized: "Chat links to this Storyline. The Storyline cannot add this chat.")
+        case (false, false):
+            return String(localized: "Storyline and chat are not linked.")
+        }
+    }
+
+    private var visibleStatusTitle: String {
+        switch (visibleSpaceSideLinked, visibleRoomSideLinked) {
+        case (true, true):
+            return String(localized: "Linked")
+        case (true, false):
+            return String(localized: "Listed by Storyline")
+        case (false, true):
+            return String(localized: "Declared by Chat")
+        case (false, false):
+            return String(localized: "Unlinked")
+        }
+    }
+
+    private var visibleStatusDetail: String {
+        switch (visibleSpaceSideLinked, visibleRoomSideLinked) {
+        case (true, true):
+            return String(localized: "Both sides recognize this link.")
+        case (true, false):
+            return String(localized: "The Storyline shows this chat, but the chat does not confirm it.")
+        case (false, true):
+            return String(localized: "The chat points to this Storyline, but the Storyline does not show it.")
+        case (false, false):
+            return String(localized: "Neither side currently declares this link.")
+        }
+    }
+
+    private var visibleStatusTintColor: UIColor {
+        switch (visibleSpaceSideLinked, visibleRoomSideLinked) {
+        case (true, true):
+            return .systemTeal
+        case (true, false):
+            return .systemOrange
+        case (false, true):
+            return .systemBlue
+        case (false, false):
+            return .tertiaryLabel
+        }
     }
 
     private func headerView() -> UIView {
@@ -298,14 +451,14 @@ private final class RoomSpaceRelationshipActionsViewController: UIViewController
 
         let statusLabel = UILabel()
         statusLabel.font = .systemFont(ofSize: 14, weight: .semibold)
-        statusLabel.textColor = membership.status.tintColor
-        statusLabel.text = membership.status.title
+        statusLabel.textColor = visibleStatusTintColor
+        statusLabel.text = visibleStatusTitle
 
         let detailLabel = UILabel()
         detailLabel.font = .systemFont(ofSize: 15)
         detailLabel.textColor = .secondaryLabel
         detailLabel.numberOfLines = 0
-        detailLabel.text = membership.status.detail
+        detailLabel.text = visibleStatusDetail
 
         let modelLabel = UILabel()
         modelLabel.font = .systemFont(ofSize: 14)
@@ -369,29 +522,45 @@ private final class RoomSpaceRelationshipActionsViewController: UIViewController
             : String(localized: "You do not have permission to edit this side.")
         unavailableLabel.isHidden = state.canEdit
 
-        var title = AttributedString(state.action.title)
+        let displayedAction = state.isOperating ? (operatingAction ?? state.action) : state.action
+        let buttonTitle: String
+        if state.isOperating {
+            buttonTitle = String(localized: "Applying change...")
+        } else if state.errorMessage != nil {
+            buttonTitle = String(localized: "Could not apply")
+        } else {
+            buttonTitle = state.action.title
+        }
+        var title = AttributedString(buttonTitle)
         title.font = .systemFont(ofSize: 16, weight: .semibold)
 
         var configuration = UIButton.Configuration.plain()
         configuration.attributedTitle = title
-        configuration.baseForegroundColor = state.action.isDestructive ? .systemRed : AppColor.accent
-        configuration.background.backgroundColor = state.action.isDestructive
+        configuration.baseForegroundColor = displayedAction.isDestructive ? .systemRed : AppColor.accent
+        configuration.background.backgroundColor = displayedAction.isDestructive
             ? UIColor.systemRed.withAlphaComponent(state.canEdit ? 0.12 : 0.06)
             : AppColor.accent.withAlphaComponent(state.canEdit ? 0.14 : 0.06)
         configuration.background.cornerRadius = 12
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
+        configuration.showsActivityIndicator = state.isOperating
+        configuration.activityIndicatorColorTransformer = UIConfigurationColorTransformer { _ in
+            displayedAction.isDestructive ? .systemRed : AppColor.accent
+        }
 
         let button = UIButton(configuration: configuration)
+        let canTap = state.canEdit && operatingAction == nil
         button.isEnabled = state.canEdit
+        button.isUserInteractionEnabled = canTap
         button.alpha = state.canEdit ? 1 : 0.45
         button.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            self.onActionSelected?(state.action, self.membership)
+            self.beginOperation(state.action)
         }, for: .touchUpInside)
 
         contentStack.addArrangedSubview(topStack)
         contentStack.addArrangedSubview(unavailableLabel)
         contentStack.addArrangedSubview(button)
+        button.accessibilityHint = state.errorMessage
 
         card.addSubview(contentStack)
         NSLayoutConstraint.activate([
@@ -402,6 +571,60 @@ private final class RoomSpaceRelationshipActionsViewController: UIViewController
         ])
 
         return card
+    }
+
+    private func beginOperation(_ action: RoomSpaceMembershipAction) {
+        guard operatingAction == nil,
+              let onActionSelected
+        else { return }
+
+        previousVisibleLinks = (visibleSpaceSideLinked, visibleRoomSideLinked)
+        operatingAction = action
+        operatingSide = Side.side(for: action)
+        failedSide = nil
+        operationErrorMessage = nil
+        applyOptimisticState(for: action)
+        reloadContent()
+
+        onActionSelected(action, membership) { [weak self] result in
+            self?.finishOperation(result)
+        }
+    }
+
+    private func applyOptimisticState(for action: RoomSpaceMembershipAction) {
+        switch action {
+        case .setSpaceSideLink:
+            visibleSpaceSideLinked = true
+        case .setRoomSideLink:
+            visibleRoomSideLinked = true
+        case .removeSpaceSideLink:
+            visibleSpaceSideLinked = false
+        case .removeRoomSideLink:
+            visibleRoomSideLinked = false
+        }
+    }
+
+    private func finishOperation(_ result: Result<Void, Error>) {
+        let completedSide = operatingSide
+        operatingAction = nil
+        operatingSide = nil
+
+        switch result {
+        case .success:
+            previousVisibleLinks = nil
+            operationErrorMessage = nil
+            failedSide = nil
+        case .failure(let error):
+            if let previousVisibleLinks {
+                visibleSpaceSideLinked = previousVisibleLinks.space
+                visibleRoomSideLinked = previousVisibleLinks.room
+            }
+            self.previousVisibleLinks = nil
+            operationErrorMessage = error.localizedDescription
+            failedSide = completedSide
+        }
+
+        reloadContent()
     }
 
     private func statusPill(isLinked: Bool) -> UILabel {
@@ -422,18 +645,22 @@ private final class RoomSpaceRelationshipActionsViewController: UIViewController
     private func state(for side: Side) -> SideState {
         switch side {
         case .space:
-            let hasLink = membership.status.hasSpaceSide
+            let hasLink = visibleSpaceSideLinked
             return SideState(
                 isLinked: hasLink,
                 canEdit: membership.canEditSpaceSide,
-                action: hasLink ? .removeSpaceSideLink : .setSpaceSideLink
+                action: hasLink ? .removeSpaceSideLink : .setSpaceSideLink,
+                isOperating: operatingSide == .space,
+                errorMessage: failedSide == .space ? operationErrorMessage : nil
             )
         case .chat:
-            let hasLink = membership.status.hasRoomSide
+            let hasLink = visibleRoomSideLinked
             return SideState(
                 isLinked: hasLink,
                 canEdit: membership.canEditRoomSide,
-                action: hasLink ? .removeRoomSideLink : .setRoomSideLink
+                action: hasLink ? .removeRoomSideLink : .setRoomSideLink,
+                isOperating: operatingSide == .chat,
+                errorMessage: failedSide == .chat ? operationErrorMessage : nil
             )
         }
     }
@@ -452,6 +679,12 @@ private final class PaddedLabel: UILabel {
 
     override func drawText(in rect: CGRect) {
         super.drawText(in: rect.inset(by: insets))
+    }
+}
+
+private extension String {
+    var nonEmptyRoomSpaceLinkName: String? {
+        isEmpty ? nil : self
     }
 }
 

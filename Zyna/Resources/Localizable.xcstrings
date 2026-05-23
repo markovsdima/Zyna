@@ -1896,6 +1896,16 @@
         }
       }
     },
+    "Group" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Группа"
+          }
+        }
+      }
+    },
     "Group Name" : {
       "localizations" : {
         "ru" : {
@@ -6112,6 +6122,16 @@
         }
       }
     },
+    "Applying change..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Применяем изменение..."
+          }
+        }
+      }
+    },
     "Both sides recognize this link." : {
       "localizations" : {
         "ru" : {
@@ -6128,6 +6148,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Чат пока недоступен локально."
+          }
+        }
+      }
+    },
+    "Chat links to this Storyline. The Storyline can add this chat." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат ссылается на этот сюжет. Сюжет может добавить этот чат."
+          }
+        }
+      }
+    },
+    "Chat links to this Storyline. The Storyline cannot add this chat." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат ссылается на этот сюжет. Сюжет не может добавить этот чат."
           }
         }
       }
@@ -6168,6 +6208,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось обновить связь с сюжетом"
+          }
+        }
+      }
+    },
+    "Could not apply" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось применить"
           }
         }
       }
@@ -6252,6 +6302,16 @@
         }
       }
     },
+    "Neither side currently declares this link." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сейчас ни одна сторона не указывает эту связь."
+          }
+        }
+      }
+    },
     "Missing" : {
       "localizations" : {
         "ru" : {
@@ -6332,6 +6392,46 @@
         }
       }
     },
+    "Storyline and chat are linked in both directions." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет и чат связаны в обе стороны."
+          }
+        }
+      }
+    },
+    "Storyline and chat are not linked." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет и чат не связаны."
+          }
+        }
+      }
+    },
+    "Storyline links to this chat. The chat can confirm the return link." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет ссылается на этот чат. Чат может подтвердить обратную связь."
+          }
+        }
+      }
+    },
+    "Storyline links to this chat. The chat cannot confirm the return link." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет ссылается на этот чат. Чат не может подтвердить обратную связь."
+          }
+        }
+      }
+    },
     "Storyline side" : {
       "localizations" : {
         "ru" : {
@@ -6388,6 +6488,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Сюжет показывает этот чат, но чат не подтверждает связь."
+          }
+        }
+      }
+    },
+    "Unlinked" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не связано"
           }
         }
       }
