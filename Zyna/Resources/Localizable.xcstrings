@@ -4176,6 +4176,16 @@
         }
       }
     },
+    "Searches messages in this room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ищет сообщения в этой комнате"
+          }
+        }
+      }
+    },
     "Search users" : {
       "localizations" : {
         "ru" : {
@@ -5612,6 +5622,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Закрепить"
+          }
+        }
+      }
+    },
+    "Pinned" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закреплённые"
           }
         }
       }

@@ -56,16 +56,18 @@ final class RoomDetailsNode: ScreenNode {
     private var tags: [RoomDetailsTag] = []
     private var tagNodes: [RoomDetailsTagNode] = []
 
-    private let membersRow = ActionRowNode()
+    private let membersQuickAction = RoomDetailsQuickActionNode()
+    private let searchQuickAction = RoomDetailsQuickActionNode()
+    private let inviteQuickAction = RoomDetailsQuickActionNode()
+    private let pinnedQuickAction = RoomDetailsQuickActionNode()
+
     private let profileRow = ActionRowNode()
     private let pinnedMessagesRow = ActionRowNode()
+    private let searchRow = ActionRowNode()
     private let storylinesRow = ActionRowNode()
     private let securityRow = ActionRowNode()
     private let rolesPermissionsRow = ActionRowNode()
     private let leaveRoomRow = ActionRowNode()
-
-    private let inviteButtonNode = AccessibleButtonNode()
-    private let searchButtonNode = AccessibleButtonNode()
 
     // MARK: - State
 
@@ -77,7 +79,6 @@ final class RoomDetailsNode: ScreenNode {
     private var isDirectProfileAvailable = false
     private var isLeavingRoom = false
     private var hasAvatar = false
-    private var hasMembersRow = false
     private var storylinesTrailingText: String?
     private var storylinesNeedsAttention = false
     private var avatarLoadRevision: UInt64 = 0
@@ -135,22 +136,35 @@ final class RoomDetailsNode: ScreenNode {
         ]
         nameEditNode.textContainerInset = .zero
 
-        searchButtonNode.setAttributedTitle(NSAttributedString(
-            string: "  " + String(localized: "Search Messages"),
-            attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
-        ), for: .normal)
-        searchButtonNode.contentHorizontalAlignment = .middle
-        searchButtonNode.addTarget(self, action: #selector(searchTapped), forControlEvents: .touchUpInside)
+        membersQuickAction.onTap = { [weak self] in self?.onMembersTapped?() }
+        membersQuickAction.apply(RoomDetailsQuickActionNode.Configuration(
+            title: String(localized: "Members"),
+            icon: AppIcon.person2.rendered(size: 20, weight: .semibold, color: AppColor.accent),
+            accessibilityHint: String(localized: "Opens the member list")
+        ))
 
-        inviteButtonNode.setAttributedTitle(NSAttributedString(
-            string: "  " + String(localized: "Invite Members"),
-            attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
-        ), for: .normal)
-        inviteButtonNode.contentHorizontalAlignment = .middle
-        inviteButtonNode.addTarget(self, action: #selector(inviteTapped), forControlEvents: .touchUpInside)
+        searchQuickAction.onTap = { [weak self] in self?.onSearchTapped?() }
+        searchQuickAction.apply(RoomDetailsQuickActionNode.Configuration(
+            title: String(localized: "Search"),
+            icon: AppIcon.magnifyingGlass.rendered(size: 20, weight: .semibold, color: AppColor.accent),
+            accessibilityLabel: String(localized: "Search Messages")
+        ))
 
-        membersRow.onTap = { [weak self] in self?.onMembersTapped?() }
-        membersRow.style.alignSelf = .stretch
+        inviteQuickAction.onTap = { [weak self] in self?.onInviteTapped?() }
+        inviteQuickAction.apply(RoomDetailsQuickActionNode.Configuration(
+            title: String(localized: "Invite"),
+            icon: AppIcon.personBadgePlus.rendered(size: 20, weight: .semibold, color: AppColor.accent),
+            accessibilityLabel: String(localized: "Invite Members")
+        ))
+
+        pinnedQuickAction.onTap = { [weak self] in self?.onPinnedMessagesTapped?() }
+        pinnedQuickAction.apply(RoomDetailsQuickActionNode.Configuration(
+            title: String(localized: "Pinned"),
+            subtitle: "0",
+            icon: AppIcon.pin.rendered(size: 20, weight: .semibold, color: AppColor.accent),
+            accessibilityLabel: String(localized: "Pinned Messages"),
+            accessibilityHint: String(localized: "Opens pinned messages")
+        ))
 
         profileRow.onTap = { [weak self] in self?.onProfileTapped?() }
         profileRow.style.alignSelf = .stretch
@@ -163,6 +177,14 @@ final class RoomDetailsNode: ScreenNode {
             leadingIcon: AppIcon.pin.rendered(size: 17, weight: .medium, color: AppColor.accent),
             trailingText: "0",
             accessibilityHint: String(localized: "Opens pinned messages")
+        ))
+
+        searchRow.onTap = { [weak self] in self?.onSearchTapped?() }
+        searchRow.style.alignSelf = .stretch
+        searchRow.apply(ActionRowNode.Configuration(
+            title: String(localized: "Search Messages"),
+            leadingIcon: AppIcon.magnifyingGlass.rendered(size: 16, weight: .medium, color: AppColor.accent),
+            accessibilityHint: String(localized: "Searches messages in this room")
         ))
 
         storylinesRow.onTap = { [weak self] in self?.onStorylinesTapped?() }
@@ -203,17 +225,17 @@ final class RoomDetailsNode: ScreenNode {
         let loadRevision = avatarLoadRevision
         applyName(name, fallbackUserId: fallbackUserId)
 
-        if !isDirectRoom, let count = memberCount {
-            hasMembersRow = true
-            let title = String(localized: "\(count) members")
-            membersRow.apply(ActionRowNode.Configuration(
-                title: title,
-                accessibilityLabel: title,
-                accessibilityHint: String(localized: "Opens the member list")
-            ))
-        } else {
-            hasMembersRow = false
-        }
+        let membersSubtitle = memberCount.map { "\($0)" }
+        let membersAccessibilityLabel = memberCount.map {
+            String(localized: "\($0) members")
+        } ?? String(localized: "Members")
+        membersQuickAction.apply(RoomDetailsQuickActionNode.Configuration(
+            title: String(localized: "Members"),
+            subtitle: membersSubtitle,
+            icon: AppIcon.person2.rendered(size: 20, weight: .semibold, color: AppColor.accent),
+            accessibilityLabel: membersAccessibilityLabel,
+            accessibilityHint: String(localized: "Opens the member list")
+        ))
 
         if let mxcUrl = avatarMxcUrl {
             loadAvatarImage(mxcUrl: mxcUrl, revision: loadRevision)
@@ -260,6 +282,7 @@ final class RoomDetailsNode: ScreenNode {
 
     func updatePinnedMessagesCount(_ count: Int) {
         pinnedMessagesRow.updateTrailingText("\(count)")
+        pinnedQuickAction.updateSubtitle("\(count)")
         setNeedsLayout()
     }
 
@@ -282,9 +305,6 @@ final class RoomDetailsNode: ScreenNode {
     func setDirectRoom(_ isDirectRoom: Bool) {
         guard self.isDirectRoom != isDirectRoom else { return }
         self.isDirectRoom = isDirectRoom
-        if isDirectRoom {
-            hasMembersRow = false
-        }
         applyLeaveRoomRowConfiguration()
         setNeedsLayout()
     }
@@ -491,36 +511,42 @@ final class RoomDetailsNode: ScreenNode {
         let spacer = ASLayoutSpec()
         spacer.style.flexGrow = 1
 
-        inviteButtonNode.style.alignSelf = .stretch
-        searchButtonNode.style.alignSelf = .stretch
-
-        var buttonsChildren: [ASLayoutElement] = []
-        if hasMembersRow {
-            buttonsChildren.append(membersRow)
-        }
+        var buttonsChildren: [ASLayoutElement]
         if isDirectRoom {
-            buttonsChildren.append(profileRow)
-            buttonsChildren.append(pinnedMessagesRow)
-            buttonsChildren.append(searchButtonNode)
+            buttonsChildren = [
+                profileRow,
+                pinnedMessagesRow,
+                searchRow,
+                leaveRoomRow
+            ]
         } else {
-            buttonsChildren.append(pinnedMessagesRow)
-            buttonsChildren.append(storylinesRow)
-            buttonsChildren.append(securityRow)
-            buttonsChildren.append(rolesPermissionsRow)
-            buttonsChildren.append(contentsOf: [inviteButtonNode, searchButtonNode])
+            buttonsChildren = [
+                storylinesRow,
+                securityRow,
+                rolesPermissionsRow
+            ]
         }
-        buttonsChildren.append(leaveRoomRow)
 
         let buttonsStack = ASStackLayoutSpec(
-            direction: .vertical, spacing: 24,
+            direction: .vertical, spacing: 12,
             justifyContent: .start, alignItems: .stretch,
             children: buttonsChildren
         )
 
+        let mainChildren: [ASLayoutElement]
+        if isDirectRoom {
+            mainChildren = [profileStack, spacer, buttonsStack]
+        } else {
+            let quickActions = makeGroupQuickActionsGrid(
+                availableWidth: max(0, constrainedSize.max.width - 48)
+            )
+            mainChildren = [profileStack, quickActions, buttonsStack, spacer, leaveRoomRow]
+        }
+
         let mainStack = ASStackLayoutSpec(
-            direction: .vertical, spacing: 0,
+            direction: .vertical, spacing: isDirectRoom ? 0 : 22,
             justifyContent: .start, alignItems: .stretch,
-            children: [profileStack, spacer, buttonsStack]
+            children: mainChildren
         )
 
         let inset = ASInsetLayoutSpec(
@@ -530,15 +556,45 @@ final class RoomDetailsNode: ScreenNode {
         return ASBackgroundLayoutSpec(child: inset, background: contentNode)
     }
 
+    private func makeGroupQuickActionsGrid(availableWidth: CGFloat) -> ASLayoutSpec {
+        let spacing: CGFloat = 10
+        let width = availableWidth.isFinite && availableWidth > 0
+            ? availableWidth
+            : max(0, ScreenConstants.width - 48)
+        let cellWidth = floor((width - spacing) / 2)
+        let cellSize = CGSize(width: cellWidth, height: 82)
+        let actions: [RoomDetailsQuickActionNode] = [
+            membersQuickAction,
+            searchQuickAction,
+            inviteQuickAction,
+            pinnedQuickAction
+        ]
+        actions.forEach { $0.style.preferredSize = cellSize }
+
+        let firstRow = ASStackLayoutSpec(
+            direction: .horizontal,
+            spacing: spacing,
+            justifyContent: .start,
+            alignItems: .stretch,
+            children: [membersQuickAction, searchQuickAction]
+        )
+        let secondRow = ASStackLayoutSpec(
+            direction: .horizontal,
+            spacing: spacing,
+            justifyContent: .start,
+            alignItems: .stretch,
+            children: [inviteQuickAction, pinnedQuickAction]
+        )
+        return ASStackLayoutSpec(
+            direction: .vertical,
+            spacing: spacing,
+            justifyContent: .start,
+            alignItems: .stretch,
+            children: [firstRow, secondRow]
+        )
+    }
+
     // MARK: - Actions
-
-    @objc private func searchTapped() {
-        onSearchTapped?()
-    }
-
-    @objc private func inviteTapped() {
-        onInviteTapped?()
-    }
 
     @objc private func removeAvatarTapped() {
         onRemoveAvatarTapped?()
@@ -558,21 +614,13 @@ final class RoomDetailsNode: ScreenNode {
         removeAvatarButtonNode.cornerRadius = 14
         removeAvatarButtonNode.clipsToBounds = true
 
-        searchButtonNode.setImage(
-            AppIcon.magnifyingGlass.rendered(size: 16, weight: .medium, color: AppColor.accent),
-            for: .normal
-        )
-        inviteButtonNode.setImage(
-            AppIcon.personBadgePlus.rendered(size: 16, weight: .medium, color: AppColor.accent),
-            for: .normal
-        )
     }
 
     // MARK: - Accessibility
 
     /// Bar before content. Default subview-walk would put the bar last
     /// (it's the topmost subview), so VO swipe order would reach it
-    /// only after stepping through avatar/name/membersRow.
+    /// only after stepping through avatar/name/actions.
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
@@ -591,6 +639,145 @@ final class RoomDetailsNode: ScreenNode {
             return elements
         }
         set { }
+    }
+}
+
+private final class RoomDetailsQuickActionNode: ASDisplayNode {
+
+    struct Configuration {
+        var title: String
+        var subtitle: String?
+        var icon: UIImage?
+        var isEnabled: Bool
+        var accessibilityLabel: String?
+        var accessibilityHint: String?
+
+        init(
+            title: String,
+            subtitle: String? = nil,
+            icon: UIImage? = nil,
+            isEnabled: Bool = true,
+            accessibilityLabel: String? = nil,
+            accessibilityHint: String? = nil
+        ) {
+            self.title = title
+            self.subtitle = subtitle
+            self.icon = icon
+            self.isEnabled = isEnabled
+            self.accessibilityLabel = accessibilityLabel
+            self.accessibilityHint = accessibilityHint
+        }
+    }
+
+    var onTap: (() -> Void)?
+
+    private let backgroundNode = RoundedBackgroundNode()
+    private let tapNode = TappableNode()
+    private let iconNode = ASImageNode()
+    private let titleNode = ASTextNode()
+    private let subtitleNode = ASTextNode()
+
+    private var configuration = Configuration(title: "")
+
+    override init() {
+        super.init()
+        automaticallyManagesSubnodes = true
+
+        isAccessibilityElement = false
+        backgroundNode.isAccessibilityElement = false
+        backgroundNode.fillColor = .secondarySystemBackground
+        backgroundNode.radius = 12
+
+        tapNode.backgroundColor = .clear
+        tapNode.onTap = { [weak self] in
+            guard let self, self.configuration.isEnabled else { return }
+            self.onTap?()
+        }
+
+        iconNode.isAccessibilityElement = false
+        iconNode.contentMode = .center
+        iconNode.style.preferredSize = CGSize(width: 24, height: 24)
+
+        titleNode.isAccessibilityElement = false
+        titleNode.maximumNumberOfLines = 1
+        titleNode.truncationMode = .byTruncatingTail
+        titleNode.style.flexShrink = 1
+
+        subtitleNode.isAccessibilityElement = false
+        subtitleNode.maximumNumberOfLines = 1
+        subtitleNode.truncationMode = .byTruncatingTail
+    }
+
+    func apply(_ configuration: Configuration) {
+        self.configuration = configuration
+
+        iconNode.image = configuration.icon
+
+        titleNode.attributedText = NSAttributedString(
+            string: configuration.title,
+            attributes: [
+                .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: configuration.isEnabled
+                    ? UIColor.label
+                    : UIColor.secondaryLabel
+            ]
+        )
+
+        if let subtitle = configuration.subtitle, !subtitle.isEmpty {
+            subtitleNode.attributedText = NSAttributedString(
+                string: subtitle,
+                attributes: [
+                    .font: UIFont.systemFont(ofSize: 12, weight: .medium),
+                    .foregroundColor: UIColor.secondaryLabel
+                ]
+            )
+        } else {
+            subtitleNode.attributedText = nil
+        }
+
+        let alpha: CGFloat = configuration.isEnabled ? 1 : 0.45
+        iconNode.alpha = alpha
+        titleNode.alpha = alpha
+        subtitleNode.alpha = alpha
+
+        tapNode.isAccessibilityElement = true
+        tapNode.accessibilityTraits = configuration.isEnabled ? .button : .staticText
+        tapNode.accessibilityLabel = configuration.accessibilityLabel ?? configuration.title
+        tapNode.accessibilityValue = configuration.subtitle
+        tapNode.accessibilityHint = configuration.isEnabled ? configuration.accessibilityHint : nil
+
+        setNeedsLayout()
+    }
+
+    func updateSubtitle(_ subtitle: String?) {
+        var next = configuration
+        next.subtitle = subtitle
+        apply(next)
+    }
+
+    override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
+        var children: [ASLayoutElement] = []
+        if configuration.icon != nil {
+            children.append(iconNode)
+        }
+        children.append(titleNode)
+        if configuration.subtitle?.isEmpty == false {
+            children.append(subtitleNode)
+        }
+
+        let content = ASStackLayoutSpec(
+            direction: .vertical,
+            spacing: 4,
+            justifyContent: .center,
+            alignItems: .center,
+            children: children
+        )
+        let padded = ASInsetLayoutSpec(
+            insets: UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8),
+            child: content
+        )
+        let withBackground = ASBackgroundLayoutSpec(child: padded, background: backgroundNode)
+        return ASOverlayLayoutSpec(child: withBackground, overlay: tapNode)
     }
 }
 
