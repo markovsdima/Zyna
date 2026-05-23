@@ -8,6 +8,7 @@ import AsyncDisplayKit
 final class SpaceComposeChoiceNode: ScreenNode {
 
     let cancelButtonNode = ASButtonNode()
+    let existingChatOptionNode: SpaceComposeOptionNode
     let chatOptionNode: SpaceComposeOptionNode
     let trackOptionNode: SpaceComposeOptionNode
 
@@ -26,6 +27,11 @@ final class SpaceComposeChoiceNode: ScreenNode {
     init(parent: RoomModel, presentation: SpacePresentationKind) {
         self.parent = parent
         self.presentation = presentation
+        self.existingChatOptionNode = SpaceComposeOptionNode(
+            icon: AppIcon.link.rendered(size: 22, weight: .semibold, color: .systemBlue),
+            title: String(localized: "Existing Chat"),
+            subtitle: String(localized: "Place one of your current chats here. It can still appear elsewhere.")
+        )
         self.chatOptionNode = SpaceComposeOptionNode(
             icon: AppIcon.bubbleLeft.rendered(size: 22, weight: .semibold, color: .systemBlue),
             title: String(localized: "New Chat"),
@@ -63,7 +69,7 @@ final class SpaceComposeChoiceNode: ScreenNode {
 
         let parentName = parent.name.isEmpty ? String(localized: "Untitled") : parent.name
         subtitleNode.attributedText = NSAttributedString(
-            string: String(localized: "Choose what to create inside \(parentName)."),
+            string: String(localized: "Choose what to add inside \(parentName)."),
             attributes: [
                 .font: UIFont.systemFont(ofSize: 15, weight: .regular),
                 .foregroundColor: UIColor.secondaryLabel
@@ -101,7 +107,7 @@ final class SpaceComposeChoiceNode: ScreenNode {
             spacing: 10,
             justifyContent: .start,
             alignItems: .stretch,
-            children: [chatOptionNode, trackOptionNode]
+            children: [existingChatOptionNode, chatOptionNode, trackOptionNode]
         )
 
         let content = ASStackLayoutSpec(

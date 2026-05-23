@@ -357,15 +357,18 @@ final class SpaceCreationNode: ScreenNode {
 
     override var accessibilityElements: [Any]? {
         get {
-            [
+            var elements: [Any] = [
                 backButtonNode.view,
                 nameInputNode.view,
                 topicInputNode.view,
                 privateOptionNode.view,
-                publicOptionNode.view,
-                aliasInputNode.view,
-                createButtonNode.view
+                publicOptionNode.view
             ]
+            if selectedAccess.isPublic {
+                elements.append(aliasInputNode.view)
+            }
+            elements.append(createButtonNode.view)
+            return elements
         }
         set { }
     }

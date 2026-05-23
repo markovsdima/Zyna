@@ -39,6 +39,10 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
         loadTask?.cancel()
     }
 
+    func reloadChildren() {
+        loadChildren()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         setupTable()
@@ -155,6 +159,7 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
         lines = lineModels
         updateSpaceCounts()
         node.tableNode.reloadData()
+        GlassService.shared.setNeedsCapture()
     }
 
     private func updateSpaceCounts() {
@@ -233,5 +238,10 @@ extension SpaceViewController: ASTableDataSource, ASTableDelegate {
 
         guard indexPath.row >= chatStartRow, !chats.isEmpty else { return }
         onChatSelected?(chats[indexPath.row - chatStartRow])
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === node.tableNode.view else { return }
+        GlassService.shared.setNeedsCapture()
     }
 }

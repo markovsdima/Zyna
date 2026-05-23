@@ -28,7 +28,7 @@ final class SpaceCreationViewController: ASDKViewController<SpaceCreationNode> {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let topInset = view.safeAreaInsets.top
+        let topInset = view.safeAreaInsets.top + 20
         if abs(node.topInset - topInset) > 0.5 {
             node.topInset = topInset
         }

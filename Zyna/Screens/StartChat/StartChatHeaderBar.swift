@@ -5,6 +5,8 @@
 
 import UIKit
 
+// TODO: If one more UIKit sheet header appears, extract a small shared
+// component instead of growing more local header variants.
 final class StartChatHeaderBar: UIView {
 
     var onCancelTapped: (() -> Void)?
@@ -16,15 +18,14 @@ final class StartChatHeaderBar: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .systemBackground
+        isAccessibilityElement = false
 
-        // Cancel button
         cancelButton.setTitle(String(localized: "Cancel"), for: .normal)
         cancelButton.titleLabel?.font = .systemFont(ofSize: 17)
         cancelButton.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         cancelButton.translatesAutoresizingMaskIntoConstraints = false
         cancelButton.setContentHuggingPriority(.required, for: .horizontal)
 
-        // Search field
         searchField.placeholder = String(localized: "Search users (@user:server)")
         searchField.backgroundColor = .secondarySystemBackground
         searchField.layer.cornerRadius = 10
@@ -42,7 +43,7 @@ final class StartChatHeaderBar: UIView {
         addSubview(cancelButton)
 
         NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 18),
+            searchField.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 20),
             searchField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             searchField.trailingAnchor.constraint(equalTo: cancelButton.leadingAnchor, constant: -10),
             searchField.heightAnchor.constraint(equalToConstant: 36),
@@ -54,6 +55,11 @@ final class StartChatHeaderBar: UIView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override var accessibilityElements: [Any]? {
+        get { [searchField, cancelButton] }
+        set { }
+    }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()

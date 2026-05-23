@@ -27,6 +27,7 @@ enum AppIcon {
     case person2
     case megaphone
     case globe
+    case link
     case xmark
     case pencil
     case checkmark
@@ -66,6 +67,7 @@ enum AppIcon {
         case .person2:          return "person.2.fill"
         case .megaphone:        return "megaphone.fill"
         case .globe:            return "globe"
+        case .link:             return "link"
         case .xmark:            return "xmark"
         case .pencil:           return "pencil"
         case .checkmark:           return "checkmark"

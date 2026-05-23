@@ -90,6 +90,29 @@ final class ZynaRoomListService: NSObject {
         spaceChildSpaceSummariesBySpaceId[spaceId] ?? []
     }
 
+    func joinedRoomSummaries() async -> [RoomSummary] {
+        let roomsSnapshot = rooms.filter { !locallyHiddenRoomIds.contains($0.id()) }
+        guard !roomsSnapshot.isEmpty else {
+            guard let clientRooms = MatrixClientService.shared.client?.rooms()
+                .filter({ !locallyHiddenRoomIds.contains($0.id()) }),
+                  !clientRooms.isEmpty else {
+                return roomsSubject.value
+            }
+
+            return await Self.buildBaseSummaries(
+                from: clientRooms,
+                impactedRoomIds: [],
+                previousSummaries: publishedSummariesByRoomId
+            )
+        }
+
+        return await Self.buildBaseSummaries(
+            from: roomsSnapshot,
+            impactedRoomIds: [],
+            previousSummaries: publishedSummariesByRoomId
+        )
+    }
+
     func refreshSpaceChildRooms(for spaceId: String) async -> [RoomSummary] {
         let children = await refreshSpaceChildren(for: spaceId)
         return children.rooms
@@ -709,9 +732,6 @@ final class ZynaRoomListService: NSObject {
         guard let spaceRoom = room(for: spaceId) else {
             throw spaceRelationshipError(String(localized: "Parent Storyline is not available locally."))
         }
-        guard let childRoom = await waitForLocalRoom(roomId: childId) else {
-            throw spaceRelationshipError(String(localized: "Child room is not available locally."))
-        }
 
         let childContent = try jsonString([
             "via": viaServers(for: childId),
@@ -723,11 +743,15 @@ final class ZynaRoomListService: NSObject {
             content: childContent
         )
 
+        guard let childRoom = await waitForLocalRoom(roomId: childId) else {
+            return
+        }
+
         let parentContent = try jsonString([
             "via": viaServers(for: spaceId),
             "canonical": true
         ])
-        _ = try await childRoom.sendStateEventRaw(
+        _ = try? await childRoom.sendStateEventRaw(
             eventType: "m.space.parent",
             stateKey: spaceId,
             content: parentContent

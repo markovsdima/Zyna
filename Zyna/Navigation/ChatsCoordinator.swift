@@ -193,18 +193,36 @@ final class ChatsCoordinator {
         vc.onSpaceSelected = { [weak self] space in
             self?.showSpace(space, animated: true, presentation: .track)
         }
-        vc.onCreateContent = { [weak self] parent, presentation in
-            self?.showSpaceComposeSheet(parent: parent, presentation: presentation)
+        vc.onCreateContent = { [weak self, weak vc] parent, presentation in
+            self?.showSpaceComposeSheet(
+                parent: parent,
+                presentation: presentation,
+                onContentChanged: {
+                    vc?.reloadChildren()
+                }
+            )
         }
         navigationController.push(vc, animated: animated)
     }
 
-    private func showSpaceComposeSheet(parent: RoomModel, presentation: SpacePresentationKind) {
+    private func showSpaceComposeSheet(
+        parent: RoomModel,
+        presentation: SpacePresentationKind,
+        onContentChanged: @escaping () -> Void
+    ) {
         let vc = SpaceComposeChoiceViewController(parent: parent, presentation: presentation)
         let nav = ZynaNavigationController(rootViewController: vc)
 
         vc.onCancel = { [weak nav] in
             nav?.dismiss(animated: true)
+        }
+        vc.onExistingChat = { [weak self, weak nav] in
+            guard let self, let nav else { return }
+            self.showAddExistingChat(
+                parent: parent,
+                in: nav,
+                onContentChanged: onContentChanged
+            )
         }
         vc.onNewChat = { [weak self, weak nav] in
             guard let self, let nav else { return }
@@ -217,6 +235,28 @@ final class ChatsCoordinator {
 
         configureComposeSheet(nav)
         navigationController.present(nav, animated: true)
+    }
+
+    private func showAddExistingChat(
+        parent: RoomModel,
+        in nav: ZynaNavigationController,
+        onContentChanged: @escaping () -> Void
+    ) {
+        let vm = SpaceAddExistingChatViewModel(
+            parent: parent,
+            roomListService: roomListService
+        )
+        let vc = SpaceAddExistingChatViewController(viewModel: vm)
+
+        vc.onBack = { [weak nav] in
+            nav?.pop()
+        }
+        vc.onChatAdded = { [weak nav] _ in
+            onContentChanged()
+            nav?.dismiss(animated: true)
+        }
+
+        nav.push(vc)
     }
 
     private func showCreateChat(parent: RoomModel, in nav: ZynaNavigationController) {

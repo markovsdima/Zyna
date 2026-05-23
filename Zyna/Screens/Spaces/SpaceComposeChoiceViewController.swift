@@ -8,6 +8,7 @@ import AsyncDisplayKit
 final class SpaceComposeChoiceViewController: ASDKViewController<SpaceComposeChoiceNode> {
 
     var onCancel: (() -> Void)?
+    var onExistingChat: (() -> Void)?
     var onNewChat: (() -> Void)?
     var onNewTrack: (() -> Void)?
 
@@ -24,6 +25,9 @@ final class SpaceComposeChoiceViewController: ASDKViewController<SpaceComposeCho
             action: #selector(cancelTapped),
             forControlEvents: .touchUpInside
         )
+        node.existingChatOptionNode.onTap = { [weak self] in
+            self?.onExistingChat?()
+        }
         node.chatOptionNode.onTap = { [weak self] in
             self?.onNewChat?()
         }
@@ -34,7 +38,7 @@ final class SpaceComposeChoiceViewController: ASDKViewController<SpaceComposeCho
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let topInset = view.safeAreaInsets.top + 8
+        let topInset = view.safeAreaInsets.top + 20
         if abs(node.topInset - topInset) > 0.5 {
             node.topInset = topInset
         }

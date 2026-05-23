@@ -54,6 +54,9 @@ final class StartChatViewController: ASDKViewController<StartChatNode>, ASTableD
         headerBar.onSearchQueryChanged = { [weak self] query in
             self?.viewModel.searchUsers(query)
         }
+
+        view.isAccessibilityElement = false
+        view.accessibilityElements = [headerBar, node.tableNode.view]
     }
 
     override func viewDidLayoutSubviews() {

@@ -5,6 +5,7 @@
 
     },
     "Add to Storyline" : {
+      "extractionState" : "stale",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
@@ -5726,26 +5727,6 @@
         }
       }
     },
-    "Child room is not available locally." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Дочерний чат пока недоступен локально."
-          }
-        }
-      }
-    },
-    "Choose what to create inside %@." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Выберите, что создать внутри «%@»."
-          }
-        }
-      }
-    },
     "Could not create Storyline" : {
       "localizations" : {
         "ru" : {
@@ -5988,6 +5969,86 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Название линии"
+          }
+        }
+      }
+    },
+    "Add Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить чат"
+          }
+        }
+      }
+    },
+    "Choose what to add inside %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выберите, что добавить внутри «%@»."
+          }
+        }
+      }
+    },
+    "Could not add chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось добавить чат"
+          }
+        }
+      }
+    },
+    "Existing Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Существующий чат"
+          }
+        }
+      }
+    },
+    "No chats found" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чаты не найдены"
+          }
+        }
+      }
+    },
+    "No chats to add" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет чатов для добавления"
+          }
+        }
+      }
+    },
+    "Place one of your current chats here. It can still appear elsewhere." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавьте сюда один из текущих чатов. Он всё равно сможет появляться в других сюжетах."
+          }
+        }
+      }
+    },
+    "Select a chat to add to %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выберите чат, который добавить в «%@»."
           }
         }
       }
