@@ -32,6 +32,7 @@ final class RoomSpaceLinkHeroView: UIView {
     private struct Uniforms {
         var resolutionTimeScale: SIMD4<Float>
         var linkState: SIMD4<Float>
+        var previousLinkState: SIMD4<Float>
         var appearance: SIMD4<Float>
     }
 
@@ -80,8 +81,14 @@ final class RoomSpaceLinkHeroView: UIView {
     private var avatarLoadTask: Task<Void, Never>?
     private var avatarLoadRevision: UInt64 = 0
     private var startTime = CACurrentMediaTime()
+    private var transitionStartTime = CACurrentMediaTime()
+    private var previousLinkState = SIMD4<Float>(0, 0, 0, 0)
+    private var targetLinkState = SIMD4<Float>(0, 0, 0, 0)
+    private var hasConfiguredVisualState = false
     private var frameInFlight = false
     private var needsRender = false
+
+    private static let transitionDuration: CFTimeInterval = 0.82
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -111,6 +118,21 @@ final class RoomSpaceLinkHeroView: UIView {
                 || $0.spaceName != configuration.spaceName
                 || $0.spaceAvatarMxcURL != configuration.spaceAvatarMxcURL
         } ?? true
+
+        let newLinkState = Self.linkStateVector(for: configuration)
+        let now = CACurrentMediaTime()
+        if hasConfiguredVisualState {
+            if Self.linkStateVectorChanged(targetLinkState, newLinkState) {
+                previousLinkState = presentationLinkState(at: now)
+                targetLinkState = newLinkState
+                transitionStartTime = now
+            }
+        } else {
+            previousLinkState = newLinkState
+            targetLinkState = newLinkState
+            transitionStartTime = now - Self.transitionDuration
+            hasConfiguredVisualState = true
+        }
 
         self.configuration = configuration
         if shouldReloadAvatars {
@@ -230,11 +252,13 @@ final class RoomSpaceLinkHeroView: UIView {
                       self.avatarLoadRevision == revision
                 else { return }
 
-                if let loadedGroupImage {
-                    self.groupTexture = self.makeTexture(from: loadedGroupImage)
+                if let loadedGroupImage,
+                   let loadedGroupTexture = self.makeTexture(from: loadedGroupImage) {
+                    self.groupTexture = loadedGroupTexture
                 }
-                if let loadedSpaceImage {
-                    self.spaceTexture = self.makeTexture(from: loadedSpaceImage)
+                if let loadedSpaceImage,
+                   let loadedSpaceTexture = self.makeTexture(from: loadedSpaceImage) {
+                    self.spaceTexture = loadedSpaceTexture
                 }
                 self.setNeedsRender()
             }
@@ -366,18 +390,7 @@ final class RoomSpaceLinkHeroView: UIView {
         let drawableSize = metalLayer.drawableSize
         let darkMode: Float = traitCollection.userInterfaceStyle == .dark ? 1 : 0
         let reduceMotion: Float = UIAccessibility.isReduceMotionEnabled ? 1 : 0
-        let linkState: SIMD4<Float>
-
-        if let configuration {
-            linkState = SIMD4<Float>(
-                configuration.hasSpaceSideLink ? 1 : 0,
-                configuration.hasRoomSideLink ? 1 : 0,
-                configuration.canEditSpaceSide ? 1 : 0,
-                configuration.canEditRoomSide ? 1 : 0
-            )
-        } else {
-            linkState = SIMD4<Float>(0, 0, 0, 0)
-        }
+        let transitionProgress = currentTransitionProgress()
 
         return Uniforms(
             resolutionTimeScale: SIMD4<Float>(
@@ -386,8 +399,37 @@ final class RoomSpaceLinkHeroView: UIView {
                 Float(CACurrentMediaTime() - startTime),
                 Float(window?.screen.scale ?? UIScreen.main.scale)
             ),
-            linkState: linkState,
-            appearance: SIMD4<Float>(darkMode, reduceMotion, 0, 0)
+            linkState: targetLinkState,
+            previousLinkState: previousLinkState,
+            appearance: SIMD4<Float>(darkMode, reduceMotion, transitionProgress, 0)
         )
+    }
+
+    private static func linkStateVector(for configuration: Configuration) -> SIMD4<Float> {
+        SIMD4<Float>(
+            configuration.hasSpaceSideLink ? 1 : 0,
+            configuration.hasRoomSideLink ? 1 : 0,
+            configuration.canEditSpaceSide ? 1 : 0,
+            configuration.canEditRoomSide ? 1 : 0
+        )
+    }
+
+    private static func linkStateVectorChanged(_ lhs: SIMD4<Float>, _ rhs: SIMD4<Float>) -> Bool {
+        lhs.x != rhs.x || lhs.y != rhs.y || lhs.z != rhs.z || lhs.w != rhs.w
+    }
+
+    private func currentTransitionProgress(at time: CFTimeInterval = CACurrentMediaTime()) -> Float {
+        guard hasConfiguredVisualState,
+              !UIAccessibility.isReduceMotionEnabled
+        else { return 1 }
+
+        let elapsed = (time - transitionStartTime) / Self.transitionDuration
+        return Float(min(max(elapsed, 0), 1))
+    }
+
+    private func presentationLinkState(at time: CFTimeInterval) -> SIMD4<Float> {
+        let progress = currentTransitionProgress(at: time)
+        let easedProgress = progress * progress * (3 - 2 * progress)
+        return previousLinkState + (targetLinkState - previousLinkState) * easedProgress
     }
 }

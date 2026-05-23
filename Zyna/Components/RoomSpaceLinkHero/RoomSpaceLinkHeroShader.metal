@@ -19,6 +19,7 @@ struct RoomSpaceLinkHeroVertexOut {
 struct RoomSpaceLinkHeroUniforms {
     float4 resolutionTimeScale;
     float4 linkState;
+    float4 previousLinkState;
     float4 appearance;
 };
 
@@ -39,10 +40,6 @@ vertex RoomSpaceLinkHeroVertexOut roomSpaceLinkHeroVertex(
     return out;
 }
 
-inline float hash11(float value) {
-    return fract(sin(value * 127.1) * 43758.5453123);
-}
-
 inline float gaussian(float x, float width) {
     float v = x / max(width, 0.0001);
     return exp(-v * v);
@@ -55,6 +52,12 @@ inline float gaussianCentered(float x, float center, float width) {
 inline float sdRoundedRect(float2 p, float2 halfSize, float radius) {
     float2 q = abs(p) - halfSize + radius;
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+inline float2 rotate2(float2 p, float angle) {
+    float s = sin(angle);
+    float c = cos(angle);
+    return float2(c * p.x - s * p.y, s * p.x + c * p.y);
 }
 
 inline float segmentDistance(float2 p, float2 a, float2 b, thread float *segmentT) {
@@ -92,6 +95,35 @@ inline float angularDifference(float angle, float center) {
     return atan2(sin(angle - center), cos(angle - center));
 }
 
+inline float chainLinkSDF(
+    float2 p,
+    float2 center,
+    float2 halfSize,
+    float cornerRadius,
+    float thickness,
+    float angle
+) {
+    float2 local = rotate2(p - center, -angle);
+    float outer = sdRoundedRect(local, halfSize, cornerRadius);
+    float2 innerHalfSize = max(halfSize - float2(thickness, thickness), float2(thickness));
+    float inner = sdRoundedRect(local, innerHalfSize, max(cornerRadius - thickness, thickness * 0.45));
+    return max(outer, -inner);
+}
+
+inline float chainLinkDash(float2 p, float2 center, float2 halfSize, float angle, float time, float seed) {
+    float2 local = rotate2(p - center, -angle) / max(halfSize, float2(0.0001));
+    float angleAround = atan2(local.y, local.x);
+    float phase = fract((angleAround + M_PI_F) / (2.0 * M_PI_F) * 10.0 - time * 0.16 + seed);
+    return smoothstep(0.04, 0.11, phase) * (1.0 - smoothstep(0.48, 0.56, phase));
+}
+
+inline float chainLinkSheen(float2 p, float2 center, float2 halfSize, float angle, float time) {
+    float2 local = rotate2(p - center, -angle) / max(halfSize, float2(0.0001));
+    float sweep = dot(local, normalize(float2(-0.72, -0.42))) + 0.18 * sin(time * 0.58);
+    float edgeFavor = smoothstep(0.12, 0.86, length(local));
+    return gaussianCentered(sweep, -0.14, 0.16) * edgeFavor;
+}
+
 inline float metallicBand(float sdf, float radius, float angle, float time, float px) {
     float rim = gaussian(sdf, 2.4 * px);
     float outer = gaussianCentered(sdf, 7.0 * px, 5.2 * px);
@@ -119,6 +151,34 @@ inline float curveEnergy(CurveSample curve, float width, float time, float speed
     float bead = movingBeads(curve.t, time, speed, 5.6, seed);
     float wave = 0.64 + 0.36 * sin(curve.t * M_PI_F * 5.0 - time * speed * 5.0 + seed * 8.0);
     return core * (0.5 + bead * 1.35 + wave * 0.18) + aura;
+}
+
+inline float2 ghostPathEnergy(CurveSample curve, float time, float seed) {
+    float line = gaussian(curve.distance, 0.0065);
+    float aura = gaussian(curve.distance, 0.026);
+    float dashPhase = fract(curve.t * 12.5 - 0.06);
+    float dash = smoothstep(0.025, 0.085, dashPhase)
+        * (1.0 - smoothstep(0.43, 0.50, dashPhase));
+    float gate = smoothstep(0.025, 0.13, curve.t) * (1.0 - smoothstep(0.88, 0.99, curve.t));
+
+    float cycle = fract(time * 0.34 + seed);
+    float attempt = sin(cycle * M_PI_F);
+    float reach = 0.09 + 0.52 * pow(max(attempt, 0.0), 0.86);
+    float packet = gaussianCentered(curve.t, reach, 0.030 + 0.016 * attempt)
+        * gaussian(curve.distance, 0.010);
+    float sourcePulse = gaussianCentered(curve.t, 0.055, 0.052)
+        * gaussian(curve.distance, 0.014)
+        * (0.36 + 0.64 * (1.0 - attempt));
+    float wakeStart = max(0.03, reach - 0.20);
+    float wake = smoothstep(0.025, reach, curve.t)
+        * (1.0 - smoothstep(wakeStart, reach, curve.t))
+        * gaussian(curve.distance, 0.012)
+        * 0.36
+        * attempt;
+
+    float dashedPath = (line * 0.38 + aura * 0.075) * dash * gate;
+    float pull = (packet * 1.32 + sourcePulse * 0.46 + wake) * gate;
+    return float2(dashedPath, pull);
 }
 
 inline float orbitEnergy(
@@ -207,6 +267,8 @@ fragment float4 roomSpaceLinkHeroFragment(
     float aspect = resolution.x / max(resolution.y, 1.0);
     float time = u.appearance.y > 0.5 ? 0.0 : u.resolutionTimeScale.z;
     float darkMode = u.appearance.x;
+    float transitionProgress = clamp(u.appearance.z, 0.0, 1.0);
+    float transition = transitionProgress * transitionProgress * (3.0 - 2.0 * transitionProgress);
     float px = 1.0 / max(resolution.y, 1.0);
     float2 axis = float2(aspect, 1.0);
 
@@ -214,13 +276,17 @@ fragment float4 roomSpaceLinkHeroFragment(
     float2 spaceCenter = float2(0.715, 0.52);
     float radius = 0.148;
 
-    float hasSpaceSide = u.linkState.x;
-    float hasRoomSide = u.linkState.y;
-    float canEditSpaceSide = u.linkState.z;
-    float canEditRoomSide = u.linkState.w;
+    float4 state = mix(u.previousLinkState, u.linkState, transition);
+    float4 stateDelta = u.linkState - u.previousLinkState;
+    float hasSpaceSide = state.x;
+    float hasRoomSide = state.y;
+    float canEditSpaceSide = state.z;
+    float canEditRoomSide = state.w;
     float readySpaceSide = (1.0 - hasSpaceSide) * canEditSpaceSide;
     float readyRoomSide = (1.0 - hasRoomSide) * canEditRoomSide;
     float fullyLinked = hasSpaceSide * hasRoomSide;
+    float anyLink = max(hasSpaceSide, hasRoomSide);
+    float editableMissing = max(readySpaceSide, readyRoomSide);
 
     float2 p = uv * axis;
     float2 group = groupCenter * axis;
@@ -252,6 +318,21 @@ fragment float4 roomSpaceLinkHeroFragment(
     float roomFlow = curveEnergy(groupToSpace, 0.0085, time, 0.54, 0.57) * hasRoomSide;
     float bridgeBloom = (gaussian(spaceToGroup.distance, 0.028) * hasSpaceSide
         + gaussian(groupToSpace.distance, 0.028) * hasRoomSide) * 0.22;
+    float transitionEnvelope = sin(transitionProgress * M_PI_F);
+    float spaceChanging = abs(stateDelta.x);
+    float roomChanging = abs(stateDelta.y);
+    float spaceAdding = step(0.0, stateDelta.x);
+    float roomAdding = step(0.0, stateDelta.y);
+    float spaceFrontT = mix(1.0 - transition, transition, spaceAdding);
+    float roomFrontT = mix(1.0 - transition, transition, roomAdding);
+    float spaceTransitionWave = gaussianCentered(spaceToGroup.t, spaceFrontT, 0.044)
+        * gaussian(spaceToGroup.distance, 0.013)
+        * spaceChanging
+        * transitionEnvelope;
+    float roomTransitionWave = gaussianCentered(groupToSpace.t, roomFrontT, 0.044)
+        * gaussian(groupToSpace.distance, 0.013)
+        * roomChanging
+        * transitionEnvelope;
 
     color += spaceColor * spaceFlow;
     color += roomColor * roomFlow;
@@ -259,7 +340,20 @@ fragment float4 roomSpaceLinkHeroFragment(
     color += linkedColor * fullyLinked * linkedPulse * (
         gaussian(spaceToGroup.distance, 0.017) + gaussian(groupToSpace.distance, 0.017)
     ) * 0.45;
-    alpha += max(max(spaceFlow, roomFlow), bridgeBloom);
+    color += spaceColor * spaceTransitionWave * (1.10 + 0.35 * spaceAdding);
+    color += roomColor * roomTransitionWave * (1.10 + 0.35 * roomAdding);
+    alpha += max(
+        max(max(spaceFlow, roomFlow), bridgeBloom),
+        max(spaceTransitionWave, roomTransitionWave) * 0.95
+    );
+
+    float2 ghostSpace = ghostPathEnergy(spaceToGroup, time, 0.19) * readySpaceSide;
+    float2 ghostRoom = ghostPathEnergy(groupToSpace, time, 0.61) * readyRoomSide;
+    float ghostSpaceEnergy = ghostSpace.x * 0.55 + ghostSpace.y * 1.35;
+    float ghostRoomEnergy = ghostRoom.x * 0.55 + ghostRoom.y * 1.35;
+    color += spaceColor * ghostSpaceEnergy;
+    color += roomColor * ghostRoomEnergy;
+    alpha += max(ghostSpaceEnergy, ghostRoomEnergy) * 0.82;
 
     float2 groupLocal = (uv - groupCenter) * axis;
     float2 spaceLocal = (uv - spaceCenter) * axis;
@@ -294,6 +388,126 @@ fragment float4 roomSpaceLinkHeroFragment(
 
     float groupSDF = length(groupLocal) - radius;
     float spaceSDF = sdRoundedRect(spaceLocal, spaceHalfSize, spaceCornerRadius);
+    float2 shadowOffset = float2(0.0, 0.020);
+    float groupShadowSDF = length(groupLocal - shadowOffset) - radius * 1.02;
+    float spaceShadowSDF = sdRoundedRect(
+        spaceLocal - shadowOffset,
+        spaceHalfSize * 1.03,
+        spaceCornerRadius * 1.15
+    );
+    float groupShadow = 1.0 - smoothstep(-0.018, 0.062, groupShadowSDF);
+    float spaceShadow = 1.0 - smoothstep(-0.018, 0.062, spaceShadowSDF);
+    float shadow = max(groupShadow, spaceShadow);
+    float3 shadowColor = darkMode > 0.5 ? float3(0.0, 0.0, 0.0) : float3(0.04, 0.055, 0.085);
+    color += shadowColor * shadow * (darkMode > 0.5 ? 0.18 : 0.12);
+    alpha += shadow * (darkMode > 0.5 ? 0.18 : 0.12);
+
+    float groupLift = gaussianCentered(groupSDF, 20.0 * px, 17.0 * px);
+    float spaceLift = gaussianCentered(spaceSDF, 20.0 * px, 17.0 * px);
+    color += (roomColor * groupLift + spaceColor * spaceLift) * (0.08 + 0.09 * editableMissing);
+    alpha += max(groupLift, spaceLift) * (0.07 + 0.06 * editableMissing);
+
+    float2 nexusCenter = float2(0.5 * aspect, 0.52);
+    float2 nexusLocal = p - nexusCenter;
+    float nexusDistance = length(nexusLocal);
+    float nodePulse = 0.62 + 0.38 * sin(time * 2.2 + anyLink * 1.7);
+    float centerCharge = transitionEnvelope * max(spaceChanging, roomChanging);
+    float oneSided = max(anyLink - fullyLinked, 0.0);
+    float linkAngle = -0.72;
+    float2 linkAxis = normalize(float2(cos(linkAngle), sin(linkAngle)));
+    float2 linkNormal = float2(-linkAxis.y, linkAxis.x);
+    float linkClosure = clamp(fullyLinked + anyLink * 0.44 + editableMissing * 0.36, 0.0, 1.0);
+    float linkSeparation = 0.018 * (1.0 - linkClosure);
+    float2 linkHalfSize = float2(0.056, 0.029);
+    float linkCornerRadius = linkHalfSize.y;
+    float linkThickness = 0.011;
+    float2 roomLinkCenter = nexusCenter - linkAxis * (0.031 + linkSeparation);
+    float2 spaceLinkCenter = nexusCenter + linkAxis * (0.031 + linkSeparation);
+    float roomLinkSDF = chainLinkSDF(
+        p,
+        roomLinkCenter,
+        linkHalfSize,
+        linkCornerRadius,
+        linkThickness,
+        linkAngle
+    );
+    float spaceLinkSDF = chainLinkSDF(
+        p,
+        spaceLinkCenter,
+        linkHalfSize,
+        linkCornerRadius,
+        linkThickness,
+        linkAngle
+    );
+    float roomLinkCore = 1.0 - smoothstep(-1.0 * px, 2.2 * px, roomLinkSDF);
+    float spaceLinkCore = 1.0 - smoothstep(-1.0 * px, 2.2 * px, spaceLinkSDF);
+    float roomLinkGlow = gaussian(roomLinkSDF, 0.018);
+    float spaceLinkGlow = gaussian(spaceLinkSDF, 0.018);
+    float roomLinkDash = chainLinkDash(p, roomLinkCenter, linkHalfSize, linkAngle, time, 0.18);
+    float spaceLinkDash = chainLinkDash(p, spaceLinkCenter, linkHalfSize, linkAngle, time, 0.57);
+    float roomLinkSheen = chainLinkSheen(p, roomLinkCenter, linkHalfSize, linkAngle, time);
+    float spaceLinkSheen = chainLinkSheen(p, spaceLinkCenter, linkHalfSize, linkAngle, time + 0.43);
+    float linkIntersection = roomLinkCore * spaceLinkCore;
+    float crossingRelief = linkIntersection * fullyLinked;
+    float axisCoord = dot(nexusLocal, linkAxis);
+    float crossingCoord = dot(nexusLocal, linkNormal);
+    float gapWindow = gaussian(axisCoord, 0.050) * fullyLinked;
+    float roomGap = gaussianCentered(crossingCoord, 0.018, 0.012) * gapWindow;
+    float spaceGap = gaussianCentered(crossingCoord, -0.018, 0.012) * gapWindow;
+    float roomCut = clamp(roomGap * 1.45, 0.0, 1.0);
+    float spaceCut = clamp(spaceGap * 1.45, 0.0, 1.0);
+    float roomKeep = 1.0 - roomCut;
+    float spaceKeep = 1.0 - spaceCut;
+    roomLinkCore *= roomKeep;
+    spaceLinkCore *= spaceKeep;
+    roomLinkGlow *= 1.0 - roomCut * 0.98;
+    spaceLinkGlow *= 1.0 - spaceCut * 0.98;
+    roomLinkSheen *= roomKeep;
+    spaceLinkSheen *= spaceKeep;
+
+    float roomLinkActive = hasRoomSide;
+    float spaceLinkActive = hasSpaceSide;
+    float roomLinkGhost = (1.0 - hasRoomSide) * (readyRoomSide + (1.0 - canEditRoomSide) * 0.20);
+    float spaceLinkGhost = (1.0 - hasSpaceSide) * (readySpaceSide + (1.0 - canEditSpaceSide) * 0.20);
+    float roomGhostCore = roomLinkCore * roomLinkDash * roomLinkGhost;
+    float spaceGhostCore = spaceLinkCore * spaceLinkDash * spaceLinkGhost;
+    float roomActiveCore = roomLinkCore * roomLinkActive;
+    float spaceActiveCore = spaceLinkCore * spaceLinkActive;
+    float roomAttemptGlow = roomLinkGlow * roomLinkGhost * (0.18 + 0.18 * nodePulse);
+    float spaceAttemptGlow = spaceLinkGlow * spaceLinkGhost * (0.18 + 0.18 * nodePulse);
+    float roomSolidGlow = roomLinkGlow * roomLinkActive * (0.19 + 0.12 * linkedPulse);
+    float spaceSolidGlow = spaceLinkGlow * spaceLinkActive * (0.19 + 0.12 * linkedPulse);
+    float roomVisibleCore = roomActiveCore;
+    float spaceVisibleCore = spaceActiveCore;
+    float roomVisibleGlow = roomSolidGlow;
+    float spaceVisibleGlow = spaceSolidGlow;
+    float weaveShadow = max(roomCut, spaceCut) * gapWindow;
+    float centerSpark = gaussian(nexusDistance, 0.021) * (fullyLinked * 0.14 + centerCharge * 0.70 + oneSided * 0.24);
+    float disconnectedGap = gaussian(abs(dot(nexusLocal, linkAxis)), 0.010)
+        * gaussian(dot(nexusLocal, float2(-linkAxis.y, linkAxis.x)), 0.022)
+        * (1.0 - anyLink)
+        * (0.25 + 0.35 * editableMissing);
+    float3 nodeGlowColor = mix(float3(0.10, 0.12, 0.18), float3(0.76, 0.92, 1.0), 1.0 - darkMode);
+    float nodeGlow = gaussian(nexusDistance, 0.086)
+        * (0.07 + anyLink * 0.10 + editableMissing * 0.10 + fullyLinked * 0.11 + centerCharge * 0.18);
+
+    color += nodeGlowColor * nodeGlow;
+    color += roomColor * (roomVisibleGlow * 0.52 + roomVisibleCore * (0.58 + roomLinkSheen * 0.28));
+    color += spaceColor * (spaceVisibleGlow * 0.52 + spaceVisibleCore * (0.58 + spaceLinkSheen * 0.28));
+    color += metalLight * (roomVisibleCore * roomLinkSheen + spaceVisibleCore * spaceLinkSheen) * 0.12;
+    color += roomColor * (roomGhostCore * (0.30 + 0.18 * nodePulse) + roomAttemptGlow);
+    color += spaceColor * (spaceGhostCore * (0.30 + 0.18 * nodePulse) + spaceAttemptGlow);
+    color += linkedColor * linkIntersection * fullyLinked * 0.035;
+    color += linkedColor * centerSpark * 0.36;
+    color -= nodeGlowColor * weaveShadow * 0.44;
+    color += metalLight * crossingRelief * fullyLinked * 0.020;
+    color -= nodeGlowColor * disconnectedGap * 0.20;
+    alpha += max(
+        max(nodeGlow, max(roomVisibleCore, spaceVisibleCore)),
+        max(max(roomGhostCore, spaceGhostCore) * 0.74, centerSpark * 0.72)
+    );
+    alpha = max(alpha, weaveShadow * 0.48);
+
     float groupAngle = atan2(groupLocal.y, groupLocal.x);
     float spaceAngle = atan2(spaceLocal.y, spaceLocal.x);
     float groupMetal = metallicBand(groupSDF, 1.0, groupAngle, time, px);
@@ -316,11 +530,8 @@ fragment float4 roomSpaceLinkHeroFragment(
 
     float centerNexus = gaussian(distance(uv * axis, float2(0.5 * aspect, 0.52)), 0.040)
         * max(fullyLinked, max(hasSpaceSide, hasRoomSide) * 0.45);
-    color += (spaceColor + roomColor + linkedColor) * centerNexus * 0.16;
-    alpha += centerNexus * 0.36;
-
-    float grain = hash11(floor(uv.x * resolution.x * 0.33) + floor(uv.y * resolution.y * 0.33) * 91.7);
-    color += (grain - 0.5) * 0.018 * alpha;
+    color += (spaceColor + roomColor + linkedColor) * centerNexus * 0.055;
+    alpha += centerNexus * 0.12;
 
     alpha = clamp(alpha, 0.0, 1.0);
     color = clamp(color, 0.0, 1.35);
