@@ -70,6 +70,29 @@ struct RoomSpaceMembershipSummary: Equatable {
     let attentionCount: Int
 }
 
+struct RoomSpaceAddCandidate: Identifiable, Equatable {
+    let id: String
+    let displayName: String
+    let avatarURL: String?
+    let roomCount: Int?
+    let spaceCount: Int?
+    let status: RoomSpaceMembershipStatus?
+    let canEditSpaceSide: Bool
+    let canEditRoomSide: Bool
+
+    var hasSpaceSideLink: Bool {
+        status?.hasSpaceSide == true
+    }
+
+    var hasRoomSideLink: Bool {
+        status?.hasRoomSide == true
+    }
+
+    var canAddSpaceSideLink: Bool {
+        !hasSpaceSideLink && canEditSpaceSide
+    }
+}
+
 enum RoomSpaceMembershipAction {
     case setRoomSideLink
     case setSpaceSideLink
@@ -111,11 +134,21 @@ final class RoomSpaceMembershipService {
         let id: String
         let displayName: String
         let avatarURL: String?
+        let roomCount: Int?
+        let spaceCount: Int?
 
-        init(id: String, displayName: String, avatarURL: String?) {
+        init(
+            id: String,
+            displayName: String,
+            avatarURL: String?,
+            roomCount: Int? = nil,
+            spaceCount: Int? = nil
+        ) {
             self.id = id
             self.displayName = displayName
             self.avatarURL = avatarURL
+            self.roomCount = roomCount
+            self.spaceCount = spaceCount
         }
 
         init(space: SpaceRoom) {
@@ -185,7 +218,7 @@ final class RoomSpaceMembershipService {
         }
 
         var childSideIds = Set<String>()
-        for candidate in candidatesById.values {
+        for candidate in candidatesById.values where candidate.id != roomId {
             if try await spaceListsChild(spaceId: candidate.id, childId: roomId, client: client) {
                 childSideIds.insert(candidate.id)
             }
@@ -243,6 +276,128 @@ final class RoomSpaceMembershipService {
             count: memberships.count,
             attentionCount: memberships.filter(\.status.needsAttention).count
         )
+    }
+
+    func loadAddCandidates(for roomId: String) async throws -> [RoomSpaceAddCandidate] {
+        guard let client = MatrixClientService.shared.client else {
+            throw spaceMembershipError(String(localized: "Matrix client is not ready."))
+        }
+
+        let spaceService = await client.spaceService()
+        let roomSummaries = await roomListService.joinedRoomSummaries()
+        let summariesById = Dictionary(
+            roomSummaries.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+
+        async let loadedParentIds = loadParentSpaceIds(for: roomId, client: client)
+        async let loadedEditableSpaces = spaceService.editableSpaces()
+        _ = await spaceService.topLevelJoinedSpaces()
+
+        var candidatesById: [String: SpaceCandidate] = [:]
+        for summary in roomSummaries where summary.isSpace {
+            candidatesById[summary.id] = SpaceCandidate(
+                id: summary.id,
+                displayName: summary.displayName.nilIfEmpty ?? String(localized: "Untitled"),
+                avatarURL: summary.avatarURL,
+                roomCount: summary.spaceChildRoomCount,
+                spaceCount: summary.spaceChildSpaceCount
+            )
+        }
+
+        let editableSpaces = await loadedEditableSpaces
+        for space in editableSpaces where candidatesById[space.roomId] == nil {
+            candidatesById[space.roomId] = SpaceCandidate(space: space)
+        }
+
+        let parentIds = try await loadedParentIds
+        for parentId in parentIds where candidatesById[parentId] == nil {
+            if let space = try? await spaceService.getSpaceRoom(roomId: parentId) {
+                candidatesById[parentId] = SpaceCandidate(space: space)
+            } else if let summary = summariesById[parentId] {
+                candidatesById[parentId] = SpaceCandidate(
+                    id: summary.id,
+                    displayName: summary.displayName.nilIfEmpty ?? String(localized: "Untitled"),
+                    avatarURL: summary.avatarURL,
+                    roomCount: summary.spaceChildRoomCount,
+                    spaceCount: summary.spaceChildSpaceCount
+                )
+            } else {
+                candidatesById[parentId] = SpaceCandidate(
+                    id: parentId,
+                    displayName: parentId,
+                    avatarURL: nil
+                )
+            }
+        }
+
+        var childSideIds = Set<String>()
+        for candidate in candidatesById.values where candidate.id != roomId {
+            if try await spaceListsChild(spaceId: candidate.id, childId: roomId, client: client) {
+                childSideIds.insert(candidate.id)
+            }
+        }
+
+        let canEditRoomSide = await canOwnUserSendState(in: roomId, stateEvent: .spaceParent)
+        var addCandidates: [RoomSpaceAddCandidate] = []
+        addCandidates.reserveCapacity(candidatesById.count)
+
+        for candidate in candidatesById.values where candidate.id != roomId {
+            let hasSpaceSide = childSideIds.contains(candidate.id)
+            let hasRoomSide = parentIds.contains(candidate.id)
+            let status: RoomSpaceMembershipStatus?
+            switch (hasSpaceSide, hasRoomSide) {
+            case (true, true):
+                status = .linked
+            case (true, false):
+                status = .listedBySpaceOnly
+            case (false, true):
+                status = .declaredByRoomOnly
+            case (false, false):
+                status = nil
+            }
+
+            addCandidates.append(RoomSpaceAddCandidate(
+                id: candidate.id,
+                displayName: candidate.displayName.nilIfEmpty ?? String(localized: "Untitled"),
+                avatarURL: candidate.avatarURL,
+                roomCount: candidate.roomCount,
+                spaceCount: candidate.spaceCount,
+                status: status,
+                canEditSpaceSide: await canOwnUserSendState(in: candidate.id, stateEvent: .spaceChild),
+                canEditRoomSide: canEditRoomSide
+            ))
+        }
+
+        return addCandidates.sorted { lhs, rhs in
+            if lhs.canAddSpaceSideLink != rhs.canAddSpaceSideLink {
+                return lhs.canAddSpaceSideLink && !rhs.canAddSpaceSideLink
+            }
+            if lhs.hasSpaceSideLink != rhs.hasSpaceSideLink {
+                return !lhs.hasSpaceSideLink && rhs.hasSpaceSideLink
+            }
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+    }
+
+    func addRoom(_ roomId: String, to candidate: RoomSpaceAddCandidate) async throws {
+        guard candidate.canAddSpaceSideLink else {
+            throw spaceMembershipError(String(localized: "You do not have permission to edit this Storyline."))
+        }
+
+        try await roomListService.setChildLink(
+            roomId,
+            toSpace: candidate.id,
+            context: "room-details-add"
+        )
+
+        if candidate.canEditRoomSide && !candidate.hasRoomSideLink {
+            try? await roomListService.setParentLink(
+                candidate.id,
+                forChild: roomId,
+                context: "room-details-add"
+            )
+        }
     }
 
     func perform(_ action: RoomSpaceMembershipAction, membership: RoomSpaceMembership, roomId: String) async throws {

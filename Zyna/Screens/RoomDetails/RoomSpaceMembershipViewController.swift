@@ -96,7 +96,12 @@ final class RoomSpaceMembershipViewController: ASDKViewController<SettingsScreen
                 accessibilityLabel: String(localized: "Back"),
                 action: { [weak self] in self?.onBack?() }
             ),
-            .title(text: String(localized: "Storylines"), subtitle: nil)
+            .title(text: String(localized: "Storylines"), subtitle: nil),
+            .circleButton(
+                icon: AppIcon.link.template(size: 17, weight: .semibold),
+                accessibilityLabel: String(localized: "Add to Storyline"),
+                action: { [weak self] in self?.showAddToSpace() }
+            )
         ]
     }
 
@@ -172,6 +177,26 @@ final class RoomSpaceMembershipViewController: ASDKViewController<SettingsScreen
             sheet.prefersScrollingExpandsWhenScrolledToEdge = false
         }
         present(controller, animated: true)
+    }
+
+    private func showAddToSpace() {
+        guard operatingSpaceId == nil else { return }
+
+        let viewModel = RoomAddToSpaceViewModel(
+            roomId: roomId,
+            roomName: roomName,
+            service: service
+        )
+        let controller = RoomAddToSpaceViewController(viewModel: viewModel)
+        controller.onBack = { [weak controller] in
+            controller?.zynaNavigationController?.pop()
+        }
+        controller.onSpaceAdded = { [weak self, weak controller] _ in
+            self?.loadMemberships()
+            controller?.zynaNavigationController?.pop()
+        }
+
+        zynaNavigationController?.push(controller)
     }
 
     private func perform(

@@ -776,6 +776,16 @@
         }
       }
     },
+    "Adding..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавляем..."
+          }
+        }
+      }
+    },
     "Adds this reaction" : {
       "localizations" : {
         "ru" : {
@@ -822,6 +832,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Уже применено"
+          }
+        }
+      }
+    },
+    "Already added" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уже добавлен"
           }
         }
       }
@@ -6072,6 +6092,16 @@
         }
       }
     },
+    "Could not add to Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось добавить в сюжет"
+          }
+        }
+      }
+    },
     "Existing Chat" : {
       "localizations" : {
         "ru" : {
@@ -6102,6 +6132,26 @@
         }
       }
     },
+    "No Storylines found" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжеты не найдены"
+          }
+        }
+      }
+    },
+    "No Storylines to add" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет сюжетов для добавления"
+          }
+        }
+      }
+    },
     "Place one of your current chats here. It can still appear elsewhere." : {
       "localizations" : {
         "ru" : {
@@ -6118,6 +6168,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Выберите чат, который добавить в «%@»."
+          }
+        }
+      }
+    },
+    "Select a Storyline for %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выберите сюжет для «%@»."
           }
         }
       }
@@ -6498,6 +6558,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не связано"
+          }
+        }
+      }
+    },
+    "Locked" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недоступно"
+          }
+        }
+      }
+    },
+    "No permission to edit this Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет прав менять этот сюжет"
+          }
+        }
+      }
+    },
+    "Ready to add" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можно добавить"
+          }
+        }
+      }
+    },
+    "You do not have permission to edit this Storyline." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет прав менять этот сюжет."
           }
         }
       }
