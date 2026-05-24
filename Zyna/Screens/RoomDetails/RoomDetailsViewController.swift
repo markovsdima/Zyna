@@ -823,7 +823,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 extension RoomDetailsViewController: AccessibilityFocusProviding {
     /// First element VO focuses on after push: the back button.
     var initialAccessibilityFocus: UIView? {
-        glassTopBar.accessibilityElementsInOrder.first
+        AccessibilityElementOrder.firstVisibleView(in: glassTopBar)
     }
 }
 

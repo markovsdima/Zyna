@@ -241,6 +241,6 @@ final class MemberDetailViewController: ASDKViewController<MemberDetailNode> {
 extension MemberDetailViewController: AccessibilityFocusProviding {
     /// First element VO focuses on after push: the back button.
     var initialAccessibilityFocus: UIView? {
-        glassTopBar.accessibilityElementsInOrder.first
+        AccessibilityElementOrder.firstVisibleView(in: glassTopBar)
     }
 }

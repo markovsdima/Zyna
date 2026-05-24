@@ -78,7 +78,7 @@ private enum VoiceMotionTiming {
 }
 
 /// Glass navigation bar with 3 island shapes: back (circle), title (rounded rect), call (circle).
-final class GlassNavBar: ASDisplayNode {
+final class GlassNavBar: ASDisplayNode, AccessibilityElementsOrderProviding {
 
     private struct VoiceShapeSample {
         let width: CGFloat

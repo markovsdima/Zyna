@@ -10,7 +10,7 @@ import Metal
 /// Glass input bar with 3 shapes: attach (circle), text field (rounded rect), mic (circle).
 /// Optional 4th shape: scroll-to-live button (metaball with mic).
 /// Tracks keyboard position and triggers glass capture on changes.
-final class GlassInputBar: ASDisplayNode {
+final class GlassInputBar: ASDisplayNode, AccessibilityElementsOrderProviding {
 
     // MARK: - Public
 
@@ -157,10 +157,10 @@ final class GlassInputBar: ASDisplayNode {
         observeInputSize()
     }
 
-    var accessibilityElementsInOrder: [UIView] {
+    var accessibilityElementsInOrder: [Any] {
         guard isNodeLoaded, !isHidden else { return [] }
 
-        var elements: [UIView] = []
+        var elements: [Any] = []
         let previewState = inputNode.previewRenderState
         if previewState.mode != .none,
            previewState.progress > 0.001,

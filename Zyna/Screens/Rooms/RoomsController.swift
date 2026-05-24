@@ -635,23 +635,20 @@ private final class RoomsPreviewPressInteraction {
 /// hit-tests it before the table cells visually behind it.
 final class RoomsScreenNode: ScreenNode {
     weak var voicePlayerView: UIView?
-    weak var glassTopBar: ASDisplayNode?
+    weak var glassTopBar: GlassTopBar?
     weak var tableNode: ASDisplayNode?
 
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
-            if let player = voicePlayerView,
-               player.superview === view,
-               !player.isHidden,
-               player.alpha > 0.01 {
-                elements.append(player)
-            }
-            if let bar = glassTopBar?.view, bar.superview === view {
-                elements.append(bar)
-            }
+            AccessibilityElementOrder.appendVisibleView(voicePlayerView, to: &elements)
+            AccessibilityElementOrder.appendProvider(
+                glassTopBar,
+                fallbackView: glassTopBar?.view,
+                to: &elements
+            )
             if let table = tableNode?.view {
-                elements.append(table)
+                AccessibilityElementOrder.appendVisibleView(table, to: &elements)
             }
             return elements
         }

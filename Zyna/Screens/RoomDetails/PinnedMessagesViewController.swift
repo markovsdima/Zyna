@@ -294,7 +294,7 @@ extension PinnedMessagesViewController: UITableViewDataSource, UITableViewDelega
 
 extension PinnedMessagesViewController: AccessibilityFocusProviding {
     var initialAccessibilityFocus: UIView? {
-        glassTopBar.accessibilityElementsInOrder.first
+        AccessibilityElementOrder.firstVisibleView(in: glassTopBar)
     }
 }
 

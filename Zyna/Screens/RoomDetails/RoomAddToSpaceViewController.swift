@@ -171,7 +171,7 @@ final class RoomAddToSpaceViewController:
 }
 
 final class RoomAddToSpaceNode: ScreenNode {
-    weak var glassTopBar: ASDisplayNode?
+    weak var glassTopBar: GlassTopBar?
     let tableNode = ASTableNode(style: .plain)
 
     override init() {
@@ -190,10 +190,12 @@ final class RoomAddToSpaceNode: ScreenNode {
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
-            if let bar = glassTopBar?.view, bar.superview === view {
-                elements.append(bar)
-            }
-            elements.append(tableNode.view)
+            AccessibilityElementOrder.appendProvider(
+                glassTopBar,
+                fallbackView: glassTopBar?.view,
+                to: &elements
+            )
+            AccessibilityElementOrder.appendVisibleView(tableNode.view, to: &elements)
             return elements
         }
         set { }

@@ -10,7 +10,7 @@ import AsyncDisplayKit
 /// Circle buttons are fixed 36x36 circles. Buttons before `.title`
 /// in the items array are placed on the left, buttons after — on the right.
 /// The `.title` is centered on the bar axis, fitted to its content width.
-final class GlassTopBar: ASDisplayNode {
+final class GlassTopBar: ASDisplayNode, AccessibilityElementsOrderProviding {
 
     // MARK: - Item
 
@@ -235,7 +235,7 @@ final class GlassTopBar: ASDisplayNode {
     /// Accessibility targets (title + circle buttons) in items-array
     /// order. Screens can take this array and reorder to taste when
     /// overriding their own `accessibilityElements`.
-    var accessibilityElementsInOrder: [UIView] {
+    var accessibilityElementsInOrder: [Any] {
         guard isNodeLoaded else { return [] }
         return entries.compactMap { entry in
             switch entry.kind {
@@ -244,6 +244,11 @@ final class GlassTopBar: ASDisplayNode {
             case .flexibleSpace: return nil
             }
         }
+    }
+
+    override var accessibilityElements: [Any]? {
+        get { accessibilityElementsInOrder }
+        set { }
     }
 
     private static var actionKey: UInt8 = 0
