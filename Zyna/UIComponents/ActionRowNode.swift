@@ -63,12 +63,20 @@ final class ActionRowNode: ASDisplayNode {
 
     private var configuration = Configuration(title: "")
 
+    var accessibilityElementView: UIView? {
+        guard isNodeLoaded, tapNode.isNodeLoaded else { return nil }
+        return tapNode.view
+    }
+
     override init() {
         super.init()
         automaticallyManagesSubnodes = true
 
+        isAccessibilityElement = false
         backgroundNode.fillColor = .secondarySystemBackground
         backgroundNode.radius = Metrics.radius
+        backgroundNode.isAccessibilityElement = false
+        backgroundNode.accessibilityElementsHidden = true
 
         tapNode.backgroundColor = .clear
         tapNode.onTap = { [weak self] in
@@ -76,17 +84,25 @@ final class ActionRowNode: ASDisplayNode {
             self.onTap?()
         }
 
+        leadingIconNode.isAccessibilityElement = false
+        leadingIconNode.accessibilityElementsHidden = true
         titleNode.maximumNumberOfLines = 1
         titleNode.truncationMode = .byTruncatingTail
         titleNode.style.flexShrink = 1
+        titleNode.isAccessibilityElement = false
+        titleNode.accessibilityElementsHidden = true
 
         trailingTextNode.maximumNumberOfLines = 1
         trailingTextNode.truncationMode = .byTruncatingTail
+        trailingTextNode.isAccessibilityElement = false
+        trailingTextNode.accessibilityElementsHidden = true
 
         leadingIconNode.contentMode = .center
         leadingIconNode.style.preferredSize = Metrics.leadingIconSize
         accessoryNode.contentMode = .center
         accessoryNode.style.preferredSize = Metrics.accessorySize
+        accessoryNode.isAccessibilityElement = false
+        accessoryNode.accessibilityElementsHidden = true
     }
 
     func apply(_ configuration: Configuration) {
@@ -124,6 +140,7 @@ final class ActionRowNode: ASDisplayNode {
         accessoryNode.alpha = alpha
 
         tapNode.isAccessibilityElement = true
+        tapNode.accessibilityElementsHidden = false
         tapNode.accessibilityTraits = configuration.isEnabled ? .button : .staticText
         tapNode.accessibilityLabel = configuration.accessibilityLabel ?? configuration.title
         tapNode.accessibilityValue = configuration.trailingText
@@ -136,6 +153,14 @@ final class ActionRowNode: ASDisplayNode {
         var next = configuration
         next.trailingText = text
         apply(next)
+    }
+
+    override var accessibilityElements: [Any]? {
+        get {
+            guard let accessibilityElementView else { return [] }
+            return [accessibilityElementView]
+        }
+        set { }
     }
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {

@@ -98,9 +98,15 @@ final class RoomDetailsNode: ScreenNode {
 
     private func setupNodes() {
         avatarBackgroundNode.backgroundColor = .systemGray4
+        avatarBackgroundNode.isAccessibilityElement = false
+        avatarBackgroundNode.accessibilityElementsHidden = true
         avatarImageNode.contentMode = .scaleAspectFill
         avatarImageNode.isLayerBacked = true
         avatarImageNode.isOpaque = false
+        avatarImageNode.isAccessibilityElement = false
+        avatarImageNode.accessibilityElementsHidden = true
+        avatarInitialsNode.isAccessibilityElement = false
+        avatarInitialsNode.accessibilityElementsHidden = true
 
         avatarTapNode.backgroundColor = .clear
         avatarTapNode.onTap = { [weak self] in self?.onAvatarTapped?() }
@@ -110,9 +116,13 @@ final class RoomDetailsNode: ScreenNode {
 
         editAvatarOverlayNode.backgroundColor = UIColor.black.withAlphaComponent(0.4)
         editAvatarOverlayNode.isHidden = true
+        editAvatarOverlayNode.isAccessibilityElement = false
+        editAvatarOverlayNode.accessibilityElementsHidden = true
         editAvatarIconNode.image = UIImage(systemName: "camera.fill")
         editAvatarIconNode.imageModificationBlock = ASImageNodeTintColorModificationBlock(.white)
         editAvatarIconNode.contentMode = .scaleAspectFit
+        editAvatarIconNode.isAccessibilityElement = false
+        editAvatarIconNode.accessibilityElementsHidden = true
 
         removeAvatarButtonNode.setImage(
             AppIcon.xmark.rendered(size: 12, weight: .bold, color: .white),
@@ -130,11 +140,14 @@ final class RoomDetailsNode: ScreenNode {
         removeAvatarButtonNode.accessibilityLabel = "Remove group avatar"
         removeAvatarButtonNode.isHidden = true
 
+        nameNode.isAccessibilityElement = true
+        nameNode.accessibilityTraits = .header
         nameEditNode.typingAttributes = [
             NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 22, weight: .bold),
             NSAttributedString.Key.foregroundColor.rawValue: UIColor.label
         ]
         nameEditNode.textContainerInset = .zero
+        nameEditNode.accessibilityLabel = String(localized: "Group Name")
 
         membersQuickAction.onTap = { [weak self] in self?.onMembersTapped?() }
         membersQuickAction.apply(RoomDetailsQuickActionNode.Configuration(
@@ -361,6 +374,7 @@ final class RoomDetailsNode: ScreenNode {
             .foregroundColor: UIColor.label
         ]
         nameNode.attributedText = NSAttributedString(string: name, attributes: attrs)
+        nameNode.accessibilityLabel = name
         nameEditNode.attributedText = NSAttributedString(string: name, attributes: attrs)
     }
 
@@ -624,21 +638,65 @@ final class RoomDetailsNode: ScreenNode {
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
-            if let player = voicePlayerView,
-               player.superview === view,
-               !player.isHidden,
-               player.alpha > 0.01 {
-                elements.append(player)
-            }
+            appendVisibleView(voicePlayerView, to: &elements)
             if let bar = glassTopBar, bar.view.superview === view {
                 elements.append(contentsOf: bar.accessibilityElementsInOrder)
             }
-            for sv in view.subviews where sv !== glassTopBar?.view && sv !== voicePlayerView {
-                elements.append(sv)
-            }
+            appendContentAccessibilityElements(to: &elements)
             return elements
         }
         set { }
+    }
+
+    private func appendContentAccessibilityElements(to elements: inout [Any]) {
+        if isEditing {
+            appendNodeView(avatarTapNode, to: &elements)
+            appendNodeView(removeAvatarButtonNode, to: &elements)
+            appendNodeView(nameEditNode, to: &elements)
+        } else {
+            appendNodeView(nameNode, to: &elements)
+        }
+
+        tagNodes.forEach { appendNodeView($0, to: &elements) }
+
+        if isDirectRoom {
+            appendActionRow(profileRow, to: &elements)
+            appendActionRow(pinnedMessagesRow, to: &elements)
+            appendActionRow(searchRow, to: &elements)
+            appendActionRow(leaveRoomRow, to: &elements)
+        } else {
+            appendQuickAction(membersQuickAction, to: &elements)
+            appendQuickAction(searchQuickAction, to: &elements)
+            appendQuickAction(inviteQuickAction, to: &elements)
+            appendQuickAction(pinnedQuickAction, to: &elements)
+            appendActionRow(storylinesRow, to: &elements)
+            appendActionRow(securityRow, to: &elements)
+            appendActionRow(rolesPermissionsRow, to: &elements)
+            appendActionRow(leaveRoomRow, to: &elements)
+        }
+    }
+
+    private func appendNodeView(_ node: ASDisplayNode, to elements: inout [Any]) {
+        guard node.isNodeLoaded else { return }
+        appendVisibleView(node.view, to: &elements)
+    }
+
+    private func appendQuickAction(_ action: RoomDetailsQuickActionNode, to elements: inout [Any]) {
+        appendVisibleView(action.accessibilityElementView, to: &elements)
+    }
+
+    private func appendActionRow(_ row: ActionRowNode, to elements: inout [Any]) {
+        appendVisibleView(row.accessibilityElementView, to: &elements)
+    }
+
+    private func appendVisibleView(_ target: UIView?, to elements: inout [Any]) {
+        guard let target,
+              target.superview != nil,
+              !target.isHidden,
+              target.alpha > 0.01 else {
+            return
+        }
+        elements.append(target)
     }
 }
 
@@ -679,12 +737,19 @@ private final class RoomDetailsQuickActionNode: ASDisplayNode {
 
     private var configuration = Configuration(title: "")
 
+    var accessibilityElementView: UIView? {
+        guard isNodeLoaded, tapNode.isNodeLoaded else { return nil }
+        return tapNode.view
+    }
+
     override init() {
         super.init()
         automaticallyManagesSubnodes = true
 
         isAccessibilityElement = false
+        accessibilityElementsHidden = false
         backgroundNode.isAccessibilityElement = false
+        backgroundNode.accessibilityElementsHidden = true
         backgroundNode.fillColor = .secondarySystemBackground
         backgroundNode.radius = 12
 
@@ -695,15 +760,18 @@ private final class RoomDetailsQuickActionNode: ASDisplayNode {
         }
 
         iconNode.isAccessibilityElement = false
+        iconNode.accessibilityElementsHidden = true
         iconNode.contentMode = .center
         iconNode.style.preferredSize = CGSize(width: 24, height: 24)
 
         titleNode.isAccessibilityElement = false
+        titleNode.accessibilityElementsHidden = true
         titleNode.maximumNumberOfLines = 1
         titleNode.truncationMode = .byTruncatingTail
         titleNode.style.flexShrink = 1
 
         subtitleNode.isAccessibilityElement = false
+        subtitleNode.accessibilityElementsHidden = true
         subtitleNode.maximumNumberOfLines = 1
         subtitleNode.truncationMode = .byTruncatingTail
     }
@@ -741,12 +809,21 @@ private final class RoomDetailsQuickActionNode: ASDisplayNode {
         subtitleNode.alpha = alpha
 
         tapNode.isAccessibilityElement = true
+        tapNode.accessibilityElementsHidden = false
         tapNode.accessibilityTraits = configuration.isEnabled ? .button : .staticText
         tapNode.accessibilityLabel = configuration.accessibilityLabel ?? configuration.title
         tapNode.accessibilityValue = configuration.subtitle
         tapNode.accessibilityHint = configuration.isEnabled ? configuration.accessibilityHint : nil
 
         setNeedsLayout()
+    }
+
+    override var accessibilityElements: [Any]? {
+        get {
+            guard let accessibilityElementView else { return [] }
+            return [accessibilityElementView]
+        }
+        set { }
     }
 
     func updateSubtitle(_ subtitle: String?) {
