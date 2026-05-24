@@ -40,6 +40,11 @@ final class SpaceCreationNode: ScreenNode {
         title: String(localized: "Private"),
         subtitle: String(localized: "Only invited people can find and join.")
     )
+    private let parentMembersOptionNode = SpaceCreationOptionNode(
+        icon: AppIcon.person2.template(size: 18, weight: .semibold),
+        title: String(localized: "Parent Members"),
+        subtitle: String(localized: "Members of the parent Storyline or Track can join without a separate invite.")
+    )
     private let publicOptionNode = SpaceCreationOptionNode(
         icon: AppIcon.globe.template(size: 18, weight: .semibold),
         title: String(localized: "Public"),
@@ -66,6 +71,7 @@ final class SpaceCreationNode: ScreenNode {
             topicInputNode,
             topicSeparator,
             accessLabel,
+            parentMembersOptionNode,
             privateOptionNode,
             publicOptionNode,
             aliasLabel,
@@ -78,7 +84,9 @@ final class SpaceCreationNode: ScreenNode {
     }
 
     func updateSelection(access: SpaceCreationAccess) {
-        selectedAccess = access
+        selectedAccess = access == .parentMembers && !allowsParentMembersAccess
+            ? .privateInviteOnly
+            : access
         applyAccessSelection()
         setNeedsLayout()
     }
@@ -163,6 +171,9 @@ final class SpaceCreationNode: ScreenNode {
         privateOptionNode.onTap = { [weak self] in
             self?.selectAccess(.privateInviteOnly)
         }
+        parentMembersOptionNode.onTap = { [weak self] in
+            self?.selectAccess(.parentMembers)
+        }
         publicOptionNode.onTap = { [weak self] in
             self?.selectAccess(.publicAnyone)
         }
@@ -230,6 +241,13 @@ final class SpaceCreationNode: ScreenNode {
             input: topicInputNode,
             separator: topicSeparator
         )
+        var accessOptionNodes: [ASLayoutElement] = []
+        if allowsParentMembersAccess {
+            accessOptionNodes.append(parentMembersOptionNode)
+        }
+        accessOptionNodes.append(privateOptionNode)
+        accessOptionNodes.append(publicOptionNode)
+
         let accessSection = ASStackLayoutSpec(
             direction: .vertical,
             spacing: 8,
@@ -242,7 +260,7 @@ final class SpaceCreationNode: ScreenNode {
                     spacing: 8,
                     justifyContent: .start,
                     alignItems: .stretch,
-                    children: [privateOptionNode, publicOptionNode]
+                    children: accessOptionNodes
                 )
             ]
         )
@@ -305,6 +323,7 @@ final class SpaceCreationNode: ScreenNode {
 
     private func selectAccess(_ access: SpaceCreationAccess) {
         guard !isCreating else { return }
+        guard access != .parentMembers || allowsParentMembersAccess else { return }
         guard access != selectedAccess else { return }
         selectedAccess = access
         applyAccessSelection()
@@ -313,8 +332,16 @@ final class SpaceCreationNode: ScreenNode {
     }
 
     private func applyAccessSelection() {
+        parentMembersOptionNode.setSelected(selectedAccess == .parentMembers)
         privateOptionNode.setSelected(selectedAccess == .privateInviteOnly)
         publicOptionNode.setSelected(selectedAccess == .publicAnyone)
+    }
+
+    private var allowsParentMembersAccess: Bool {
+        if case .track = mode {
+            return true
+        }
+        return false
     }
 
     private func aliasSection() -> ASLayoutSpec {
@@ -360,10 +387,13 @@ final class SpaceCreationNode: ScreenNode {
             var elements: [Any] = [
                 backButtonNode.view,
                 nameInputNode.view,
-                topicInputNode.view,
-                privateOptionNode.view,
-                publicOptionNode.view
+                topicInputNode.view
             ]
+            if allowsParentMembersAccess {
+                elements.append(parentMembersOptionNode.view)
+            }
+            elements.append(privateOptionNode.view)
+            elements.append(publicOptionNode.view)
             if selectedAccess.isPublic {
                 elements.append(aliasInputNode.view)
             }

@@ -28,6 +28,7 @@ struct RoomSummary: Identifiable {
     let spaceChildRoomCount: Int
     let spaceChildSpaceCount: Int
     let spaceRecentRooms: [SpaceChildSummary]
+    let spaceMetadata: SpaceRoomMetadata?
 }
 
 struct SpaceChildSummary: Codable, Equatable {
@@ -40,6 +41,22 @@ struct SpaceChildSummary: Codable, Equatable {
 struct SpaceChildrenSummary {
     let rooms: [RoomSummary]
     let spaces: [RoomSummary]
+}
+
+final class SpaceChildrenObservation {
+    private let task: Task<Void, Never>
+
+    init(task: Task<Void, Never>) {
+        self.task = task
+    }
+
+    deinit {
+        cancel()
+    }
+
+    func cancel() {
+        task.cancel()
+    }
 }
 
 private let logRooms = ScopedLog(.rooms)
@@ -120,9 +137,67 @@ final class ZynaRoomListService: NSObject {
 
     func refreshSpaceChildren(for spaceId: String) async -> SpaceChildrenSummary {
         let children = await loadSpaceChildren(for: spaceId)
-        spaceChildSummariesBySpaceId[spaceId] = children.rooms
-        spaceChildSpaceSummariesBySpaceId[spaceId] = children.spaces
+        cacheSpaceChildren(children, for: spaceId)
         return children
+    }
+
+    func observeSpaceChildren(
+        for spaceId: String,
+        onUpdate: @escaping @MainActor (SpaceChildrenSummary) -> Void
+    ) -> SpaceChildrenObservation {
+        SpaceChildrenObservation(task: Task { [weak self] in
+            guard let self else { return }
+            guard let client = MatrixClientService.shared.client else {
+                await MainActor.run { onUpdate(SpaceChildrenSummary(rooms: [], spaces: [])) }
+                return
+            }
+
+            let spaceService = await client.spaceService()
+            guard let list = try? await spaceService.spaceRoomList(spaceId: spaceId) else {
+                await MainActor.run { onUpdate(SpaceChildrenSummary(rooms: [], spaces: [])) }
+                return
+            }
+
+            let observer = SpaceChildrenLiveObserver(
+                spaceId: spaceId,
+                list: list,
+                roomListService: self,
+                onUpdate: onUpdate
+            )
+
+            let entriesListener = SpaceRoomListEntriesCallback { [weak observer] _ in
+                guard let observer else { return }
+                Task { await observer.scheduleReload() }
+            }
+            let paginationListener = SpaceRoomListPaginationCallback { [weak observer] state in
+                guard let observer else { return }
+                Task { await observer.handlePaginationState(state) }
+            }
+            let spaceListener = SpaceRoomListSpaceCallback { [weak observer] _ in
+                guard let observer else { return }
+                Task { await observer.scheduleReload() }
+            }
+
+            let roomUpdatesHandle = await list.subscribeToRoomUpdate(listener: entriesListener)
+            let paginationHandle = list.subscribeToPaginationStateUpdates(listener: paginationListener)
+            let spaceHandle = list.subscribeToSpaceUpdates(listener: spaceListener)
+
+            await observer.reloadAndEmit()
+            await observer.handlePaginationState(list.paginationState())
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    break
+                }
+            }
+
+            roomUpdatesHandle.cancel()
+            paginationHandle.cancel()
+            spaceHandle.cancel()
+            await observer.cancel()
+        })
     }
 
     func addChild(_ childId: String, toSpace spaceId: String, context: String) async throws {
@@ -334,7 +409,15 @@ final class ZynaRoomListService: NSObject {
 
         try? await list.paginate()
         let children = await list.rooms()
+        return await buildSpaceChildrenSummary(from: children)
+    }
 
+    fileprivate func cacheSpaceChildren(_ children: SpaceChildrenSummary, for spaceId: String) {
+        spaceChildSummariesBySpaceId[spaceId] = children.rooms
+        spaceChildSpaceSummariesBySpaceId[spaceId] = children.spaces
+    }
+
+    fileprivate func buildSpaceChildrenSummary(from children: [SpaceRoom]) async -> SpaceChildrenSummary {
         let childRooms = children.filter { child in
             switch child.roomType {
             case .space:
@@ -363,10 +446,10 @@ final class ZynaRoomListService: NSObject {
         )
 
         let roomSummaries = childRooms
-            .map { summariesById[$0.roomId] ?? Self.previewSummary(from: $0) }
+            .map { Self.spaceChildSummary(from: $0, localSummary: summariesById[$0.roomId]) }
             .sorted(by: Self.spaceActivitySort)
         let spaceSummaries = childSpaces
-            .map { summariesById[$0.roomId] ?? Self.previewSummary(from: $0) }
+            .map { Self.spaceChildSummary(from: $0, localSummary: summariesById[$0.roomId]) }
             .sorted(by: Self.spaceActivitySort)
 
         return SpaceChildrenSummary(
@@ -650,7 +733,8 @@ final class ZynaRoomListService: NSObject {
                 directUserId: directUserId,
                 spaceChildRoomCount: 0,
                 spaceChildSpaceCount: 0,
-                spaceRecentRooms: []
+                spaceRecentRooms: [],
+                spaceMetadata: info.isSpace ? SpaceRoomMetadata(roomInfo: info) : nil
             ))
         }
 
@@ -730,12 +814,12 @@ final class ZynaRoomListService: NSObject {
 
         for (spaceId, entry) in graph {
             let childSummaries = entry.childRooms.map {
-                summariesById[$0.roomId] ?? previewSummary(from: $0)
+                spaceChildSummary(from: $0, localSummary: summariesById[$0.roomId])
             }
             spaceChildSummariesBySpaceId[spaceId] = childSummaries.sorted(by: spaceActivitySort)
             spaceChildSpaceSummariesBySpaceId[spaceId] = entry.childSpaces
                 .map { child in
-                    let base = summariesById[child.roomId] ?? previewSummary(from: child)
+                    let base = spaceChildSummary(from: child, localSummary: summariesById[child.roomId])
                     guard let childEntry = graph[base.id] else { return base }
                     return enrichedSpaceSummary(
                         base,
@@ -781,7 +865,7 @@ final class ZynaRoomListService: NSObject {
         summariesById: [String: RoomSummary]
     ) -> RoomSummary {
         let childSummaries = entry.childRooms.map {
-            summariesById[$0.roomId] ?? previewSummary(from: $0)
+            spaceChildSummary(from: $0, localSummary: summariesById[$0.roomId])
         }
         let visibleChildren = childSummaries.filter { !$0.isMuted }
         let previewSource = visibleChildren.isEmpty ? childSummaries : visibleChildren
@@ -811,7 +895,8 @@ final class ZynaRoomListService: NSObject {
                     avatarURL: $0.avatarURL,
                     directUserId: $0.directUserId
                 )
-            }
+            },
+            spaceMetadata: summary.spaceMetadata
         )
     }
 
@@ -836,7 +921,37 @@ final class ZynaRoomListService: NSObject {
             directUserId: nil,
             spaceChildRoomCount: 0,
             spaceChildSpaceCount: 0,
-            spaceRecentRooms: []
+            spaceRecentRooms: [],
+            spaceMetadata: SpaceRoomMetadata(spaceRoom: preview)
+        )
+    }
+
+    private static func spaceChildSummary(
+        from child: SpaceRoom,
+        localSummary: RoomSummary?
+    ) -> RoomSummary {
+        guard let localSummary else {
+            return previewSummary(from: child)
+        }
+
+        return RoomSummary(
+            id: localSummary.id,
+            displayName: localSummary.displayName,
+            avatarURL: localSummary.avatarURL,
+            lastMessage: localSummary.lastMessage,
+            lastMessageSenderName: localSummary.lastMessageSenderName,
+            lastMessageTimestamp: localSummary.lastMessageTimestamp,
+            unreadCount: localSummary.unreadCount,
+            unreadMentionCount: localSummary.unreadMentionCount,
+            isMarkedUnread: localSummary.isMarkedUnread,
+            isEncrypted: localSummary.isEncrypted,
+            isSpace: localSummary.isSpace,
+            isMuted: localSummary.isMuted,
+            directUserId: localSummary.directUserId,
+            spaceChildRoomCount: localSummary.spaceChildRoomCount,
+            spaceChildSpaceCount: localSummary.spaceChildSpaceCount,
+            spaceRecentRooms: localSummary.spaceRecentRooms,
+            spaceMetadata: SpaceRoomMetadata(spaceRoom: child)
         )
     }
 
@@ -1148,9 +1263,122 @@ final class ZynaRoomListService: NSObject {
     }
 }
 
+// MARK: - Space Children Observation
+
+private actor SpaceChildrenLiveObserver {
+    private let spaceId: String
+    private let list: SpaceRoomList
+    private let roomListService: ZynaRoomListService
+    private let onUpdate: @MainActor (SpaceChildrenSummary) -> Void
+    private var isCancelled = false
+    private var isPaginating = false
+    private var paginationTask: Task<Void, Never>?
+    private var reloadTask: Task<Void, Never>?
+    private var reloadPending = false
+    private var lastPaginationState: SpaceRoomListPaginationState = .idle(endReached: false)
+    private static let reloadDebounceDelay: Duration = .milliseconds(120)
+
+    init(
+        spaceId: String,
+        list: SpaceRoomList,
+        roomListService: ZynaRoomListService,
+        onUpdate: @escaping @MainActor (SpaceChildrenSummary) -> Void
+    ) {
+        self.spaceId = spaceId
+        self.list = list
+        self.roomListService = roomListService
+        self.onUpdate = onUpdate
+    }
+
+    func reloadAndEmit() async {
+        reloadPending = false
+        await emitCurrentChildren()
+    }
+
+    func scheduleReload() {
+        guard !isCancelled else { return }
+        reloadPending = true
+        guard reloadTask == nil else { return }
+
+        reloadTask = Task {
+            do {
+                try await Task.sleep(for: Self.reloadDebounceDelay)
+            } catch {
+                return
+            }
+            await self.performScheduledReloads()
+        }
+    }
+
+    private func performScheduledReloads() async {
+        while !isCancelled, reloadPending {
+            reloadPending = false
+            await emitCurrentChildren()
+        }
+        reloadTask = nil
+    }
+
+    private func emitCurrentChildren() async {
+        guard !isCancelled else { return }
+        let children = await list.rooms()
+        guard !isCancelled else { return }
+        let summary = await roomListService.buildSpaceChildrenSummary(from: children)
+        guard !isCancelled else { return }
+        roomListService.cacheSpaceChildren(summary, for: spaceId)
+        await MainActor.run {
+            onUpdate(summary)
+        }
+    }
+
+    func handlePaginationState(_ state: SpaceRoomListPaginationState) {
+        guard !isCancelled else { return }
+        lastPaginationState = state
+        paginateIfNeeded()
+    }
+
+    func cancel() {
+        isCancelled = true
+        paginationTask?.cancel()
+        paginationTask = nil
+        reloadTask?.cancel()
+        reloadTask = nil
+        reloadPending = false
+    }
+
+    private func paginateIfNeeded() {
+        guard !isCancelled, !isPaginating else { return }
+        guard case .idle(let endReached) = lastPaginationState, !endReached else { return }
+
+        isPaginating = true
+        paginationTask = Task { [list] in
+            let shouldContinue: Bool
+            do {
+                try await list.paginate()
+                shouldContinue = true
+            } catch {
+                shouldContinue = false
+                logRooms("Space child pagination failed: \(error)")
+            }
+            await self.didFinishPagination(shouldContinue: shouldContinue)
+        }
+    }
+
+    private func didFinishPagination(shouldContinue: Bool) async {
+        guard !isCancelled else { return }
+        isPaginating = false
+        paginationTask = nil
+
+        scheduleReload()
+
+        guard shouldContinue, !isCancelled else { return }
+        lastPaginationState = list.paginationState()
+        paginateIfNeeded()
+    }
+}
+
 // MARK: - SDK Listeners
 
-private final class EntriesListener: RoomListEntriesListener {
+private final class EntriesListener: @unchecked Sendable, RoomListEntriesListener {
     private let handler: ([RoomListEntriesUpdate]) -> Void
 
     init(handler: @escaping ([RoomListEntriesUpdate]) -> Void) {
@@ -1162,7 +1390,7 @@ private final class EntriesListener: RoomListEntriesListener {
     }
 }
 
-private final class ServiceStateListener: RoomListServiceStateListener {
+private final class ServiceStateListener: @unchecked Sendable, RoomListServiceStateListener {
     private let handler: (RoomListServiceState) -> Void
 
     init(handler: @escaping (RoomListServiceState) -> Void) {
@@ -1174,7 +1402,7 @@ private final class ServiceStateListener: RoomListServiceStateListener {
     }
 }
 
-private final class LoadingStateListener: RoomListLoadingStateListener {
+private final class LoadingStateListener: @unchecked Sendable, RoomListLoadingStateListener {
     private let handler: (RoomListLoadingState) -> Void
 
     init(handler: @escaping (RoomListLoadingState) -> Void) {
@@ -1183,5 +1411,41 @@ private final class LoadingStateListener: RoomListLoadingStateListener {
 
     func onUpdate(state: RoomListLoadingState) {
         handler(state)
+    }
+}
+
+private final class SpaceRoomListEntriesCallback: @unchecked Sendable, SpaceRoomListEntriesListener {
+    private let handler: ([SpaceListUpdate]) -> Void
+
+    init(handler: @escaping ([SpaceListUpdate]) -> Void) {
+        self.handler = handler
+    }
+
+    func onUpdate(rooms: [SpaceListUpdate]) {
+        handler(rooms)
+    }
+}
+
+private final class SpaceRoomListPaginationCallback: @unchecked Sendable, SpaceRoomListPaginationStateListener {
+    private let handler: (SpaceRoomListPaginationState) -> Void
+
+    init(handler: @escaping (SpaceRoomListPaginationState) -> Void) {
+        self.handler = handler
+    }
+
+    func onUpdate(paginationState: SpaceRoomListPaginationState) {
+        handler(paginationState)
+    }
+}
+
+private final class SpaceRoomListSpaceCallback: @unchecked Sendable, SpaceRoomListSpaceListener {
+    private let handler: (SpaceRoom?) -> Void
+
+    init(handler: @escaping (SpaceRoom?) -> Void) {
+        self.handler = handler
+    }
+
+    func onUpdate(space: SpaceRoom?) {
+        handler(space)
     }
 }

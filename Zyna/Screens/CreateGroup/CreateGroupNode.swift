@@ -75,6 +75,11 @@ final class CreateGroupNode: ScreenNode {
         title: String(localized: "Private"),
         subtitle: String(localized: "Only invited people can join. Messages are encrypted.")
     )
+    private let spaceMembersOptionNode = CreateGroupOptionNode(
+        icon: AppIcon.person2.template(size: 18, weight: .semibold),
+        title: String(localized: "Space Members"),
+        subtitle: String(localized: "Members of this Storyline or Track can join without a separate invite.")
+    )
     private let publicOptionNode = CreateGroupOptionNode(
         icon: AppIcon.globe.template(size: 18, weight: .semibold),
         title: String(localized: "Public"),
@@ -140,6 +145,7 @@ final class CreateGroupNode: ScreenNode {
         allMembersOptionNode.onTap = { [weak self] in self?.selectPostingPermission(.allMembers) }
         moderatorsOnlyOptionNode.onTap = { [weak self] in self?.selectPostingPermission(.moderatorsOnly) }
         privateOptionNode.onTap = { [weak self] in self?.selectAccess(.privateInviteOnly) }
+        spaceMembersOptionNode.onTap = { [weak self] in self?.selectAccess(.spaceMembers) }
         publicOptionNode.onTap = { [weak self] in self?.selectAccess(.publicAnyone) }
         applySelection()
 
@@ -156,7 +162,7 @@ final class CreateGroupNode: ScreenNode {
 
     func updateSelection(postingPermission: CreateGroupPostingPermission, access: CreateGroupAccess) {
         selectedPostingPermission = postingPermission
-        selectedAccess = access
+        selectedAccess = access == .spaceMembers && !allowsSpaceMembersAccess ? .privateInviteOnly : access
         applySelection()
         setNeedsLayout()
     }
@@ -224,12 +230,19 @@ final class CreateGroupNode: ScreenNode {
             children: [postingPermissionLabel, postingOptions]
         )
 
+        var accessOptionNodes: [ASLayoutElement] = []
+        if allowsSpaceMembersAccess {
+            accessOptionNodes.append(spaceMembersOptionNode)
+        }
+        accessOptionNodes.append(privateOptionNode)
+        accessOptionNodes.append(publicOptionNode)
+
         let accessOptions = ASStackLayoutSpec(
             direction: .vertical,
             spacing: 8,
             justifyContent: .start,
             alignItems: .stretch,
-            children: [privateOptionNode, publicOptionNode]
+            children: accessOptionNodes
         )
         let accessSection = ASStackLayoutSpec(
             direction: .vertical,
@@ -288,6 +301,7 @@ final class CreateGroupNode: ScreenNode {
 
     private func selectAccess(_ access: CreateGroupAccess) {
         guard !isCreating else { return }
+        guard access != .spaceMembers || allowsSpaceMembersAccess else { return }
         guard access != selectedAccess else { return }
         selectedAccess = access
         applySelection()
@@ -299,8 +313,13 @@ final class CreateGroupNode: ScreenNode {
         allMembersOptionNode.setSelected(selectedPostingPermission == .allMembers)
         moderatorsOnlyOptionNode.setSelected(selectedPostingPermission == .moderatorsOnly)
         privateOptionNode.setSelected(selectedAccess == .privateInviteOnly)
+        spaceMembersOptionNode.setSelected(selectedAccess == .spaceMembers)
         publicOptionNode.setSelected(selectedAccess == .publicAnyone)
         refreshCreateButton()
+    }
+
+    private var allowsSpaceMembersAccess: Bool {
+        presentation == .spaceChildChat
     }
 
     private func aliasSection() -> ASLayoutSpec {

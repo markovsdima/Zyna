@@ -74,7 +74,8 @@ extension StoredRoom {
             directUserId: directUserId,
             spaceChildRoomCount: spaceChildRoomCount,
             spaceChildSpaceCount: spaceChildSpaceCount,
-            spaceRecentRooms: Self.decodeSpaceRecentRooms(spaceRecentRoomsJSON)
+            spaceRecentRooms: Self.decodeSpaceRecentRooms(spaceRecentRoomsJSON),
+            spaceMetadata: nil
         )
     }
 

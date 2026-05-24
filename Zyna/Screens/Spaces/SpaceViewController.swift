@@ -20,7 +20,7 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
     private let glassTopBar = GlassTopBar()
     private var chats: [RoomModel] = []
     private var lines: [RoomModel] = []
-    private var loadTask: Task<Void, Never>?
+    private var spaceChildrenObservation: SpaceChildrenObservation?
     private var removeTasks: [String: Task<Void, Never>] = [:]
     private var removingChildIds = Set<String>()
     private var activeChildContextMenu: ListContextMenuController?
@@ -42,14 +42,14 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
     required init?(coder: NSCoder) { fatalError() }
 
     deinit {
-        loadTask?.cancel()
+        spaceChildrenObservation?.cancel()
         activeChildContextMenu?.dismiss(animated: false)
         removeTasks.values.forEach { $0.cancel() }
         setChildContextInteractionLocked(false)
     }
 
     func reloadChildren() {
-        loadChildren()
+        restartChildrenObservation()
     }
 
     func updateSpace(_ updatedSpace: RoomModel) {
@@ -87,11 +87,13 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
         super.viewWillAppear(animated)
         GlassService.shared.captureFor(duration: 0.5)
         GlassService.shared.setNeedsCapture()
-        loadChildren()
+        startChildrenObservation()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        spaceChildrenObservation?.cancel()
+        spaceChildrenObservation = nil
         activeChildContextMenu?.dismiss(animated: false)
         setChildContextInteractionLocked(false)
     }
@@ -141,29 +143,31 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
         ]
     }
 
-    private func loadChildren() {
+    private func startChildrenObservation(applyCache: Bool = true) {
+        guard spaceChildrenObservation == nil else { return }
+
         let cachedSummaries = roomListService.cachedSpaceChildRooms(for: space.id)
         let cachedSpaceSummaries = roomListService.cachedSpaceChildSpaces(for: space.id)
-        if !cachedSummaries.isEmpty || !cachedSpaceSummaries.isEmpty {
+        if applyCache, !cachedSummaries.isEmpty || !cachedSpaceSummaries.isEmpty {
             applyChildSummaries(
                 rooms: cachedSummaries,
                 spaces: cachedSpaceSummaries
             )
         }
 
-        loadTask?.cancel()
-        loadTask = Task { [weak self] in
+        spaceChildrenObservation = roomListService.observeSpaceChildren(for: space.id) { [weak self] summaries in
             guard let self else { return }
-            let summaries = await roomListService.refreshSpaceChildren(for: space.id)
-
-            await MainActor.run { [weak self] in
-                guard let self, !Task.isCancelled else { return }
-                applyChildSummaries(
-                    rooms: summaries.rooms,
-                    spaces: summaries.spaces
-                )
-            }
+            applyChildSummaries(
+                rooms: summaries.rooms,
+                spaces: summaries.spaces
+            )
         }
+    }
+
+    private func restartChildrenObservation(applyCache: Bool = true) {
+        spaceChildrenObservation?.cancel()
+        spaceChildrenObservation = nil
+        startChildrenObservation(applyCache: applyCache)
     }
 
     private func applyChildSummaries(rooms: [RoomSummary], spaces: [RoomSummary]) {
@@ -213,7 +217,8 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
             directUserId: space.directUserId,
             spaceChildRoomCount: roomCount,
             spaceChildSpaceCount: lineCount,
-            spaceRecentRooms: space.spaceRecentRooms
+            spaceRecentRooms: space.spaceRecentRooms,
+            spaceMetadata: space.spaceMetadata
         )
     }
 
@@ -253,6 +258,7 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
                         rooms: summaries.rooms,
                         spaces: summaries.spaces
                     )
+                    self.restartChildrenObservation(applyCache: false)
                 }
             } catch {
                 await MainActor.run { [weak self] in
@@ -260,7 +266,7 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
                     self.removingChildIds.remove(child.id)
                     self.removeTasks[child.id] = nil
                     self.showRemoveError(error)
-                    self.loadChildren()
+                    self.restartChildrenObservation()
                 }
             }
         }

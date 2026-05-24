@@ -87,10 +87,15 @@ enum SpaceCreationMode: Equatable {
 
 enum SpaceCreationAccess: Equatable {
     case privateInviteOnly
+    case parentMembers
     case publicAnyone
 
     var isPublic: Bool {
         self == .publicAnyone
+    }
+
+    var isParentRestricted: Bool {
+        self == .parentMembers
     }
 }
 

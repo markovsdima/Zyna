@@ -11,6 +11,7 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
 
     var onBack: (() -> Void)?
     var onSelectUser: ((String) -> Void)?
+    var onInviteTapped: (() -> Void)?
 
     private let viewModel: MembersListViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -43,6 +44,14 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.node.tableNode.reloadData()
+            }
+            .store(in: &cancellables)
+
+        viewModel.$canInviteMembers
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.rebuildGlassTopBarItems()
             }
             .store(in: &cancellables)
 
@@ -98,12 +107,15 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
         glassTopBar.sourceView = node.tableNode.view
         node.addSubnode(glassTopBar)
         node.glassTopBar = glassTopBar
+        rebuildGlassTopBarItems()
+    }
 
+    private func rebuildGlassTopBarItems() {
         let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
         // Items ordering matters: GlassTopBar uses the first .title or
         // .flexibleSpace as its divider, so .title must come right after
         // the left buttons — otherwise its shape/frame aren't drawn.
-        glassTopBar.items = [
+        var items: [GlassTopBar.Item] = [
             .circleButton(
                 icon: backIcon,
                 accessibilityLabel: String(localized: "Back"),
@@ -111,6 +123,17 @@ final class MembersListViewController: ASDKViewController<MembersListNode>, ASTa
             ),
             .title(text: String(localized: "Members"), subtitle: nil)
         ]
+
+        if viewModel.canInviteMembers, onInviteTapped != nil {
+            let inviteIcon = AppIcon.personBadgePlus.template(size: 17, weight: .medium)
+            items.append(.circleButton(
+                icon: inviteIcon,
+                accessibilityLabel: String(localized: "Invite Members"),
+                action: { [weak self] in self?.onInviteTapped?() }
+            ))
+        }
+
+        glassTopBar.items = items
     }
 
     private func setupVoicePlayerHost() {

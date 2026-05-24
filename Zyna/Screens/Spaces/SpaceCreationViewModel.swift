@@ -25,6 +25,9 @@ final class SpaceCreationViewModel {
     init(mode: SpaceCreationMode, roomListService: ZynaRoomListService) {
         self.mode = mode
         self.roomListService = roomListService
+        if case .track = mode {
+            access = .parentMembers
+        }
     }
 
     var serverName: String? {
@@ -88,6 +91,19 @@ final class SpaceCreationViewModel {
                     mode: mode
                 )
                 let isPublic = selectedAccess.isPublic
+                let isParentRestricted = selectedAccess.isParentRestricted
+                let historyVisibilityOverride: RoomHistoryVisibility?
+                if isPublic {
+                    historyVisibilityOverride = nil
+                } else if isParentRestricted {
+                    historyVisibilityOverride = .shared
+                } else {
+                    historyVisibilityOverride = .invited
+                }
+                let joinRuleOverride = try parentRestrictedJoinRuleIfNeeded(
+                    access: selectedAccess,
+                    mode: mode
+                )
                 let params = CreateRoomParameters(
                     name: name,
                     topic: topic.isEmpty ? nil : topic,
@@ -98,8 +114,8 @@ final class SpaceCreationViewModel {
                     invite: nil,
                     avatar: nil,
                     powerLevelContentOverride: nil,
-                    joinRuleOverride: nil,
-                    historyVisibilityOverride: isPublic ? nil : .invited,
+                    joinRuleOverride: joinRuleOverride,
+                    historyVisibilityOverride: historyVisibilityOverride,
                     canonicalAlias: aliasLocalPart,
                     isSpace: true
                 )
@@ -207,7 +223,8 @@ final class SpaceCreationViewModel {
             directUserId: nil,
             spaceChildRoomCount: 0,
             spaceChildSpaceCount: 0,
-            spaceRecentRooms: []
+            spaceRecentRooms: [],
+            spaceMetadata: nil
         )
     }
 
@@ -255,6 +272,17 @@ final class SpaceCreationViewModel {
         return localPart
     }
 
+    private func parentRestrictedJoinRuleIfNeeded(
+        access: SpaceCreationAccess,
+        mode: SpaceCreationMode
+    ) throws -> JoinRule? {
+        guard access.isParentRestricted else { return nil }
+        guard case .track(let parent) = mode else {
+            throw SpaceCreationValidationError.missingParentSpace
+        }
+        return .restricted(rules: [.roomMembership(roomId: parent.id)])
+    }
+
     private static func defaultAliasLocalPart(for spaceName: String) -> String {
         MatrixAliasLocalPart.generated(from: spaceName)
     }
@@ -276,6 +304,7 @@ private enum SpaceCreationValidationError: LocalizedError {
     case missingAlias(SpacePresentationKind)
     case invalidAlias
     case aliasTaken
+    case missingParentSpace
 
     var errorDescription: String? {
         switch self {
@@ -289,6 +318,8 @@ private enum SpaceCreationValidationError: LocalizedError {
             return String(localized: "Address contains unsupported characters.")
         case .aliasTaken:
             return String(localized: "This address is already taken.")
+        case .missingParentSpace:
+            return String(localized: "Parent space is not available for restricted access.")
         }
     }
 }

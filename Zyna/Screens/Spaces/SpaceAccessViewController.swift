@@ -30,12 +30,15 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
         case alias
     }
 
-    private enum AccessOption: CaseIterable {
+    private enum AccessOption: Equatable {
+        case parentMembers
         case inviteOnly
         case anyone
 
         var title: String {
             switch self {
+            case .parentMembers:
+                return String(localized: "Parent Members")
             case .inviteOnly:
                 return String(localized: "Private Storyline")
             case .anyone:
@@ -45,6 +48,8 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
 
         var detail: String {
             switch self {
+            case .parentMembers:
+                return String(localized: "Members of the parent Storyline or Track can join without a separate invite.")
             case .inviteOnly:
                 return String(localized: "Only invited people can join this Storyline.")
             case .anyone:
@@ -52,8 +57,13 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
             }
         }
 
-        var joinRule: JoinRule {
+        func joinRule(parentSpaceId: String?) throws -> JoinRule {
             switch self {
+            case .parentMembers:
+                guard let parentSpaceId else {
+                    throw SpaceAccessError.parentSpaceUnavailable
+                }
+                return .restricted(rules: [.roomMembership(roomId: parentSpaceId)])
             case .inviteOnly:
                 return .invite
             case .anyone:
@@ -68,6 +78,7 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
     }
 
     private let room: Room
+    private let spaceMembershipService: RoomSpaceMembershipService?
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let glassTopBar = GlassTopBar()
     private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
@@ -75,15 +86,23 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
     private var roomInfo: RoomInfo?
     private var powerLevels: RoomPowerLevels?
     private var directoryVisibility: RoomVisibility?
+    private var parentMemberships: [RoomSpaceMembership] = []
+    private var parentRestrictedSpaceId: String?
     private var roomInfoTask: Task<Void, Never>?
+    private var parentAccessTask: Task<Void, Never>?
     private var operationTask: Task<Void, Never>?
     private var roomInfoSubscription: TaskHandle?
     private var progressAlert: UIAlertController?
     private var isLoading = false
     private var isSaving = false
 
-    init(room: Room, audioPlayer: AudioPlayerService? = nil) {
+    init(
+        room: Room,
+        audioPlayer: AudioPlayerService? = nil,
+        roomListService: ZynaRoomListService? = nil
+    ) {
         self.room = room
+        self.spaceMembershipService = roomListService.map(RoomSpaceMembershipService.init(roomListService:))
         super.init(node: SettingsScreenNode())
         self.voicePlayerHost = audioPlayer.map {
             EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
@@ -97,6 +116,7 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
 
     deinit {
         roomInfoTask?.cancel()
+        parentAccessTask?.cancel()
         operationTask?.cancel()
         roomInfoSubscription?.cancel()
     }
@@ -108,6 +128,7 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
         setupVoicePlayerHost()
         subscribeToRoomInfoUpdates()
         loadState()
+        loadParentAccess()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -194,7 +215,26 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
                 self.roomInfo = loadedInfo ?? self.roomInfo
                 self.powerLevels = loadedPowerLevels ?? self.powerLevels
                 self.directoryVisibility = loadedVisibility ?? self.directoryVisibility ?? .private
+                self.updateParentRestrictedSpaceId()
                 self.isLoading = false
+                self.tableView.reloadData()
+                GlassService.shared.setNeedsCapture()
+            }
+        }
+    }
+
+    private func loadParentAccess() {
+        parentAccessTask?.cancel()
+        guard let spaceMembershipService else { return }
+
+        let roomId = room.id()
+        parentAccessTask = Task { [weak self, spaceMembershipService, roomId] in
+            guard let self else { return }
+            let memberships = (try? await spaceMembershipService.loadMemberships(for: roomId)) ?? []
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.parentMemberships = memberships
+                self.updateParentRestrictedSpaceId()
                 self.tableView.reloadData()
                 GlassService.shared.setNeedsCapture()
             }
@@ -215,6 +255,7 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
         if let infoPowerLevels = info.powerLevels {
             powerLevels = infoPowerLevels
         }
+        updateParentRestrictedSpaceId()
         tableView.reloadData()
         GlassService.shared.setNeedsCapture()
     }
@@ -225,9 +266,24 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
             return .anyone
         case .invite, .private:
             return .inviteOnly
-        case .none, .knock, .restricted(rules: _), .knockRestricted(rules: _), .custom(repr: _):
+        case .restricted(let rules), .knockRestricted(let rules):
+            guard let parentRestrictedSpaceId,
+                  Self.restrictedRoomIds(from: rules).contains(parentRestrictedSpaceId)
+            else { return nil }
+            return .parentMembers
+        case .none, .knock, .custom(repr: _):
             return nil
         }
+    }
+
+    private var availableAccessOptions: [AccessOption] {
+        var options: [AccessOption] = []
+        if parentRestrictedSpaceId != nil || selectedAccess == .parentMembers {
+            options.append(.parentMembers)
+        }
+        options.append(.inviteOnly)
+        options.append(.anyone)
+        return options
     }
 
     private var serverName: String? {
@@ -269,12 +325,62 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
         return localAlias ?? (useFallback ? aliases.first : nil)
     }
 
+    private static func restrictedRoomIds(from rules: [AllowRule]) -> Set<String> {
+        Set(rules.compactMap { rule in
+            if case let .roomMembership(roomId) = rule {
+                return roomId
+            }
+            return nil
+        })
+    }
+
+    private static func restrictedRoomIds(from joinRule: JoinRule?) -> Set<String> {
+        switch joinRule {
+        case .restricted(let rules), .knockRestricted(let rules):
+            return restrictedRoomIds(from: rules)
+        case .public, .knock, .invite, .private, .custom(repr: _), .none:
+            return []
+        }
+    }
+
+    private static func preferredParentRestrictedSpaceId(
+        from memberships: [RoomSpaceMembership],
+        matching restrictedRoomIds: Set<String>
+    ) -> String? {
+        if !restrictedRoomIds.isEmpty {
+            if let linked = memberships.first(where: { restrictedRoomIds.contains($0.id) && $0.status == .linked }) {
+                return linked.id
+            }
+            if let listedByParent = memberships.first(where: { restrictedRoomIds.contains($0.id) && $0.status.hasSpaceSide }) {
+                return listedByParent.id
+            }
+            if let matching = memberships.first(where: { restrictedRoomIds.contains($0.id) }) {
+                return matching.id
+            }
+        }
+        if let linked = memberships.first(where: { $0.status == .linked }) {
+            return linked.id
+        }
+        if let listedByParent = memberships.first(where: { $0.status.hasSpaceSide }) {
+            return listedByParent.id
+        }
+        return memberships.first?.id
+    }
+
+    private func updateParentRestrictedSpaceId() {
+        parentRestrictedSpaceId = Self.preferredParentRestrictedSpaceId(
+            from: parentMemberships,
+            matching: Self.restrictedRoomIds(from: roomInfo?.joinRule)
+        )
+    }
+
     private func updateAccess(_ option: AccessOption) {
         guard canEdit(.access) else { return }
         guard selectedAccess != option else { return }
-        let shouldHideFromDirectory = option == .inviteOnly && canEdit(.directory)
+        let shouldHideFromDirectory = option != .anyone && canEdit(.directory)
+        let parentSpaceId = parentRestrictedSpaceId
         performSavingOperation { [room] in
-            try await room.updateJoinRules(newRule: option.joinRule)
+            try await room.updateJoinRules(newRule: option.joinRule(parentSpaceId: parentSpaceId))
             if shouldHideFromDirectory {
                 try await room.updateRoomVisibility(visibility: .private)
             }
@@ -329,6 +435,7 @@ final class SpaceAccessViewController: ASDKViewController<SettingsScreenNode> {
                     self.roomInfo = loadedInfo ?? self.roomInfo
                     self.powerLevels = loadedPowerLevels ?? self.powerLevels
                     self.directoryVisibility = loadedVisibility ?? self.directoryVisibility
+                    self.updateParentRestrictedSpaceId()
                     self.finishSaving()
                 }
             } catch {
@@ -517,7 +624,7 @@ extension SpaceAccessViewController: UITableViewDataSource, UITableViewDelegate 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch Section(rawValue: section) ?? .access {
         case .access:
-            return AccessOption.allCases.count
+            return availableAccessOptions.count
         case .directory:
             return DirectoryRow.allCases.count
         }
@@ -545,7 +652,7 @@ extension SpaceAccessViewController: UITableViewDataSource, UITableViewDelegate 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         switch Section(rawValue: indexPath.section) ?? .access {
         case .access:
-            let option = AccessOption.allCases[indexPath.row]
+            let option = availableAccessOptions[indexPath.row]
             let enabled = !isSaving && canEdit(.access)
             return optionCell(
                 title: option.title,
@@ -649,7 +756,7 @@ extension SpaceAccessViewController: UITableViewDataSource, UITableViewDelegate 
         switch Section(rawValue: indexPath.section) ?? .access {
         case .access:
             guard canEdit(.access) else { return }
-            updateAccess(AccessOption.allCases[indexPath.row])
+            updateAccess(availableAccessOptions[indexPath.row])
         case .directory:
             if DirectoryRow(rawValue: indexPath.row) == .alias,
                canEdit(.alias) {
@@ -669,6 +776,7 @@ extension SpaceAccessViewController: UITableViewDataSource, UITableViewDelegate 
 
 private enum SpaceAccessError: LocalizedError {
     case clientUnavailable
+    case parentSpaceUnavailable
     case missingServerName
     case emptyAlias
     case invalidAlias
@@ -680,6 +788,8 @@ private enum SpaceAccessError: LocalizedError {
         switch self {
         case .clientUnavailable:
             return String(localized: "Matrix client is not ready.")
+        case .parentSpaceUnavailable:
+            return String(localized: "Parent space is not available for restricted access.")
         case .missingServerName:
             return String(localized: "Cannot determine the server name for the Storyline address.")
         case .emptyAlias:

@@ -156,9 +156,17 @@ final class ChatsCoordinator {
         case .live(let room):
             showChatScreen(.live(room), animated: animated)
         case .cached(let room):
-            showChatScreen(.cached(room), animated: animated)
+            if requiresRoomJoinPreview(room) {
+                showRoomJoinPreview(room, animated: animated)
+            } else {
+                showChatScreen(.cached(room), animated: animated)
+            }
         case .space(let space):
-            showSpace(space, animated: animated)
+            if requiresSpaceJoinPreview(space) {
+                showSpaceJoinPreview(space, animated: animated, presentation: .storyline)
+            } else {
+                showSpace(space, animated: animated)
+            }
         }
     }
 
@@ -184,14 +192,20 @@ final class ChatsCoordinator {
             self?.showSpaceSettings(space: space, source: vc)
         }
         vc.onChatSelected = { [weak self] chat in
-            if let room = self?.roomListService.room(for: chat.id) {
+            if self?.requiresRoomJoinPreview(chat) == true {
+                self?.showRoomJoinPreview(chat)
+            } else if let room = self?.roomListService.room(for: chat.id) {
                 self?.showChat(room)
             } else {
                 self?.showChat(.cached(chat))
             }
         }
         vc.onSpaceSelected = { [weak self] space in
-            self?.showSpace(space, animated: true, presentation: .track)
+            if self?.requiresSpaceJoinPreview(space) == true {
+                self?.showSpaceJoinPreview(space, presentation: .track)
+            } else {
+                self?.showSpace(space, animated: true, presentation: .track)
+            }
         }
         vc.onCreateContent = { [weak self, weak vc] parent, presentation in
             self?.showSpaceComposeSheet(
@@ -201,6 +215,65 @@ final class ChatsCoordinator {
                     vc?.reloadChildren()
                 }
             )
+        }
+        navigationController.push(vc, animated: animated)
+    }
+
+    private func requiresSpaceJoinPreview(_ space: RoomModel) -> Bool {
+        guard let metadata = space.spaceMetadata else { return false }
+        return metadata.membership != .joined
+    }
+
+    private func requiresRoomJoinPreview(_ room: RoomModel) -> Bool {
+        guard !room.isSpace,
+              let metadata = room.spaceMetadata else { return false }
+        return metadata.membership != .joined
+    }
+
+    private func showSpaceJoinPreview(
+        _ space: RoomModel,
+        animated: Bool = true,
+        presentation: SpacePresentationKind
+    ) {
+        let vc = SpaceJoinPreviewViewController(
+            space: space,
+            presentation: presentation,
+            roomListService: roomListService
+        )
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
+        vc.onJoined = { [weak self, weak vc] joinedSpace in
+            guard let self,
+                  let vc,
+                  self.navigationController.topViewController === vc else { return }
+            self.navigationController.pop(animated: false)
+            self.showSpace(joinedSpace, animated: true, presentation: presentation)
+        }
+        navigationController.push(vc, animated: animated)
+    }
+
+    private func showRoomJoinPreview(
+        _ room: RoomModel,
+        animated: Bool = true
+    ) {
+        let vc = SpaceJoinPreviewViewController(
+            room: room,
+            roomListService: roomListService
+        )
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
+        vc.onJoined = { [weak self, weak vc] joinedRoom in
+            guard let self,
+                  let vc,
+                  self.navigationController.topViewController === vc else { return }
+            self.navigationController.pop(animated: false)
+            if let room = self.roomListService.room(for: joinedRoom.id) {
+                self.showChat(room)
+            } else {
+                self.showChat(.cached(joinedRoom))
+            }
         }
         navigationController.push(vc, animated: animated)
     }
@@ -247,7 +320,11 @@ final class ChatsCoordinator {
     }
 
     private func showSpaceAccess(room: Room) {
-        let vc = SpaceAccessViewController(room: room, audioPlayer: audioPlayer)
+        let vc = SpaceAccessViewController(
+            room: room,
+            audioPlayer: audioPlayer,
+            roomListService: roomListService
+        )
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -599,6 +676,9 @@ final class ChatsCoordinator {
         }
         vc.onSelectUser = { [weak self] userId in
             self?.showMemberDetail(room: room, userId: userId)
+        }
+        vc.onInviteTapped = { [weak self] in
+            self?.showInviteMembers(room: room)
         }
         navigationController.push(vc)
     }

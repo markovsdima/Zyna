@@ -6971,6 +6971,519 @@
           }
         }
       }
+    },
+    "%@ Preview" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Предпросмотр: «%@»"
+          }
+        }
+      }
+    },
+    "%lld children" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld child"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld children"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld элемента"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld элементов"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld элемент"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld элементов"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Accept Invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Принять приглашение"
+          }
+        }
+      }
+    },
+    "Accept the invite to open this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Примите приглашение, чтобы открыть «%@»."
+          }
+        }
+      }
+    },
+    "Access details are not available." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Детали доступа недоступны."
+          }
+        }
+      }
+    },
+    "Address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес"
+          }
+        }
+      }
+    },
+    "Anyone can join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В «%@» может вступить кто угодно."
+          }
+        }
+      }
+    },
+    "Ask to Join" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запросить доступ"
+          }
+        }
+      }
+    },
+    "Authorized members can join; others can request access." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники с разрешением могут вступить; остальные могут запросить доступ."
+          }
+        }
+      }
+    },
+    "Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат"
+          }
+        }
+      }
+    },
+    "Contents" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Содержимое"
+          }
+        }
+      }
+    },
+    "Could Not Join %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось вступить в «%@»"
+          }
+        }
+      }
+    },
+    "Custom" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Особая"
+          }
+        }
+      }
+    },
+    "Custom Matrix access rule." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Особое правило доступа Matrix."
+          }
+        }
+      }
+    },
+    "In progress" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В процессе"
+          }
+        }
+      }
+    },
+    "Invite only" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только по приглашению"
+          }
+        }
+      }
+    },
+    "Invite Required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужно приглашение"
+          }
+        }
+      }
+    },
+    "Join %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вступить в «%@»"
+          }
+        }
+      }
+    },
+    "Join this %@ to read and send messages." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вступите в «%@», чтобы читать и отправлять сообщения."
+          }
+        }
+      }
+    },
+    "Join this %@ to see its chats and nested spaces." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вступите в раздел «%@», чтобы увидеть его чаты и вложенные линии."
+          }
+        }
+      }
+    },
+    "Joinable" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можно вступить"
+          }
+        }
+      }
+    },
+    "Joined" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы участник"
+          }
+        }
+      }
+    },
+    "Members of an authorized Storyline can join." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники разрешённого сюжета могут вступить."
+          }
+        }
+      }
+    },
+    "Members of the parent Storyline or Track can join without a separate invite." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники родительского сюжета или линии смогут вступить без отдельного приглашения."
+          }
+        }
+      }
+    },
+    "Members of this Storyline or Track can join without a separate invite." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники этого сюжета или линии смогут войти без отдельного приглашения."
+          }
+        }
+      }
+    },
+    "Only invited people can join." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вступить смогут только приглашённые."
+          }
+        }
+      }
+    },
+    "Open %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть «%@»"
+          }
+        }
+      }
+    },
+    "Opening..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открываем..."
+          }
+        }
+      }
+    },
+    "Parent Members" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники родительского раздела"
+          }
+        }
+      }
+    },
+    "Parent space is not available for restricted access." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Родительский сюжет или линия недоступны для ограниченного доступа."
+          }
+        }
+      }
+    },
+    "People can request access." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можно запросить доступ."
+          }
+        }
+      }
+    },
+    "Request Sent" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заявка отправлена"
+          }
+        }
+      }
+    },
+    "Restricted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ограниченная"
+          }
+        }
+      }
+    },
+    "Send a request to join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправьте заявку на вступление в «%@»."
+          }
+        }
+      }
+    },
+    "Sending..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправляем..."
+          }
+        }
+      }
+    },
+    "Space Members" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники сюжета или линии"
+          }
+        }
+      }
+    },
+    "This %@ uses an access rule Zyna cannot join directly." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У раздела «%@» правило доступа, с которым Zyna не может вступить напрямую."
+          }
+        }
+      }
+    },
+    "Unavailable" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недоступно"
+          }
+        }
+      }
+    },
+    "Unknown" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Неизвестно"
+          }
+        }
+      }
+    },
+    "Working..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выполняем..."
+          }
+        }
+      }
+    },
+    "You are already a member of this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы уже участник «%@»."
+          }
+        }
+      }
+    },
+    "You are not a member of a Storyline authorized for this %@." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет участия в сюжете, который даёт доступ к «%@»."
+          }
+        }
+      }
+    },
+    "You cannot join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В «%@» нельзя вступить."
+          }
+        }
+      }
+    },
+    "You need an invite to join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для вступления в «%@» нужно приглашение."
+          }
+        }
+      }
+    },
+    "Your membership allows you to join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ваше участие позволяет вступить в «%@»."
+          }
+        }
+      }
+    },
+    "Your request to join this %@ is waiting for approval." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заявка на вступление в «%@» ожидает одобрения."
+          }
+        }
+      }
+    },
+    "Your request to join this %@ was sent." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заявка на вступление в «%@» отправлена."
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

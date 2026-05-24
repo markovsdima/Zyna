@@ -31,10 +31,21 @@ struct RoomModel: Equatable {
     let spaceChildRoomCount: Int
     let spaceChildSpaceCount: Int
     let spaceRecentRooms: [SpaceChildModel]
+    let spaceMetadata: SpaceRoomMetadata?
 }
 
 extension RoomModel {
     var spaceMetaText: String {
+        if spaceChildRoomCount == 0,
+           spaceChildSpaceCount == 0,
+           let childrenCount = spaceMetadata?.childrenCount,
+           childrenCount > 0 {
+            return String.localizedStringWithFormat(
+                String(localized: "%lld children"),
+                Int64(childrenCount)
+            )
+        }
+
         let chats = String.localizedStringWithFormat(
             String(localized: "%lld chats"),
             Int64(spaceChildRoomCount)
@@ -87,7 +98,8 @@ extension RoomModel {
                         mxcAvatarURL: child.avatarURL
                     )
                 )
-            }
+            },
+            spaceMetadata: room.spaceMetadata
         )
     }
 
@@ -118,7 +130,8 @@ extension RoomModel {
             directUserId: directUserId,
             spaceChildRoomCount: spaceChildRoomCount,
             spaceChildSpaceCount: spaceChildSpaceCount,
-            spaceRecentRooms: spaceRecentRooms
+            spaceRecentRooms: spaceRecentRooms,
+            spaceMetadata: spaceMetadata
         )
     }
 
@@ -144,7 +157,31 @@ extension RoomModel {
             directUserId: directUserId,
             spaceChildRoomCount: spaceChildRoomCount,
             spaceChildSpaceCount: spaceChildSpaceCount,
-            spaceRecentRooms: spaceRecentRooms
+            spaceRecentRooms: spaceRecentRooms,
+            spaceMetadata: spaceMetadata
+        )
+    }
+
+    func withSpaceMetadata(_ metadata: SpaceRoomMetadata?) -> RoomModel {
+        RoomModel(
+            id: id,
+            name: name,
+            lastMessage: lastMessage,
+            lastMessageSenderName: lastMessageSenderName,
+            timestamp: timestamp,
+            avatar: avatar,
+            isOnline: isOnline,
+            lastSeen: lastSeen,
+            unreadCount: unreadCount,
+            unreadMentionCount: unreadMentionCount,
+            isMarkedUnread: isMarkedUnread,
+            isEncrypted: isEncrypted,
+            isSpace: isSpace,
+            directUserId: directUserId,
+            spaceChildRoomCount: spaceChildRoomCount,
+            spaceChildSpaceCount: spaceChildSpaceCount,
+            spaceRecentRooms: spaceRecentRooms,
+            spaceMetadata: metadata
         )
     }
 

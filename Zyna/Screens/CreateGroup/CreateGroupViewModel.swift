@@ -18,9 +18,14 @@ enum CreateGroupPostingPermission: Equatable {
 enum CreateGroupAccess: Equatable {
     case privateInviteOnly
     case publicAnyone
+    case spaceMembers
 
     var isPublic: Bool {
         self == .publicAnyone
+    }
+
+    var isSpaceRestricted: Bool {
+        self == .spaceMembers
     }
 }
 
@@ -50,6 +55,9 @@ final class CreateGroupViewModel {
         self.members = members
         self.roomListService = roomListService
         self.parentSpaceId = parentSpaceId
+        if parentSpaceId != nil {
+            roomAccess = .spaceMembers
+        }
     }
 
     var serverName: String? {
@@ -119,18 +127,30 @@ final class CreateGroupViewModel {
                     aliasWasEdited: aliasWasEditedSnapshot
                 )
                 let isPublic = access.isPublic
+                let isSpaceRestricted = access.isSpaceRestricted
+                let isEncrypted = !isPublic && !isSpaceRestricted
+                let preset: RoomPreset = isEncrypted ? .privateChat : .publicChat
+                let historyVisibilityOverride: RoomHistoryVisibility?
+                if isPublic {
+                    historyVisibilityOverride = nil
+                } else if isSpaceRestricted {
+                    historyVisibilityOverride = .shared
+                } else {
+                    historyVisibilityOverride = .invited
+                }
+                let joinRuleOverride = try restrictedJoinRuleIfNeeded(access: access)
                 let params = CreateRoomParameters(
                     name: name,
                     topic: topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : topic,
-                    isEncrypted: !isPublic,
+                    isEncrypted: isEncrypted,
                     isDirect: false,
                     visibility: isPublic ? .public : .private,
-                    preset: isPublic ? .publicChat : .privateChat,
+                    preset: preset,
                     invite: members.map(\.userId),
                     avatar: nil,
                     powerLevelContentOverride: postingPermission.restrictsRegularMembers ? Self.restrictedPostingPowerLevels : nil,
-                    joinRuleOverride: nil,
-                    historyVisibilityOverride: isPublic ? nil : .invited,
+                    joinRuleOverride: joinRuleOverride,
+                    historyVisibilityOverride: historyVisibilityOverride,
                     canonicalAlias: aliasLocalPart
                 )
                 let roomId = try await client.createRoom(request: params)
@@ -191,6 +211,14 @@ final class CreateGroupViewModel {
         return localPart
     }
 
+    private func restrictedJoinRuleIfNeeded(access: CreateGroupAccess) throws -> JoinRule? {
+        guard access.isSpaceRestricted else { return nil }
+        guard let parentSpaceId else {
+            throw RoomCreationValidationError.missingParentSpace
+        }
+        return .restricted(rules: [.roomMembership(roomId: parentSpaceId)])
+    }
+
     private func waitForCreatedRoom(roomId: String) async -> Room? {
         for _ in 0..<20 {
             if let room = roomListService.room(for: roomId) {
@@ -235,6 +263,7 @@ private enum RoomCreationValidationError: LocalizedError {
     case missingAlias
     case invalidAlias
     case aliasTaken
+    case missingParentSpace
 
     var errorDescription: String? {
         switch self {
@@ -246,6 +275,8 @@ private enum RoomCreationValidationError: LocalizedError {
             return String(localized: "Room address contains unsupported characters.")
         case .aliasTaken:
             return String(localized: "This room address is already taken.")
+        case .missingParentSpace:
+            return String(localized: "Parent space is not available for restricted access.")
         }
     }
 }
