@@ -4,6 +4,26 @@
     "" : {
 
     },
+    "Access and Visibility" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступ и видимость"
+          }
+        }
+      }
+    },
+    "A Storyline address is required before the Storyline can be shown in public search." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужен адрес сюжета, прежде чем его можно будет показывать в публичном поиске."
+          }
+        }
+      }
+    },
     "Add to Storyline" : {
       "localizations" : {
         "ru" : {
@@ -24,12 +44,132 @@
         }
       }
     },
+    "Administration" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Администрирование"
+          }
+        }
+      }
+    },
+    "Anyone can join this Storyline without an invite." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Любой сможет вступить в этот сюжет без приглашения."
+          }
+        }
+      }
+    },
+    "Chats and Lines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чаты и линии"
+          }
+        }
+      }
+    },
+    "Choose a name before saving changes." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите название перед сохранением."
+          }
+        }
+      }
+    },
+    "Could Not Open Storyline Settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось открыть настройки сюжета"
+          }
+        }
+      }
+    },
+    "Could Not Save Storyline Access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить доступ к сюжету"
+          }
+        }
+      }
+    },
+    "Could not publish the Storyline address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось опубликовать адрес сюжета."
+          }
+        }
+      }
+    },
+    "Directory visibility controls whether this Storyline can be found in public search." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видимость в каталоге определяет, можно ли найти этот сюжет в публичном поиске."
+          }
+        }
+      }
+    },
     "Directions within this Storyline will appear here." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Здесь появятся направления внутри сюжета."
+          }
+        }
+      }
+    },
+    "Edit who can change this Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Настройте, кто может менять этот сюжет"
+          }
+        }
+      }
+    },
+    "Failed to save Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить сюжет"
+          }
+        }
+      }
+    },
+    "No description" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Без описания"
+          }
+        }
+      }
+    },
+    "Only invited people can join this Storyline." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только приглашённые смогут вступить в этот сюжет."
           }
         }
       }
@@ -54,6 +194,56 @@
         }
       }
     },
+    "Organization" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Организация"
+          }
+        }
+      }
+    },
+    "Parent Storylines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Родительские сюжеты"
+          }
+        }
+      }
+    },
+    "Private Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приватный сюжет"
+          }
+        }
+      }
+    },
+    "Public Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Публичный сюжет"
+          }
+        }
+      }
+    },
+    "Remove Photo" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить фото"
+          }
+        }
+      }
+    },
     "Storyline" : {
       "localizations" : {
         "ru" : {
@@ -64,12 +254,142 @@
         }
       }
     },
+    "Storyline Access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступ к сюжету"
+          }
+        }
+      }
+    },
+    "Storyline Directory" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Каталог сюжетов"
+          }
+        }
+      }
+    },
+    "Storyline Profile" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Профиль сюжета"
+          }
+        }
+      }
+    },
+    "Storyline Settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Настройки сюжета"
+          }
+        }
+      }
+    },
+    "Storyline address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес сюжета"
+          }
+        }
+      }
+    },
+    "Storyline address is required." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужен адрес сюжета."
+          }
+        }
+      }
+    },
+    "Storyline address required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужен адрес сюжета"
+          }
+        }
+      }
+    },
+    "Storyline name is required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужно название сюжета"
+          }
+        }
+      }
+    },
+    "This Storyline is not available locally yet." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот сюжет пока недоступен локально."
+          }
+        }
+      }
+    },
+    "This Storyline currently uses an access rule Zyna cannot edit directly. Choosing an option will replace it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сейчас в этом сюжете используется правило доступа, которое Zyna не может редактировать напрямую. Выбор варианта заменит его."
+          }
+        }
+      }
+    },
+    "This Storyline address is already taken." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот адрес сюжета уже занят."
+          }
+        }
+      }
+    },
     "Untitled" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Без названия"
+          }
+        }
+      }
+    },
+    "View and repair parent Storyline links" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Посмотреть и исправить связи с родительскими сюжетами"
+          }
+        }
+      }
+    },
+    "You do not have permission to edit this Storyline profile." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет прав менять профиль этого сюжета."
           }
         }
       }
@@ -1082,6 +1402,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось определить имя сервера для адреса комнаты."
+          }
+        }
+      }
+    },
+    "Cannot determine the server name for the Storyline address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось определить сервер для адреса сюжета."
           }
         }
       }
@@ -3996,12 +4326,32 @@
         }
       }
     },
+    "Visible in Storyline Directory" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Виден в каталоге сюжетов"
+          }
+        }
+      }
+    },
     "World-readable history is available only for public unencrypted rooms." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "История для всех доступна только в публичных незашифрованных комнатах."
+          }
+        }
+      }
+    },
+    "Who Can Join" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Кто может вступить"
           }
         }
       }
@@ -4032,6 +4382,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Событие комнаты"
+          }
+        }
+      }
+    },
+    "Invalid Storyline address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Некорректный адрес сюжета."
           }
         }
       }

@@ -180,8 +180,8 @@ final class ChatsCoordinator {
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
-        vc.onSettings = {
-            ScopedLog(.rooms)("Storyline title tapped: \(space.id)")
+        vc.onSettings = { [weak self, weak vc] space in
+            self?.showSpaceSettings(space: space, source: vc)
         }
         vc.onChatSelected = { [weak self] chat in
             if let room = self?.roomListService.room(for: chat.id) {
@@ -203,6 +203,65 @@ final class ChatsCoordinator {
             )
         }
         navigationController.push(vc, animated: animated)
+    }
+
+    private func showSpaceSettings(
+        space: RoomModel,
+        source: SpaceViewController?
+    ) {
+        let room = roomListService.room(for: space.id)
+            ?? (try? MatrixClientService.shared.client?.getRoom(roomId: space.id))
+        guard let room else {
+            presentSimpleAlert(
+                title: String(localized: "Could Not Open Storyline Settings"),
+                message: String(localized: "This Storyline is not available locally yet.")
+            )
+            return
+        }
+
+        let vc = SpaceSettingsViewController(
+            space: space,
+            room: room,
+            audioPlayer: audioPlayer
+        )
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
+        vc.onProfileUpdated = { [weak source] updatedSpace in
+            source?.updateSpace(updatedSpace)
+        }
+        vc.onAccessTapped = { [weak self] in
+            self?.showSpaceAccess(room: room)
+        }
+        vc.onPermissionsTapped = { [weak self] in
+            self?.showRoomRolesPermissions(room: room)
+        }
+        vc.onParentStorylinesTapped = { [weak self] in
+            self?.showRoomSpaceMembership(room: room)
+        }
+        vc.onMembersTapped = { [weak self] in
+            self?.showMembersList(room: room)
+        }
+
+        navigationController.push(vc)
+    }
+
+    private func showSpaceAccess(room: Room) {
+        let vc = SpaceAccessViewController(room: room, audioPlayer: audioPlayer)
+        vc.onBack = { [weak self] in
+            self?.navigationController.pop()
+        }
+        navigationController.push(vc)
+    }
+
+    private func presentSimpleAlert(title: String, message: String) {
+        let alert = UIAlertController(
+            title: title,
+            message: message,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+        navigationController.topViewController?.present(alert, animated: true)
     }
 
     private func showSpaceComposeSheet(

@@ -122,6 +122,32 @@ extension RoomModel {
         )
     }
 
+    func withSpaceProfile(name: String, avatarURL: String?) -> RoomModel {
+        RoomModel(
+            id: id,
+            name: name,
+            lastMessage: lastMessage,
+            lastMessageSenderName: lastMessageSenderName,
+            timestamp: timestamp,
+            avatar: AvatarViewModel(
+                userId: id,
+                displayName: name,
+                mxcAvatarURL: avatarURL
+            ),
+            isOnline: isOnline,
+            lastSeen: lastSeen,
+            unreadCount: unreadCount,
+            unreadMentionCount: unreadMentionCount,
+            isMarkedUnread: isMarkedUnread,
+            isEncrypted: isEncrypted,
+            isSpace: isSpace,
+            directUserId: directUserId,
+            spaceChildRoomCount: spaceChildRoomCount,
+            spaceChildSpaceCount: spaceChildSpaceCount,
+            spaceRecentRooms: spaceRecentRooms
+        )
+    }
+
     var showsUnreadBadge: Bool {
         unreadCount > 0 || isMarkedUnread
     }

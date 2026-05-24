@@ -9,7 +9,7 @@ import UIKit
 final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
 
     var onBack: (() -> Void)?
-    var onSettings: (() -> Void)?
+    var onSettings: ((RoomModel) -> Void)?
     var onChatSelected: ((RoomModel) -> Void)?
     var onSpaceSelected: ((RoomModel) -> Void)?
     var onCreateContent: ((RoomModel, SpacePresentationKind) -> Void)?
@@ -50,6 +50,14 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
 
     func reloadChildren() {
         loadChildren()
+    }
+
+    func updateSpace(_ updatedSpace: RoomModel) {
+        guard updatedSpace.id == space.id else { return }
+        space = updatedSpace
+        rebuildGlassTopBarItems()
+        node.tableNode.reloadData()
+        GlassService.shared.setNeedsCapture()
     }
 
     override func viewDidLoad() {
@@ -102,11 +110,15 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
         glassTopBar.sourceView = node.tableNode.view
         node.addSubnode(glassTopBar)
         node.glassTopBar = glassTopBar
+        rebuildGlassTopBarItems()
+    }
 
+    private func rebuildGlassTopBarItems() {
         let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
         let composeIcon = AppIcon.compose.template(size: 17, weight: .medium)
         glassTopBar.onTitleTapped = { [weak self] in
-            self?.onSettings?()
+            guard let self else { return }
+            self.onSettings?(self.space)
         }
         glassTopBar.items = [
             .circleButton(
