@@ -16,6 +16,9 @@ final class ChatNode: ASDisplayNode {
     /// table cells visually behind them (the bars are transparent glass).
     weak var glassNavBar: GlassNavBar?
     weak var glassInputBar: GlassInputBar?
+    weak var readOnlyComposerView: UIView?
+    weak var unencryptedNoticeView: UIView?
+    weak var pinnedMessagesBannerView: UIView?
 
     /// Set by ChatViewController. The scroll-to-live floating button lives
     /// at this node's view level (not inside the input bar) so its tap
@@ -59,11 +62,19 @@ final class ChatNode: ASDisplayNode {
 
     override func layout() {
         super.layout()
-        tableNode.frame = bounds
-        bubbleGradientHostView.frame = bounds
-        paintSplashHostView.frame = bounds
+        if tableNode.frame != bounds {
+            tableNode.frame = bounds
+        }
+        if bubbleGradientHostView.frame != bounds {
+            bubbleGradientHostView.frame = bounds
+        }
+        if paintSplashHostView.frame != bounds {
+            paintSplashHostView.frame = bounds
+        }
         for source in bubbleGradientSources.values {
-            source.frame = bubbleGradientHostView.bounds
+            if source.frame != bubbleGradientHostView.bounds {
+                source.frame = bubbleGradientHostView.bounds
+            }
         }
     }
 
@@ -85,6 +96,17 @@ final class ChatNode: ASDisplayNode {
                     elements.append(contentsOf: navElements)
                 }
             }
+            if let unencryptedNoticeView,
+               unencryptedNoticeView.superview === view,
+               !unencryptedNoticeView.isHidden {
+                elements.append(unencryptedNoticeView)
+            }
+            if let pinnedMessagesBannerView,
+               pinnedMessagesBannerView.superview === view,
+               !pinnedMessagesBannerView.isHidden,
+               pinnedMessagesBannerView.alpha > 0.01 {
+                elements.append(pinnedMessagesBannerView)
+            }
             if let inputBar = glassInputBar,
                inputBar.isNodeLoaded,
                inputBar.view.superview === view,
@@ -95,6 +117,11 @@ final class ChatNode: ASDisplayNode {
                 } else {
                     elements.append(contentsOf: inputElements)
                 }
+            }
+            if let readOnlyComposerView,
+               readOnlyComposerView.superview === view,
+               !readOnlyComposerView.isHidden {
+                elements.append(readOnlyComposerView)
             }
             if let tap = scrollButtonTap, tap.superview === view, tap.alpha > 0 {
                 elements.append(tap)

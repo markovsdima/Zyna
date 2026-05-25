@@ -28,6 +28,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let teleportDistanceScreens: CGFloat = 1.5
     }
 
+    private enum MessageNavigation {
+        static let journeyDistanceScreens: CGFloat = 1.5
+        static let readinessRetryDelay: TimeInterval = 0.05
+        static let maxReadinessRetries = 4
+        static let liveEdgeNudgeDelay: TimeInterval = 0.03
+        static let pinnedAdvanceDelay: TimeInterval = 0.30
+    }
+
     private enum ContentUpdates {
         static let liveEdgeTolerance: CGFloat = 24
     }
@@ -58,6 +66,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         static let baselineLiveTolerance: CGFloat = 24
         static let scrollDebounce: TimeInterval = 0.15
         static let contentUpdateDelay: TimeInterval = 0.05
+    }
+
+    private enum PinnedMessagesChrome {
+        static let collapseDelay: TimeInterval = 4
     }
 
     private enum RedactionAnimations {
@@ -114,6 +126,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var batchFetchCancellable: AnyCancellable?
     private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
+    private let readOnlyComposerView = ReadOnlyComposerPlaceholderView()
+    private let unencryptedNoticeView = UnencryptedRoomNoticeView()
+    private let pinnedMessagesBannerView = PinnedMessagesBannerView()
     private let searchBar = SearchBarView()
     private let inviteBanner = InviteBannerView()
 
@@ -128,6 +143,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let scrollButtonBadgeLabel = UILabel()
     private let replySwipeIndicatorView = UIImageView()
     private let dateHeaderOverlayManager = DateHeaderOverlayManager()
+    private var showsReadOnlyComposerPlaceholder = false
     
     /// Flip to `true` to show Apple vs Custom glass comparison overlay (iOS 26+)
     private static let showGlassComparison = false
@@ -178,6 +194,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var redactionAnimationArmWork: DispatchWorkItem?
     private var didCleanupViewModel = false
     private var prefetchedAppearanceUserIds = Set<String>()
+    private var selectedPinnedMessageIndex = 0
+    private var isPinnedMessagesBannerExpanded = false
+    private var pinnedMessagesCollapseWorkItem: DispatchWorkItem?
 
     private var isPreviewMode: Bool {
         viewModel.mode.isPreview
@@ -189,6 +208,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     var canPresentVoicePlaybackIsland: Bool {
         !isPreviewMode
+    }
+
+    func navigateToEvent(eventId: String) {
+        guard !isPreviewMode else { return }
+        navigateToMessage(eventId: eventId)
     }
 
     // MARK: - Init
@@ -250,7 +274,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             glassNavBar.onCall = { [weak self] in self?.onCallTapped?() }
             glassNavBar.onTitleTapped = { [weak self] in
                 guard let self else { return }
-                if let userId = self.viewModel.partnerUserId {
+                if self.viewModel.liveRoom != nil {
+                    self.onRoomDetailsTapped?()
+                } else if let userId = self.viewModel.partnerUserId {
                     self.onTitleTapped?(userId)
                 } else {
                     self.onRoomDetailsTapped?()
@@ -319,6 +345,24 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             glassInputBar.isHidden = viewModel.isInvited
             node.addSubnode(glassInputBar)
             node.glassInputBar = glassInputBar
+
+            readOnlyComposerView.isHidden = true
+            view.addSubview(readOnlyComposerView)
+            node.readOnlyComposerView = readOnlyComposerView
+
+            unencryptedNoticeView.isHidden = true
+            view.addSubview(unencryptedNoticeView)
+            node.unencryptedNoticeView = unencryptedNoticeView
+
+            pinnedMessagesBannerView.isHidden = true
+            pinnedMessagesBannerView.alpha = 0
+            pinnedMessagesBannerView.addTarget(
+                self,
+                action: #selector(pinnedMessagesBannerTapped),
+                for: .touchUpInside
+            )
+            node.view.addSubview(pinnedMessagesBannerView)
+            node.pinnedMessagesBannerView = pinnedMessagesBannerView
         }
 
         // Scroll-to-live button — lives on node.view so its tap target
@@ -395,6 +439,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         glassNavBar.updateLayout(in: view)
+        updatePinnedMessagesBannerLayout()
         searchBar.frame = CGRect(
             x: 0, y: glassNavBar.coveredHeight,
             width: view.bounds.width, height: 44
@@ -412,9 +457,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 height: CGFloat(5 * 32 + 16)
             )
         }
-        node.tableNode.contentInset.bottom = glassNavBar.coveredHeight
+        updateTopChromeTableInset()
 
+        readOnlyComposerView.updateLayout(in: view)
         glassInputBar.updateLayout(in: view)
+        updateComposerChrome()
         updateTableInsetsForInputBar()
         updateDateHeaderOverlay()
     }
@@ -466,6 +513,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func cleanupViewModelIfNeeded() {
         guard !didCleanupViewModel else { return }
         didCleanupViewModel = true
+        cancelPinnedMessagesAutoCollapseTimer()
         viewModel.cleanup()
     }
 
@@ -482,14 +530,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
 
-        let newCoveredHeight = glassInputBar.coveredHeight
+        let newCoveredHeight = activeComposerCoveredHeight()
         let previousCoveredHeight = previousInputCoveredHeight
         let tableView = node.tableNode.view
         let liveEdgeDistance = tableDistanceToLiveEdge()
         let wasPinnedToLiveEdge = liveEdgeDistance <= InputBarInsetCompensation.liveEdgeTolerance
 
-        node.tableNode.contentInset.top = newCoveredHeight
-        tableView.verticalScrollIndicatorInsets.top = newCoveredHeight
+        if node.tableNode.contentInset.top != newCoveredHeight {
+            node.tableNode.contentInset.top = newCoveredHeight
+        }
+        if tableView.verticalScrollIndicatorInsets.top != newCoveredHeight {
+            tableView.verticalScrollIndicatorInsets.top = newCoveredHeight
+        }
 
         // Don't fight UIKit's rubber-band or active user scroll. Snapping the
         // inverted table back to the live edge during an elastic pull is what
@@ -501,6 +553,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         if let previousCoveredHeight {
             let compensationDelta = newCoveredHeight - previousCoveredHeight
+            guard abs(compensationDelta) > 0.5 else {
+                previousInputCoveredHeight = newCoveredHeight
+                return
+            }
             let isInAutomaticZone = liveEdgeDistance
                 <= abs(compensationDelta) + InputBarInsetCompensation.automaticZoneTolerance
             if wasPinnedToLiveEdge {
@@ -518,6 +574,230 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         previousInputCoveredHeight = newCoveredHeight
+    }
+
+    private func updateTopChromeTableInset() {
+        let pinnedHeight = shouldShowPinnedMessagesBanner()
+            ? PinnedMessagesBannerView.height + 16
+            : 0
+        let bottom = glassNavBar.coveredHeight + pinnedHeight
+        if node.tableNode.contentInset.bottom != bottom {
+            node.tableNode.contentInset.bottom = bottom
+        }
+        if node.tableNode.view.verticalScrollIndicatorInsets.bottom != bottom {
+            node.tableNode.view.verticalScrollIndicatorInsets.bottom = bottom
+        }
+    }
+
+    private func activeComposerCoveredHeight() -> CGFloat {
+        guard !viewModel.isInvited else { return 0 }
+        let composerHeight: CGFloat
+        if showsReadOnlyComposerPlaceholder {
+            composerHeight = readOnlyComposerView.coveredHeight(in: view)
+        } else {
+            composerHeight = glassInputBar.coveredHeight
+        }
+        return composerHeight + unencryptedNoticeView.additionalCoveredHeight
+    }
+
+    private func activeComposerTopY() -> CGFloat {
+        if !readOnlyComposerView.isHidden {
+            return readOnlyComposerView.frame.minY
+        }
+        if !glassInputBar.isHidden {
+            return glassInputBar.frame.minY
+        }
+        return view.bounds.maxY
+    }
+
+    private func updateUnencryptedNoticeLayout() {
+        unencryptedNoticeView.updateLayout(in: view, aboveY: activeComposerTopY())
+    }
+
+    private func updatePinnedMessagesBannerLayout() {
+        guard !isPreviewMode else { return }
+        pinnedMessagesBannerView.frame = targetPinnedMessagesBannerFrame()
+    }
+
+    private func targetPinnedMessagesBannerFrame() -> CGRect {
+        guard isPinnedMessagesBannerExpanded else {
+            let size = PinnedMessagesBannerView.collapsedSize
+            let backFrame = glassNavBar.backButtonNode.isNodeLoaded
+                ? glassNavBar.backButtonNode.view.convert(
+                    glassNavBar.backButtonNode.view.bounds,
+                    to: view
+                )
+                : CGRect(x: 10, y: view.safeAreaInsets.top + 4, width: 36, height: 36)
+            return CGRect(
+                x: backFrame.midX - size.width / 2,
+                y: glassNavBar.frame.maxY + 8,
+                width: size.width,
+                height: size.height
+            )
+        }
+
+        let width = min(view.bounds.width - 24, 420)
+        return CGRect(
+            x: (view.bounds.width - width) / 2,
+            y: glassNavBar.frame.maxY + 8,
+            width: width,
+            height: PinnedMessagesBannerView.height
+        )
+    }
+
+    private func shouldShowPinnedMessagesBanner() -> Bool {
+        guard !isPreviewMode else { return false }
+        let state = viewModel.pinnedMessagesState
+        return state.hasPinnedMessages
+            && searchBar.isHidden
+            && inviteBanner.isHidden
+    }
+
+    private func updatePinnedMessagesBanner(animated: Bool) {
+        guard !isPreviewMode else { return }
+        let state = viewModel.pinnedMessagesState
+        let shouldShow = shouldShowPinnedMessagesBanner()
+
+        if !shouldShow {
+            isPinnedMessagesBannerExpanded = false
+        }
+
+        selectedPinnedMessageIndex = min(
+            selectedPinnedMessageIndex,
+            max(0, state.eventIds.count - 1)
+        )
+
+        let targetFrame = targetPinnedMessagesBannerFrame()
+        if shouldShow,
+           state.eventIds.indices.contains(selectedPinnedMessageIndex) {
+            let eventId = state.eventIds[selectedPinnedMessageIndex]
+            pinnedMessagesBannerView.configure(
+                index: selectedPinnedMessageIndex,
+                count: state.eventIds.count,
+                preview: viewModel.pinnedPreview(eventId: eventId),
+                mode: isPinnedMessagesBannerExpanded ? .expanded : .collapsed
+            )
+        }
+
+        let applyVisibility = {
+            self.pinnedMessagesBannerView.alpha = shouldShow ? 1 : 0
+            self.pinnedMessagesBannerView.frame = targetFrame
+            self.pinnedMessagesBannerView.layoutIfNeeded()
+        }
+
+        if shouldShow {
+            if pinnedMessagesBannerView.isHidden {
+                pinnedMessagesBannerView.frame = targetFrame
+                pinnedMessagesBannerView.layoutIfNeeded()
+            }
+            pinnedMessagesBannerView.isHidden = false
+        }
+
+        if animated {
+            UIView.animate(
+                withDuration: 0.18,
+                delay: 0,
+                options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseOut],
+                animations: applyVisibility
+            ) { _ in
+                self.pinnedMessagesBannerView.isHidden = !shouldShow
+            }
+        } else {
+            applyVisibility()
+            pinnedMessagesBannerView.isHidden = !shouldShow
+        }
+
+        updateTopChromeTableInset()
+        updateDateHeaderOverlay()
+        node.view.bringSubviewToFront(pinnedMessagesBannerView)
+        updatePinnedMessagesAutoCollapseTimer()
+    }
+
+    @objc private func pinnedMessagesBannerTapped() {
+        let eventIds = viewModel.pinnedMessagesState.eventIds
+        guard eventIds.indices.contains(selectedPinnedMessageIndex) else { return }
+
+        cancelPinnedMessagesAutoCollapseTimer()
+
+        guard isPinnedMessagesBannerExpanded else {
+            isPinnedMessagesBannerExpanded = true
+            updatePinnedMessagesBanner(animated: true)
+            return
+        }
+
+        let eventId = eventIds[selectedPinnedMessageIndex]
+        let didStartNavigation = navigateToMessage(eventId: eventId)
+
+        if didStartNavigation && eventIds.count > 1 {
+            let nextIndex = (selectedPinnedMessageIndex + 1) % eventIds.count
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + MessageNavigation.pinnedAdvanceDelay
+            ) { [weak self] in
+                guard let self,
+                      self.viewModel.pinnedMessagesState.eventIds == eventIds,
+                      self.isPinnedMessagesBannerExpanded else {
+                    return
+                }
+                self.selectedPinnedMessageIndex = nextIndex
+                self.updatePinnedMessagesBanner(animated: true)
+            }
+        } else {
+            updatePinnedMessagesAutoCollapseTimer()
+        }
+    }
+
+    private func updatePinnedMessagesAutoCollapseTimer() {
+        cancelPinnedMessagesAutoCollapseTimer()
+        guard isPinnedMessagesBannerExpanded,
+              shouldShowPinnedMessagesBanner() else { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.isPinnedMessagesBannerExpanded,
+                  self.shouldShowPinnedMessagesBanner() else { return }
+            self.isPinnedMessagesBannerExpanded = false
+            self.updatePinnedMessagesBanner(animated: true)
+        }
+        pinnedMessagesCollapseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + PinnedMessagesChrome.collapseDelay,
+            execute: workItem
+        )
+    }
+
+    private func cancelPinnedMessagesAutoCollapseTimer() {
+        pinnedMessagesCollapseWorkItem?.cancel()
+        pinnedMessagesCollapseWorkItem = nil
+    }
+
+    private func updateComposerChrome() {
+        applyComposerContainerVisibility()
+        updateUnencryptedNoticeLayout()
+    }
+
+    private func shouldShowUnencryptedNotice() -> Bool {
+        !viewModel.isInvited && !viewModel.isRoomEncrypted
+    }
+
+    private func applyComposerContainerVisibility() {
+        guard !isPreviewMode else { return }
+        let shouldShowReadOnly = !viewModel.isInvited && showsReadOnlyComposerPlaceholder
+        glassInputBar.isHidden = viewModel.isInvited || shouldShowReadOnly
+        readOnlyComposerView.isHidden = !shouldShowReadOnly
+        unencryptedNoticeView.isHidden = !shouldShowUnencryptedNotice()
+        if shouldShowReadOnly {
+            glassInputBar.inputNode.textInputNode.resignFirstResponder()
+        }
+    }
+
+    private func composerTopObstructionY() -> CGFloat {
+        if !unencryptedNoticeView.isHidden {
+            return unencryptedNoticeView.frame.minY
+        }
+        if !readOnlyComposerView.isHidden {
+            return readOnlyComposerView.frame.minY
+        }
+        return glassInputBar.isHidden ? view.bounds.maxY : glassInputBar.frame.minY
     }
 
     private func tableOffsetBounds(for tableView: UIScrollView) -> (minY: CGFloat, maxY: CGFloat) {
@@ -630,11 +910,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             tableFrame.minY,
             glassNavBar.frame.maxY,
             searchBar.isHidden ? tableFrame.minY : searchBar.frame.maxY,
-            inviteBanner.isHidden ? tableFrame.minY : inviteBanner.frame.maxY
+            inviteBanner.isHidden ? tableFrame.minY : inviteBanner.frame.maxY,
+            shouldShowPinnedMessagesBanner() ? pinnedMessagesBannerView.frame.maxY : tableFrame.minY
         )
         let bottomObstruction = min(
             tableFrame.maxY,
-            glassInputBar.isHidden ? view.bounds.maxY : glassInputBar.frame.minY
+            composerTopObstructionY()
         )
 
         guard bottomObstruction > topObstruction else { return nil }
@@ -869,11 +1150,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.activateSearch()
         searchBar.isHidden = false
         searchBar.activate()
+        updatePinnedMessagesBanner(animated: true)
     }
 
     private func deactivateSearch() {
         viewModel.deactivateSearch()
         searchBar.isHidden = true
+        updatePinnedMessagesBanner(animated: true)
     }
 
     private func navigateToCurrentSearchResult() {
@@ -1000,6 +1283,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.handleRedactionFailure(for: messageId, disposition: disposition)
         }
 
+        viewModel.onPinnedMessagesError = { [weak self] error in
+            self?.presentPinnedMessagesError(error)
+        }
+
         viewModel.canRestoreFailedEditDraft = { [weak self] in
             guard let self else { return false }
             return self.glassInputBar.inputNode.currentText
@@ -1012,7 +1299,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .sink { [weak self] invited in
                 guard let self, !self.isPreviewMode else { return }
                 self.inviteBanner.isHidden = !invited
-                self.glassInputBar.isHidden = invited
+                self.updateComposerChrome()
+                GlassService.shared.setNeedsCapture()
+                self.updateTableInsetsForInputBar()
+                self.updatePinnedMessagesBanner(animated: true)
+                self.updateDateHeaderOverlay()
             }
             .store(in: &cancellables)
 
@@ -1076,7 +1367,40 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .receive(on: DispatchQueue.main)
             .sink { [weak self] blocked in
                 guard let self, !self.isPreviewMode else { return }
-                self.glassInputBar.inputNode.setComposerLocked(blocked)
+                let isRoomSendRestricted = self.viewModel.composerSendRestrictionReason == .roomSendNotAllowed
+                self.glassInputBar.inputNode.setComposerLocked(blocked && !isRoomSendRestricted)
+            }
+            .store(in: &cancellables)
+
+        viewModel.$composerSendRestrictionReason
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] reason in
+                guard let self, !self.isPreviewMode else { return }
+                self.showsReadOnlyComposerPlaceholder = reason == .roomSendNotAllowed
+                self.glassInputBar.inputNode.setComposerLocked(self.viewModel.isComposerSendBlocked && reason != .roomSendNotAllowed)
+                self.updateComposerChrome()
+                GlassService.shared.setNeedsCapture()
+                self.updateTableInsetsForInputBar()
+                self.updateDateHeaderOverlay()
+            }
+            .store(in: &cancellables)
+
+        viewModel.$isRoomEncrypted
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, !self.isPreviewMode else { return }
+                self.updateComposerChrome()
+                GlassService.shared.setNeedsCapture()
+                self.updateTableInsetsForInputBar()
+                self.updateDateHeaderOverlay()
+            }
+            .store(in: &cancellables)
+
+        viewModel.$pinnedMessagesState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, !self.isPreviewMode else { return }
+                self.updatePinnedMessagesBanner(animated: true)
             }
             .store(in: &cancellables)
     }
@@ -1639,6 +1963,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             })
         }
 
+        if viewModel.canTogglePin(message) {
+            let title = viewModel.isPinned(message)
+                ? String(localized: "Unpin")
+                : String(localized: "Pin")
+            actions.append(UIAccessibilityCustomAction(name: title) { [weak self] _ in
+                self?.viewModel.togglePinned(message)
+                return true
+            })
+        }
+
         if message.itemIdentifier != nil && !message.content.isRedacted {
             actions.append(UIAccessibilityCustomAction(name: "Delete") { [weak self] _ in
                 self?.triggerPaintSplashDelete(for: message)
@@ -1800,6 +2134,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 image: UIImage(systemName: "arrowshape.turn.up.right"),
                 handler: { [weak self] in
                     self?.onForwardMessage?(message)
+                }
+            ))
+        }
+
+        if viewModel.canTogglePin(message) {
+            let isPinned = viewModel.isPinned(message)
+            actions.append(ContextMenuAction(
+                title: isPinned ? String(localized: "Unpin") : String(localized: "Pin"),
+                image: (isPinned ? AppIcon.pinSlash : AppIcon.pin)
+                    .rendered(size: 17, weight: .medium, color: .label),
+                handler: { [weak self] in
+                    self?.viewModel.togglePinned(message)
                 }
             ))
         }
@@ -2131,24 +2477,34 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     // MARK: - Smart Navigation (Journey / Teleportation)
 
-    private func navigateToMessage(eventId: String) {
-        // If message is visible on screen — smooth scroll (journey)
+    @discardableResult
+    private func navigateToMessage(eventId: String, attempt: Int = 0) -> Bool {
+        guard !isTeleporting else {
+            return false
+        }
+
         if let idx = viewModel.indexOfMessage(eventId: eventId) {
             let targetIP = IndexPath(row: idx, section: 0)
-            let visibleRect = node.tableNode.view.bounds
-            if let cellNode = node.tableNode.nodeForRow(at: targetIP),
-               visibleRect.intersects(cellNode.view.frame) {
-                print("[nav] journey — already visible at idx=\(idx)")
-                node.tableNode.scrollToRow(at: targetIP, at: .middle, animated: true)
+
+            guard tableCanNavigate(to: targetIP) else {
+                return scheduleMessageNavigationRetryIfNeeded(eventId: eventId, attempt: attempt)
+            }
+
+            if shouldJourneyToMessage(at: targetIP) {
+                scrollJourneyToMessage(at: targetIP, animated: true)
                 highlightMessage(eventId: eventId, delay: 0.3)
-                return
+                return true
             }
         }
+
+        guard viewModel.messageWindowPosition(eventId: eventId) != .missing else {
+            return false
+        }
+
         // Otherwise — teleport (Telegram-style snapshot slide)
         // Inverted table: higher row = older. Jumping to older → content slides down, to newer → up.
-        let currentFirst = node.tableNode.indexPathsForVisibleRows().first?.row ?? 0
         let targetIdx = viewModel.indexOfMessage(eventId: eventId)
-        let direction: TeleportDirection = (targetIdx ?? Int.max) > currentFirst ? .up : .down
+        let direction = teleportDirectionToMessage(eventId: eventId, targetIndex: targetIdx)
 
         teleport(direction: direction) {
             self.viewModel.jumpToMessage(eventId: eventId)
@@ -2158,6 +2514,141 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
             self.highlightMessage(eventId: eventId, delay: 0.1)
         }
+        return true
+    }
+
+    private func tableCanNavigate(to indexPath: IndexPath) -> Bool {
+        let tableView = node.tableNode.view
+        guard tableView.bounds.width > 0,
+              tableView.bounds.height > 0,
+              tableView.contentSize.height > 0,
+              indexPath.section < tableView.numberOfSections,
+              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
+        else {
+            return false
+        }
+        tableView.layoutIfNeeded()
+        return true
+    }
+
+    private func scheduleMessageNavigationRetryIfNeeded(eventId: String, attempt: Int) -> Bool {
+        guard attempt < MessageNavigation.maxReadinessRetries else {
+            return false
+        }
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + MessageNavigation.readinessRetryDelay
+        ) { [weak self] in
+            self?.navigateToMessage(eventId: eventId, attempt: attempt + 1)
+        }
+        return true
+    }
+
+    private func shouldJourneyToMessage(at indexPath: IndexPath) -> Bool {
+        let tableView = node.tableNode.view
+        let targetRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
+        guard targetRect.width > 0,
+              targetRect.height > 0 else {
+            return isMessageIndexNearVisibleRows(indexPath.row)
+        }
+
+        let viewport = unobscuredTableViewportInView()
+            ?? tableView.convert(tableView.bounds, to: view)
+        let verticalDistance: CGFloat
+        if targetRect.maxY < viewport.minY {
+            verticalDistance = viewport.minY - targetRect.maxY
+        } else if targetRect.minY > viewport.maxY {
+            verticalDistance = targetRect.minY - viewport.maxY
+        } else {
+            verticalDistance = 0
+        }
+
+        let threshold = max(viewport.height, tableView.bounds.height)
+            * MessageNavigation.journeyDistanceScreens
+        return verticalDistance <= threshold
+    }
+
+    private func scrollJourneyToMessage(at indexPath: IndexPath, animated: Bool) {
+        let tableView = node.tableNode.view
+        tableView.layoutIfNeeded()
+
+        let targetRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
+        guard targetRect.width > 0,
+              targetRect.height > 0 else {
+            node.tableNode.scrollToRow(at: indexPath, at: .middle, animated: animated)
+            return
+        }
+
+        let viewport = unobscuredTableViewportInView()
+            ?? tableView.convert(tableView.bounds, to: view)
+        let deltaY = targetRect.midY - viewport.midY
+        let offsetBounds = tableOffsetBounds(for: tableView)
+        let beforeOffset = node.tableNode.contentOffset
+        var targetOffset = node.tableNode.contentOffset
+        targetOffset.y = min(
+            max(targetOffset.y - deltaY, offsetBounds.minY),
+            offsetBounds.maxY
+        )
+
+        if abs(targetOffset.y - beforeOffset.y) <= 0.5 {
+            return
+        }
+
+        let isLeavingExactLiveEdge = beforeOffset.y <= offsetBounds.minY + 0.5
+            && targetOffset.y > offsetBounds.minY + 0.5
+        let applyTargetOffset = { [weak self] in
+            guard let self else { return }
+            self.node.tableNode.setContentOffset(targetOffset, animated: animated)
+        }
+        if isLeavingExactLiveEdge {
+            var nudgeOffset = beforeOffset
+            nudgeOffset.y = min(offsetBounds.minY + 1, offsetBounds.maxY)
+            node.tableNode.setContentOffset(nudgeOffset, animated: false)
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + MessageNavigation.liveEdgeNudgeDelay,
+                execute: applyTargetOffset
+            )
+        } else {
+            applyTargetOffset()
+        }
+    }
+
+    private func isMessageIndexNearVisibleRows(_ index: Int) -> Bool {
+        let visibleRows = node.tableNode.indexPathsForVisibleRows().map(\.row)
+        guard let minRow = visibleRows.min(),
+              let maxRow = visibleRows.max() else {
+            return false
+        }
+        if index < minRow {
+            return minRow - index <= visibleRows.count
+        }
+        if index > maxRow {
+            return index - maxRow <= visibleRows.count
+        }
+        return true
+    }
+
+    private func teleportDirectionToMessage(eventId: String, targetIndex: Int?) -> TeleportDirection {
+        switch viewModel.messageWindowPosition(eventId: eventId) {
+        case .newerThanCurrentWindow:
+            return .down
+        case .olderThanCurrentWindow:
+            return .up
+        case .inCurrentWindow:
+            return teleportDirectionWithinCurrentWindow(targetIndex: targetIndex)
+        case .missing:
+            return .up
+        }
+    }
+
+    private func teleportDirectionWithinCurrentWindow(targetIndex: Int?) -> TeleportDirection {
+        guard let targetIndex else { return .up }
+        let visibleRows = node.tableNode.indexPathsForVisibleRows().map(\.row)
+        guard let minRow = visibleRows.min(),
+              let maxRow = visibleRows.max() else {
+            return .up
+        }
+        let visibleMidpoint = (minRow + maxRow) / 2
+        return targetIndex > visibleMidpoint ? .up : .down
     }
 
     private func highlightMessage(eventId: String, delay: TimeInterval) {
@@ -2191,7 +2682,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func teleport(direction: TeleportDirection, swapData: () -> Void, scrollAfter: () -> Void) {
         let tableView = node.tableNode.view
         guard let snapshot = tableView.snapshotView(afterScreenUpdates: false) else {
-            swapData()
+            completeTeleportWithoutAnimation(
+                swapData: swapData,
+                scrollAfter: scrollAfter
+            )
             return
         }
 
@@ -2252,6 +2746,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         tableAnim.delegate = TeleportAnimationDelegate { [weak self, weak snapshotContainer] in
             snapshotContainer?.removeFromSuperview()
             self?.isTeleporting = false
+            self?.updateScrollToLiveVisibility()
             self?.updateDateHeaderOverlay()
             self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         }
@@ -2259,6 +2754,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         // Sustain glass capture for the full spring animation
         GlassService.shared.captureFor(duration: springTiming.settlingDuration)
+    }
+
+    private func completeTeleportWithoutAnimation(
+        swapData: () -> Void,
+        scrollAfter: () -> Void
+    ) {
+        swapData()
+        node.tableNode.reloadData()
+        node.tableNode.view.layoutIfNeeded()
+        scrollAfter()
+        updateScrollToLiveVisibility()
+        updateDateHeaderOverlay()
+        scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
+        GlassService.shared.setNeedsCapture()
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -2302,6 +2811,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let sourceView = node.tableNode.view
         glassNavBar.sourceView = sourceView
         glassInputBar.sourceView = sourceView
+        unencryptedNoticeView.sourceView = sourceView
         if Self.showGlassComparison {
             glassComparison.sourceView = sourceView
         }
@@ -3079,6 +3589,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         present(alert, animated: true)
     }
 
+    private func presentPinnedMessagesError(_ error: Error) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(
+            title: String(localized: "Could Not Update Pinned Messages"),
+            message: error.localizedDescription,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+        present(alert, animated: true)
+    }
+
     private func presentSendFailureNotice(_ notice: ChatViewModel.SendFailureNotice) {
         guard presentedViewController == nil else { return }
 
@@ -3098,6 +3619,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             present(alert, animated: true)
         case .recipientIdentityVerificationRequired:
             presentRoomSendSecurityIssue(context: notice.context)
+        case .roomSendNotAllowed:
+            let alert = UIAlertController(
+                title: String(localized: "Cannot Send Messages"),
+                message: String(localized: "Only people with posting permission can send messages in this room."),
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+            present(alert, animated: true)
         }
     }
 

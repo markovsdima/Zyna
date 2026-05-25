@@ -100,6 +100,13 @@ enum MessageWindowChangeOrigin: Equatable {
 /// rows. Most methods mutate state and emit UI updates — call them on
 /// main. The `queryOlder()` read-only method is thread-safe and
 /// designed for use from Texture's background batch-fetch queue.
+enum MessageWindowPosition {
+    case inCurrentWindow
+    case olderThanCurrentWindow
+    case newerThanCurrentWindow
+    case missing
+}
+
 final class MessageWindow {
 
     private struct PendingDuplicateFingerprint: Hashable {
@@ -311,6 +318,23 @@ final class MessageWindow {
         hasNewerInDB = checkHasNewerInDB()
         emitChange(stored, origin: .jump)
         log("jumpToOldest: window=\(stored.count)")
+    }
+
+    func position(of eventId: String) -> MessageWindowPosition {
+        guard let target = queryByEventId(eventId) else {
+            return .missing
+        }
+        guard let oldestTimestamp,
+              let newestTimestamp else {
+            return .inCurrentWindow
+        }
+        if target.timestamp < oldestTimestamp {
+            return .olderThanCurrentWindow
+        }
+        if target.timestamp > newestTimestamp {
+            return .newerThanCurrentWindow
+        }
+        return .inCurrentWindow
     }
 
     // MARK: - Cluster Peek

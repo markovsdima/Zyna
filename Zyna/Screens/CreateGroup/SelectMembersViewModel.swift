@@ -12,9 +12,16 @@ final class SelectMembersViewModel {
     @Published private(set) var searchResults: [UserProfile] = []
     @Published private(set) var selectedUsers: [UserProfile] = []
 
+    let allowsSkip: Bool
+
     var onNext: (([UserProfile]) -> Void)?
+    var onSkip: (() -> Void)?
 
     private var searchTask: Task<Void, Never>?
+
+    init(allowsSkip: Bool = false) {
+        self.allowsSkip = allowsSkip
+    }
 
     func searchUsers(_ query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -60,5 +67,10 @@ final class SelectMembersViewModel {
 
     func proceed() {
         onNext?(selectedUsers)
+    }
+
+    func skip() {
+        guard allowsSkip else { return }
+        onSkip?()
     }
 }

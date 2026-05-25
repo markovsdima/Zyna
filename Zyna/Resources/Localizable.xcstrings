@@ -4,6 +4,406 @@
     "" : {
 
     },
+    "Access and Visibility" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступ и видимость"
+          }
+        }
+      }
+    },
+    "A Storyline address is required before the Storyline can be shown in public search." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужен адрес сюжета, прежде чем его можно будет показывать в публичном поиске."
+          }
+        }
+      }
+    },
+    "Add to Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить в сюжет"
+          }
+        }
+      }
+    },
+    "Add the first chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавьте первый чат"
+          }
+        }
+      }
+    },
+    "Administration" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Администрирование"
+          }
+        }
+      }
+    },
+    "Anyone can join this Storyline without an invite." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Любой сможет вступить в этот сюжет без приглашения."
+          }
+        }
+      }
+    },
+    "Chats and Lines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чаты и линии"
+          }
+        }
+      }
+    },
+    "Choose a name before saving changes." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите название перед сохранением."
+          }
+        }
+      }
+    },
+    "Could Not Open Storyline Settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось открыть настройки сюжета"
+          }
+        }
+      }
+    },
+    "Could Not Save Storyline Access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить доступ к сюжету"
+          }
+        }
+      }
+    },
+    "Could not publish the Storyline address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось опубликовать адрес сюжета."
+          }
+        }
+      }
+    },
+    "Directory visibility controls whether this Storyline can be found in public search." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видимость в каталоге определяет, можно ли найти этот сюжет в публичном поиске."
+          }
+        }
+      }
+    },
+    "Directions within this Storyline will appear here." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Здесь появятся направления внутри сюжета."
+          }
+        }
+      }
+    },
+    "Edit who can change this Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Настройте, кто может менять этот сюжет"
+          }
+        }
+      }
+    },
+    "Failed to save Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить сюжет"
+          }
+        }
+      }
+    },
+    "No description" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Без описания"
+          }
+        }
+      }
+    },
+    "Only invited people can join this Storyline." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только приглашённые смогут вступить в этот сюжет."
+          }
+        }
+      }
+    },
+    "No accessible chats" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет доступных чатов"
+          }
+        }
+      }
+    },
+    "No messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет сообщений"
+          }
+        }
+      }
+    },
+    "Organization" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Организация"
+          }
+        }
+      }
+    },
+    "Parent Storylines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Родительские сюжеты"
+          }
+        }
+      }
+    },
+    "Private Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приватный сюжет"
+          }
+        }
+      }
+    },
+    "Public Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Публичный сюжет"
+          }
+        }
+      }
+    },
+    "Remove Photo" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить фото"
+          }
+        }
+      }
+    },
+    "Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет"
+          }
+        }
+      }
+    },
+    "Storyline Access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступ к сюжету"
+          }
+        }
+      }
+    },
+    "Storyline Directory" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Каталог сюжетов"
+          }
+        }
+      }
+    },
+    "Storyline Profile" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Профиль сюжета"
+          }
+        }
+      }
+    },
+    "Storyline Settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Настройки сюжета"
+          }
+        }
+      }
+    },
+    "Storyline address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес сюжета"
+          }
+        }
+      }
+    },
+    "Storyline address is required." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужен адрес сюжета."
+          }
+        }
+      }
+    },
+    "Storyline address required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужен адрес сюжета"
+          }
+        }
+      }
+    },
+    "Storyline name is required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужно название сюжета"
+          }
+        }
+      }
+    },
+    "This Storyline is not available locally yet." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот сюжет пока недоступен локально."
+          }
+        }
+      }
+    },
+    "This Storyline currently uses an access rule Zyna cannot edit directly. Choosing an option will replace it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сейчас в этом сюжете используется правило доступа, которое Zyna не может редактировать напрямую. Выбор варианта заменит его."
+          }
+        }
+      }
+    },
+    "This Storyline address is already taken." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот адрес сюжета уже занят."
+          }
+        }
+      }
+    },
+    "Untitled" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Без названия"
+          }
+        }
+      }
+    },
+    "View and repair parent Storyline links" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Посмотреть и исправить связи с родительскими сюжетами"
+          }
+        }
+      }
+    },
+    "You do not have permission to edit this Storyline profile." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет прав менять профиль этого сюжета."
+          }
+        }
+      }
+    },
+    "storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "сюжет"
+          }
+        }
+      }
+    },
     "%@ accepted %@'s join request" : {
       "localizations" : {
         "ru" : {
@@ -374,6 +774,58 @@
         }
       }
     },
+    "%lld chats" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld chat"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld chats"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld чата"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld чатов"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld чат"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld чатов"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld members" : {
       "localizations" : {
         "en" : {
@@ -478,6 +930,102 @@
         }
       }
     },
+    "%lld tracks" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld track"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld tracks"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld линии"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld линий"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld линия"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld линий"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%llu members" : {
+      "localizations" : {
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu участника"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu участников"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu участник"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%llu участников"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "1 member" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 участник"
+          }
+        }
+      }
+    },
     "A previous scan was interrupted. Pages: %d." : {
       "localizations" : {
         "ru" : {
@@ -528,6 +1076,16 @@
         }
       }
     },
+    "Access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступ"
+          }
+        }
+      }
+    },
     "Add" : {
       "localizations" : {
         "ru" : {
@@ -538,8 +1096,25 @@
         }
       }
     },
+    "Adding..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавляем..."
+          }
+        }
+      }
+    },
     "Adds this reaction" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавляет эту реакцию"
+          }
+        }
+      }
     },
     "Admin" : {
       "localizations" : {
@@ -547,6 +1122,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Админ"
+          }
+        }
+      }
+    },
+    "All Members" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все участники"
           }
         }
       }
@@ -562,7 +1147,24 @@
       }
     },
     "Already applied" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уже применено"
+          }
+        }
+      }
+    },
+    "Already added" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уже добавлен"
+          }
+        }
+      }
     },
     "Another device wants to verify this session." : {
       "localizations" : {
@@ -570,6 +1172,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Другое устройство хочет верифицировать эту сессию."
+          }
+        }
+      }
+    },
+    "Anyone can find and join. Messages are not encrypted." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Любой сможет найти комнату и присоединиться. Сообщения не шифруются."
           }
         }
       }
@@ -774,8 +1386,45 @@
         }
       }
     },
+    "Cannot Send Messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нельзя отправлять сообщения"
+          }
+        }
+      }
+    },
+    "Cannot determine the server name for the room address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось определить имя сервера для адреса комнаты."
+          }
+        }
+      }
+    },
+    "Cannot determine the server name for the Storyline address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось определить сервер для адреса сюжета."
+          }
+        }
+      }
+    },
     "Caption" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подпись"
+          }
+        }
+      }
     },
     "Change" : {
       "localizations" : {
@@ -798,7 +1447,14 @@
       }
     },
     "Changes member role" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Меняет роль участника"
+          }
+        }
+      }
     },
     "Chat Theme" : {
       "localizations" : {
@@ -881,7 +1537,14 @@
       }
     },
     "Close" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрыть"
+          }
+        }
+      }
     },
     "Close preview" : {
       "localizations" : {
@@ -889,6 +1552,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Закрыть плашку"
+          }
+        }
+      }
+    },
+    "Close Search" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрыть поиск"
           }
         }
       }
@@ -1003,12 +1676,42 @@
         }
       }
     },
+    "Could not continue the secure call. Check participant verification and try again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось продолжить защищённый звонок. Проверьте подтверждение участника и попробуйте снова."
+          }
+        }
+      }
+    },
+    "Could not create room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать комнату"
+          }
+        }
+      }
+    },
     "Could Not Load Devices" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось загрузить устройства"
+          }
+        }
+      }
+    },
+    "Could not send encrypted call signaling. Try again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось отправить зашифрованный сигнал звонка. Попробуйте снова."
           }
         }
       }
@@ -1024,7 +1727,14 @@
       }
     },
     "Could Not Simulate Soft Logout" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось симулировать мягкий выход"
+          }
+        }
+      }
     },
     "Could Not Update Trust" : {
       "localizations" : {
@@ -1032,26 +1742,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось обновить доверие"
-          }
-        }
-      }
-    },
-    "Could not continue the secure call. Check participant verification and try again." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Не удалось продолжить защищённый звонок. Проверьте подтверждение участника и попробуйте снова."
-          }
-        }
-      }
-    },
-    "Could not send encrypted call signaling. Try again." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Не удалось отправить зашифрованный сигнал звонка. Попробуйте снова."
           }
         }
       }
@@ -1072,6 +1762,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Создать группу"
+          }
+        }
+      }
+    },
+    "Creating..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создаём..."
           }
         }
       }
@@ -1197,10 +1897,24 @@
       }
     },
     "Diagnostics" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Диагностика"
+          }
+        }
+      }
     },
     "Discard" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить изменения"
+          }
+        }
+      }
     },
     "Dismisses this preview" : {
       "localizations" : {
@@ -1283,7 +1997,14 @@
       }
     },
     "emoji" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "эмодзи"
+          }
+        }
+      }
     },
     "Encrypted Key Backup Is Off" : {
       "localizations" : {
@@ -1415,8 +2136,55 @@
         }
       }
     },
+    "Failed to create chat: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать чат: %@"
+          }
+        }
+      }
+    },
+    "Failed to create room: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать комнату: %@"
+          }
+        }
+      }
+    },
+    "Failed to join room: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось присоединиться к комнате: %@"
+          }
+        }
+      }
+    },
+    "Failed to leave room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось покинуть комнату"
+          }
+        }
+      }
+    },
     "Fix duplicate or stuck local timeline rows" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправить дубли или зависшие локальные строки таймлайна"
+          }
+        }
+      }
     },
     "Forest" : {
       "localizations" : {
@@ -1474,6 +2242,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Зелёный"
+          }
+        }
+      }
+    },
+    "Group" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Группа"
           }
         }
       }
@@ -1584,6 +2362,16 @@
         }
       }
     },
+    "Invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пригласить"
+          }
+        }
+      }
+    },
     "Invite Members" : {
       "localizations" : {
         "ru" : {
@@ -1610,6 +2398,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ирис и мята"
+          }
+        }
+      }
+    },
+    "Join Room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Присоединиться"
+          }
+        }
+      }
+    },
+    "Joining..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Присоединяемся..."
           }
         }
       }
@@ -1782,6 +2590,66 @@
         }
       }
     },
+    "Leave Anyway" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Всё равно выйти"
+          }
+        }
+      }
+    },
+    "Leave Conversation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Покинуть переписку"
+          }
+        }
+      }
+    },
+    "Leave Room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Покинуть комнату"
+          }
+        }
+      }
+    },
+    "Leaving Conversation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выходим из переписки"
+          }
+        }
+      }
+    },
+    "Leaving May Lock Room Management" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выход может заблокировать управление комнатой"
+          }
+        }
+      }
+    },
+    "Leaving Room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выходим из комнаты"
+          }
+        }
+      }
+    },
     "Light" : {
       "localizations" : {
         "ru" : {
@@ -1798,6 +2666,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Загрузка"
+          }
+        }
+      }
+    },
+    "Loading permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузка прав"
           }
         }
       }
@@ -1842,6 +2720,16 @@
         }
       }
     },
+    "Matrix client is not ready." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Matrix-клиент ещё не готов."
+          }
+        }
+      }
+    },
     "Member" : {
       "localizations" : {
         "ru" : {
@@ -1862,6 +2750,16 @@
         }
       }
     },
+    "Members can send messages according to room permissions." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники смогут писать согласно правам комнаты."
+          }
+        }
+      }
+    },
     "Message" : {
       "localizations" : {
         "ru" : {
@@ -1872,22 +2770,22 @@
         }
       }
     },
-    "Message Not Sent" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сообщение не отправлено"
-          }
-        }
-      }
-    },
     "Message Keys Are Not Fully Saved" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ключи сообщений сохранены не полностью"
+          }
+        }
+      }
+    },
+    "Message Not Sent" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение не отправлено"
           }
         }
       }
@@ -1912,8 +2810,25 @@
         }
       }
     },
+    "Moderators Only" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только модераторы"
+          }
+        }
+      }
+    },
     "More Emoji" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ещё эмодзи"
+          }
+        }
+      }
     },
     "My Colors" : {
       "localizations" : {
@@ -2012,13 +2927,164 @@
       }
     },
     "No emoji found." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эмодзи не найдены."
+          }
+        }
+      }
     },
     "No local timeline issues found." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Локальных проблем таймлайна не найдено."
+          }
+        }
+      }
     },
     "No reactions yet." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Реакций пока нет."
+          }
+        }
+      }
+    },
+    "No results" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ничего не найдено"
+          }
+        }
+      }
+    },
+    "Not encrypted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не зашифровано"
+          }
+        }
+      }
+    },
+    "Not enough permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недостаточно прав"
+          }
+        }
+      }
+    },
+    "Ask to join" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "По запросу"
+          }
+        }
+      }
+    },
+    "Custom access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Особый доступ"
+          }
+        }
+      }
+    },
+    "Custom history" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История: особая"
+          }
+        }
+      }
+    },
+    "Encrypted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Зашифровано"
+          }
+        }
+      }
+    },
+    "Encryption unknown" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Шифрование неизвестно"
+          }
+        }
+      }
+    },
+    "History from invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История с приглашения"
+          }
+        }
+      }
+    },
+    "History from joining" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История со входа"
+          }
+        }
+      }
+    },
+    "History visible to anyone" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История видна всем"
+          }
+        }
+      }
+    },
+    "New members can see history" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новым видна история"
+          }
+        }
+      }
+    },
+    "Restricted access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ограниченная"
+          }
+        }
+      }
     },
     "No Specific Participant Found" : {
       "localizations" : {
@@ -2041,7 +3107,14 @@
       }
     },
     "Offline" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не в сети"
+          }
+        }
+      }
     },
     "OK" : {
       "localizations" : {
@@ -2064,7 +3137,34 @@
       }
     },
     "Online" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В сети"
+          }
+        }
+      }
+    },
+    "Only invited people can join. Messages are encrypted." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Войти смогут только приглашённые. Сообщения шифруются."
+          }
+        }
+      }
+    },
+    "Only people with posting permission can send messages in this room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Писать в этой комнате могут только участники с правом отправки."
+          }
+        }
+      }
     },
     "Open Profile" : {
       "localizations" : {
@@ -2076,11 +3176,35 @@
         }
       }
     },
+    "Open Room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть комнату"
+          }
+        }
+      }
+    },
     "Opens the member list" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает список участников"
+          }
+        }
+      }
     },
     "Opens this emoji category" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает эту категорию эмодзи"
+          }
+        }
+      }
     },
     "Orange" : {
       "localizations" : {
@@ -2162,6 +3286,16 @@
         }
       }
     },
+    "People" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Люди"
+          }
+        }
+      }
+    },
     "Photos" : {
       "localizations" : {
         "ru" : {
@@ -2212,8 +3346,25 @@
         }
       }
     },
+    "Posting Permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Права на отправку"
+          }
+        }
+      }
+    },
     "Preserve keys and show re-login" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранить ключи и показать повторный вход"
+          }
+        }
+      }
     },
     "Previous Theme" : {
       "localizations" : {
@@ -2225,12 +3376,42 @@
         }
       }
     },
+    "Private" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приватная"
+          }
+        }
+      }
+    },
     "Profile" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Профиль"
+          }
+        }
+      }
+    },
+    "Public" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Публичная"
+          }
+        }
+      }
+    },
+    "Public Rooms" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Публичные комнаты"
           }
         }
       }
@@ -2256,7 +3437,14 @@
       }
     },
     "Reactions" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Реакции"
+          }
+        }
+      }
     },
     "Reason (optional)" : {
       "localizations" : {
@@ -2318,12 +3506,42 @@
         }
       }
     },
+    "Regular members can read, but only moderators can post." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обычные участники смогут читать, но писать смогут только модераторы."
+          }
+        }
+      }
+    },
     "Remove" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Удалить"
+          }
+        }
+      }
+    },
+    "Room name is required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите название комнаты"
+          }
+        }
+      }
+    },
+    "Room was created, but it is not available locally yet. Please wait for sync and open it from the room list." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Комната создана, но пока недоступна локально. Дождитесь синхронизации и откройте её из списка чатов."
           }
         }
       }
@@ -2359,7 +3577,14 @@
       }
     },
     "Remove reaction" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить реакцию"
+          }
+        }
+      }
     },
     "Rename" : {
       "localizations" : {
@@ -2382,19 +3607,54 @@
       }
     },
     "Repair" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправить"
+          }
+        }
+      }
     },
     "Repair Complete" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправление завершено"
+          }
+        }
+      }
     },
     "Repair Failed" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправление не удалось"
+          }
+        }
+      }
     },
     "Repair Local Message Cache" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправить локальный кэш сообщений"
+          }
+        }
+      }
     },
     "Repairing" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправляем"
+          }
+        }
+      }
     },
     "Reset" : {
       "localizations" : {
@@ -2436,6 +3696,16 @@
         }
       }
     },
+    "Review Members" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Посмотреть участников"
+          }
+        }
+      }
+    },
     "Role" : {
       "localizations" : {
         "ru" : {
@@ -2446,12 +3716,682 @@
         }
       }
     },
+    "%@ (Current)" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ (сейчас)"
+          }
+        }
+      }
+    },
+    "Administrators" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Администраторы"
+          }
+        }
+      }
+    },
+    "Ban People" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Банить участников"
+          }
+        }
+      }
+    },
+    "Could Not Save Room Permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить разрешения комнаты"
+          }
+        }
+      }
+    },
+    "Delete Messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалять сообщения"
+          }
+        }
+      }
+    },
+    "Everyone" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все"
+          }
+        }
+      }
+    },
+    "Invite People" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приглашать людей"
+          }
+        }
+      }
+    },
+    "Member Moderation" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Модерация участников"
+          }
+        }
+      }
+    },
+    "Member roles are changed from each member profile." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Роли участников меняются из профиля конкретного участника."
+          }
+        }
+      }
+    },
+    "Messages and Content" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщения и контент"
+          }
+        }
+      }
+    },
+    "Moderators" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Модераторы"
+          }
+        }
+      }
+    },
+    "Only users who can edit room power levels can change these settings." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эти настройки могут менять только пользователи с правом редактировать power levels комнаты."
+          }
+        }
+      }
+    },
+    "Opens room roles and permissions settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает настройки ролей и разрешений комнаты"
+          }
+        }
+      }
+    },
+    "Remove People" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалять участников"
+          }
+        }
+      }
+    },
+    "Reset Permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сбросить разрешения"
+          }
+        }
+      }
+    },
+    "Reset Permissions?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сбросить разрешения?"
+          }
+        }
+      }
+    },
+    "Reset returns permissions to the default Matrix power levels." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сброс возвращает разрешения к стандартным Matrix power levels."
+          }
+        }
+      }
+    },
+    "Roles" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Роли"
+          }
+        }
+      }
+    },
+    "Roles and Permissions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Роли и разрешения"
+          }
+        }
+      }
+    },
+    "Room Address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес комнаты"
+          }
+        }
+      }
+    },
+    "Room Avatar" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Аватар комнаты"
+          }
+        }
+      }
+    },
+    "Room Details" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Детали комнаты"
+          }
+        }
+      }
+    },
+    "Room Name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название комнаты"
+          }
+        }
+      }
+    },
+    "Room Topic" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Тема комнаты"
+          }
+        }
+      }
+    },
+    "Room permissions will be returned to the Matrix defaults." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Разрешения комнаты будут возвращены к стандартным значениям Matrix."
+          }
+        }
+      }
+    },
+    "Send Messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправлять сообщения"
+          }
+        }
+      }
+    },
+    "A room address is required before the room can be shown in the public room directory." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чтобы показывать комнату в публичном каталоге, нужен адрес комнаты."
+          }
+        }
+      }
+    },
+    "Add a room address before showing the room in the directory." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавьте адрес комнаты перед публикацией в каталоге."
+          }
+        }
+      }
+    },
+    "Anyone" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Кто угодно"
+          }
+        }
+      }
+    },
+    "Anyone can join this room without an invite." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Любой сможет войти без приглашения."
+          }
+        }
+      }
+    },
+    "Could Not Save Room Settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить настройки комнаты"
+          }
+        }
+      }
+    },
+    "Could not publish this room address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось опубликовать этот адрес комнаты."
+          }
+        }
+      }
+    },
+    "Directory visibility controls whether this room can be found in public room search." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видимость в каталоге определяет, будет ли комната находиться в публичном поиске."
+          }
+        }
+      }
+    },
+    "Enable" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включить"
+          }
+        }
+      }
+    },
+    "Enable End-to-End Encryption?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включить сквозное шифрование?"
+          }
+        }
+      }
+    },
+    "Encryption" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Шифрование"
+          }
+        }
+      }
+    },
+    "End-to-End Encryption" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сквозное шифрование"
+          }
+        }
+      }
+    },
+    "End-to-end encryption cannot be disabled after it is enabled." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "После включения сквозное шифрование нельзя отключить."
+          }
+        }
+      }
+    },
+    "From invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "С приглашения"
+          }
+        }
+      }
+    },
+    "From joining" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Со входа"
+          }
+        }
+      }
+    },
+    "History can be read without joining the room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Историю можно читать без входа в комнату."
+          }
+        }
+      }
+    },
+    "Invite Only" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "По приглашению"
+          }
+        }
+      }
+    },
+    "Members can see history from the moment they joined." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники видят историю с момента входа."
+          }
+        }
+      }
+    },
+    "Members can see history from the moment they were invited." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники видят историю с момента приглашения."
+          }
+        }
+      }
+    },
+    "New members can see messages sent before they joined." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новые участники видят сообщения, отправленные до их входа."
+          }
+        }
+      }
+    },
+    "New members can see previous history" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новые участники видят прошлую историю"
+          }
+        }
+      }
+    },
+    "Not Set" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не задан"
+          }
+        }
+      }
+    },
+    "Only invited people can join this room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Войти смогут только приглашённые участники."
+          }
+        }
+      }
+    },
+    "Opens room security and privacy settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает настройки безопасности и конфиденциальности комнаты"
+          }
+        }
+      }
+    },
+    "Room Access" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Доступ к комнате"
+          }
+        }
+      }
+    },
+    "Room Directory" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Каталог комнат"
+          }
+        }
+      }
+    },
+    "Room History" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История комнаты"
+          }
+        }
+      }
+    },
+    "Room address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес комнаты"
+          }
+        }
+      }
+    },
+    "Room address is required." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Укажите адрес комнаты."
+          }
+        }
+      }
+    },
+    "Room address required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужен адрес комнаты"
+          }
+        }
+      }
+    },
+    "Saving" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранение"
+          }
+        }
+      }
+    },
+    "Security and Privacy" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Безопасность и конфиденциальность"
+          }
+        }
+      }
+    },
+    "This cannot be turned off later for this room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Потом его нельзя будет отключить для этой комнаты."
+          }
+        }
+      }
+    },
+    "This room currently uses an access rule Zyna cannot edit directly. Choosing an option will replace it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сейчас в комнате используется правило доступа, которое Zyna не редактирует напрямую. Выбор варианта заменит его."
+          }
+        }
+      }
+    },
+    "Use only the local part before the server name." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Укажите только часть адреса до имени сервера."
+          }
+        }
+      }
+    },
+    "Visible in Room Directory" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Видна в каталоге комнат"
+          }
+        }
+      }
+    },
+    "Visible in Storyline Directory" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Виден в каталоге сюжетов"
+          }
+        }
+      }
+    },
+    "World-readable history is available only for public unencrypted rooms." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История для всех доступна только в публичных незашифрованных комнатах."
+          }
+        }
+      }
+    },
+    "Who Can Join" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Кто может вступить"
+          }
+        }
+      }
+    },
+    "Room address contains unsupported characters." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес комнаты содержит неподдерживаемые символы."
+          }
+        }
+      }
+    },
+    "Room address is required for public rooms." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для публичной комнаты нужен адрес."
+          }
+        }
+      }
+    },
     "Room event" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Событие комнаты"
+          }
+        }
+      }
+    },
+    "Invalid Storyline address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Некорректный адрес сюжета."
           }
         }
       }
@@ -2566,8 +4506,25 @@
         }
       }
     },
+    "Search chats, people, rooms" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чаты, люди, комнаты"
+          }
+        }
+      }
+    },
     "Search emoji" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поиск эмодзи"
+          }
+        }
+      }
     },
     "Search employees" : {
       "localizations" : {
@@ -2575,6 +4532,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Поиск сотрудников"
+          }
+        }
+      }
+    },
+    "Search Error" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ошибка поиска"
           }
         }
       }
@@ -2599,6 +4566,16 @@
         }
       }
     },
+    "Searches messages in this room" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ищет сообщения в этой комнате"
+          }
+        }
+      }
+    },
     "Search users" : {
       "localizations" : {
         "ru" : {
@@ -2615,6 +4592,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Поиск (@user:server)"
+          }
+        }
+      }
+    },
+    "Searching..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ищем..."
+          }
+        }
+      }
+    },
+    "Type 3 or more characters to search people and public rooms." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите 3 или больше символов, чтобы искать людей и публичные комнаты."
           }
         }
       }
@@ -2640,7 +4637,14 @@
       }
     },
     "Send" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправить"
+          }
+        }
+      }
     },
     "Send Message" : {
       "localizations" : {
@@ -2648,6 +4652,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Написать"
+          }
+        }
+      }
+    },
+    "Sending messages is currently unavailable" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправка сообщений сейчас недоступна"
           }
         }
       }
@@ -2774,6 +4788,16 @@
         }
       }
     },
+    "Shows a confirmation before leaving" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывает подтверждение перед выходом"
+          }
+        }
+      }
+    },
     "Sign In" : {
       "localizations" : {
         "ru" : {
@@ -2885,10 +4909,34 @@
       }
     },
     "Simulate" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Симулировать"
+          }
+        }
+      }
     },
     "Simulate Soft Logout" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Симулировать мягкий выход"
+          }
+        }
+      }
+    },
+    "Skip" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пропустить"
+          }
+        }
+      }
     },
     "Slide to cancel" : {
       "localizations" : {
@@ -3030,6 +5078,46 @@
         }
       }
     },
+    "This conversation will be removed from your chats. Other participants will still have access to it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Эта переписка исчезнет из вашего списка чатов. У других участников она останется доступной."
+          }
+        }
+      }
+    },
+    "This room address is already taken." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот адрес комнаты уже занят."
+          }
+        }
+      }
+    },
+    "This room will be removed from your chats. You may be able to rejoin later if it stays public." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Комната исчезнет из вашего списка чатов. Если она останется публичной, вы сможете войти снова."
+          }
+        }
+      }
+    },
+    "This room will be removed from your chats. You will need another invite to rejoin." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Комната исчезнет из вашего списка чатов. Чтобы вернуться, понадобится новое приглашение."
+          }
+        }
+      }
+    },
     "This cannot be undone. Enter your account password to delete the old encrypted backup and reset encryption." : {
       "localizations" : {
         "ru" : {
@@ -3072,7 +5160,14 @@
       }
     },
     "This fixes local duplicate or stuck timeline rows. It does not delete messages from Matrix." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исправляет локальные дубли или зависшие строки таймлайна. Сообщения из Matrix не удаляются."
+          }
+        }
+      }
     },
     "This is how it looks in groups." : {
       "localizations" : {
@@ -3125,7 +5220,14 @@
       }
     },
     "This stops sync and shows the soft logout re-login screen without clearing encrypted message keys." : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Останавливает синхронизацию и показывает экран повторного входа после мягкого выхода, не очищая ключи зашифрованных сообщений."
+          }
+        }
+      }
     },
     "This will permanently destroy your current key backup. All previously encrypted messages that haven't been decrypted on this device will become unreadable forever.\n\nOnly do this if you've lost your recovery key and have no other verified devices." : {
       "localizations" : {
@@ -3167,22 +5269,22 @@
         }
       }
     },
-    "Unable to Save" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Не удалось сохранить"
-          }
-        }
-      }
-    },
     "Unable to decrypt message" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось расшифровать сообщение"
+          }
+        }
+      }
+    },
+    "Unable to Save" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось сохранить"
           }
         }
       }
@@ -3213,6 +5315,12 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "Updated messages: %1$lld\nDeleted local duplicates: %2$lld\nUpdated envelope items: %3$lld\nRetired envelopes: %4$lld"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обновлено сообщений: %1$lld\nУдалено локальных дублей: %2$lld\nОбновлено элементов оболочки: %3$lld\nСписано оболочек: %4$lld"
           }
         }
       }
@@ -3277,22 +5385,23 @@
         }
       }
     },
-    "Verify this device to send encrypted messages" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Подтвердите это устройство, чтобы отправлять зашифрованные сообщения"
-          }
-        }
-      }
-    },
     "Verify this device to make encrypted calls." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Подтвердите это устройство, чтобы совершать зашифрованные звонки."
+          }
+        }
+      }
+    },
+    "Verify this device to send encrypted messages" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подтвердите это устройство, чтобы отправлять зашифрованные сообщения"
           }
         }
       }
@@ -3373,6 +5482,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Вы"
+          }
+        }
+      }
+    },
+    "You are the only joined member. If you leave, nobody may be able to join this room again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы единственный участник в комнате. Если вы выйдете, возможно, никто больше не сможет в неё войти."
+          }
+        }
+      }
+    },
+    "You are the only member who can change roles and permissions. If you leave, remaining members may not be able to recover room administration. Promote another member before leaving." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы единственный участник, который может менять роли и разрешения. Если вы выйдете, оставшиеся участники могут потерять возможность восстановить управление комнатой. Перед выходом повысьте другого участника."
+          }
+        }
+      }
+    },
+    "You are the only member who can invite people and change roles or permissions. If you leave, remaining members may not be able to add people or recover room administration. Promote another member before leaving." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы единственный участник, который может приглашать людей и менять роли или разрешения. Если вы выйдете, оставшиеся участники могут потерять возможность добавлять людей и восстановить управление комнатой. Перед выходом повысьте другого участника."
+          }
+        }
+      }
+    },
+    "You are the only member who can invite people. If you leave, remaining members may not be able to add anyone else. Promote another member or lower the invite requirement before leaving." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы единственный участник, который может приглашать людей. Если вы выйдете, оставшиеся участники могут потерять возможность добавлять кого-либо ещё. Перед выходом повысьте другого участника или снизьте требование для приглашений."
           }
         }
       }
@@ -3483,6 +5632,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Вы отклонили заявку %@"
+          }
+        }
+      }
+    },
+    "You do not have permission to send call signaling in this room." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет прав на отправку сигналов звонка в этой комнате."
           }
         }
       }
@@ -3688,7 +5847,14 @@
       }
     },
     "Zyna" : {
-
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zyna"
+          }
+        }
+      }
     },
     "Zyna Blue" : {
       "localizations" : {
@@ -3776,6 +5942,1545 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zyna не будет повторять отправку этого сообщения автоматически. После устранения проблемы доверия нажмите на неотправленное сообщение и повторите отправку вручную."
+          }
+        }
+      }
+    },
+    "Could Not Update Pinned Messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось обновить закреплённые сообщения"
+          }
+        }
+      }
+    },
+    "Expands pinned messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Разворачивает закреплённые сообщения"
+          }
+        }
+      }
+    },
+    "Message not loaded yet" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщение ещё не загружено"
+          }
+        }
+      }
+    },
+    "No pinned messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет закреплённых сообщений"
+          }
+        }
+      }
+    },
+    "Opens a pinned message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает закреплённое сообщение"
+          }
+        }
+      }
+    },
+    "Opens pinned messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает закреплённые сообщения"
+          }
+        }
+      }
+    },
+    "Pin" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрепить"
+          }
+        }
+      }
+    },
+    "Pinned" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закреплённые"
+          }
+        }
+      }
+    },
+    "Pinned Messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закреплённые сообщения"
+          }
+        }
+      }
+    },
+    "Pinned message" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закреплённое сообщение"
+          }
+        }
+      }
+    },
+    "Unpin" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открепить"
+          }
+        }
+      }
+    },
+    "Notifications toggle will appear here" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Здесь будет переключатель уведомлений"
+          }
+        }
+      }
+    },
+    "Add to %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить в «%@»"
+          }
+        }
+      }
+    },
+    "Address contains unsupported characters." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес содержит неподдерживаемые символы."
+          }
+        }
+      }
+    },
+    "Address is required for public Storyline." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для публичного сюжета нужен адрес."
+          }
+        }
+      }
+    },
+    "Address is required for public Track." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для публичной линии нужен адрес."
+          }
+        }
+      }
+    },
+    "Anyone can find and join." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Любой сможет найти и присоединиться."
+          }
+        }
+      }
+    },
+    "Cannot determine the server name for the address." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось определить имя сервера для адреса."
+          }
+        }
+      }
+    },
+    "Chat Name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название чата"
+          }
+        }
+      }
+    },
+    "Could not create Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать сюжет"
+          }
+        }
+      }
+    },
+    "Could not create Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать линию"
+          }
+        }
+      }
+    },
+    "Could not remove from Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось убрать из сюжета"
+          }
+        }
+      }
+    },
+    "Could not remove from Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось убрать из линии"
+          }
+        }
+      }
+    },
+    "Could not encode Matrix state event content." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось закодировать содержимое Matrix state event."
+          }
+        }
+      }
+    },
+    "Create Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать чат"
+          }
+        }
+      }
+    },
+    "Create Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать сюжет"
+          }
+        }
+      }
+    },
+    "Create Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать линию"
+          }
+        }
+      }
+    },
+    "Create a Track inside %@ for a focused direction." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создайте линию внутри «%@» для отдельного направления."
+          }
+        }
+      }
+    },
+    "Create a nested direction for related chats." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать вложенное направление для связанных чатов."
+          }
+        }
+      }
+    },
+    "Create a regular chat and place it inside this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать обычный чат и поместить его в «%@»."
+          }
+        }
+      }
+    },
+    "Description (optional)" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Описание (необязательно)"
+          }
+        }
+      }
+    },
+    "Directions within this Track will appear here." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Здесь появятся направления внутри линии."
+          }
+        }
+      }
+    },
+    "Failed to create %@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Failed to create %1$@: %2$@"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось создать «%1$@»: %2$@"
+          }
+        }
+      }
+    },
+    "Gather related chats and tracks into one Storyline." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Соберите связанные чаты и линии в один сюжет."
+          }
+        }
+      }
+    },
+    "Name is required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Введите название"
+          }
+        }
+      }
+    },
+    "New Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новый сюжет"
+          }
+        }
+      }
+    },
+    "New Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Новая линия"
+          }
+        }
+      }
+    },
+    "Only invited people can find and join." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Найти и присоединиться смогут только приглашённые."
+          }
+        }
+      }
+    },
+    "Parent Storyline is not available locally." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Родительский сюжет пока недоступен локально."
+          }
+        }
+      }
+    },
+    "Remove from Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать из сюжета"
+          }
+        }
+      }
+    },
+    "Remove from Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать из линии"
+          }
+        }
+      }
+    },
+    "Storyline Address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес сюжета"
+          }
+        }
+      }
+    },
+    "Storyline Name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название сюжета"
+          }
+        }
+      }
+    },
+    "This address is already taken." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот адрес уже занят."
+          }
+        }
+      }
+    },
+    "Track" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Линия"
+          }
+        }
+      }
+    },
+    "Track Address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес линии"
+          }
+        }
+      }
+    },
+    "Track Name" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название линии"
+          }
+        }
+      }
+    },
+    "Add Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить чат"
+          }
+        }
+      }
+    },
+    "Choose what to add inside %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выберите, что добавить внутри «%@»."
+          }
+        }
+      }
+    },
+    "Could not add chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось добавить чат"
+          }
+        }
+      }
+    },
+    "Could not add to Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось добавить в сюжет"
+          }
+        }
+      }
+    },
+    "Existing Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Существующий чат"
+          }
+        }
+      }
+    },
+    "No chats found" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чаты не найдены"
+          }
+        }
+      }
+    },
+    "No chats to add" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет чатов для добавления"
+          }
+        }
+      }
+    },
+    "No Storylines found" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжеты не найдены"
+          }
+        }
+      }
+    },
+    "No Storylines to add" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет сюжетов для добавления"
+          }
+        }
+      }
+    },
+    "Place one of your current chats here. It can still appear elsewhere." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавьте сюда один из текущих чатов. Он всё равно сможет появляться в других сюжетах."
+          }
+        }
+      }
+    },
+    "Select a chat to add to %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выберите чат, который добавить в «%@»."
+          }
+        }
+      }
+    },
+    "Select a Storyline for %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выберите сюжет для «%@»."
+          }
+        }
+      }
+    },
+    "Applying change..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Применяем изменение..."
+          }
+        }
+      }
+    },
+    "Both sides recognize this link." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обе стороны подтверждают эту связь."
+          }
+        }
+      }
+    },
+    "Chat is not available locally." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат пока недоступен локально."
+          }
+        }
+      }
+    },
+    "Chat links to this Storyline. The Storyline can add this chat." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат ссылается на этот сюжет. Сюжет может добавить этот чат."
+          }
+        }
+      }
+    },
+    "Chat links to this Storyline. The Storyline cannot add this chat." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат ссылается на этот сюжет. Сюжет не может добавить этот чат."
+          }
+        }
+      }
+    },
+    "Chat side" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сторона чата"
+          }
+        }
+      }
+    },
+    "Confirm in Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подтвердить в чате"
+          }
+        }
+      }
+    },
+    "Could Not Load Storylines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить сюжеты"
+          }
+        }
+      }
+    },
+    "Could Not Update Storyline Link" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось обновить связь с сюжетом"
+          }
+        }
+      }
+    },
+    "Could not apply" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось применить"
+          }
+        }
+      }
+    },
+    "Declared by Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Указан в чате"
+          }
+        }
+      }
+    },
+    "Invalid Matrix response." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Некорректный ответ Matrix."
+          }
+        }
+      }
+    },
+    "Linked" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Связано"
+          }
+        }
+      }
+    },
+    "Listed by Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавлен в сюжет"
+          }
+        }
+      }
+    },
+    "Loading Storylines..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загружаем сюжеты..."
+          }
+        }
+      }
+    },
+    "Matrix request failed with HTTP %lld." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запрос Matrix завершился с HTTP %lld."
+          }
+        }
+      }
+    },
+    "Matrix state event was not found." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "State event Matrix не найден."
+          }
+        }
+      }
+    },
+    "Matrix stores this as two independent links. They can disagree, so Zyna lets you edit each side explicitly." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Matrix хранит это как две независимые связи. Они могут расходиться, поэтому Zyna даёт явно менять каждую сторону."
+          }
+        }
+      }
+    },
+    "Neither side currently declares this link." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сейчас ни одна сторона не указывает эту связь."
+          }
+        }
+      }
+    },
+    "Missing" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет"
+          }
+        }
+      }
+    },
+    "No Storylines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет сюжетов"
+          }
+        }
+      }
+    },
+    "None" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет"
+          }
+        }
+      }
+    },
+    "Opens Storyline links" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открывает связи с сюжетами"
+          }
+        }
+      }
+    },
+    "Present" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Есть"
+          }
+        }
+      }
+    },
+    "Remove Chat Link" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать связь в чате"
+          }
+        }
+      }
+    },
+    "Remove from Storyline List" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Убрать из списка сюжета"
+          }
+        }
+      }
+    },
+    "Shows Storyline link details" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывает детали связи с сюжетом"
+          }
+        }
+      }
+    },
+    "Storyline and chat are linked in both directions." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет и чат связаны в обе стороны."
+          }
+        }
+      }
+    },
+    "Storyline and chat are not linked." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет и чат не связаны."
+          }
+        }
+      }
+    },
+    "Storyline links to this chat. The chat can confirm the return link." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет ссылается на этот чат. Чат может подтвердить обратную связь."
+          }
+        }
+      }
+    },
+    "Storyline links to this chat. The chat cannot confirm the return link." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет ссылается на этот чат. Чат не может подтвердить обратную связь."
+          }
+        }
+      }
+    },
+    "Storyline side" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сторона сюжета"
+          }
+        }
+      }
+    },
+    "Storylines" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжеты"
+          }
+        }
+      }
+    },
+    "The chat points back to the Storyline with m.space.parent." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат ссылается обратно на сюжет через m.space.parent."
+          }
+        }
+      }
+    },
+    "The chat points to this Storyline, but the Storyline does not show it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат ссылается на этот сюжет, но сюжет не показывает чат."
+          }
+        }
+      }
+    },
+    "The Storyline lists this chat with m.space.child." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет перечисляет этот чат через m.space.child."
+          }
+        }
+      }
+    },
+    "The Storyline shows this chat, but the chat does not confirm it." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сюжет показывает этот чат, но чат не подтверждает связь."
+          }
+        }
+      }
+    },
+    "Unlinked" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не связано"
+          }
+        }
+      }
+    },
+    "Locked" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недоступно"
+          }
+        }
+      }
+    },
+    "No permission to edit this Storyline" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет прав менять этот сюжет"
+          }
+        }
+      }
+    },
+    "Ready to add" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можно добавить"
+          }
+        }
+      }
+    },
+    "You do not have permission to edit this Storyline." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет прав менять этот сюжет."
+          }
+        }
+      }
+    },
+    "You do not have permission to edit this side." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет прав менять эту сторону."
+          }
+        }
+      }
+    },
+    "%@ Preview" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Предпросмотр: «%@»"
+          }
+        }
+      }
+    },
+    "%lld children" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld child"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld children"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld элемента"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld элементов"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld элемент"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld элементов"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "Accept Invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Принять приглашение"
+          }
+        }
+      }
+    },
+    "Accept the invite to open this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Примите приглашение, чтобы открыть «%@»."
+          }
+        }
+      }
+    },
+    "Access details are not available." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Детали доступа недоступны."
+          }
+        }
+      }
+    },
+    "Address" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Адрес"
+          }
+        }
+      }
+    },
+    "Anyone can join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В «%@» может вступить кто угодно."
+          }
+        }
+      }
+    },
+    "Ask to Join" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запросить доступ"
+          }
+        }
+      }
+    },
+    "Authorized members can join; others can request access." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники с разрешением могут вступить; остальные могут запросить доступ."
+          }
+        }
+      }
+    },
+    "Chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Чат"
+          }
+        }
+      }
+    },
+    "Contents" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Содержимое"
+          }
+        }
+      }
+    },
+    "Could Not Join %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось вступить в «%@»"
+          }
+        }
+      }
+    },
+    "Custom" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Особая"
+          }
+        }
+      }
+    },
+    "Custom Matrix access rule." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Особое правило доступа Matrix."
+          }
+        }
+      }
+    },
+    "In progress" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В процессе"
+          }
+        }
+      }
+    },
+    "Invite only" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только по приглашению"
+          }
+        }
+      }
+    },
+    "Invite Required" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужно приглашение"
+          }
+        }
+      }
+    },
+    "Join %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вступить в «%@»"
+          }
+        }
+      }
+    },
+    "Join this %@ to read and send messages." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вступите в «%@», чтобы читать и отправлять сообщения."
+          }
+        }
+      }
+    },
+    "Join this %@ to see its chats and nested spaces." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вступите в раздел «%@», чтобы увидеть его чаты и вложенные линии."
+          }
+        }
+      }
+    },
+    "Joinable" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можно вступить"
+          }
+        }
+      }
+    },
+    "Joined" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы участник"
+          }
+        }
+      }
+    },
+    "Members of an authorized Storyline can join." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники разрешённого сюжета могут вступить."
+          }
+        }
+      }
+    },
+    "Members of the parent Storyline or Track can join without a separate invite." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники родительского сюжета или линии смогут вступить без отдельного приглашения."
+          }
+        }
+      }
+    },
+    "Members of this Storyline or Track can join without a separate invite." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники этого сюжета или линии смогут войти без отдельного приглашения."
+          }
+        }
+      }
+    },
+    "Only invited people can join." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вступить смогут только приглашённые."
+          }
+        }
+      }
+    },
+    "Open %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть «%@»"
+          }
+        }
+      }
+    },
+    "Opening..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открываем..."
+          }
+        }
+      }
+    },
+    "Parent Members" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники родительского раздела"
+          }
+        }
+      }
+    },
+    "Parent space is not available for restricted access." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Родительский сюжет или линия недоступны для ограниченного доступа."
+          }
+        }
+      }
+    },
+    "People can request access." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Можно запросить доступ."
+          }
+        }
+      }
+    },
+    "Request Sent" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заявка отправлена"
+          }
+        }
+      }
+    },
+    "Restricted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ограниченная"
+          }
+        }
+      }
+    },
+    "Send a request to join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправьте заявку на вступление в «%@»."
+          }
+        }
+      }
+    },
+    "Sending..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправляем..."
+          }
+        }
+      }
+    },
+    "Space Members" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Участники сюжета или линии"
+          }
+        }
+      }
+    },
+    "This %@ uses an access rule Zyna cannot join directly." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У раздела «%@» правило доступа, с которым Zyna не может вступить напрямую."
+          }
+        }
+      }
+    },
+    "Unavailable" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Недоступно"
+          }
+        }
+      }
+    },
+    "Unknown" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Неизвестно"
+          }
+        }
+      }
+    },
+    "Working..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выполняем..."
+          }
+        }
+      }
+    },
+    "You are already a member of this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы уже участник «%@»."
+          }
+        }
+      }
+    },
+    "You are not a member of a Storyline authorized for this %@." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "У вас нет участия в сюжете, который даёт доступ к «%@»."
+          }
+        }
+      }
+    },
+    "You cannot join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В «%@» нельзя вступить."
+          }
+        }
+      }
+    },
+    "You need an invite to join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для вступления в «%@» нужно приглашение."
+          }
+        }
+      }
+    },
+    "Your membership allows you to join this %@." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ваше участие позволяет вступить в «%@»."
+          }
+        }
+      }
+    },
+    "Your request to join this %@ is waiting for approval." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заявка на вступление в «%@» ожидает одобрения."
+          }
+        }
+      }
+    },
+    "Your request to join this %@ was sent." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заявка на вступление в «%@» отправлена."
           }
         }
       }

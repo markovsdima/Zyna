@@ -10,6 +10,7 @@ import MatrixRustSDK
 enum ChatOpenTarget {
     case live(Room)
     case cached(RoomModel)
+    case space(RoomModel)
 }
 
 final class RoomsViewModel {
@@ -22,11 +23,13 @@ final class RoomsViewModel {
     /// re-created (that would flicker during presence bursts).
     var onInPlacePresence: (([(IndexPath, Bool)]) -> Void)?
 
-    let roomListService = ZynaRoomListService()
+    let roomListService: ZynaRoomListService
     private var cancellables = Set<AnyCancellable>()
     private var prefetchedVisibleAppearanceUserIds = Set<String>()
 
-    init() {
+    init(roomListService: ZynaRoomListService = ZynaRoomListService()) {
+        self.roomListService = roomListService
+
         roomListService.roomsSubject
             .map { summaries in
                 ScopedLog(.ui)("Received \(summaries.count) rooms in UI")
@@ -184,6 +187,17 @@ final class RoomsViewModel {
         applyFilter()
     }
 
+    func localChats(matching query: String) -> [RoomModel] {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return [] }
+
+        return allChats.filter { room in
+            room.name.lowercased().contains(normalized)
+                || room.lastMessage.lowercased().contains(normalized)
+                || room.directUserId?.lowercased().contains(normalized) == true
+        }
+    }
+
     private func applyFilter() {
         if searchQuery.isEmpty {
             chats = allChats
@@ -204,6 +218,15 @@ final class RoomsViewModel {
     func resolveChat(at index: Int, completion: @escaping (ChatOpenTarget) -> Void) {
         guard chats.indices.contains(index) else { return }
         let chat = chats[index]
+        resolveChat(chat, completion: completion)
+    }
+
+    func resolveChat(_ chat: RoomModel, completion: @escaping (ChatOpenTarget) -> Void) {
+        if chat.isSpace {
+            completion(.space(chat))
+            return
+        }
+
         if let room = roomListService.room(for: chat.id) {
             completion(.live(room))
         } else {

@@ -15,6 +15,7 @@ enum AppIcon {
     case mic
     case lockOpen
     case lockClosed
+    case lockSlash
     case chevronLeft
     case chevronUp
     case chevronDown
@@ -22,10 +23,20 @@ enum AppIcon {
     case chevronForward
     case phone
     case compose
+    case person
+    case person2
+    case megaphone
+    case globe
+    case link
     case xmark
     case pencil
     case checkmark
+    case checkmarkCircleFill
+    case circle
+    case xmarkCircleFill
     case bubbleLeft
+    case pin
+    case pinSlash
     case personBadgeMinus
     case personBadgePlus
     case personSlash
@@ -44,6 +55,7 @@ enum AppIcon {
         case .mic:              return "mic.fill"
         case .lockOpen:         return "lock.open.fill"
         case .lockClosed:       return "lock.fill"
+        case .lockSlash:        return "lock.slash"
         case .chevronLeft:      return "chevron.left"
         case .chevronUp:        return "chevron.up"
         case .chevronDown:      return "chevron.down"
@@ -51,10 +63,20 @@ enum AppIcon {
         case .chevronForward:   return "chevron.forward"
         case .phone:            return "phone.fill"
         case .compose:          return "square.and.pencil"
+        case .person:           return "person.crop.circle.fill"
+        case .person2:          return "person.2.fill"
+        case .megaphone:        return "megaphone.fill"
+        case .globe:            return "globe"
+        case .link:             return "link"
         case .xmark:            return "xmark"
         case .pencil:           return "pencil"
-        case .checkmark:        return "checkmark"
+        case .checkmark:           return "checkmark"
+        case .checkmarkCircleFill: return "checkmark.circle.fill"
+        case .circle:              return "circle"
+        case .xmarkCircleFill:     return "xmark.circle.fill"
         case .bubbleLeft:       return "bubble.left.fill"
+        case .pin:              return "pin.fill"
+        case .pinSlash:         return "pin.slash.fill"
         case .personBadgeMinus: return "person.badge.minus"
         case .personBadgePlus:  return "person.badge.plus"
         case .personSlash:      return "person.slash"

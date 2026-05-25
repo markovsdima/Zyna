@@ -24,6 +24,7 @@ final class MembersListViewModel {
     /// not on presence ticks. The VC drives a `reloadData()` from this.
     @Published private(set) var rows: [Row] = []
     @Published private(set) var isLoading: Bool = true
+    @Published private(set) var canInviteMembers: Bool = false
 
     /// Presence ticks for in-place cell updates. Decoupled from `rows`
     /// so a presence flap doesn't tear down all visible cells via a
@@ -36,6 +37,7 @@ final class MembersListViewModel {
     private var joined: [MemberCellNode.Model] = []
     private var cancellables = Set<AnyCancellable>()
     private var roomInfoSubscription: TaskHandle?
+    private var invitePermissionTask: Task<Void, Never>?
 
     /// Coalescing reload flags. Touched only on main — MainActor
     /// isolation gives us exclusivity without a lock.
@@ -53,11 +55,13 @@ final class MembersListViewModel {
         self.presenceTag = "members-list-\(room.id())"
         subscribePresence()
         reload()
+        reloadInvitePermission()
         subscribeToRoomInfoUpdates()
     }
 
     deinit {
         roomInfoSubscription?.cancel()
+        invitePermissionTask?.cancel()
         roomInfoDebounce?.cancel()
         PresenceTracker.shared.unregister(for: presenceTag)
     }
@@ -188,7 +192,10 @@ final class MembersListViewModel {
     private func subscribeToRoomInfoUpdates() {
         // Callback fires off-main; bounce so flags stay MainActor-isolated.
         let listener = RoomInfoCallbackListener { [weak self] in
-            DispatchQueue.main.async { self?.scheduleDebouncedReload() }
+            DispatchQueue.main.async {
+                self?.scheduleDebouncedReload()
+                self?.reloadInvitePermission()
+            }
         }
         roomInfoSubscription = room.subscribeToRoomInfoUpdates(listener: listener)
     }
@@ -233,11 +240,33 @@ final class MembersListViewModel {
         let bSeen = b.presence?.lastSeen ?? .distantPast
         return aSeen > bSeen
     }
+
+    // MARK: - Permissions
+
+    private func reloadInvitePermission() {
+        invitePermissionTask?.cancel()
+        invitePermissionTask = Task { [weak self] in
+            guard let self else { return }
+
+            let powerLevels: RoomPowerLevels?
+            if let info = try? await room.roomInfo(), let infoPowerLevels = info.powerLevels {
+                powerLevels = infoPowerLevels
+            } else {
+                powerLevels = try? await room.getPowerLevels()
+            }
+            let canInvite = powerLevels?.canOwnUserInvite() == true
+
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                self.canInviteMembers = canInvite
+            }
+        }
+    }
 }
 
 // MARK: - Room Info listener
 
-private final class RoomInfoCallbackListener: RoomInfoListener {
+private final class RoomInfoCallbackListener: @unchecked Sendable, RoomInfoListener {
     private let callback: () -> Void
 
     init(callback: @escaping () -> Void) {

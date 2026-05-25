@@ -16,7 +16,7 @@ struct VoiceTitleState: Equatable {
     let isLoading: Bool
 }
 
-final class PresenceTitleNode: ASDisplayNode {
+final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProviding {
 
     var name: String = "" {
         didSet {
