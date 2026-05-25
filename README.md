@@ -23,7 +23,7 @@ Demo: [YouTube quick tour](https://youtube.com/shorts/Tv3BSCmnINg?feature=share)
 - Security and recovery flows for verified devices, encrypted key backup, soft logout, device sessions, and trust-aware send failures
 - Encrypted local app database and protected per-user local storage for cached messages, media, and outgoing state
 - Voice calls using Matrix call events and WebRTC audio
-- Custom native UI with asynchronous chat rendering, glass navigation/input bars, Metal-powered effects, chat bubble themes, custom transitions, swipe-to-reply, and persistent voice playback
+- Custom native UI with responsive Texture-based chat timelines, glass navigation/input bars, Metal-powered effects, chat bubble themes, custom transitions, swipe-to-reply, and persistent voice playback
 - VoiceOver support across the main chat, rooms, glass controls, and detail flows
 
 ## Architecture
