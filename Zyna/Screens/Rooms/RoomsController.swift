@@ -9,7 +9,7 @@ import MatrixRustSDK
 
 class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
-    private let viewModel = RoomsViewModel()
+    private let viewModel: RoomsViewModel
     private let tableNode = ASTableNode()
     private let audioPlayer: AudioPlayerService
     private var cancellables = Set<AnyCancellable>()
@@ -33,8 +33,12 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     private var previewResolutionGeneration = 0
     private var pendingPreviewResolutionGeneration: Int?
 
-    init(audioPlayer: AudioPlayerService) {
+    init(
+        audioPlayer: AudioPlayerService,
+        roomListService: ZynaRoomListService = ZynaRoomListService()
+    ) {
         self.audioPlayer = audioPlayer
+        self.viewModel = RoomsViewModel(roomListService: roomListService)
         super.init(node: RoomsScreenNode())
 
         setupTableNode()
@@ -208,6 +212,7 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
 
     private func activateChatPreview(at indexPath: IndexPath, sourceFrame: CGRect?) {
         guard viewModel.chats.indices.contains(indexPath.row) else { return }
+        guard !viewModel.chats[indexPath.row].isSpace else { return }
 
         previewResolutionGeneration += 1
         let generation = previewResolutionGeneration
@@ -269,9 +274,13 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
     }
 
     private func configureHeaderBarItems() {
+        let searchIcon = AppIcon.magnifyingGlass.template(size: 17, weight: .medium)
         let composeIcon = AppIcon.compose.template(size: 17, weight: .medium)
 
         glassTopBar.items = [
+            .circleButton(icon: searchIcon, accessibilityLabel: "Search", action: { [weak self] in
+                self?.showSearchSheet()
+            }),
             .title(text: "Chats test", subtitle: glassTopBar.subtitle),
             .circleButton(icon: composeIcon, accessibilityLabel: "New chat", action: { [weak self] in
                 self?.onComposeTapped?()
@@ -309,6 +318,33 @@ class RoomsViewController: ASDKViewController<ASDisplayNode> {
             tableNode.view.verticalScrollIndicatorInsets.bottom = bottom
         }
     }
+
+    private func showSearchSheet() {
+        let vc = RoomsSearchViewController(
+            roomListService: viewModel.roomListService,
+            localChatsProvider: { [weak self] query in
+                self?.viewModel.localChats(matching: query) ?? []
+            },
+            resolveLocalChat: { [weak self] chat, completion in
+                self?.viewModel.resolveChat(chat, completion: completion)
+            }
+        )
+        vc.onOpenTarget = { [weak self] target in
+            self?.onChatSelected?(target)
+        }
+
+        let nav = ZynaNavigationController(rootViewController: vc)
+        configureSearchSheet(nav)
+        present(nav, animated: true)
+    }
+
+    private func configureSearchSheet(_ controller: UIViewController) {
+        controller.modalPresentationStyle = .pageSheet
+        guard let sheet = controller.sheetPresentationController else { return }
+        sheet.detents = [.large()]
+        sheet.prefersGrabberVisible = true
+        sheet.prefersScrollingExpandsWhenScrolledToEdge = true
+    }
 }
 
 // MARK: - Table Node Data Source & Delegate
@@ -326,6 +362,9 @@ extension RoomsViewController: ASTableDataSource, ASTableDelegate {
     func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
         let chat = viewModel.chats[indexPath.row]
         return {
+            if chat.isSpace {
+                return SpaceCellNode(space: chat)
+            }
             return RoomsCellNode(chat: chat)
         }
     }
@@ -343,7 +382,8 @@ extension RoomsViewController: ASTableDataSource, ASTableDelegate {
 
 extension RoomsViewController {
     func tableNode(_ tableNode: ASTableNode, canEditRowAt indexPath: IndexPath) -> Bool {
-        return true
+        guard viewModel.chats.indices.contains(indexPath.row) else { return false }
+        return !viewModel.chats[indexPath.row].isSpace
     }
 
     func tableNode(_ tableNode: ASTableNode, commitEditingStyle editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
@@ -358,19 +398,23 @@ extension RoomsViewController {
 
 extension RoomsViewController {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        previewPressInteraction.cancelForScroll()
+        if scrollView === tableNode.view {
+            previewPressInteraction.cancelForScroll()
+            prefetchVisibleProfileAppearances()
+        }
         GlassService.shared.setNeedsCapture()
-        prefetchVisibleProfileAppearances()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if decelerate {
+        if scrollView === tableNode.view, decelerate {
             fpsBooster.start()
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        fpsBooster.stop()
+        if scrollView === tableNode.view {
+            fpsBooster.stop()
+        }
     }
 }
 
@@ -384,7 +428,7 @@ extension RoomsViewController: UIGestureRecognizerDelegate {
               viewModel.chats.indices.contains(indexPath.row)
         else { return false }
 
-        return true
+        return !viewModel.chats[indexPath.row].isSpace
     }
 
     func gestureRecognizer(
@@ -591,23 +635,20 @@ private final class RoomsPreviewPressInteraction {
 /// hit-tests it before the table cells visually behind it.
 final class RoomsScreenNode: ScreenNode {
     weak var voicePlayerView: UIView?
-    weak var glassTopBar: ASDisplayNode?
+    weak var glassTopBar: GlassTopBar?
     weak var tableNode: ASDisplayNode?
 
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
-            if let player = voicePlayerView,
-               player.superview === view,
-               !player.isHidden,
-               player.alpha > 0.01 {
-                elements.append(player)
-            }
-            if let bar = glassTopBar?.view, bar.superview === view {
-                elements.append(bar)
-            }
+            AccessibilityElementOrder.appendVisibleView(voicePlayerView, to: &elements)
+            AccessibilityElementOrder.appendProvider(
+                glassTopBar,
+                fallbackView: glassTopBar?.view,
+                to: &elements
+            )
             if let table = tableNode?.view {
-                elements.append(table)
+                AccessibilityElementOrder.appendVisibleView(table, to: &elements)
             }
             return elements
         }

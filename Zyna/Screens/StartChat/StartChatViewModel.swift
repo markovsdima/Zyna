@@ -14,6 +14,7 @@ final class StartChatViewModel {
 
     var onDMReady: ((Room) -> Void)?
     var onNewGroup: (() -> Void)?
+    var onNewStoryline: (() -> Void)?
     var onError: ((String) -> Void)?
 
     private var searchTask: Task<Void, Never>?
@@ -92,5 +93,9 @@ final class StartChatViewModel {
 
     func newGroupTapped() {
         onNewGroup?()
+    }
+
+    func newStorylineTapped() {
+        onNewStoryline?()
     }
 }

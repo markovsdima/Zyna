@@ -15,13 +15,48 @@ struct RoomSummary: Identifiable {
     let displayName: String
     let avatarURL: String?
     let lastMessage: String?
+    let lastMessageSenderName: String?
     let lastMessageTimestamp: Date?
     let unreadCount: UInt64
     let unreadMentionCount: UInt64
     let isMarkedUnread: Bool
     let isEncrypted: Bool
+    let isSpace: Bool
+    let isMuted: Bool
     /// Matrix user ID of the other person in a DM room, nil for group rooms.
     let directUserId: String?
+    let spaceChildRoomCount: Int
+    let spaceChildSpaceCount: Int
+    let spaceRecentRooms: [SpaceChildSummary]
+    let spaceMetadata: SpaceRoomMetadata?
+}
+
+struct SpaceChildSummary: Codable, Equatable {
+    let id: String
+    let displayName: String
+    let avatarURL: String?
+    let directUserId: String?
+}
+
+struct SpaceChildrenSummary {
+    let rooms: [RoomSummary]
+    let spaces: [RoomSummary]
+}
+
+final class SpaceChildrenObservation {
+    private let task: Task<Void, Never>
+
+    init(task: Task<Void, Never>) {
+        self.task = task
+    }
+
+    deinit {
+        cancel()
+    }
+
+    func cancel() {
+        task.cancel()
+    }
 }
 
 private let logRooms = ScopedLog(.rooms)
@@ -40,9 +75,17 @@ final class ZynaRoomListService: NSObject {
     private var serviceStateHandle: TaskHandle?
     private var rooms: [Room] = []
     private var publishedSummariesByRoomId: [String: RoomSummary] = [:]
+    private var spaceChildSummariesBySpaceId: [String: [RoomSummary]] = [:]
+    private var spaceChildSpaceSummariesBySpaceId: [String: [RoomSummary]] = [:]
+    private var locallyHiddenRoomIds = Set<String>()
     private var rebuildTask: Task<Void, Never>?
     private var rebuildRevision: UInt64 = 0
     private var isListening = false
+    private var cancellables = Set<AnyCancellable>()
+
+    private static let writeQueue = DispatchQueue(label: "com.zyna.db.rooms", qos: .userInitiated)
+    private static let latestEventSettleDelay: Duration = .milliseconds(150)
+    private static let spaceRecentRoomLimit = 4
 
     func room(for id: String) -> Room? {
         if let cached = rooms.first(where: { $0.id() == id }) {
@@ -55,10 +98,380 @@ final class ZynaRoomListService: NSObject {
         }
         return MatrixClientService.shared.client?.rooms().first { $0.id() == id }
     }
-    private var cancellables = Set<AnyCancellable>()
 
-    private static let writeQueue = DispatchQueue(label: "com.zyna.db.rooms", qos: .userInitiated)
-    private static let latestEventSettleDelay: Duration = .milliseconds(150)
+    func cachedSpaceChildRooms(for spaceId: String) -> [RoomSummary] {
+        spaceChildSummariesBySpaceId[spaceId] ?? []
+    }
+
+    func cachedSpaceChildSpaces(for spaceId: String) -> [RoomSummary] {
+        spaceChildSpaceSummariesBySpaceId[spaceId] ?? []
+    }
+
+    func joinedRoomSummaries() async -> [RoomSummary] {
+        let roomsSnapshot = rooms.filter { !locallyHiddenRoomIds.contains($0.id()) }
+        guard !roomsSnapshot.isEmpty else {
+            guard let clientRooms = MatrixClientService.shared.client?.rooms()
+                .filter({ !locallyHiddenRoomIds.contains($0.id()) }),
+                  !clientRooms.isEmpty else {
+                return roomsSubject.value
+            }
+
+            return await Self.buildBaseSummaries(
+                from: clientRooms,
+                impactedRoomIds: [],
+                previousSummaries: publishedSummariesByRoomId
+            )
+        }
+
+        return await Self.buildBaseSummaries(
+            from: roomsSnapshot,
+            impactedRoomIds: [],
+            previousSummaries: publishedSummariesByRoomId
+        )
+    }
+
+    func refreshSpaceChildRooms(for spaceId: String) async -> [RoomSummary] {
+        let children = await refreshSpaceChildren(for: spaceId)
+        return children.rooms
+    }
+
+    func refreshSpaceChildren(for spaceId: String) async -> SpaceChildrenSummary {
+        let children = await loadSpaceChildren(for: spaceId)
+        cacheSpaceChildren(children, for: spaceId)
+        return children
+    }
+
+    func observeSpaceChildren(
+        for spaceId: String,
+        onUpdate: @escaping @MainActor (SpaceChildrenSummary) -> Void
+    ) -> SpaceChildrenObservation {
+        SpaceChildrenObservation(task: Task { [weak self] in
+            guard let self else { return }
+            guard let client = MatrixClientService.shared.client else {
+                await MainActor.run { onUpdate(SpaceChildrenSummary(rooms: [], spaces: [])) }
+                return
+            }
+
+            let spaceService = await client.spaceService()
+            guard let list = try? await spaceService.spaceRoomList(spaceId: spaceId) else {
+                await MainActor.run { onUpdate(SpaceChildrenSummary(rooms: [], spaces: [])) }
+                return
+            }
+
+            let observer = SpaceChildrenLiveObserver(
+                spaceId: spaceId,
+                list: list,
+                roomListService: self,
+                onUpdate: onUpdate
+            )
+
+            let entriesListener = SpaceRoomListEntriesCallback { [weak observer] _ in
+                guard let observer else { return }
+                Task { await observer.scheduleReload() }
+            }
+            let paginationListener = SpaceRoomListPaginationCallback { [weak observer] state in
+                guard let observer else { return }
+                Task { await observer.handlePaginationState(state) }
+            }
+            let spaceListener = SpaceRoomListSpaceCallback { [weak observer] _ in
+                guard let observer else { return }
+                Task { await observer.scheduleReload() }
+            }
+
+            let roomUpdatesHandle = await list.subscribeToRoomUpdate(listener: entriesListener)
+            let paginationHandle = list.subscribeToPaginationStateUpdates(listener: paginationListener)
+            let spaceHandle = list.subscribeToSpaceUpdates(listener: spaceListener)
+
+            await observer.reloadAndEmit()
+            await observer.handlePaginationState(list.paginationState())
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    break
+                }
+            }
+
+            roomUpdatesHandle.cancel()
+            paginationHandle.cancel()
+            spaceHandle.cancel()
+            await observer.cancel()
+        })
+    }
+
+    func addChild(_ childId: String, toSpace spaceId: String, context: String) async throws {
+        guard let client = MatrixClientService.shared.client else {
+            throw spaceRelationshipError(String(localized: "Matrix client is not ready."))
+        }
+
+        let spaceService = await client.spaceService()
+        var lastError: Error?
+
+        for attempt in 1...10 {
+            _ = await waitForLocalRoom(roomId: childId)
+            _ = await spaceService.topLevelJoinedSpaces()
+            _ = try? await spaceService.getSpaceRoom(roomId: spaceId)
+            _ = try? await spaceService.getSpaceRoom(roomId: childId)
+
+            do {
+                try await spaceService.addChildToSpace(childId: childId, spaceId: spaceId)
+                if attempt > 1 {
+                    logSpaceRelationship(
+                        "Linked child after retry",
+                        stage: "addChildToSpace",
+                        context: context,
+                        spaceId: spaceId,
+                        childId: childId,
+                        attempt: attempt
+                    )
+                }
+                _ = await refreshSpaceChildren(for: spaceId)
+                return
+            } catch {
+                lastError = error
+                logSpaceRelationship(
+                    "Space relationship retry scheduled",
+                    stage: "addChildToSpace",
+                    context: context,
+                    spaceId: spaceId,
+                    childId: childId,
+                    attempt: attempt,
+                    error: error
+                )
+                if attempt < 10 {
+                    try? await Task.sleep(for: .milliseconds(350 + attempt * 250))
+                }
+            }
+        }
+
+        do {
+            logSpaceRelationship(
+                "Falling back to raw space state events",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId,
+                error: lastError
+            )
+            try await addChildWithRawStateEvents(childId: childId, spaceId: spaceId)
+            logSpaceRelationship(
+                "Linked child with raw state events",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId
+            )
+            _ = await refreshSpaceChildren(for: spaceId)
+        } catch {
+            logSpaceRelationship(
+                "Raw space state event fallback failed",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId,
+                error: error
+            )
+            throw error
+        }
+    }
+
+    func removeChild(_ childId: String, fromSpace spaceId: String, context: String) async throws {
+        guard let client = MatrixClientService.shared.client else {
+            throw spaceRelationshipError(String(localized: "Matrix client is not ready."))
+        }
+
+        let spaceService = await client.spaceService()
+        var lastError: Error?
+
+        for attempt in 1...10 {
+            _ = await waitForLocalRoom(roomId: childId)
+            _ = await spaceService.topLevelJoinedSpaces()
+            _ = try? await spaceService.getSpaceRoom(roomId: spaceId)
+            _ = try? await spaceService.getSpaceRoom(roomId: childId)
+
+            do {
+                try await spaceService.removeChildFromSpace(childId: childId, spaceId: spaceId)
+                if attempt > 1 {
+                    logSpaceRelationship(
+                        "Removed child after retry",
+                        stage: "removeChildFromSpace",
+                        context: context,
+                        spaceId: spaceId,
+                        childId: childId,
+                        attempt: attempt
+                    )
+                }
+                _ = await refreshSpaceChildren(for: spaceId)
+                return
+            } catch {
+                lastError = error
+                logSpaceRelationship(
+                    "Space relationship removal retry scheduled",
+                    stage: "removeChildFromSpace",
+                    context: context,
+                    spaceId: spaceId,
+                    childId: childId,
+                    attempt: attempt,
+                    error: error
+                )
+                if attempt < 10 {
+                    try? await Task.sleep(for: .milliseconds(350 + attempt * 250))
+                }
+            }
+        }
+
+        do {
+            logSpaceRelationship(
+                "Falling back to raw removal state events",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId,
+                error: lastError
+            )
+            try await removeChildWithRawStateEvents(childId: childId, spaceId: spaceId)
+            logSpaceRelationship(
+                "Removed child with raw state events",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId
+            )
+            _ = await refreshSpaceChildren(for: spaceId)
+        } catch {
+            logSpaceRelationship(
+                "Raw removal state event fallback failed",
+                stage: "sendStateEventRaw",
+                context: context,
+                spaceId: spaceId,
+                childId: childId,
+                error: error
+            )
+            throw error
+        }
+    }
+
+    func setChildLink(_ childId: String, toSpace spaceId: String, context: String) async throws {
+        logSpaceRelationship(
+            "Setting space child state event",
+            stage: "sendStateEventRaw",
+            context: context,
+            spaceId: spaceId,
+            childId: childId
+        )
+        try await sendSpaceChildState(childId: childId, spaceId: spaceId)
+        _ = await refreshSpaceChildren(for: spaceId)
+    }
+
+    func removeChildLink(_ childId: String, fromSpace spaceId: String, context: String) async throws {
+        logSpaceRelationship(
+            "Removing space child state event",
+            stage: "sendStateEventRaw",
+            context: context,
+            spaceId: spaceId,
+            childId: childId
+        )
+        try await sendEmptySpaceChildState(childId: childId, spaceId: spaceId)
+        _ = await refreshSpaceChildren(for: spaceId)
+    }
+
+    func setParentLink(_ spaceId: String, forChild childId: String, context: String) async throws {
+        logSpaceRelationship(
+            "Setting space parent state event",
+            stage: "sendStateEventRaw",
+            context: context,
+            spaceId: spaceId,
+            childId: childId
+        )
+        try await sendSpaceParentState(spaceId: spaceId, childId: childId)
+    }
+
+    func removeParentLink(_ spaceId: String, fromChild childId: String, context: String) async throws {
+        logSpaceRelationship(
+            "Removing space parent state event",
+            stage: "sendStateEventRaw",
+            context: context,
+            spaceId: spaceId,
+            childId: childId
+        )
+        try await sendEmptySpaceParentState(spaceId: spaceId, childId: childId)
+    }
+
+    private func loadSpaceChildren(for spaceId: String) async -> SpaceChildrenSummary {
+        guard let client = MatrixClientService.shared.client else {
+            return SpaceChildrenSummary(rooms: [], spaces: [])
+        }
+        let spaceService = await client.spaceService()
+        guard let list = try? await spaceService.spaceRoomList(spaceId: spaceId) else {
+            return SpaceChildrenSummary(rooms: [], spaces: [])
+        }
+
+        try? await list.paginate()
+        let children = await list.rooms()
+        return await buildSpaceChildrenSummary(from: children)
+    }
+
+    fileprivate func cacheSpaceChildren(_ children: SpaceChildrenSummary, for spaceId: String) {
+        spaceChildSummariesBySpaceId[spaceId] = children.rooms
+        spaceChildSpaceSummariesBySpaceId[spaceId] = children.spaces
+    }
+
+    fileprivate func buildSpaceChildrenSummary(from children: [SpaceRoom]) async -> SpaceChildrenSummary {
+        let childRooms = children.filter { child in
+            switch child.roomType {
+            case .space:
+                return false
+            case .room, .custom:
+                return true
+            }
+        }
+        let childSpaces = children.filter { child in
+            if case .space = child.roomType { return true }
+            return false
+        }
+        let childRoomIds = childRooms.map(\.roomId)
+        let childSpaceIds = childSpaces.map(\.roomId)
+
+        let previousSummaries = publishedSummariesByRoomId
+        let localChildRooms = (childRoomIds + childSpaceIds).compactMap { room(for: $0) }
+        let summaries = await Self.buildBaseSummaries(
+            from: localChildRooms,
+            impactedRoomIds: Set(childRoomIds + childSpaceIds),
+            previousSummaries: previousSummaries
+        )
+        let summariesById = Dictionary(
+            summaries.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+
+        let roomSummaries = childRooms
+            .map { Self.spaceChildSummary(from: $0, localSummary: summariesById[$0.roomId]) }
+            .sorted(by: Self.spaceActivitySort)
+        let spaceSummaries = childSpaces
+            .map { Self.spaceChildSummary(from: $0, localSummary: summariesById[$0.roomId]) }
+            .sorted(by: Self.spaceActivitySort)
+
+        return SpaceChildrenSummary(
+            rooms: roomSummaries,
+            spaces: spaceSummaries
+        )
+    }
+
+    func removeRoomLocally(roomId: String, purgeTimeline: Bool = true) {
+        locallyHiddenRoomIds.insert(roomId)
+        rebuildRevision &+= 1
+        rebuildTask?.cancel()
+
+        let summaries = roomsSubject.value.filter { $0.id != roomId }
+        publishedSummariesByRoomId = Dictionary(
+            summaries.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        roomsSubject.send(summaries)
+
+        Self.removeRoomFromGRDB(roomId: roomId, purgeTimeline: purgeTimeline)
+    }
 
     override init() {
         super.init()
@@ -167,6 +580,8 @@ final class ZynaRoomListService: NSObject {
         switch update {
         case .reset(let values):
             rooms = values
+            let valueIds = Set(values.map { $0.id() })
+            locallyHiddenRoomIds.formIntersection(valueIds)
             impactedRoomIds.formUnion(values.map { $0.id() })
         case .append(let values):
             rooms.append(contentsOf: values)
@@ -182,21 +597,39 @@ final class ZynaRoomListService: NSObject {
             impactedRoomIds.insert(value.id())
         case .set(let index, let value):
             if Int(index) < rooms.count {
+                let oldRoomId = rooms[Int(index)].id()
                 rooms[Int(index)] = value
+                if oldRoomId != value.id() {
+                    locallyHiddenRoomIds.remove(oldRoomId)
+                }
                 impactedRoomIds.insert(value.id())
             }
         case .remove(let index):
             if Int(index) < rooms.count {
-                rooms.remove(at: Int(index))
+                let removed = rooms.remove(at: Int(index))
+                locallyHiddenRoomIds.remove(removed.id())
             }
         case .popBack:
-            if !rooms.isEmpty { rooms.removeLast() }
+            if !rooms.isEmpty {
+                let removed = rooms.removeLast()
+                locallyHiddenRoomIds.remove(removed.id())
+            }
         case .popFront:
-            if !rooms.isEmpty { rooms.removeFirst() }
+            if !rooms.isEmpty {
+                let removed = rooms.removeFirst()
+                locallyHiddenRoomIds.remove(removed.id())
+            }
         case .truncate(let length):
+            if Int(length) < rooms.count {
+                let removed = rooms.dropFirst(Int(length))
+                for room in removed {
+                    locallyHiddenRoomIds.remove(room.id())
+                }
+            }
             rooms = Array(rooms.prefix(Int(length)))
         case .clear:
             rooms = []
+            locallyHiddenRoomIds.removeAll()
         }
     }
 
@@ -207,16 +640,18 @@ final class ZynaRoomListService: NSObject {
         rebuildRevision &+= 1
         let revision = rebuildRevision
         let previousSummaries = publishedSummariesByRoomId
+        let hiddenRoomIds = locallyHiddenRoomIds
 
         rebuildTask?.cancel()
         rebuildTask = Task { [weak self] in
             guard let self else { return }
 
-            let summaries = await Self.buildSummaries(
-                from: roomsSnapshot,
-                impactedRoomIds: impactedRoomIds,
+            let buildResult = await Self.buildSummaries(
+                from: roomsSnapshot.filter { !hiddenRoomIds.contains($0.id()) },
+                impactedRoomIds: impactedRoomIds.subtracting(hiddenRoomIds),
                 previousSummaries: previousSummaries
             )
+            let summaries = buildResult.summaries
 
             guard !Task.isCancelled, self.rebuildRevision == revision else { return }
 
@@ -224,6 +659,8 @@ final class ZynaRoomListService: NSObject {
                 summaries.map { ($0.id, $0) },
                 uniquingKeysWith: { _, latest in latest }
             )
+            self.spaceChildSummariesBySpaceId = buildResult.spaceChildSummariesBySpaceId
+            self.spaceChildSpaceSummariesBySpaceId = buildResult.spaceChildSpaceSummariesBySpaceId
             Self.writeRoomsToGRDB(summaries)
 
             await MainActor.run { [weak self] in
@@ -236,6 +673,19 @@ final class ZynaRoomListService: NSObject {
     }
 
     private static func buildSummaries(
+        from rooms: [Room],
+        impactedRoomIds: Set<String>,
+        previousSummaries: [String: RoomSummary]
+    ) async -> RoomListBuildResult {
+        let summaries = await buildBaseSummaries(
+            from: rooms,
+            impactedRoomIds: impactedRoomIds,
+            previousSummaries: previousSummaries
+        )
+        return await enrichSpaceSummaries(summaries)
+    }
+
+    private static func buildBaseSummaries(
         from rooms: [Room],
         impactedRoomIds: Set<String>,
         previousSummaries: [String: RoomSummary]
@@ -269,19 +719,402 @@ final class ZynaRoomListService: NSObject {
 
             summaries.append(RoomSummary(
                 id: roomId,
-                displayName: room.displayName() ?? "Unknown",
+                displayName: room.displayName() ?? (info.isSpace ? String(localized: "Untitled") : "Unknown"),
                 avatarURL: avatarURL,
-                lastMessage: lastPreview.0,
-                lastMessageTimestamp: lastPreview.1,
+                lastMessage: lastPreview.body,
+                lastMessageSenderName: lastPreview.senderName,
+                lastMessageTimestamp: lastPreview.timestamp,
                 unreadCount: info.numUnreadMessages,
                 unreadMentionCount: info.numUnreadMentions,
                 isMarkedUnread: info.isMarkedUnread,
                 isEncrypted: room.encryptionState() != .notEncrypted,
-                directUserId: directUserId
+                isSpace: info.isSpace,
+                isMuted: info.cachedUserDefinedNotificationMode == .mute,
+                directUserId: directUserId,
+                spaceChildRoomCount: 0,
+                spaceChildSpaceCount: 0,
+                spaceRecentRooms: [],
+                spaceMetadata: info.isSpace ? SpaceRoomMetadata(roomInfo: info) : nil
             ))
         }
 
         return summaries
+    }
+
+    private struct RoomListBuildResult {
+        let summaries: [RoomSummary]
+        let spaceChildSummariesBySpaceId: [String: [RoomSummary]]
+        let spaceChildSpaceSummariesBySpaceId: [String: [RoomSummary]]
+    }
+
+    private struct SpaceGraphEntry {
+        let childRooms: [SpaceRoom]
+        let childSpaces: [SpaceRoom]
+
+        var childRoomIds: [String] { childRooms.map(\.roomId) }
+        var childSpaceIds: [String] { childSpaces.map(\.roomId) }
+    }
+
+    private static func enrichSpaceSummaries(_ summaries: [RoomSummary]) async -> RoomListBuildResult {
+        guard summaries.contains(where: \.isSpace),
+              let client = MatrixClientService.shared.client else {
+            return RoomListBuildResult(
+                summaries: summaries,
+                spaceChildSummariesBySpaceId: [:],
+                spaceChildSpaceSummariesBySpaceId: [:]
+            )
+        }
+
+        let summariesById = Dictionary(
+            summaries.map { ($0.id, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        var graph: [String: SpaceGraphEntry] = [:]
+
+        let spaceService = await client.spaceService()
+        for space in summaries where space.isSpace {
+            if Task.isCancelled { break }
+            guard let list = try? await spaceService.spaceRoomList(spaceId: space.id) else { continue }
+            try? await list.paginate()
+            let children = await list.rooms()
+
+            var childRooms: [SpaceRoom] = []
+            var childSpaces: [SpaceRoom] = []
+            for child in children {
+                switch child.roomType {
+                case .space:
+                    childSpaces.append(child)
+                case .room, .custom:
+                    childRooms.append(child)
+                }
+            }
+
+            graph[space.id] = SpaceGraphEntry(
+                childRooms: childRooms,
+                childSpaces: childSpaces
+            )
+        }
+
+        guard !graph.isEmpty else {
+            return RoomListBuildResult(
+                summaries: summaries,
+                spaceChildSummariesBySpaceId: [:],
+                spaceChildSpaceSummariesBySpaceId: [:]
+            )
+        }
+
+        var childIds = Set<String>()
+        for entry in graph.values {
+            childIds.formUnion(entry.childRoomIds)
+            childIds.formUnion(entry.childSpaceIds)
+        }
+
+        var spaceChildSummariesBySpaceId: [String: [RoomSummary]] = [:]
+        var spaceChildSpaceSummariesBySpaceId: [String: [RoomSummary]] = [:]
+
+        for (spaceId, entry) in graph {
+            let childSummaries = entry.childRooms.map {
+                spaceChildSummary(from: $0, localSummary: summariesById[$0.roomId])
+            }
+            spaceChildSummariesBySpaceId[spaceId] = childSummaries.sorted(by: spaceActivitySort)
+            spaceChildSpaceSummariesBySpaceId[spaceId] = entry.childSpaces
+                .map { child in
+                    let base = spaceChildSummary(from: child, localSummary: summariesById[child.roomId])
+                    guard let childEntry = graph[base.id] else { return base }
+                    return enrichedSpaceSummary(
+                        base,
+                        entry: childEntry,
+                        summariesById: summariesById
+                    )
+                }
+                .sorted(by: spaceActivitySort)
+        }
+
+        let enriched: [RoomSummary] = summaries.compactMap { summary -> RoomSummary? in
+            if childIds.contains(summary.id) {
+                return nil
+            }
+
+            guard summary.isSpace, let entry = graph[summary.id] else {
+                return summary
+            }
+
+            return enrichedSpaceSummary(
+                summary,
+                entry: entry,
+                summariesById: summariesById
+            )
+        }
+
+        let sortedSummaries = enriched.enumerated()
+            .sorted { lhs, rhs in
+                spaceListSort(lhs.element, rhs.element, leftIndex: lhs.offset, rightIndex: rhs.offset)
+            }
+            .map { $0.element }
+
+        return RoomListBuildResult(
+            summaries: sortedSummaries,
+            spaceChildSummariesBySpaceId: spaceChildSummariesBySpaceId,
+            spaceChildSpaceSummariesBySpaceId: spaceChildSpaceSummariesBySpaceId
+        )
+    }
+
+    private static func enrichedSpaceSummary(
+        _ summary: RoomSummary,
+        entry: SpaceGraphEntry,
+        summariesById: [String: RoomSummary]
+    ) -> RoomSummary {
+        let childSummaries = entry.childRooms.map {
+            spaceChildSummary(from: $0, localSummary: summariesById[$0.roomId])
+        }
+        let visibleChildren = childSummaries.filter { !$0.isMuted }
+        let previewSource = visibleChildren.isEmpty ? childSummaries : visibleChildren
+        let previewChildren = previewSource.sorted(by: spaceActivitySort)
+        let latestChild = previewChildren.first
+
+        return RoomSummary(
+            id: summary.id,
+            displayName: summary.displayName,
+            avatarURL: summary.avatarURL,
+            lastMessage: latestChild?.lastMessage,
+            lastMessageSenderName: latestChild?.lastMessageSenderName,
+            lastMessageTimestamp: visibleChildren.sorted(by: spaceActivitySort).first?.lastMessageTimestamp,
+            unreadCount: UInt64(visibleChildren.reduce(0) { $0 + Int($1.unreadCount) }),
+            unreadMentionCount: UInt64(visibleChildren.reduce(0) { $0 + Int($1.unreadMentionCount) }),
+            isMarkedUnread: visibleChildren.contains(where: \.isMarkedUnread),
+            isEncrypted: summary.isEncrypted,
+            isSpace: true,
+            isMuted: summary.isMuted,
+            directUserId: nil,
+            spaceChildRoomCount: entry.childRoomIds.count,
+            spaceChildSpaceCount: entry.childSpaceIds.count,
+            spaceRecentRooms: Array(previewChildren.prefix(spaceRecentRoomLimit)).map {
+                SpaceChildSummary(
+                    id: $0.id,
+                    displayName: $0.displayName,
+                    avatarURL: $0.avatarURL,
+                    directUserId: $0.directUserId
+                )
+            },
+            spaceMetadata: summary.spaceMetadata
+        )
+    }
+
+    private static func previewSummary(from preview: SpaceRoom) -> RoomSummary {
+        let displayName = preview.displayName.isEmpty
+            ? (preview.canonicalAlias ?? String(localized: "Untitled"))
+            : preview.displayName
+
+        return RoomSummary(
+            id: preview.roomId,
+            displayName: displayName,
+            avatarURL: preview.avatarUrl,
+            lastMessage: nil,
+            lastMessageSenderName: nil,
+            lastMessageTimestamp: nil,
+            unreadCount: 0,
+            unreadMentionCount: 0,
+            isMarkedUnread: false,
+            isEncrypted: false,
+            isSpace: preview.roomType == .space,
+            isMuted: false,
+            directUserId: nil,
+            spaceChildRoomCount: 0,
+            spaceChildSpaceCount: 0,
+            spaceRecentRooms: [],
+            spaceMetadata: SpaceRoomMetadata(spaceRoom: preview)
+        )
+    }
+
+    private static func spaceChildSummary(
+        from child: SpaceRoom,
+        localSummary: RoomSummary?
+    ) -> RoomSummary {
+        guard let localSummary else {
+            return previewSummary(from: child)
+        }
+
+        return RoomSummary(
+            id: localSummary.id,
+            displayName: localSummary.displayName,
+            avatarURL: localSummary.avatarURL,
+            lastMessage: localSummary.lastMessage,
+            lastMessageSenderName: localSummary.lastMessageSenderName,
+            lastMessageTimestamp: localSummary.lastMessageTimestamp,
+            unreadCount: localSummary.unreadCount,
+            unreadMentionCount: localSummary.unreadMentionCount,
+            isMarkedUnread: localSummary.isMarkedUnread,
+            isEncrypted: localSummary.isEncrypted,
+            isSpace: localSummary.isSpace,
+            isMuted: localSummary.isMuted,
+            directUserId: localSummary.directUserId,
+            spaceChildRoomCount: localSummary.spaceChildRoomCount,
+            spaceChildSpaceCount: localSummary.spaceChildSpaceCount,
+            spaceRecentRooms: localSummary.spaceRecentRooms,
+            spaceMetadata: SpaceRoomMetadata(spaceRoom: child)
+        )
+    }
+
+    private func waitForLocalRoom(roomId: String) async -> Room? {
+        for _ in 0..<20 {
+            if let room = room(for: roomId) {
+                return room
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return room(for: roomId)
+    }
+
+    private func addChildWithRawStateEvents(childId: String, spaceId: String) async throws {
+        try await sendSpaceChildState(childId: childId, spaceId: spaceId)
+        try? await sendSpaceParentState(spaceId: spaceId, childId: childId)
+    }
+
+    private func removeChildWithRawStateEvents(childId: String, spaceId: String) async throws {
+        try await sendEmptySpaceChildState(childId: childId, spaceId: spaceId)
+        try? await sendEmptySpaceParentState(spaceId: spaceId, childId: childId)
+    }
+
+    private func sendSpaceChildState(childId: String, spaceId: String) async throws {
+        guard let spaceRoom = room(for: spaceId) else {
+            throw spaceRelationshipError(String(localized: "Parent Storyline is not available locally."))
+        }
+
+        let content = try jsonString([
+            "via": viaServers(for: childId),
+            "suggested": false
+        ])
+        _ = try await spaceRoom.sendStateEventRaw(
+            eventType: "m.space.child",
+            stateKey: childId,
+            content: content
+        )
+    }
+
+    private func sendEmptySpaceChildState(childId: String, spaceId: String) async throws {
+        guard let spaceRoom = room(for: spaceId) else {
+            throw spaceRelationshipError(String(localized: "Parent Storyline is not available locally."))
+        }
+
+        _ = try await spaceRoom.sendStateEventRaw(
+            eventType: "m.space.child",
+            stateKey: childId,
+            content: "{}"
+        )
+    }
+
+    private func sendSpaceParentState(spaceId: String, childId: String) async throws {
+        guard let childRoom = await waitForLocalRoom(roomId: childId) else {
+            throw spaceRelationshipError(String(localized: "Chat is not available locally."))
+        }
+
+        let content = try jsonString([
+            "via": viaServers(for: spaceId),
+            "canonical": true
+        ])
+        _ = try await childRoom.sendStateEventRaw(
+            eventType: "m.space.parent",
+            stateKey: spaceId,
+            content: content
+        )
+    }
+
+    private func sendEmptySpaceParentState(spaceId: String, childId: String) async throws {
+        guard let childRoom = await waitForLocalRoom(roomId: childId) else {
+            throw spaceRelationshipError(String(localized: "Chat is not available locally."))
+        }
+
+        _ = try await childRoom.sendStateEventRaw(
+            eventType: "m.space.parent",
+            stateKey: spaceId,
+            content: "{}"
+        )
+    }
+
+    private func viaServers(for roomId: String) -> [String] {
+        guard let serverName = roomId.split(separator: ":", maxSplits: 1).last,
+              !serverName.isEmpty
+        else {
+            return []
+        }
+        return [String(serverName)]
+    }
+
+    private func jsonString(_ value: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: value, options: [])
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw spaceRelationshipError(String(localized: "Could not encode Matrix state event content."))
+        }
+        return string
+    }
+
+    private func spaceRelationshipError(_ message: String) -> Error {
+        NSError(
+            domain: "Zyna.SpaceRelationship",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+    }
+
+    private func logSpaceRelationship(
+        _ title: String,
+        stage: String,
+        context: String,
+        spaceId: String,
+        childId: String,
+        attempt: Int? = nil,
+        error: Error? = nil
+    ) {
+        var parts = [
+            title,
+            "stage=\(stage)",
+            "context=\(context)",
+            "spaceId=\(spaceId)",
+            "childId=\(childId)"
+        ]
+        if let attempt {
+            parts.append("attempt=\(attempt)")
+        }
+        if let error {
+            parts.append("localized=\(error.localizedDescription)")
+            parts.append("reflected=\(String(reflecting: error))")
+        }
+
+        let message = "[SpaceRelationship] " + parts.joined(separator: " ")
+        print(message)
+        logRooms(message)
+    }
+
+    private static func spaceActivitySort(_ lhs: RoomSummary, _ rhs: RoomSummary) -> Bool {
+        switch (lhs.lastMessageTimestamp, rhs.lastMessageTimestamp) {
+        case let (left?, right?):
+            return left > right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        case (nil, nil):
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+    }
+
+    private static func spaceListSort(
+        _ lhs: RoomSummary,
+        _ rhs: RoomSummary,
+        leftIndex: Int,
+        rightIndex: Int
+    ) -> Bool {
+        switch (lhs.lastMessageTimestamp, rhs.lastMessageTimestamp) {
+        case let (left?, right?):
+            guard left != right else { return leftIndex < rightIndex }
+            return left > right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        case (nil, nil):
+            return leftIndex < rightIndex
+        }
     }
 
     // MARK: - GRDB Persistence
@@ -303,35 +1136,76 @@ final class ZynaRoomListService: NSObject {
         }
     }
 
+    private static func removeRoomFromGRDB(roomId: String, purgeTimeline: Bool) {
+        if purgeTimeline {
+            let envelopeIds = Set(OutgoingEnvelopeService.shared
+                .envelopes(roomId: roomId)
+                .map(\.id))
+            OutgoingEnvelopeService.shared.deleteEnvelopes(ids: envelopeIds)
+        }
+
+        let dbQueue = DatabaseService.shared.dbQueue
+        writeQueue.async {
+            do {
+                try dbQueue.write { db in
+                    _ = try StoredRoom.deleteOne(db, key: roomId)
+                    if purgeTimeline {
+                        _ = try StoredMessage
+                            .filter(Column("roomId") == roomId)
+                            .deleteAll(db)
+                    }
+                }
+                logRooms("Removed room \(roomId) from local cache")
+            } catch {
+                logRooms("Failed to remove room \(roomId) from local cache: \(error)")
+            }
+        }
+    }
+
     // MARK: - Last Message Extraction
 
     private static func shouldRetryLatestEvent(
-        currentPreview: (String?, Date?),
+        currentPreview: LatestMessagePreview,
         previousSummary: RoomSummary?
     ) -> Bool {
         guard let previousSummary else { return false }
-        return currentPreview.0 == previousSummary.lastMessage &&
-            currentPreview.1 == previousSummary.lastMessageTimestamp
+        return currentPreview.body == previousSummary.lastMessage &&
+            currentPreview.timestamp == previousSummary.lastMessageTimestamp
     }
 
-    private static func extractLastMessage(from value: LatestEventValue) -> (String?, Date?) {
+    private struct LatestMessagePreview {
+        let body: String?
+        let senderName: String?
+        let timestamp: Date?
+    }
+
+    private static func extractLastMessage(from value: LatestEventValue) -> LatestMessagePreview {
         let timestamp: Date
         let content: TimelineItemContent
+        let senderName: String?
 
         switch value {
         case .none:
-            return (nil, nil)
-        case .remote(let ts, _, _, _, let c):
+            return LatestMessagePreview(body: nil, senderName: nil, timestamp: nil)
+        case .remote(let ts, let sender, let isOwn, let profile, let c):
             timestamp = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
             content = c
-        case .local(let ts, _, _, let c, _):
+            senderName = Self.senderDisplayName(sender: sender, isOwn: isOwn, profile: profile)
+        case .local(let ts, let sender, let profile, let c, _):
             timestamp = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
             content = c
+            senderName = Self.senderDisplayName(sender: sender, isOwn: true, profile: profile)
         case .remoteInvite(let ts, _, _):
-            return (nil, Date(timeIntervalSince1970: TimeInterval(ts) / 1000))
+            return LatestMessagePreview(
+                body: nil,
+                senderName: nil,
+                timestamp: Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
+            )
         }
 
-        guard case .msgLike(let msgContent) = content else { return (nil, timestamp) }
+        guard case .msgLike(let msgContent) = content else {
+            return LatestMessagePreview(body: nil, senderName: senderName, timestamp: timestamp)
+        }
 
         let text: String
         switch msgContent.kind {
@@ -348,12 +1222,30 @@ final class ZynaRoomListService: NSObject {
         case .liveLocation:
             text = "Live location"
         case .other:
-            return (nil, timestamp)
+            return LatestMessagePreview(body: nil, senderName: senderName, timestamp: timestamp)
         @unknown default:
-            return (nil, timestamp)
+            return LatestMessagePreview(body: nil, senderName: senderName, timestamp: timestamp)
         }
 
-        return (text, timestamp)
+        return LatestMessagePreview(body: text, senderName: senderName, timestamp: timestamp)
+    }
+
+    private static func senderDisplayName(
+        sender: String,
+        isOwn: Bool,
+        profile: ProfileDetails
+    ) -> String {
+        if isOwn {
+            return String(localized: "You")
+        }
+
+        if case .ready(let displayName, _, _) = profile,
+           let displayName,
+           !displayName.isEmpty {
+            return displayName
+        }
+
+        return sender
     }
 
     private static func textForMessageType(_ msgType: MessageType) -> String {
@@ -371,9 +1263,122 @@ final class ZynaRoomListService: NSObject {
     }
 }
 
+// MARK: - Space Children Observation
+
+private actor SpaceChildrenLiveObserver {
+    private let spaceId: String
+    private let list: SpaceRoomList
+    private let roomListService: ZynaRoomListService
+    private let onUpdate: @MainActor (SpaceChildrenSummary) -> Void
+    private var isCancelled = false
+    private var isPaginating = false
+    private var paginationTask: Task<Void, Never>?
+    private var reloadTask: Task<Void, Never>?
+    private var reloadPending = false
+    private var lastPaginationState: SpaceRoomListPaginationState = .idle(endReached: false)
+    private static let reloadDebounceDelay: Duration = .milliseconds(120)
+
+    init(
+        spaceId: String,
+        list: SpaceRoomList,
+        roomListService: ZynaRoomListService,
+        onUpdate: @escaping @MainActor (SpaceChildrenSummary) -> Void
+    ) {
+        self.spaceId = spaceId
+        self.list = list
+        self.roomListService = roomListService
+        self.onUpdate = onUpdate
+    }
+
+    func reloadAndEmit() async {
+        reloadPending = false
+        await emitCurrentChildren()
+    }
+
+    func scheduleReload() {
+        guard !isCancelled else { return }
+        reloadPending = true
+        guard reloadTask == nil else { return }
+
+        reloadTask = Task {
+            do {
+                try await Task.sleep(for: Self.reloadDebounceDelay)
+            } catch {
+                return
+            }
+            await self.performScheduledReloads()
+        }
+    }
+
+    private func performScheduledReloads() async {
+        while !isCancelled, reloadPending {
+            reloadPending = false
+            await emitCurrentChildren()
+        }
+        reloadTask = nil
+    }
+
+    private func emitCurrentChildren() async {
+        guard !isCancelled else { return }
+        let children = await list.rooms()
+        guard !isCancelled else { return }
+        let summary = await roomListService.buildSpaceChildrenSummary(from: children)
+        guard !isCancelled else { return }
+        roomListService.cacheSpaceChildren(summary, for: spaceId)
+        await MainActor.run {
+            onUpdate(summary)
+        }
+    }
+
+    func handlePaginationState(_ state: SpaceRoomListPaginationState) {
+        guard !isCancelled else { return }
+        lastPaginationState = state
+        paginateIfNeeded()
+    }
+
+    func cancel() {
+        isCancelled = true
+        paginationTask?.cancel()
+        paginationTask = nil
+        reloadTask?.cancel()
+        reloadTask = nil
+        reloadPending = false
+    }
+
+    private func paginateIfNeeded() {
+        guard !isCancelled, !isPaginating else { return }
+        guard case .idle(let endReached) = lastPaginationState, !endReached else { return }
+
+        isPaginating = true
+        paginationTask = Task { [list] in
+            let shouldContinue: Bool
+            do {
+                try await list.paginate()
+                shouldContinue = true
+            } catch {
+                shouldContinue = false
+                logRooms("Space child pagination failed: \(error)")
+            }
+            await self.didFinishPagination(shouldContinue: shouldContinue)
+        }
+    }
+
+    private func didFinishPagination(shouldContinue: Bool) async {
+        guard !isCancelled else { return }
+        isPaginating = false
+        paginationTask = nil
+
+        scheduleReload()
+
+        guard shouldContinue, !isCancelled else { return }
+        lastPaginationState = list.paginationState()
+        paginateIfNeeded()
+    }
+}
+
 // MARK: - SDK Listeners
 
-private final class EntriesListener: RoomListEntriesListener {
+private final class EntriesListener: @unchecked Sendable, RoomListEntriesListener {
     private let handler: ([RoomListEntriesUpdate]) -> Void
 
     init(handler: @escaping ([RoomListEntriesUpdate]) -> Void) {
@@ -385,7 +1390,7 @@ private final class EntriesListener: RoomListEntriesListener {
     }
 }
 
-private final class ServiceStateListener: RoomListServiceStateListener {
+private final class ServiceStateListener: @unchecked Sendable, RoomListServiceStateListener {
     private let handler: (RoomListServiceState) -> Void
 
     init(handler: @escaping (RoomListServiceState) -> Void) {
@@ -397,7 +1402,7 @@ private final class ServiceStateListener: RoomListServiceStateListener {
     }
 }
 
-private final class LoadingStateListener: RoomListLoadingStateListener {
+private final class LoadingStateListener: @unchecked Sendable, RoomListLoadingStateListener {
     private let handler: (RoomListLoadingState) -> Void
 
     init(handler: @escaping (RoomListLoadingState) -> Void) {
@@ -406,5 +1411,41 @@ private final class LoadingStateListener: RoomListLoadingStateListener {
 
     func onUpdate(state: RoomListLoadingState) {
         handler(state)
+    }
+}
+
+private final class SpaceRoomListEntriesCallback: @unchecked Sendable, SpaceRoomListEntriesListener {
+    private let handler: ([SpaceListUpdate]) -> Void
+
+    init(handler: @escaping ([SpaceListUpdate]) -> Void) {
+        self.handler = handler
+    }
+
+    func onUpdate(rooms: [SpaceListUpdate]) {
+        handler(rooms)
+    }
+}
+
+private final class SpaceRoomListPaginationCallback: @unchecked Sendable, SpaceRoomListPaginationStateListener {
+    private let handler: (SpaceRoomListPaginationState) -> Void
+
+    init(handler: @escaping (SpaceRoomListPaginationState) -> Void) {
+        self.handler = handler
+    }
+
+    func onUpdate(paginationState: SpaceRoomListPaginationState) {
+        handler(paginationState)
+    }
+}
+
+private final class SpaceRoomListSpaceCallback: @unchecked Sendable, SpaceRoomListSpaceListener {
+    private let handler: (SpaceRoom?) -> Void
+
+    init(handler: @escaping (SpaceRoom?) -> Void) {
+        self.handler = handler
+    }
+
+    func onUpdate(space: SpaceRoom?) {
+        handler(space)
     }
 }

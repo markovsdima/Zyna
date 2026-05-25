@@ -10,7 +10,7 @@ import AsyncDisplayKit
 final class ProfileScreenNode: ScreenNode {
 
     let content: ProfileNode
-    weak var glassTopBar: ASDisplayNode?
+    weak var glassTopBar: GlassTopBar?
     weak var voicePlayerView: UIView?
 
     init(mode: ProfileMode) {
@@ -28,16 +28,13 @@ final class ProfileScreenNode: ScreenNode {
     override var accessibilityElements: [Any]? {
         get {
             var elements: [Any] = []
-            if let player = voicePlayerView,
-               player.superview === view,
-               !player.isHidden,
-               player.alpha > 0.01 {
-                elements.append(player)
-            }
-            if let bar = glassTopBar?.view, bar.superview === view {
-                elements.append(bar)
-            }
-            elements.append(content.view)
+            AccessibilityElementOrder.appendVisibleView(voicePlayerView, to: &elements)
+            AccessibilityElementOrder.appendProvider(
+                glassTopBar,
+                fallbackView: glassTopBar?.view,
+                to: &elements
+            )
+            AccessibilityElementOrder.appendVisibleView(content.view, to: &elements)
             return elements
         }
         set { }

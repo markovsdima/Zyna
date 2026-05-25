@@ -31,13 +31,22 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
         node.tableNode.view.keyboardDismissMode = .onDrag
 
         node.headerNode.onNextTapped = { [weak self] in
-            self?.viewModel.proceed()
+            self?.performHeaderAction()
         }
         node.headerNode.onSearchQueryChanged = { [weak self] query in
             self?.viewModel.searchUsers(query)
         }
+        updateHeaderActionTitle(selectedUsers: viewModel.selectedUsers)
 
         bindViewModel()
+    }
+
+    private func performHeaderAction() {
+        if viewModel.allowsSkip, viewModel.selectedUsers.isEmpty {
+            viewModel.skip()
+        } else {
+            viewModel.proceed()
+        }
     }
 
     private func bindViewModel() {
@@ -56,8 +65,21 @@ final class SelectMembersViewController: ASDKViewController<SelectMembersNode>, 
                     self?.removeSelected(user: user)
                 }
                 self.node.showChips = !users.isEmpty
+                self.updateHeaderActionTitle(selectedUsers: users)
             }
             .store(in: &cancellables)
+    }
+
+    private func updateHeaderActionTitle(selectedUsers: [UserProfile]) {
+        guard viewModel.allowsSkip else {
+            node.headerNode.setActionTitle(String(localized: "Next"))
+            return
+        }
+
+        let title = selectedUsers.isEmpty
+            ? String(localized: "Skip")
+            : String(localized: "Invite")
+        node.headerNode.setActionTitle(title)
     }
 
     private func removeSelected(user: UserProfile) {

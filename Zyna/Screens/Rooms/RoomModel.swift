@@ -7,10 +7,17 @@
 
 import UIKit
 
+struct SpaceChildModel: Equatable {
+    let id: String
+    let name: String
+    let avatar: AvatarViewModel
+}
+
 struct RoomModel: Equatable {
     let id: String
     let name: String
     let lastMessage: String
+    let lastMessageSenderName: String?
     let timestamp: String
     let avatar: AvatarViewModel
     var isOnline: Bool
@@ -18,10 +25,37 @@ struct RoomModel: Equatable {
     let unreadCount: Int
     let unreadMentionCount: Int
     let isMarkedUnread: Bool
+    let isEncrypted: Bool
+    let isSpace: Bool
     let directUserId: String?
+    let spaceChildRoomCount: Int
+    let spaceChildSpaceCount: Int
+    let spaceRecentRooms: [SpaceChildModel]
+    let spaceMetadata: SpaceRoomMetadata?
 }
 
 extension RoomModel {
+    var spaceMetaText: String {
+        if spaceChildRoomCount == 0,
+           spaceChildSpaceCount == 0,
+           let childrenCount = spaceMetadata?.childrenCount,
+           childrenCount > 0 {
+            return String.localizedStringWithFormat(
+                String(localized: "%lld children"),
+                Int64(childrenCount)
+            )
+        }
+
+        let chats = String.localizedStringWithFormat(
+            String(localized: "%lld chats"),
+            Int64(spaceChildRoomCount)
+        )
+        let tracks = String.localizedStringWithFormat(
+            String(localized: "%lld tracks"),
+            Int64(spaceChildSpaceCount)
+        )
+        return "\(chats) · \(tracks)"
+    }
 
     init(from room: RoomSummary) {
         let avatarId = room.directUserId ?? room.id
@@ -40,6 +74,7 @@ extension RoomModel {
             id: room.id,
             name: room.displayName,
             lastMessage: room.lastMessage ?? "",
+            lastMessageSenderName: room.lastMessageSenderName,
             timestamp: room.lastMessageTimestamp.map { Self.formatTimestamp($0) } ?? "",
             avatar: avatar,
             isOnline: false,
@@ -47,7 +82,24 @@ extension RoomModel {
             unreadCount: Int(room.unreadCount),
             unreadMentionCount: Int(room.unreadMentionCount),
             isMarkedUnread: room.isMarkedUnread,
-            directUserId: room.directUserId
+            isEncrypted: room.isEncrypted,
+            isSpace: room.isSpace,
+            directUserId: room.directUserId,
+            spaceChildRoomCount: room.spaceChildRoomCount,
+            spaceChildSpaceCount: room.spaceChildSpaceCount,
+            spaceRecentRooms: room.spaceRecentRooms.map { child in
+                let avatarId = child.directUserId ?? child.id
+                return SpaceChildModel(
+                    id: child.id,
+                    name: child.displayName,
+                    avatar: AvatarViewModel(
+                        userId: avatarId,
+                        displayName: child.displayName,
+                        mxcAvatarURL: child.avatarURL
+                    )
+                )
+            },
+            spaceMetadata: room.spaceMetadata
         )
     }
 
@@ -65,6 +117,7 @@ extension RoomModel {
             id: id,
             name: name,
             lastMessage: lastMessage,
+            lastMessageSenderName: lastMessageSenderName,
             timestamp: timestamp,
             avatar: updatedAvatar,
             isOnline: isOnline,
@@ -72,7 +125,63 @@ extension RoomModel {
             unreadCount: unreadCount,
             unreadMentionCount: unreadMentionCount,
             isMarkedUnread: isMarkedUnread,
-            directUserId: directUserId
+            isEncrypted: isEncrypted,
+            isSpace: isSpace,
+            directUserId: directUserId,
+            spaceChildRoomCount: spaceChildRoomCount,
+            spaceChildSpaceCount: spaceChildSpaceCount,
+            spaceRecentRooms: spaceRecentRooms,
+            spaceMetadata: spaceMetadata
+        )
+    }
+
+    func withSpaceProfile(name: String, avatarURL: String?) -> RoomModel {
+        RoomModel(
+            id: id,
+            name: name,
+            lastMessage: lastMessage,
+            lastMessageSenderName: lastMessageSenderName,
+            timestamp: timestamp,
+            avatar: AvatarViewModel(
+                userId: id,
+                displayName: name,
+                mxcAvatarURL: avatarURL
+            ),
+            isOnline: isOnline,
+            lastSeen: lastSeen,
+            unreadCount: unreadCount,
+            unreadMentionCount: unreadMentionCount,
+            isMarkedUnread: isMarkedUnread,
+            isEncrypted: isEncrypted,
+            isSpace: isSpace,
+            directUserId: directUserId,
+            spaceChildRoomCount: spaceChildRoomCount,
+            spaceChildSpaceCount: spaceChildSpaceCount,
+            spaceRecentRooms: spaceRecentRooms,
+            spaceMetadata: spaceMetadata
+        )
+    }
+
+    func withSpaceMetadata(_ metadata: SpaceRoomMetadata?) -> RoomModel {
+        RoomModel(
+            id: id,
+            name: name,
+            lastMessage: lastMessage,
+            lastMessageSenderName: lastMessageSenderName,
+            timestamp: timestamp,
+            avatar: avatar,
+            isOnline: isOnline,
+            lastSeen: lastSeen,
+            unreadCount: unreadCount,
+            unreadMentionCount: unreadMentionCount,
+            isMarkedUnread: isMarkedUnread,
+            isEncrypted: isEncrypted,
+            isSpace: isSpace,
+            directUserId: directUserId,
+            spaceChildRoomCount: spaceChildRoomCount,
+            spaceChildSpaceCount: spaceChildSpaceCount,
+            spaceRecentRooms: spaceRecentRooms,
+            spaceMetadata: metadata
         )
     }
 

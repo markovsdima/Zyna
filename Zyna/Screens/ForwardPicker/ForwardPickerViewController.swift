@@ -51,7 +51,9 @@ final class ForwardPickerViewController: ASDKViewController<ASDisplayNode> {
 
     private func loadRooms() {
         let service = ZynaRoomListService()
-        rooms = service.roomsSubject.value.map { RoomModel(from: $0) }
+        rooms = service.roomsSubject.value
+            .map { RoomModel(from: $0) }
+            .filter { !$0.isSpace }
         tableNode.reloadData()
     }
 }

@@ -225,6 +225,8 @@ final class CallService {
             return String(localized: "Verify this device to make encrypted calls.")
         case .recipientIdentityVerificationRequired:
             return String(localized: "Could not continue the secure call. Check participant verification and try again.")
+        case .roomSendNotAllowed:
+            return String(localized: "You do not have permission to send call signaling in this room.")
         }
     }
 

@@ -68,10 +68,31 @@ User reaches them via the rotor → "Actions" → swipe down.
 When you have a glass bar floating over a table/list:
 
 1. Create a screen node (e.g. `MyScreenNode: ScreenNode`) with
-   `weak var glassBar: ASDisplayNode?` and a content view ref
-2. Override `accessibilityElements` to return `[glassBar.view, content]`
-   — bar first, otherwise touch hits fall through to the content
-   underneath the transparent glass
+   `weak var glassBar: GlassTopBar?` and a content view ref
+2. Override `accessibilityElements` to append ordered bar elements,
+   then content. Use `AccessibilityElementOrder.appendProvider(...)`
+   instead of appending `glassBar.view` directly:
+
+```swift
+override var accessibilityElements: [Any]? {
+    get {
+        var elements: [Any] = []
+        AccessibilityElementOrder.appendProvider(
+            glassBar,
+            fallbackView: glassBar?.view,
+            to: &elements
+        )
+        AccessibilityElementOrder.appendVisibleView(tableNode.view, to: &elements)
+        return elements
+    }
+    set { }
+}
+```
+
+   Bar elements first keep touch exploration from falling through to
+   content underneath transparent glass. Expanding the provider keeps
+   VoiceOver order stable inside the bar too — e.g. Back → title → Add,
+   not whatever UIKit/Texture subview order happens to produce.
 3. In each bar button: use `AccessibleButtonNode` and set
    `isAccessibilityElement = true`, `accessibilityLabel`,
    `accessibilityTraits = .button`
@@ -153,7 +174,11 @@ of the z-stack. In our chat: `tableNode` is added first, so
 a cell from underneath the glass bar. The bar gets skipped.
 
 Fix: override `accessibilityElements` on the parent node to
-return glass bars **before** the table.
+return glass/header controls **before** the table. For composite
+glass controls, use `AccessibilityElementsOrderProviding` and
+`AccessibilityElementOrder.appendProvider(...)` so the screen gets
+the provider's internal order instead of exposing the whole bar view
+as an opaque container.
 
 ## `ASButtonNode` ignores VoiceOver double-tap
 
@@ -177,6 +202,7 @@ Always set it alongside the label.
 
 | Component | Location |
 |---|---|
+| Glass/header order helpers | `AccessibilityElementsOrderProviding.swift` |
 | Glass bar buttons | `init()` of the bar |
 | Glass bar title (`PresenceTitleNode`, `GlassTopBarTitleView`) | Inside the title node, updated when content changes |
 | Chat input buttons | `setupNodes()` of `ChatInputNode` |
