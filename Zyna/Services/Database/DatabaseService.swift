@@ -757,6 +757,55 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v23_spaceChildGraph") { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE storedSpaceChild (
+                        spaceId TEXT NOT NULL,
+                        childId TEXT NOT NULL,
+                        sortOrder INTEGER NOT NULL,
+                        displayName TEXT NOT NULL,
+                        avatarURL TEXT,
+                        lastMessage TEXT,
+                        lastMessageSenderName TEXT,
+                        lastMessageTimestamp DOUBLE,
+                        unreadCount INTEGER NOT NULL DEFAULT 0,
+                        unreadMentionCount INTEGER NOT NULL DEFAULT 0,
+                        isMarkedUnread BOOLEAN NOT NULL DEFAULT 0,
+                        isEncrypted BOOLEAN NOT NULL DEFAULT 0,
+                        isSpace BOOLEAN NOT NULL DEFAULT 0,
+                        isMuted BOOLEAN NOT NULL DEFAULT 0,
+                        directUserId TEXT,
+                        spaceChildRoomCount INTEGER NOT NULL DEFAULT 0,
+                        spaceChildSpaceCount INTEGER NOT NULL DEFAULT 0,
+                        spaceRecentRoomsJSON TEXT,
+                        canonicalAlias TEXT,
+                        topic TEXT,
+                        joinRuleKind TEXT,
+                        joinRuleCustom TEXT,
+                        worldReadable BOOLEAN,
+                        guestCanJoin BOOLEAN NOT NULL DEFAULT 0,
+                        membership TEXT,
+                        viaJSON TEXT,
+                        joinedMembersCount INTEGER NOT NULL DEFAULT 0,
+                        childrenCount INTEGER NOT NULL DEFAULT 0,
+                        joinRuleRulesJSON TEXT,
+                        PRIMARY KEY (spaceId, childId)
+                    )
+                """
+            )
+            try db.create(
+                index: "idx_storedSpaceChild_space_order",
+                on: "storedSpaceChild",
+                columns: ["spaceId", "isSpace", "sortOrder"]
+            )
+            try db.create(
+                index: "idx_storedSpaceChild_child",
+                on: "storedSpaceChild",
+                columns: ["childId"]
+            )
+        }
+
         return migrator
     }
 
