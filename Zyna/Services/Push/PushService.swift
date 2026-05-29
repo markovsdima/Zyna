@@ -16,6 +16,8 @@ final class PushService {
 
     static let shared = PushService()
 
+    private static let notificationPrePromptSeenKey = "com.zyna.push.notificationPrePromptSeen"
+
     private var deviceToken: Data?
 
     #if DEBUG
@@ -72,11 +74,29 @@ final class PushService {
 
     // MARK: - Request Permission & Register
 
-    /// Call after login or session restore. Requests notification permission,
-    /// registers for remote notifications, and registers the pusher if a
-    /// device token is already available.
-    func registerIfNeeded() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+    /// Call after login or session restore. Registers for remote notifications
+    /// only when the user has already granted notification permission.
+    func registerIfAuthorized() {
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            guard let self else { return }
+            guard Self.isAuthorized(settings.authorizationStatus) else {
+                logPush("Notification permission is not authorized; skipping APNs registration")
+                return
+            }
+
+            DispatchQueue.main.async {
+                UIApplication.shared.registerForRemoteNotifications()
+                if let token = self.deviceToken {
+                    Task { await self.registerPusher(deviceToken: token) }
+                }
+            }
+        }
+    }
+
+    /// Call only after the app has explained why notifications are useful.
+    func requestAuthorizationAndRegister() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { [weak self] granted, error in
+            guard let self else { return }
             if let error {
                 logPush("Authorization request failed: \(error)")
                 return
@@ -85,12 +105,41 @@ final class PushService {
             guard granted else { return }
             DispatchQueue.main.async {
                 UIApplication.shared.registerForRemoteNotifications()
+                if let token = self.deviceToken {
+                    Task { await self.registerPusher(deviceToken: token) }
+                }
             }
         }
+    }
 
-        // Token may already be cached from a previous registerForRemoteNotifications call
-        if deviceToken != nil {
-            Task { await registerPusher() }
+    func shouldShowNotificationPrePrompt() async -> Bool {
+        guard !UserDefaults.standard.bool(forKey: Self.notificationPrePromptSeenKey) else {
+            return false
+        }
+        let status = await notificationAuthorizationStatus()
+        return status == .notDetermined
+    }
+
+    func markNotificationPrePromptSeen() {
+        UserDefaults.standard.set(true, forKey: Self.notificationPrePromptSeenKey)
+    }
+
+    private static func isAuthorized(_ status: UNAuthorizationStatus) -> Bool {
+        switch status {
+        case .authorized, .provisional, .ephemeral:
+            return true
+        case .notDetermined, .denied:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func notificationAuthorizationStatus() async -> UNAuthorizationStatus {
+        await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                continuation.resume(returning: settings.authorizationStatus)
+            }
         }
     }
 
@@ -98,12 +147,19 @@ final class PushService {
 
     /// Called from AppDelegate when APNs returns a device token.
     func didRegisterForRemoteNotifications(deviceToken: Data) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.didRegisterForRemoteNotifications(deviceToken: deviceToken)
+            }
+            return
+        }
+
         self.deviceToken = deviceToken
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
         logPush("Device token: \(hex)")
 
         Task {
-            await registerPusher()
+            await registerPusher(deviceToken: deviceToken)
         }
     }
 
@@ -113,12 +169,7 @@ final class PushService {
 
     // MARK: - Register Pusher on Homeserver
 
-    private func registerPusher() async {
-        guard let token = deviceToken else {
-            logPush("No device token, skipping pusher registration")
-            return
-        }
-
+    private func registerPusher(deviceToken token: Data) async {
         guard let client = MatrixClientService.shared.client else {
             logPush("No Matrix client, skipping pusher registration")
             return
