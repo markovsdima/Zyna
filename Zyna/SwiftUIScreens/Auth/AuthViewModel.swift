@@ -17,6 +17,7 @@ final class AuthViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var serverSupportsPassword = true
     @Published var serverSupportsOAuth = false
+    let allowsAccountCreation = Brand.current.allowsAccountCreation
 
     private let matrixService = MatrixClientService.shared
     private var oauthClient: Client?
@@ -64,6 +65,10 @@ final class AuthViewModel: ObservableObject {
 
     func register(homeserver: String) {
         guard !isLoading else { return }
+        guard allowsAccountCreation else {
+            errorMessage = "Account creation is not available in this app"
+            return
+        }
 
         isLoading = true
         errorMessage = nil
