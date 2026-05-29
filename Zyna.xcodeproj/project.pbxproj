@@ -312,7 +312,7 @@
 				INFOPLIST_FILE = Zyna/App/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls, sharing photos, and scanning documents.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Zyna needs access to your microphone for voice calls.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save photos from chats to your photo library.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -357,7 +357,7 @@
 				INFOPLIST_FILE = Zyna/App/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Zyna needs access to your camera for video calls, sharing photos, and scanning documents.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Zyna needs access to your microphone for voice calls.";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save photos from chats to your photo library.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
