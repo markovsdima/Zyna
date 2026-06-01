@@ -16,6 +16,7 @@
 		322E76E32DADAA97003921EC /* PINRemoteImage.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76E12DADAA97003921EC /* PINRemoteImage.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		322E77762DB083AE003921EC /* AsyncDisplayKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; };
 		322E77772DB083AE003921EC /* AsyncDisplayKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		3293F7982FCDF4C700D0298C /* ZynaNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 3293F7912FCDF4C600D0298C /* ZynaNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		32E8235E2FB4EEE800A86B57 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 32E8235D2FB4EEE800A86B57 /* GRDB */; };
 		32ED2F0E2F59FA7E0080ED2A /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 32ED2F0D2F59FA7E0080ED2A /* WebRTC */; };
 		32F7D31A2E3EE41A009282C3 /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
@@ -28,6 +29,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 324E19552DAD578A00CB5769;
 			remoteInfo = Zyna;
+		};
+		3293F7962FCDF4C700D0298C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 324E194E2DAD578A00CB5769 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3293F7902FCDF4C600D0298C;
+			remoteInfo = ZynaNotificationService;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -46,6 +54,17 @@
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		3293F7992FCDF4C700D0298C /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				3293F7982FCDF4C700D0298C /* ZynaNotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -55,10 +74,18 @@
 		322E76E12DADAA97003921EC /* PINRemoteImage.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PINRemoteImage.xcframework; path = Carthage/Build/PINRemoteImage.xcframework; sourceTree = "<group>"; };
 		324E19562DAD578A00CB5769 /* Zyna.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zyna.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		326E0A932F81CA82008567E5 /* ZynaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZynaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		3293F7912FCDF4C600D0298C /* ZynaNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ZynaNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		32A89B5E2DB46A3D0051DCE9 /* RxSwift.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = RxSwift.xcframework; path = Carthage/Build/RxSwift.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		3293F79D2FCDF4C700D0298C /* Exceptions for "ZynaNotificationService" folder in "ZynaNotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 3293F7902FCDF4C600D0298C /* ZynaNotificationService */;
+		};
 		32ED2CEE2F58F2580080ED2A /* Exceptions for "Zyna" folder in "Zyna" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -75,6 +102,14 @@
 		326E0A942F81CA82008567E5 /* ZynaTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = ZynaTests;
+			sourceTree = "<group>";
+		};
+		3293F7922FCDF4C700D0298C /* ZynaNotificationService */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				3293F79D2FCDF4C700D0298C /* Exceptions for "ZynaNotificationService" folder in "ZynaNotificationService" target */,
+			);
+			path = ZynaNotificationService;
 			sourceTree = "<group>";
 		};
 		32ED2CC32F58F2580080ED2A /* Zyna */ = {
@@ -110,6 +145,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		3293F78E2FCDF4C600D0298C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -131,6 +173,7 @@
 				32ED2CC32F58F2580080ED2A /* Zyna */,
 				32F7D3142E3E80DB009282C3 /* Secrets */,
 				326E0A942F81CA82008567E5 /* ZynaTests */,
+				3293F7922FCDF4C700D0298C /* ZynaNotificationService */,
 				322E76D62DADAA72003921EC /* Frameworks */,
 				324E19572DAD578A00CB5769 /* Products */,
 			);
@@ -141,6 +184,7 @@
 			children = (
 				324E19562DAD578A00CB5769 /* Zyna.app */,
 				326E0A932F81CA82008567E5 /* ZynaTests.xctest */,
+				3293F7912FCDF4C600D0298C /* ZynaNotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -163,10 +207,12 @@
 				324E19532DAD578A00CB5769 /* Frameworks */,
 				324E19542DAD578A00CB5769 /* Resources */,
 				322E76DA2DADAA72003921EC /* Embed Frameworks */,
+				3293F7992FCDF4C700D0298C /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				3293F7972FCDF4C700D0298C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				32ED2CC32F58F2580080ED2A /* Zyna */,
@@ -205,6 +251,28 @@
 			productReference = 326E0A932F81CA82008567E5 /* ZynaTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		3293F7902FCDF4C600D0298C /* ZynaNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3293F79C2FCDF4C700D0298C /* Build configuration list for PBXNativeTarget "ZynaNotificationService" */;
+			buildPhases = (
+				3293F78D2FCDF4C600D0298C /* Sources */,
+				3293F78E2FCDF4C600D0298C /* Frameworks */,
+				3293F78F2FCDF4C600D0298C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				3293F7922FCDF4C700D0298C /* ZynaNotificationService */,
+			);
+			name = ZynaNotificationService;
+			packageProductDependencies = (
+			);
+			productName = ZynaNotificationService;
+			productReference = 3293F7912FCDF4C600D0298C /* ZynaNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -222,6 +290,9 @@
 					326E0A922F81CA82008567E5 = {
 						CreatedOnToolsVersion = 26.3;
 						TestTargetID = 324E19552DAD578A00CB5769;
+					};
+					3293F7902FCDF4C600D0298C = {
+						CreatedOnToolsVersion = 26.3;
 					};
 				};
 			};
@@ -248,6 +319,7 @@
 			targets = (
 				324E19552DAD578A00CB5769 /* Zyna */,
 				326E0A922F81CA82008567E5 /* ZynaTests */,
+				3293F7902FCDF4C600D0298C /* ZynaNotificationService */,
 			);
 		};
 /* End PBXProject section */
@@ -261,6 +333,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		326E0A912F81CA82008567E5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3293F78F2FCDF4C600D0298C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -284,6 +363,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		3293F78D2FCDF4C600D0298C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -291,6 +377,11 @@
 			isa = PBXTargetDependency;
 			target = 324E19552DAD578A00CB5769 /* Zyna */;
 			targetProxy = 326E0A972F81CA82008567E5 /* PBXContainerItemProxy */;
+		};
+		3293F7972FCDF4C700D0298C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3293F7902FCDF4C600D0298C /* ZynaNotificationService */;
+			targetProxy = 3293F7962FCDF4C700D0298C /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -326,7 +417,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.app.zyna.Zyna;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Zyna Distrib";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Zyna Distr";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -371,7 +462,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.app.zyna.Zyna;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Zyna Distrib";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Zyna Distr";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
@@ -549,6 +640,76 @@
 			};
 			name = Release;
 		};
+		3293F79A2FCDF4C700D0298C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ZynaNotificationService/ZynaNotificationService.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = UM3QPHF8E3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ZynaNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ZynaNotificationService;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.app.zyna.Zyna.ZynaNotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Zyna NSE Distr";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		3293F79B2FCDF4C700D0298C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ZynaNotificationService/ZynaNotificationService.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = UM3QPHF8E3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ZynaNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ZynaNotificationService;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.app.zyna.Zyna.ZynaNotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Zyna NSE Distr";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -575,6 +736,15 @@
 			buildConfigurations = (
 				326E0A992F81CA82008567E5 /* Debug */,
 				326E0A9A2F81CA82008567E5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		3293F79C2FCDF4C700D0298C /* Build configuration list for PBXNativeTarget "ZynaNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3293F79A2FCDF4C700D0298C /* Debug */,
+				3293F79B2FCDF4C700D0298C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
