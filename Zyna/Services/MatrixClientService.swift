@@ -6,7 +6,6 @@
 import Foundation
 import Combine
 import MatrixRustSDK
-import KeychainAccess
 
 // MARK: - Client State
 
@@ -117,6 +116,7 @@ final class MatrixClientService {
     private let userIdKey = "com.zyna.matrix.lastUserId"
     private let localSessionIdKey = "com.zyna.matrix.localSessionId"
     private static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
+    private static let passphraseKeychainService = "com.zyna.matrix.crypto"
     // MSC4268 encrypted history sharing is experimental and affects privacy expectations:
     // invited users may receive keys for earlier room history. Keep disabled until the app has explicit UX for that behavior.
     private static let enableEncryptedHistorySharingOnInvite = false
@@ -124,16 +124,47 @@ final class MatrixClientService {
     private static let decryptionSettings = DecryptionSettings(senderDeviceTrustRequirement: .crossSignedOrLegacy)
 
     private init() {
-        let keychain = Keychain(service: "com.zyna.matrix.crypto")
-            .accessibility(.afterFirstUnlockThisDeviceOnly)
+        passphrase = Self.loadMatrixStorePassphrase()
+    }
 
-        if let stored = try? keychain.get(Self.passphraseKeychainKey) {
-            passphrase = stored
-        } else {
-            let generated = EncryptionKeyProvider().generateKey().base64EncodedString()
-            try? keychain.set(generated, key: Self.passphraseKeychainKey)
-            passphrase = generated
+    private static func loadMatrixStorePassphrase() -> String {
+        let sharedKeychain = ZynaSecurityConfig.sharedKeychain(service: passphraseKeychainService)
+        let legacyKeychain = ZynaSecurityConfig.legacyKeychain(service: passphraseKeychainService)
+
+        do {
+            if let stored = try sharedKeychain.get(passphraseKeychainKey) {
+                return stored
+            }
+        } catch {
+            logAuth("Failed to read shared Matrix store passphrase: \(error)")
         }
+
+        do {
+            if let legacy = try legacyKeychain.get(passphraseKeychainKey) {
+                do {
+                    try sharedKeychain.set(legacy, key: passphraseKeychainKey)
+                    logAuth("Migrated Matrix store passphrase to shared keychain")
+                } catch {
+                    logAuth("Failed to migrate Matrix store passphrase to shared keychain: \(error)")
+                }
+                return legacy
+            }
+        } catch {
+            logAuth("Failed to read legacy Matrix store passphrase: \(error)")
+        }
+
+        let generated = EncryptionKeyProvider().generateKey().base64EncodedString()
+        do {
+            try sharedKeychain.set(generated, key: passphraseKeychainKey)
+        } catch {
+            logAuth("Failed to save Matrix store passphrase in shared keychain: \(error)")
+            do {
+                try legacyKeychain.set(generated, key: passphraseKeychainKey)
+            } catch {
+                logAuth("Failed to save Matrix store passphrase in legacy keychain: \(error)")
+            }
+        }
+        return generated
     }
 
     // MARK: - Session Paths
