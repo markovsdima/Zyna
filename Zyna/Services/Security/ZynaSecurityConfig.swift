@@ -10,6 +10,10 @@ enum ZynaSecurityConfig {
     static let appGroupIdentifier = "group.com.app.zyna"
     static let keychainAccessGroup = "UM3QPHF8E3.com.app.zyna.shared"
 
+    static func appGroupContainerURL() -> URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)
+    }
+
     static func sharedKeychain(service: String) -> Keychain {
         Keychain(service: service, accessGroup: keychainAccessGroup)
             .accessibility(.afterFirstUnlockThisDeviceOnly)

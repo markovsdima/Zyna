@@ -123,6 +123,11 @@ final class MatrixClientService {
     private static let roomKeyRecipientStrategy: CollectStrategy = .identityBasedStrategy
     private static let decryptionSettings = DecryptionSettings(senderDeviceTrustRequirement: .crossSignedOrLegacy)
 
+    private struct MatrixStorePaths {
+        let dataPath: String
+        let cachePath: String
+    }
+
     private init() {
         passphrase = Self.loadMatrixStorePassphrase()
     }
@@ -169,24 +174,34 @@ final class MatrixClientService {
 
     // MARK: - Session Paths
 
-    private func sessionDataPath(for userId: String? = nil) -> String {
-        let dir = legacyMatrixDataDirectory()
-        _ = try? LocalDataProtection.createProtectedDirectory(
-            at: dir,
-            protection: .backgroundReadable,
-            excludeFromBackup: true
+    private func matrixStorePaths(for userId: String? = nil) -> MatrixStorePaths {
+        guard let sharedDataDirectory = LocalDataProtection.sharedMatrixDataDirectory(),
+              let sharedCacheDirectory = LocalDataProtection.sharedMatrixCacheDirectory() else {
+            logAuth("App Group container unavailable; using legacy Matrix store directories")
+            let dataDirectory = legacyMatrixDataDirectory()
+            let cacheDirectory = legacyMatrixCacheDirectory()
+            createMatrixStoreDirectory(dataDirectory)
+            createMatrixStoreDirectory(cacheDirectory)
+            return MatrixStorePaths(dataPath: dataDirectory.path, cachePath: cacheDirectory.path)
+        }
+
+        migrateMatrixStoreToAppGroupIfNeeded(
+            userId: userId,
+            sharedDataDirectory: sharedDataDirectory,
+            sharedCacheDirectory: sharedCacheDirectory
         )
-        return dir.path
+        createMatrixStoreDirectory(sharedDataDirectory)
+        createMatrixStoreDirectory(sharedCacheDirectory)
+
+        return MatrixStorePaths(dataPath: sharedDataDirectory.path, cachePath: sharedCacheDirectory.path)
     }
 
-    private func sessionCachePath(for userId: String? = nil) -> String {
-        let dir = legacyMatrixCacheDirectory()
+    private func createMatrixStoreDirectory(_ directory: URL) {
         _ = try? LocalDataProtection.createProtectedDirectory(
-            at: dir,
+            at: directory,
             protection: .backgroundReadable,
             excludeFromBackup: true
         )
-        return dir.path
     }
 
     private func legacyMatrixDataDirectory() -> URL {
@@ -205,6 +220,119 @@ final class MatrixClientService {
             .appendingPathComponent("default", isDirectory: true)
     }
 
+    private func appSandboxMatrixDataDirectories(for userId: String?) -> [URL] {
+        var directories = [
+            legacyMatrixDataDirectory(),
+            LocalDataProtection.matrixDataDirectory(for: nil)
+        ]
+
+        if let userId, !userId.isEmpty {
+            directories.append(LocalDataProtection.matrixDataDirectory(for: userId))
+        }
+
+        return uniqueURLs(directories)
+    }
+
+    private func appSandboxMatrixCacheDirectories(for userId: String?) -> [URL] {
+        var directories = [
+            legacyMatrixCacheDirectory(),
+            LocalDataProtection.matrixCacheDirectory(for: nil)
+        ]
+
+        if let userId, !userId.isEmpty {
+            directories.append(LocalDataProtection.matrixCacheDirectory(for: userId))
+        }
+
+        return uniqueURLs(directories)
+    }
+
+    private func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        var result: [URL] = []
+
+        for url in urls {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { continue }
+            result.append(url)
+        }
+
+        return result
+    }
+
+    private func migrateMatrixStoreToAppGroupIfNeeded(
+        userId: String?,
+        sharedDataDirectory: URL,
+        sharedCacheDirectory: URL
+    ) {
+        migrateMatrixDirectoryToAppGroupIfNeeded(
+            sources: appSandboxMatrixDataDirectories(for: userId),
+            destination: sharedDataDirectory,
+            label: "data"
+        )
+        migrateMatrixDirectoryToAppGroupIfNeeded(
+            sources: appSandboxMatrixCacheDirectories(for: userId),
+            destination: sharedCacheDirectory,
+            label: "cache"
+        )
+    }
+
+    private func migrateMatrixDirectoryToAppGroupIfNeeded(
+        sources: [URL],
+        destination: URL,
+        label: String
+    ) {
+        let fm = FileManager.default
+
+        guard !directoryHasContents(destination) else {
+            return
+        }
+
+        guard let source = sources.first(where: { directoryHasContents($0) }) else {
+            return
+        }
+
+        let parent = destination.deletingLastPathComponent()
+        let temporaryDestination = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent)-migration-\(UUID().uuidString)",
+            isDirectory: true
+        )
+
+        do {
+            try LocalDataProtection.createProtectedDirectory(
+                at: parent,
+                protection: .backgroundReadable,
+                excludeFromBackup: true
+            )
+
+            if fm.fileExists(atPath: destination.path), !directoryHasContents(destination) {
+                try fm.removeItem(at: destination)
+            }
+
+            try fm.copyItem(at: source, to: temporaryDestination)
+            try? LocalDataProtection.applyProtectionRecursively(
+                to: temporaryDestination,
+                protection: .backgroundReadable
+            )
+            try fm.moveItem(at: temporaryDestination, to: destination)
+            logAuth("Migrated Matrix \(label) store to App Group container")
+        } catch {
+            try? fm.removeItem(at: temporaryDestination)
+            logAuth("Failed to migrate Matrix \(label) store to App Group container: \(error)")
+        }
+    }
+
+    private func directoryHasContents(_ url: URL) -> Bool {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              let contents = try? fm.contentsOfDirectory(atPath: url.path) else {
+            return false
+        }
+
+        return !contents.isEmpty
+    }
+
     private func removeEmptyDirectory(_ url: URL) {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(atPath: url.path),
@@ -218,6 +346,16 @@ final class MatrixClientService {
     /// with a previous device's crypto store.
     private func clearSessionDirectories(userId: String? = nil) {
         let fm = FileManager.default
+        if let sharedDataDirectory = LocalDataProtection.sharedMatrixDataDirectory() {
+            try? fm.removeItem(at: sharedDataDirectory)
+            removeEmptyDirectory(sharedDataDirectory.deletingLastPathComponent())
+            removeEmptyDirectory(sharedDataDirectory.deletingLastPathComponent().deletingLastPathComponent())
+        }
+        if let sharedCacheDirectory = LocalDataProtection.sharedMatrixCacheDirectory() {
+            try? fm.removeItem(at: sharedCacheDirectory)
+            removeEmptyDirectory(sharedCacheDirectory.deletingLastPathComponent())
+            removeEmptyDirectory(sharedCacheDirectory.deletingLastPathComponent().deletingLastPathComponent())
+        }
         try? fm.removeItem(at: LocalDataProtection.matrixDataDirectory(for: nil))
         try? fm.removeItem(at: LocalDataProtection.matrixCacheDirectory(for: nil))
         if let userId, !userId.isEmpty {
@@ -248,7 +386,8 @@ final class MatrixClientService {
         }
 
         do {
-            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+            let storePaths = matrixStorePaths()
+            let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
                 .passphrase(passphrase: passphrase)
 
             let client = try await ClientBuilder()
@@ -332,7 +471,8 @@ final class MatrixClientService {
         }
 
         do {
-            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+            let storePaths = matrixStorePaths(for: userId)
+            let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
                 .passphrase(passphrase: passphrase)
 
             let client = try await ClientBuilder()
@@ -711,7 +851,8 @@ final class MatrixClientService {
         stateSubject.send(.loggingIn)
 
         do {
-            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+            let storePaths = matrixStorePaths(for: session.userId)
+            let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
                 .passphrase(passphrase: passphrase)
 
             let client = try await ClientBuilder()
@@ -789,7 +930,8 @@ final class MatrixClientService {
             clearSessionDirectories()
         }
 
-        let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+        let storePaths = matrixStorePaths()
+        let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
             .passphrase(passphrase: passphrase)
 
         return try await ClientBuilder()
