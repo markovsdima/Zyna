@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import CryptoKit
 import UIKit
 import UserNotifications
 import MatrixRustSDK
@@ -28,6 +29,11 @@ final class PushService {
     private static let gatewayPath = "/_matrix/push/v1/notify"
 
     private init() {}
+
+    private static func pusherNotificationClientIdentifier(for userId: String) -> String {
+        let digest = SHA256.hash(data: Data(userId.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
 
     private static func buildURL(from homeserverUrl: String, path: String) -> URL? {
         var raw = homeserverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -193,6 +199,17 @@ final class PushService {
 
             let pushkey = token.map { String(format: "%02x", $0) }.joined()
             let deviceName = await UIDevice.current.name
+            let pusherNotificationClientIdentifier = Self.pusherNotificationClientIdentifier(for: session.userId)
+            let defaultPayload: [String: Any] = [
+                "aps": [
+                    "mutable-content": 1,
+                    "alert": [
+                        "loc-key": "Notification",
+                        "loc-args": []
+                    ]
+                ],
+                "pusher_notification_client_identifier": pusherNotificationClientIdentifier
+            ]
 
             let body: [String: Any] = [
                 "pushkey": pushkey,
@@ -203,7 +220,8 @@ final class PushService {
                 "lang": "en",
                 "data": [
                     "url": gatewayURL.absoluteString,
-                    "format": "event_id_only"
+                    "format": "event_id_only",
+                    "default_payload": defaultPayload
                 ]
             ]
 

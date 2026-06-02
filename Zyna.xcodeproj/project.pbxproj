@@ -17,6 +17,9 @@
 		322E77762DB083AE003921EC /* AsyncDisplayKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; };
 		322E77772DB083AE003921EC /* AsyncDisplayKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		3293F7982FCDF4C700D0298C /* ZynaNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 3293F7912FCDF4C600D0298C /* ZynaNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		3293F7A02FCF000100D0298C /* MatrixRustSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */; };
+		3293F7A12FCF000100D0298C /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
+		3293F7A32FCF000100D0298C /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 3293F7A22FCF000100D0298C /* libsqlite3.tbd */; };
 		32E8235E2FB4EEE800A86B57 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 32E8235D2FB4EEE800A86B57 /* GRDB */; };
 		32ED2F0E2F59FA7E0080ED2A /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 32ED2F0D2F59FA7E0080ED2A /* WebRTC */; };
 		32F7D31A2E3EE41A009282C3 /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
@@ -75,6 +78,7 @@
 		324E19562DAD578A00CB5769 /* Zyna.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zyna.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		326E0A932F81CA82008567E5 /* ZynaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZynaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3293F7912FCDF4C600D0298C /* ZynaNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ZynaNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		3293F7A22FCF000100D0298C /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 		32A89B5E2DB46A3D0051DCE9 /* RxSwift.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = RxSwift.xcframework; path = Carthage/Build/RxSwift.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -83,6 +87,13 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+			);
+			target = 3293F7902FCDF4C600D0298C /* ZynaNotificationService */;
+		};
+		3293FDAD2FCF203500D0298C /* Exceptions for "Zyna" folder in "ZynaNotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Core/Concurrency/Atomic.swift,
 			);
 			target = 3293F7902FCDF4C600D0298C /* ZynaNotificationService */;
 		};
@@ -116,6 +127,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				32ED2CEE2F58F2580080ED2A /* Exceptions for "Zyna" folder in "Zyna" target */,
+				3293FDAD2FCF203500D0298C /* Exceptions for "Zyna" folder in "ZynaNotificationService" target */,
 			);
 			path = Zyna;
 			sourceTree = "<group>";
@@ -149,6 +161,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3293F7A02FCF000100D0298C /* MatrixRustSDK in Frameworks */,
+				3293F7A12FCF000100D0298C /* KeychainAccess in Frameworks */,
+				3293F7A32FCF000100D0298C /* libsqlite3.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -158,6 +173,7 @@
 		322E76D62DADAA72003921EC /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				3293F7A22FCF000100D0298C /* libsqlite3.tbd */,
 				32A89B5E2DB46A3D0051DCE9 /* RxSwift.xcframework */,
 				322E76E12DADAA97003921EC /* PINRemoteImage.xcframework */,
 				322E76DE2DADAA8B003921EC /* PINOperation.xcframework */,
@@ -268,6 +284,8 @@
 			);
 			name = ZynaNotificationService;
 			packageProductDependencies = (
+				322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */,
+				32F7D3192E3EE41A009282C3 /* KeychainAccess */,
 			);
 			productName = ZynaNotificationService;
 			productReference = 3293F7912FCDF4C600D0298C /* ZynaNotificationService.appex */;

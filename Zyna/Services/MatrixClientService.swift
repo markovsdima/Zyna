@@ -113,7 +113,7 @@ final class MatrixClientService {
     private let invalidatingSession = Atomic(false)
     private let sessionRecoveryActive = Atomic(false)
 
-    private let userIdKey = "com.zyna.matrix.lastUserId"
+    private let userIdKey = ZynaSecurityConfig.matrixLastUserIdKey
     private let localSessionIdKey = "com.zyna.matrix.localSessionId"
     private static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
     private static let passphraseKeychainService = "com.zyna.matrix.crypto"
@@ -122,6 +122,7 @@ final class MatrixClientService {
     private static let enableEncryptedHistorySharingOnInvite = false
     private static let roomKeyRecipientStrategy: CollectStrategy = .identityBasedStrategy
     private static let decryptionSettings = DecryptionSettings(senderDeviceTrustRequirement: .crossSignedOrLegacy)
+    private static let crossProcessLockHolderName = Bundle.main.bundleIdentifier ?? "Zyna"
 
     private struct MatrixStorePaths {
         let dataPath: String
@@ -391,6 +392,7 @@ final class MatrixClientService {
                 .passphrase(passphrase: passphrase)
 
             let client = try await ClientBuilder()
+                .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
                 .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
                 .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
@@ -414,6 +416,7 @@ final class MatrixClientService {
 
             let userId = try client.userId()
             UserDefaults.standard.set(userId, forKey: userIdKey)
+            ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
             let localSessionId = startNewLocalSessionId()
             activateLocalData(userId: userId)
 
@@ -476,6 +479,7 @@ final class MatrixClientService {
                 .passphrase(passphrase: passphrase)
 
             let client = try await ClientBuilder()
+                .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
                 .homeserverUrl(url: session.homeserverUrl)
                 .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
@@ -492,6 +496,7 @@ final class MatrixClientService {
 
             try await client.restoreSession(session: session)
             logAuth("Session restored for \(userId)")
+            ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
             ensureLocalSessionId()
             activateLocalData(userId: userId)
             sessionRecoverySession = nil
@@ -856,6 +861,7 @@ final class MatrixClientService {
                 .passphrase(passphrase: passphrase)
 
             let client = try await ClientBuilder()
+                .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
                 .homeserverUrl(url: session.homeserverUrl)
                 .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
@@ -879,6 +885,7 @@ final class MatrixClientService {
 
             let refreshedSession = try client.session()
             UserDefaults.standard.set(refreshedSession.userId, forKey: userIdKey)
+            ZynaSecurityConfig.setSharedLastMatrixUserId(refreshedSession.userId)
             ensureLocalSessionId()
             activateLocalData(userId: refreshedSession.userId)
             sessionDelegate.saveSessionInKeychain(session: refreshedSession)
@@ -935,6 +942,7 @@ final class MatrixClientService {
             .passphrase(passphrase: passphrase)
 
         return try await ClientBuilder()
+            .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
             .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
             .sqliteStore(config: storeConfig)
             .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
@@ -971,6 +979,7 @@ final class MatrixClientService {
 
         let userId = try client.userId()
         UserDefaults.standard.set(userId, forKey: userIdKey)
+        ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
         let localSessionId = startNewLocalSessionId()
         activateLocalData(userId: userId)
 
@@ -1075,6 +1084,7 @@ final class MatrixClientService {
             sessionDelegate.clearAllSessions()
         }
         UserDefaults.standard.removeObject(forKey: userIdKey)
+        ZynaSecurityConfig.clearSharedLastMatrixUserId()
         UserDefaults.standard.removeObject(forKey: localSessionIdKey)
         clearSessionDirectories(userId: userId)
         clearAppLocalData(userId: userId)
