@@ -7564,7 +7564,11 @@
           }
         }
       }
-    }
+    },
+    "MatrixRTC" : {},
+    "Off keeps the current Zyna direct call implementation" : {},
+    "Use MatrixRTC Calls" : {},
+    "Zyna Direct" : {}
   },
   "version" : "1.1"
 }

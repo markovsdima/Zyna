@@ -20,6 +20,7 @@
 		3293F7A02FCF000100D0298C /* MatrixRustSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */; };
 		3293F7A12FCF000100D0298C /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
 		3293F7A32FCF000100D0298C /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 3293F7A22FCF000100D0298C /* libsqlite3.tbd */; };
+		3293FDB02FD0BA2E00D0298C /* EmbeddedElementCall in Frameworks */ = {isa = PBXBuildFile; productRef = 3293FDAF2FD0BA2E00D0298C /* EmbeddedElementCall */; };
 		32E8235E2FB4EEE800A86B57 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 32E8235D2FB4EEE800A86B57 /* GRDB */; };
 		32ED2F0E2F59FA7E0080ED2A /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 32ED2F0D2F59FA7E0080ED2A /* WebRTC */; };
 		32F7D31A2E3EE41A009282C3 /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
@@ -141,6 +142,7 @@
 			files = (
 				322E76DC2DADAA7E003921EC /* PINCache.xcframework in Frameworks */,
 				322E77762DB083AE003921EC /* AsyncDisplayKit.xcframework in Frameworks */,
+				3293FDB02FD0BA2E00D0298C /* EmbeddedElementCall in Frameworks */,
 				322C5EE22FB6531C00F29FB7 /* MatrixRustSDK in Frameworks */,
 				322E76DF2DADAA8B003921EC /* PINOperation.xcframework in Frameworks */,
 				32E8235E2FB4EEE800A86B57 /* GRDB in Frameworks */,
@@ -239,6 +241,7 @@
 				32ED2F0D2F59FA7E0080ED2A /* WebRTC */,
 				32E8235D2FB4EEE800A86B57 /* GRDB */,
 				322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */,
+				3293FDAF2FD0BA2E00D0298C /* EmbeddedElementCall */,
 			);
 			productName = Zyna;
 			productReference = 324E19562DAD578A00CB5769 /* Zyna.app */;
@@ -329,6 +332,7 @@
 				32ED2F0C2F59FA7E0080ED2A /* XCRemoteSwiftPackageReference "WebRTC" */,
 				32E8235C2FB4EEE800A86B57 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 				322C5EE02FB6531C00F29FB7 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */,
+				3293FDAE2FD0BA2E00D0298C /* XCRemoteSwiftPackageReference "element-call-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 324E19572DAD578A00CB5769 /* Products */;
@@ -426,7 +430,7 @@
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -471,7 +475,7 @@
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -545,7 +549,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -603,7 +607,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -672,7 +676,7 @@
 				INFOPLIST_FILE = ZynaNotificationService/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = ZynaNotificationService;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -707,7 +711,7 @@
 				INFOPLIST_FILE = ZynaNotificationService/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = ZynaNotificationService;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -778,6 +782,14 @@
 				version = "26.5.13-zyna.5-beta.6";
 			};
 		};
+		3293FDAE2FD0BA2E00D0298C /* XCRemoteSwiftPackageReference "element-call-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/element-hq/element-call-swift";
+			requirement = {
+				kind = exactVersion;
+				version = 0.20.0;
+			};
+		};
 		32E8235C2FB4EEE800A86B57 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/markovsdima/GRDB.swift.git";
@@ -809,6 +821,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 322C5EE02FB6531C00F29FB7 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */;
 			productName = MatrixRustSDK;
+		};
+		3293FDAF2FD0BA2E00D0298C /* EmbeddedElementCall */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3293FDAE2FD0BA2E00D0298C /* XCRemoteSwiftPackageReference "element-call-swift" */;
+			productName = EmbeddedElementCall;
 		};
 		32E8235D2FB4EEE800A86B57 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;

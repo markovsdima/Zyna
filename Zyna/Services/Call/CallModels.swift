@@ -5,6 +5,51 @@
 
 import Foundation
 
+// MARK: - Call Backend Preference
+
+enum CallBackend: String, CaseIterable {
+    case zynaDirect = "zyna_direct"
+    case matrixRTC = "matrix_rtc"
+
+    var title: String {
+        switch self {
+        case .zynaDirect:
+            return String(localized: "Zyna Direct")
+        case .matrixRTC:
+            return String(localized: "MatrixRTC")
+        }
+    }
+}
+
+final class CallBackendPreferenceStore {
+    static let shared = CallBackendPreferenceStore()
+
+    private let defaultsKey = "com.zyna.calls.backend"
+    private let defaults: UserDefaults
+
+    private init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    var selectedBackend: CallBackend {
+        get {
+            guard let rawValue = defaults.string(forKey: defaultsKey),
+                  let backend = CallBackend(rawValue: rawValue) else {
+                return .zynaDirect
+            }
+            return backend
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: defaultsKey)
+        }
+    }
+
+    var usesMatrixRTC: Bool {
+        get { selectedBackend == .matrixRTC }
+        set { selectedBackend = newValue ? .matrixRTC : .zynaDirect }
+    }
+}
+
 // MARK: - Call State
 
 enum CallState: Equatable {

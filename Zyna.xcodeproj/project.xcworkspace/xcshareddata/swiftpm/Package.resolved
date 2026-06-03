@@ -1,6 +1,15 @@
 {
-  "originHash" : "dbdaad5a41e6e571674f96af8257c2b6ef7f633a46a938aa7babc40d950efada",
+  "originHash" : "7bc94c15ab3cfcf800e3f692aa02132326d4be7ff9c2fd7a152802c47a3cc0f2",
   "pins" : [
+    {
+      "identity" : "element-call-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/element-hq/element-call-swift",
+      "state" : {
+        "revision" : "9a9f546b0c49ab4f893316ae6d23691ae14b84e0",
+        "version" : "0.20.0"
+      }
+    },
     {
       "identity" : "grdb.swift",
       "kind" : "remoteSourceControl",
