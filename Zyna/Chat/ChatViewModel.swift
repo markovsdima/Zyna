@@ -80,6 +80,11 @@ final class ChatViewModel {
         var hasPinnedMessages: Bool { !eventIds.isEmpty }
     }
 
+    struct ActiveRoomCallState: Equatable {
+        var isActive = false
+        var participantCount = 0
+    }
+
     private struct RedactionTransitionCandidate {
         let message: StoredMessage
         let previous: StoredMessage
@@ -169,6 +174,7 @@ final class ChatViewModel {
     @Published private(set) var composerSendRestrictionReason: OutgoingSendFailureReason?
     @Published private(set) var isRoomEncrypted: Bool = true
     @Published private(set) var pinnedMessagesState = PinnedMessagesState()
+    @Published private(set) var activeRoomCallState = ActiveRoomCallState()
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -202,6 +208,7 @@ final class ChatViewModel {
     private var roomResolutionTask: Task<Void, Never>?
     private var sendPermissionTask: Task<Void, Never>?
     private var pinnedMessagesTask: Task<Void, Never>?
+    private var roomInfoSubscription: TaskHandle?
     private var currentMatrixClientState = MatrixClientService.shared.state
     private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
     private var canSendRoomMessages = true
@@ -432,6 +439,8 @@ final class ChatViewModel {
         self.room = room
         isInvited = room.membership() == .invited
         refreshRoomEncryptionState(room)
+        refreshActiveRoomCallState(room)
+        subscribeToRoomInfoUpdates(room)
 
         let timelineService = TimelineService(room: room)
         self.timelineService = timelineService
@@ -448,18 +457,36 @@ final class ChatViewModel {
         }
     }
 
+    private func subscribeToRoomInfoUpdates(_ room: Room) {
+        roomInfoSubscription?.cancel()
+        let listener = ChatRoomInfoListener { [weak self] info in
+            DispatchQueue.main.async {
+                self?.applyRoomInfoUpdate(info)
+            }
+        }
+        roomInfoSubscription = room.subscribeToRoomInfoUpdates(listener: listener)
+    }
+
+    private func applyRoomInfoUpdate(_ info: RoomInfo) {
+        updateActiveRoomCallState(from: info)
+        updatePinnedMessages(from: info)
+    }
+
     private func resolveRoomInfo(_ room: Room) {
         Task { [weak self] in
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
+            let activeRoomCallState = Self.activeRoomCallState(from: info)
             if let powerLevels = info.powerLevels {
                 let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
                 await MainActor.run {
                     self.updateCanSendRoomMessages(canSendMessage)
+                    self.applyActiveRoomCallState(activeRoomCallState)
                     self.updatePinnedMessages(from: info)
                 }
             } else {
                 await MainActor.run {
+                    self.applyActiveRoomCallState(activeRoomCallState)
                     self.updatePinnedMessages(from: info)
                 }
             }
@@ -523,6 +550,29 @@ final class ChatViewModel {
                 self.updatePinnedMessages(from: info, powerLevels: loadedPowerLevels)
             }
         }
+    }
+
+    private func refreshActiveRoomCallState(_ room: Room) {
+        activeRoomCallState = ActiveRoomCallState(
+            isActive: room.hasActiveRoomCall(),
+            participantCount: activeRoomCallState.participantCount
+        )
+    }
+
+    private func updateActiveRoomCallState(from info: RoomInfo) {
+        applyActiveRoomCallState(Self.activeRoomCallState(from: info))
+    }
+
+    private static func activeRoomCallState(from info: RoomInfo) -> ActiveRoomCallState {
+        ActiveRoomCallState(
+            isActive: info.hasRoomCall,
+            participantCount: info.activeRoomCallParticipants.count
+        )
+    }
+
+    private func applyActiveRoomCallState(_ state: ActiveRoomCallState) {
+        guard activeRoomCallState != state else { return }
+        activeRoomCallState = state
     }
 
     private func updatePinnedMessages(
@@ -4110,6 +4160,8 @@ final class ChatViewModel {
         sendPermissionTask = nil
         pinnedMessagesTask?.cancel()
         pinnedMessagesTask = nil
+        roomInfoSubscription?.cancel()
+        roomInfoSubscription = nil
         timelineService?.onDiffs = nil
         timelineService?.onReadCursor = nil
         timelineService?.onOwnFullyReadMarker = nil
@@ -5061,5 +5113,17 @@ final class ChatViewModel {
                 )
             }
         }
+    }
+}
+
+private final class ChatRoomInfoListener: @unchecked Sendable, RoomInfoListener {
+    private let callback: (RoomInfo) -> Void
+
+    init(callback: @escaping (RoomInfo) -> Void) {
+        self.callback = callback
+    }
+
+    func call(roomInfo: RoomInfo) {
+        callback(roomInfo)
     }
 }

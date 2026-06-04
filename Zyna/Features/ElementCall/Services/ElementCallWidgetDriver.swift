@@ -24,7 +24,6 @@ private struct ElementCallWidgetMessage: Codable {
     }
 
     enum Action: String, Codable {
-        case hangup = "im.vector.hangup"
         case close = "io.element.close"
         case mediaState = "io.element.device_mute"
     }
@@ -93,7 +92,7 @@ final class ElementCallWidgetDriver: WidgetCapabilitiesProvider, @unchecked Send
                 ),
                 config: .init(
                     intent: intent,
-                    header: .appBar,
+                    header: HeaderStyle.none,
                     confineToRoom: true,
                     controlledAudioDevices: false
                 )
@@ -149,23 +148,6 @@ final class ElementCallWidgetDriver: WidgetCapabilitiesProvider, @unchecked Send
         let result = await widgetDriver.handle.send(msg: message)
         handleMessageIfNeeded(message)
         return .success(result)
-    }
-
-    func sendHangupToWidget() {
-        let message = ElementCallWidgetMessage(
-            direction: .fromWidget,
-            action: .hangup,
-            widgetId: widgetID
-        )
-
-        do {
-            let data = try JSONEncoder().encode(message)
-            if let json = String(data: data, encoding: .utf8) {
-                onMessageToWidget?(json)
-            }
-        } catch {
-            logElementCallWidget("Failed to encode Element Call hangup message: \(error)")
-        }
     }
 
     func acquireCapabilities(capabilities: WidgetCapabilities) -> WidgetCapabilities {

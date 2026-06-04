@@ -131,6 +131,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let pinnedMessagesBannerView = PinnedMessagesBannerView()
     private let searchBar = SearchBarView()
     private let inviteBanner = InviteBannerView()
+    private let activeCallBanner = ActiveCallBannerView()
 
     /// Scroll-to-live button lives at node.view level (not inside input bar)
     /// so its tap target works even when positioned above the bar's bounds.
@@ -340,6 +341,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             view.addSubview(inviteBanner)
         }
 
+        // Active MatrixRTC call banner (hidden by default)
+        activeCallBanner.isHidden = true
+        activeCallBanner.alpha = 0
+        activeCallBanner.onJoin = { [weak self] in
+            self?.onCallTapped?()
+        }
+        if !isPreviewMode {
+            view.addSubview(activeCallBanner)
+            node.activeCallBannerView = activeCallBanner
+        }
+
         // Glass input bar
         if !isPreviewMode {
             glassInputBar.isHidden = viewModel.isInvited
@@ -439,6 +451,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         glassNavBar.updateLayout(in: view)
+        updateActiveCallBannerLayout()
         updatePinnedMessagesBannerLayout()
         searchBar.frame = CGRect(
             x: 0, y: glassNavBar.coveredHeight,
@@ -474,6 +487,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             item: audioPlayer.nowPlaying,
             snapshot: audioPlayer.snapshot
         )
+        updateActiveCallBanner(animated: false)
+        updatePinnedMessagesBanner(animated: false)
         // Pre-warm glass before the navigation transition starts so the
         // shared render loop is already active on the first animated frame.
         GlassService.shared.captureFor(duration: 0.5)
@@ -577,10 +592,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func updateTopChromeTableInset() {
+        let activeCallHeight = shouldShowActiveCallBanner()
+            ? ActiveCallBannerView.height
+            : 0
         let pinnedHeight = shouldShowPinnedMessagesBanner()
             ? PinnedMessagesBannerView.height + 16
             : 0
-        let bottom = glassNavBar.coveredHeight + pinnedHeight
+        let bottom = glassNavBar.coveredHeight + activeCallHeight + pinnedHeight
         if node.tableNode.contentInset.bottom != bottom {
             node.tableNode.contentInset.bottom = bottom
         }
@@ -619,6 +637,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         pinnedMessagesBannerView.frame = targetPinnedMessagesBannerFrame()
     }
 
+    private func updateActiveCallBannerLayout() {
+        guard !isPreviewMode else { return }
+        activeCallBanner.frame = targetActiveCallBannerFrame()
+    }
+
+    private func targetActiveCallBannerFrame() -> CGRect {
+        CGRect(
+            x: 0,
+            y: glassNavBar.coveredHeight,
+            width: view.bounds.width,
+            height: ActiveCallBannerView.height
+        )
+    }
+
     private func targetPinnedMessagesBannerFrame() -> CGRect {
         guard isPinnedMessagesBannerExpanded else {
             let size = PinnedMessagesBannerView.collapsedSize
@@ -651,6 +683,53 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         return state.hasPinnedMessages
             && searchBar.isHidden
             && inviteBanner.isHidden
+            && !shouldShowActiveCallBanner()
+    }
+
+    private func shouldShowActiveCallBanner() -> Bool {
+        guard !isPreviewMode else { return false }
+        return viewModel.activeRoomCallState.isActive
+            && CallBackendPreferenceStore.shared.usesMatrixRTC
+            && !viewModel.isInvited
+            && searchBar.isHidden
+    }
+
+    private func updateActiveCallBanner(animated: Bool) {
+        guard !isPreviewMode else { return }
+        let shouldShow = shouldShowActiveCallBanner()
+        let targetFrame = targetActiveCallBannerFrame()
+
+        let applyVisibility = {
+            self.activeCallBanner.alpha = shouldShow ? 1 : 0
+            self.activeCallBanner.frame = targetFrame
+            self.activeCallBanner.layoutIfNeeded()
+        }
+
+        if shouldShow {
+            if activeCallBanner.isHidden {
+                activeCallBanner.frame = targetFrame
+                activeCallBanner.layoutIfNeeded()
+            }
+            activeCallBanner.isHidden = false
+        }
+
+        if animated {
+            UIView.animate(
+                withDuration: 0.18,
+                delay: 0,
+                options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseOut],
+                animations: applyVisibility
+            ) { _ in
+                self.activeCallBanner.isHidden = !shouldShow
+            }
+        } else {
+            applyVisibility()
+            activeCallBanner.isHidden = !shouldShow
+        }
+
+        updateTopChromeTableInset()
+        updateDateHeaderOverlay()
+        node.view.bringSubviewToFront(activeCallBanner)
     }
 
     private func updatePinnedMessagesBanner(animated: Bool) {
@@ -911,6 +990,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             glassNavBar.frame.maxY,
             searchBar.isHidden ? tableFrame.minY : searchBar.frame.maxY,
             inviteBanner.isHidden ? tableFrame.minY : inviteBanner.frame.maxY,
+            activeCallBanner.isHidden ? tableFrame.minY : activeCallBanner.frame.maxY,
             shouldShowPinnedMessagesBanner() ? pinnedMessagesBannerView.frame.maxY : tableFrame.minY
         )
         let bottomObstruction = min(
@@ -1150,12 +1230,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         viewModel.activateSearch()
         searchBar.isHidden = false
         searchBar.activate()
+        updateActiveCallBanner(animated: true)
         updatePinnedMessagesBanner(animated: true)
     }
 
     private func deactivateSearch() {
         viewModel.deactivateSearch()
         searchBar.isHidden = true
+        updateActiveCallBanner(animated: true)
         updatePinnedMessagesBanner(animated: true)
     }
 
@@ -1299,6 +1381,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .sink { [weak self] invited in
                 guard let self, !self.isPreviewMode else { return }
                 self.inviteBanner.isHidden = !invited
+                self.updateActiveCallBanner(animated: true)
                 self.updateComposerChrome()
                 GlassService.shared.setNeedsCapture()
                 self.updateTableInsetsForInputBar()
@@ -1400,6 +1483,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self, !self.isPreviewMode else { return }
+                self.updatePinnedMessagesBanner(animated: true)
+            }
+            .store(in: &cancellables)
+
+        viewModel.$activeRoomCallState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, !self.isPreviewMode else { return }
+                self.updateActiveCallBanner(animated: true)
                 self.updatePinnedMessagesBanner(animated: true)
             }
             .store(in: &cancellables)

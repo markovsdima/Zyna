@@ -15,7 +15,6 @@ final class ElementCallViewController: UIViewController {
     private enum ScriptMessageName {
         static let diagnostics = "elementCallDiagnostics"
         static let widgetAction = "elementCallWidgetAction"
-        static let backButton = "elementCallBackButton"
     }
 
     var onDismiss: (() -> Void)?
@@ -26,7 +25,6 @@ final class ElementCallViewController: UIViewController {
     private let webView: WKWebView
     private let staticServer = ElementCallStaticServer()
     private let statusLabel = UILabel()
-    private let closeButton = UIButton(type: .system)
     private var widgetDriver: ElementCallWidgetDriver?
     private var isDismissing = false
 
@@ -51,7 +49,6 @@ final class ElementCallViewController: UIViewController {
         super.init(nibName: nil, bundle: nil)
         configuration.userContentController.add(self, name: ScriptMessageName.diagnostics)
         configuration.userContentController.add(self, name: ScriptMessageName.widgetAction)
-        configuration.userContentController.add(self, name: ScriptMessageName.backButton)
 
         modalPresentationStyle = .fullScreen
     }
@@ -63,7 +60,6 @@ final class ElementCallViewController: UIViewController {
     deinit {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.diagnostics)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.widgetAction)
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.backButton)
         staticServer.stop()
     }
 
@@ -104,28 +100,11 @@ final class ElementCallViewController: UIViewController {
         statusLabel.adjustsFontForContentSizeCategory = true
         view.addSubview(statusLabel)
 
-        var configuration = UIButton.Configuration.filled()
-        configuration.image = UIImage(systemName: "xmark")
-        configuration.baseForegroundColor = .label
-        configuration.baseBackgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.92)
-        closeButton.configuration = configuration
-        closeButton.accessibilityLabel = String(localized: "Close")
-        closeButton.layer.cornerRadius = 22
-        closeButton.clipsToBounds = true
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
-        view.addSubview(closeButton)
-
         NSLayoutConstraint.activate([
             statusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             statusLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
-
-            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
-            closeButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
-            closeButton.widthAnchor.constraint(equalToConstant: 44),
-            closeButton.heightAnchor.constraint(equalToConstant: 44)
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24)
         ])
     }
 
@@ -174,7 +153,7 @@ final class ElementCallViewController: UIViewController {
         }
         widgetDriver.onCallEnded = { [weak self] in
             DispatchQueue.main.async {
-                self?.dismissElementCall(sendHangup: false)
+                self?.dismissElementCall()
             }
         }
 
@@ -209,16 +188,9 @@ final class ElementCallViewController: UIViewController {
         }
     }
 
-    @objc private func closeTapped() {
-        dismissElementCall(sendHangup: true)
-    }
-
-    private func dismissElementCall(sendHangup: Bool) {
+    private func dismissElementCall() {
         guard !isDismissing else { return }
         isDismissing = true
-        if sendHangup {
-            widgetDriver?.sendHangupToWidget()
-        }
         staticServer.stop()
         onDismiss?()
     }
@@ -259,10 +231,7 @@ final class ElementCallViewController: UIViewController {
         let source = """
         (() => {
           window.controls = window.controls || {};
-          window.controls.\(ScriptMessageName.backButton) = () => {
-            window.webkit.messageHandlers.\(ScriptMessageName.backButton).postMessage("");
-          };
-          window.controls.onBackButtonPressed = window.controls.\(ScriptMessageName.backButton);
+          window.controls.onBackButtonPressed = () => {};
 
           window.addEventListener("message", (event) => {
             const data = event.data;
@@ -348,8 +317,6 @@ extension ElementCallViewController: WKScriptMessageHandler {
                 Task { [weak self] in
                     await self?.widgetDriver?.handleMessage(body)
                 }
-            } else if message.name == ScriptMessageName.backButton {
-                dismissElementCall(sendHangup: true)
             }
             return
         }

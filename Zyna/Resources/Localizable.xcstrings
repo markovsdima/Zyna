@@ -1316,6 +1316,16 @@
         }
       }
     },
+    "Call in progress" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Идет звонок"
+          }
+        }
+      }
+    },
     "Can you check this?" : {
       "localizations" : {
         "ru" : {
@@ -2408,6 +2418,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Присоединиться"
+          }
+        }
+      }
+    },
+    "Join" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Войти"
+          }
+        }
+      }
+    },
+    "Join Call" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Войти в звонок"
           }
         }
       }
