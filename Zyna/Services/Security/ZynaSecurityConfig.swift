@@ -8,8 +8,18 @@ import Foundation
 
 enum ZynaSecurityConfig {
     static let appGroupIdentifier = "group.com.app.zyna"
-    static let keychainAccessGroup = "UM3QPHF8E3.com.app.zyna.shared"
     static let matrixLastUserIdKey = "com.zyna.matrix.lastUserId"
+    private static let keychainAccessGroupInfoPlistKey = "ZynaKeychainAccessGroup"
+    private static let fallbackKeychainAccessGroup = "UM3QPHF8E3.com.app.zyna.shared"
+
+    static let keychainAccessGroup: String = {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: keychainAccessGroupInfoPlistKey) as? String,
+              !value.isEmpty,
+              !value.contains("$(") else {
+            return fallbackKeychainAccessGroup
+        }
+        return value
+    }()
 
     static func appGroupContainerURL() -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)

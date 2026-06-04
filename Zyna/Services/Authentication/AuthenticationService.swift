@@ -15,6 +15,7 @@ enum AuthenticationError: LocalizedError {
     case invalidCredentials
     case networkError
     case sessionNotFound
+    case sessionPersistenceFailed(String)
     case invalidOAuthURL
     case registrationNotSupported
 
@@ -30,6 +31,8 @@ enum AuthenticationError: LocalizedError {
             return "Network connection error"
         case .sessionNotFound:
             return "No saved session found"
+        case .sessionPersistenceFailed(let message):
+            return "Failed to save session: \(message)"
         case .invalidOAuthURL:
             return "Server returned an invalid authentication URL"
         case .registrationNotSupported:
@@ -82,6 +85,14 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
     }
 
     func saveSessionInKeychain(session: MatrixRustSDK.Session) {
+        do {
+            try persistSessionInKeychain(session: session)
+        } catch {
+            logKeychain("Failed to save session: \(error)")
+        }
+    }
+
+    func persistSessionInKeychain(session: MatrixRustSDK.Session) throws {
         let sessionData = SessionData(
             accessToken: session.accessToken,
             refreshToken: session.refreshToken,
@@ -91,24 +102,33 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
             oauthData: session.oauthData
         )
 
-        do {
-            let data = try encoder.encode(sessionData)
-            let dataString = String(data: data, encoding: .utf8) ?? ""
-            var didSaveSharedSession = false
-            do {
-                try sharedKeychain.set(dataString, key: session.userId)
-                didSaveSharedSession = true
-            } catch {
-                logKeychain("Failed to save session in shared keychain, falling back to legacy for user \(session.userId): \(error)")
-                try legacyKeychain.set(dataString, key: session.userId)
-            }
-            if didSaveSharedSession {
-                try? legacyKeychain.remove(session.userId)
-            }
-            logKeychain("Session saved for user: \(session.userId)")
-        } catch {
-            logKeychain("Failed to save session: \(error)")
+        let data = try encoder.encode(sessionData)
+        guard let dataString = String(data: data, encoding: .utf8) else {
+            throw AuthenticationError.sessionPersistenceFailed("Session JSON was not UTF-8")
         }
+
+        var sharedSaveError: Error?
+        var legacySaveError: Error?
+
+        do {
+            try sharedKeychain.set(dataString, key: session.userId)
+        } catch {
+            sharedSaveError = error
+            logKeychain("Failed to save session in shared keychain, falling back to legacy for user \(session.userId): \(error)")
+        }
+
+        do {
+            try legacyKeychain.set(dataString, key: session.userId)
+        } catch {
+            legacySaveError = error
+            logKeychain("Failed to save session in legacy keychain for user \(session.userId): \(error)")
+        }
+
+        if let sharedSaveError, let legacySaveError {
+            throw AuthenticationError.sessionPersistenceFailed("shared=\(sharedSaveError) legacy=\(legacySaveError)")
+        }
+
+        logKeychain("Session saved for user: \(session.userId)")
     }
 
     func clearSession(userId: String) {
@@ -133,6 +153,14 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
         case (.failure(let sharedError), .failure(let legacyError)):
             logKeychain("Failed to clear all sessions: shared=\(sharedError) legacy=\(legacyError)")
         }
+    }
+
+    func storedSessionUserIds() -> [String] {
+        var result: [String] = []
+        result.append(contentsOf: sharedKeychain.allKeys())
+        result.append(contentsOf: legacyKeychain.allKeys())
+
+        return Array(Set(result)).sorted()
     }
 
     private func sessionDataString(for userId: String) throws -> String? {

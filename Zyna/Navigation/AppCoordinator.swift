@@ -9,8 +9,18 @@ import Combine
 
 final class AppCoordinator {
 
+    private enum RootScreen {
+        case auth
+        case main
+        case verification
+        case sessionRecovery
+    }
+
+    private static let installationSentinelKey = "com.zyna.installation.initialized"
+
     weak var window: UIWindow?
     private var mainCoordinator: MainCoordinator?
+    private var rootScreen: RootScreen?
     private var cancellables = Set<AnyCancellable>()
     private var isPerformingLogout = false
     private var serverLogoutTask: Task<Void, Error>?
@@ -30,6 +40,7 @@ final class AppCoordinator {
         if let window {
             AppBannerCenter.shared.attach(to: window)
         }
+        prepareLocalStateForLaunch()
         OutgoingTextOutboxService.shared.start()
         OutgoingImageOutboxService.shared.start()
         OutgoingVideoOutboxService.shared.start()
@@ -48,6 +59,20 @@ final class AppCoordinator {
         } else {
             showAuth()
         }
+    }
+
+    private func prepareLocalStateForLaunch() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: Self.installationSentinelKey) == nil else {
+            return
+        }
+
+        if defaults.string(forKey: ZynaSecurityConfig.matrixLastUserIdKey) == nil {
+            MatrixClientService.resetPersistedSessionStateAfterFreshInstall()
+        }
+
+        defaults.set(true, forKey: Self.installationSentinelKey)
+        defaults.synchronize()
     }
 
     private func observeClientState() {
@@ -98,6 +123,8 @@ final class AppCoordinator {
     // MARK: - Navigation
 
     private func showAuth() {
+        guard rootScreen != .auth else { return }
+
         AppBannerCenter.shared.dismissAll()
         isShowingSessionRecovery = false
         let viewModel = AuthViewModel()
@@ -111,6 +138,7 @@ final class AppCoordinator {
         }
         let authView = AuthView(viewModel: viewModel)
         let vc = authView.wrapped()
+        rootScreen = .auth
         window?.rootViewController = vc
     }
 
@@ -253,6 +281,7 @@ final class AppCoordinator {
             viewModel.onVerified = { [weak self] in self?.showMain() }
             viewModel.onSkipped = { [weak self] in self?.showMain() }
             let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+            rootScreen = .verification
             window?.rootViewController = vc
         }
     }
@@ -364,6 +393,7 @@ final class AppCoordinator {
 
         PresenceTracker.shared.connect()
 
+        rootScreen = .main
         window?.rootViewController = coordinator.tabBarController
         Task { @MainActor [weak self] in
             self?.presentPendingNotificationPrePromptIfNeeded()
@@ -407,6 +437,7 @@ final class AppCoordinator {
             }
         }
 
+        rootScreen = .sessionRecovery
         window?.rootViewController = SessionRecoveryView(viewModel: viewModel).wrapped()
     }
 

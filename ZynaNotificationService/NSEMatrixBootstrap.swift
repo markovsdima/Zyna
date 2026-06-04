@@ -27,6 +27,31 @@ struct NSEPreparedNotification: Sendable {
     let isNoisy: Bool
 }
 
+private enum NSESecurityConfig {
+    static let appGroupIdentifier = "group.com.app.zyna"
+    static let matrixLastUserIdKey = "com.zyna.matrix.lastUserId"
+    static let sessionKeychainService = "com.zyna.matrix.session"
+    static let passphraseKeychainService = "com.zyna.matrix.crypto"
+    static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
+
+    private static let keychainAccessGroupInfoPlistKey = "ZynaKeychainAccessGroup"
+    private static let fallbackKeychainAccessGroup = "UM3QPHF8E3.com.app.zyna.shared"
+
+    static let keychainAccessGroup: String = {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: keychainAccessGroupInfoPlistKey) as? String,
+              !value.isEmpty,
+              !value.contains("$(") else {
+            return fallbackKeychainAccessGroup
+        }
+        return value
+    }()
+
+    static func sharedKeychain(service: String) -> Keychain {
+        Keychain(service: service, accessGroup: keychainAccessGroup)
+            .accessibility(.afterFirstUnlockThisDeviceOnly)
+    }
+}
+
 /// Builds the minimal Matrix runtime inside the Notification Service Extension
 /// so a push payload can be resolved into locally decrypted notification text.
 final class NSEMatrixBootstrap {
@@ -69,13 +94,6 @@ final class NSEMatrixBootstrap {
             }
         }
     }
-
-    private static let appGroupIdentifier = "group.com.app.zyna"
-    private static let keychainAccessGroup = "UM3QPHF8E3.com.app.zyna.shared"
-    private static let matrixLastUserIdKey = "com.zyna.matrix.lastUserId"
-    private static let sessionKeychainService = "com.zyna.matrix.session"
-    private static let passphraseKeychainService = "com.zyna.matrix.crypto"
-    private static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
 
     private let decoder = JSONDecoder()
 
@@ -207,7 +225,7 @@ final class NSEMatrixBootstrap {
     }
 
     private func loadContext() throws -> Context {
-        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier) else {
+        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: NSESecurityConfig.appGroupIdentifier) else {
             throw BootstrapError.appGroupUnavailable
         }
 
@@ -229,7 +247,7 @@ final class NSEMatrixBootstrap {
             )
         }
 
-        let sessionKeychain = sharedKeychain(service: Self.sessionKeychainService)
+        let sessionKeychain = sharedKeychain(service: NSESecurityConfig.sessionKeychainService)
         guard let userId = sharedUserId() ?? sessionKeychain.allKeys().sorted().first else {
             throw BootstrapError.userIdUnavailable
         }
@@ -250,8 +268,8 @@ final class NSEMatrixBootstrap {
             slidingSyncVersion: .native
         )
 
-        let passphraseKeychain = sharedKeychain(service: Self.passphraseKeychainService)
-        guard let passphrase = try passphraseKeychain.get(Self.passphraseKeychainKey) else {
+        let passphraseKeychain = sharedKeychain(service: NSESecurityConfig.passphraseKeychainService)
+        guard let passphrase = try passphraseKeychain.get(NSESecurityConfig.passphraseKeychainKey) else {
             throw BootstrapError.passphraseUnavailable
         }
 
@@ -283,13 +301,12 @@ final class NSEMatrixBootstrap {
     }
 
     private func sharedUserId() -> String? {
-        UserDefaults(suiteName: Self.appGroupIdentifier)?
-            .string(forKey: Self.matrixLastUserIdKey)
+        UserDefaults(suiteName: NSESecurityConfig.appGroupIdentifier)?
+            .string(forKey: NSESecurityConfig.matrixLastUserIdKey)
     }
 
     private func sharedKeychain(service: String) -> Keychain {
-        Keychain(service: service, accessGroup: Self.keychainAccessGroup)
-            .accessibility(.afterFirstUnlockThisDeviceOnly)
+        NSESecurityConfig.sharedKeychain(service: service)
     }
 
     private func directoryHasContents(_ url: URL) -> Bool {
@@ -318,9 +335,6 @@ private final class NSESessionDelegate: ClientSessionDelegate {
         let homeserverUrl: String
         let oauthData: String?
     }
-
-    private static let sessionKeychainService = "com.zyna.matrix.session"
-    private static let keychainAccessGroup = "UM3QPHF8E3.com.app.zyna.shared"
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -364,7 +378,6 @@ private final class NSESessionDelegate: ClientSessionDelegate {
     }
 
     private func sharedKeychain() -> Keychain {
-        Keychain(service: Self.sessionKeychainService, accessGroup: Self.keychainAccessGroup)
-            .accessibility(.afterFirstUnlockThisDeviceOnly)
+        NSESecurityConfig.sharedKeychain(service: NSESecurityConfig.sessionKeychainService)
     }
 }

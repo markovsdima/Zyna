@@ -139,12 +139,11 @@ final class AuthViewModel: ObservableObject {
 
         Task {
             do {
-                let client = try await matrixService.buildUnauthenticatedClient(homeserver: trimmed)
-                let details = await client.homeserverLoginDetails()
+                let capabilities = try await matrixService.homeserverCapabilities(homeserver: trimmed)
 
                 await MainActor.run {
-                    serverSupportsPassword = details.supportsPasswordLogin()
-                    serverSupportsOAuth = details.supportsOauthLogin()
+                    serverSupportsPassword = capabilities.supportsPassword
+                    serverSupportsOAuth = capabilities.supportsOAuth
                 }
             } catch {
                 await MainActor.run {

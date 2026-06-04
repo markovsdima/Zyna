@@ -133,6 +133,35 @@ final class MatrixClientService {
         passphrase = Self.loadMatrixStorePassphrase()
     }
 
+    static func resetPersistedSessionStateAfterFreshInstall() {
+        DefaultSessionDelegate().clearAllSessions()
+        clearPersistedMatrixStorePassphrase()
+        ZynaSecurityConfig.clearSharedLastMatrixUserId()
+        DatabasePassphraseStore.removeAllPassphrases()
+        removeSharedMatrixStoreDirectories()
+        LocalDataProtection.removeMatrixNoSessionStore()
+        LocalDataProtection.removeAllUserLocalData()
+        LocalDataProtection.removeLegacyGlobalLocalData()
+        LocalDataProtection.removeTemporaryLocalData()
+    }
+
+    private static func clearPersistedMatrixStorePassphrase() {
+        let sharedKeychain = ZynaSecurityConfig.sharedKeychain(service: passphraseKeychainService)
+        let legacyKeychain = ZynaSecurityConfig.legacyKeychain(service: passphraseKeychainService)
+        try? sharedKeychain.removeAll()
+        try? legacyKeychain.removeAll()
+    }
+
+    private static func removeSharedMatrixStoreDirectories() {
+        let fm = FileManager.default
+        if let sharedDataDirectory = LocalDataProtection.sharedMatrixDataDirectory() {
+            try? fm.removeItem(at: sharedDataDirectory)
+        }
+        if let sharedCacheDirectory = LocalDataProtection.sharedMatrixCacheDirectory() {
+            try? fm.removeItem(at: sharedCacheDirectory)
+        }
+    }
+
     private static func loadMatrixStorePassphrase() -> String {
         let sharedKeychain = ZynaSecurityConfig.sharedKeychain(service: passphraseKeychainService)
         let legacyKeychain = ZynaSecurityConfig.legacyKeychain(service: passphraseKeychainService)
@@ -380,7 +409,7 @@ final class MatrixClientService {
 
         // Clear stale local state so a fresh login cannot reuse another user's
         // decrypted app cache or Matrix crypto store.
-        if let existingUserId = UserDefaults.standard.string(forKey: userIdKey) {
+        if let existingUserId = persistedUserId() {
             clearLocalSession(userId: existingUserId)
         } else {
             clearSessionDirectories()
@@ -415,14 +444,12 @@ final class MatrixClientService {
             )
 
             let userId = try client.userId()
-            UserDefaults.standard.set(userId, forKey: userIdKey)
-            ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
+            let session = try client.session()
+            try sessionDelegate.persistSessionInKeychain(session: session)
+
+            persistStoredSessionMarker(userId: userId)
             let localSessionId = startNewLocalSessionId()
             activateLocalData(userId: userId)
-
-            // Manually save session — SDK only auto-calls delegate on token refresh
-            let session = try client.session()
-            sessionDelegate.saveSessionInKeychain(session: session)
 
             logAuth("Logged in as \(userId) localSession=\(localSessionId)")
 
@@ -459,7 +486,7 @@ final class MatrixClientService {
             return
         }
 
-        guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
+        guard let userId = persistedUserId() else {
             logAuth("No stored userId found")
             throw AuthenticationError.sessionNotFound
         }
@@ -469,6 +496,11 @@ final class MatrixClientService {
             session = try sessionDelegate.retrieveSessionFromKeychain(userId: userId)
         } catch {
             logAuth("Stored session unavailable for \(userId): \(error)")
+            if case AuthenticationError.sessionNotFound = error {
+                clearStoredSessionMarker(userId: userId)
+                stateSubject.send(.loggedOut)
+                throw error
+            }
             await enterSessionRecovery(source: .restoreFailure, session: nil, reason: String(describing: error))
             throw error
         }
@@ -884,11 +916,11 @@ final class MatrixClientService {
             )
 
             let refreshedSession = try client.session()
-            UserDefaults.standard.set(refreshedSession.userId, forKey: userIdKey)
-            ZynaSecurityConfig.setSharedLastMatrixUserId(refreshedSession.userId)
+            try sessionDelegate.persistSessionInKeychain(session: refreshedSession)
+
+            persistStoredSessionMarker(userId: refreshedSession.userId)
             ensureLocalSessionId()
             activateLocalData(userId: refreshedSession.userId)
-            sessionDelegate.saveSessionInKeychain(session: refreshedSession)
 
             sessionRecoverySession = refreshedSession
             sessionRecoveryActive.tryToClearFlag()
@@ -931,7 +963,7 @@ final class MatrixClientService {
 
     /// Build a client for a given homeserver (without logging in).
     func buildUnauthenticatedClient(homeserver: String) async throws -> Client {
-        if let existingUserId = UserDefaults.standard.string(forKey: userIdKey) {
+        if let existingUserId = persistedUserId() {
             clearLocalSession(userId: existingUserId)
         } else {
             clearSessionDirectories()
@@ -958,6 +990,24 @@ final class MatrixClientService {
             .build()
     }
 
+    func homeserverCapabilities(homeserver: String) async throws -> (supportsPassword: Bool, supportsOAuth: Bool) {
+        let client = try await ClientBuilder()
+            .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
+            .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
+            .inMemoryStore()
+            .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
+            .setSessionDelegate(sessionDelegate: sessionDelegate)
+            .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
+            .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+            .build()
+
+        let details = await client.homeserverLoginDetails()
+        return (
+            supportsPassword: details.supportsPasswordLogin(),
+            supportsOAuth: details.supportsOauthLogin()
+        )
+    }
+
     /// Start an OAuth authentication flow. Returns the login URL and authorization data.
     func startOAuthFlow(client: Client) async throws -> (loginURL: URL, authData: OAuthAuthorizationData) {
         let authData = try await client.urlForOauth(
@@ -978,13 +1028,12 @@ final class MatrixClientService {
         try await client.loginWithOauthCallback(callbackUrl: callbackURL)
 
         let userId = try client.userId()
-        UserDefaults.standard.set(userId, forKey: userIdKey)
-        ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
+        let session = try client.session()
+        try sessionDelegate.persistSessionInKeychain(session: session)
+
+        persistStoredSessionMarker(userId: userId)
         let localSessionId = startNewLocalSessionId()
         activateLocalData(userId: userId)
-
-        let session = try client.session()
-        sessionDelegate.saveSessionInKeychain(session: session)
 
         logAuth("OAuth login successful as \(userId) localSession=\(localSessionId)")
 
@@ -998,7 +1047,7 @@ final class MatrixClientService {
     }
 
     var hasStoredSession: Bool {
-        UserDefaults.standard.string(forKey: userIdKey) != nil
+        persistedUserId() != nil
     }
 
     var currentLocalSessionId: String? {
@@ -1014,7 +1063,7 @@ final class MatrixClientService {
                 canSignIn: true
             )
         }
-        guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
+        guard let userId = persistedUserId() else {
             return nil
         }
         return SessionRecoveryCredentials(
@@ -1036,7 +1085,7 @@ final class MatrixClientService {
         if let client, let session = try? client.session() {
             return session
         }
-        guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
+        guard let userId = persistedUserId() else {
             return nil
         }
         return try? sessionDelegate.retrieveSessionFromKeychain(userId: userId)
@@ -1046,7 +1095,33 @@ final class MatrixClientService {
         if let client, let userId = try? client.userId(), !userId.isEmpty {
             return userId
         }
-        return UserDefaults.standard.string(forKey: userIdKey)
+        return persistedUserId()
+    }
+
+    private func persistedUserId() -> String? {
+        if let userId = UserDefaults.standard.string(forKey: userIdKey), !userId.isEmpty {
+            return userId
+        }
+
+        if let userId = ZynaSecurityConfig.sharedUserDefaults()?.string(forKey: userIdKey), !userId.isEmpty {
+            persistStoredSessionMarker(userId: userId)
+            logAuth("Restored stored session marker from shared defaults for \(userId)")
+            return userId
+        }
+
+        guard let userId = sessionDelegate.storedSessionUserIds().first, !userId.isEmpty else {
+            return nil
+        }
+
+        persistStoredSessionMarker(userId: userId)
+        logAuth("Restored stored session marker from keychain for \(userId)")
+        return userId
+    }
+
+    private func persistStoredSessionMarker(userId: String) {
+        UserDefaults.standard.set(userId, forKey: userIdKey)
+        UserDefaults.standard.synchronize()
+        ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
     }
 
     private func activateLocalData(userId: String) {
@@ -1084,16 +1159,29 @@ final class MatrixClientService {
             sessionDelegate.clearAllSessions()
         }
         UserDefaults.standard.removeObject(forKey: userIdKey)
+        UserDefaults.standard.synchronize()
         ZynaSecurityConfig.clearSharedLastMatrixUserId()
         UserDefaults.standard.removeObject(forKey: localSessionIdKey)
+        UserDefaults.standard.synchronize()
         clearSessionDirectories(userId: userId)
         clearAppLocalData(userId: userId)
+    }
+
+    private func clearStoredSessionMarker(userId: String) {
+        UserDefaults.standard.removeObject(forKey: userIdKey)
+        UserDefaults.standard.removeObject(forKey: localSessionIdKey)
+        UserDefaults.standard.synchronize()
+        ZynaSecurityConfig.clearSharedLastMatrixUserId()
+        sessionRecoverySession = nil
+        sessionRecoveryActive.tryToClearFlag()
+        logAuth("Cleared stale stored session marker for \(userId)")
     }
 
     @discardableResult
     private func startNewLocalSessionId() -> String {
         let id = UUID().uuidString
         UserDefaults.standard.set(id, forKey: localSessionIdKey)
+        UserDefaults.standard.synchronize()
         return id
     }
 
