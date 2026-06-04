@@ -786,6 +786,10 @@ final class ChatsCoordinator {
             presentVerificationRequiredForCall()
             return
         }
+        if CallBackendPreferenceStore.shared.usesMatrixRTC {
+            presentElementCallScreen(room: room)
+            return
+        }
         CallService.shared.startCall(room: room, timelineService: timelineService)
         presentCallScreen(roomName: room.displayName() ?? "Call")
     }
@@ -830,6 +834,19 @@ final class ChatsCoordinator {
 
     func presentCallScreen(roomName: String) {
         let callVC = CallViewController(roomName: roomName)
+        callVC.onDismiss = { [weak self] in
+            self?.navigationController.dismiss(animated: true)
+        }
+        navigationController.present(callVC, animated: true)
+    }
+
+    func presentElementCallScreen(room: Room) {
+        let credentials = MatrixClientService.shared.sessionRecoveryCredentials
+        let callVC = ElementCallViewController(
+            room: room,
+            roomName: room.displayName() ?? "Call",
+            deviceID: credentials?.deviceId
+        )
         callVC.onDismiss = { [weak self] in
             self?.navigationController.dismiss(animated: true)
         }

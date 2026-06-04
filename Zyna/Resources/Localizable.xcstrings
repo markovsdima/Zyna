@@ -7565,6 +7565,46 @@
         }
       }
     },
+    "Element Call bundle is not available." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bundle Element Call недоступен."
+          }
+        }
+      }
+    },
+    "Element Call local server failed to start." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось запустить локальный сервер Element Call."
+          }
+        }
+      }
+    },
+    "Element Call session is missing a Matrix device ID." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "В сессии Element Call нет Matrix device ID."
+          }
+        }
+      }
+    },
+    "Element Call widget failed to start." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось запустить виджет Element Call."
+          }
+        }
+      }
+    },
     "MatrixRTC" : {},
     "Off keeps the current Zyna direct call implementation" : {},
     "Use MatrixRTC Calls" : {},
