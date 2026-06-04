@@ -56,6 +56,21 @@ final class MainCoordinator {
         self.callsCoordinator = calls
         self.profileCoordinator = profile
 
+        tabBarController.onSelectionChanged = { [weak self] in
+            self?.publishBannerVisibilityContext()
+        }
+        for navigationController in [
+            contacts.navigationController,
+            calls.navigationController,
+            chats.navigationController,
+            profile.navigationController
+        ] {
+            navigationController.onStackChanged = { [weak self] in
+                self?.publishBannerVisibilityContext()
+            }
+        }
+        publishBannerVisibilityContext()
+
         contacts.onOpenChat = { [weak self] room in
             self?.routeToChat(room: room)
         }
@@ -72,6 +87,20 @@ final class MainCoordinator {
 
     func stopVoicePlayback() {
         voicePlayback.stop()
+    }
+
+    private func publishBannerVisibilityContext() {
+        let currentRoomId: String?
+        if let chats = chatsCoordinator,
+           tabBarController.selectedController === chats.navigationController,
+           let chat = chats.navigationController.topViewController as? ChatViewController {
+            currentRoomId = chat.roomIdentifier
+        } else {
+            currentRoomId = nil
+        }
+        AppBannerCenter.shared.updateVisibility(
+            BannerVisibilityContext(currentRoomId: currentRoomId)
+        )
     }
 
     private func routeToChat(room: Room) {

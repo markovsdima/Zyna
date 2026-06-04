@@ -37,6 +37,8 @@ public class ZynaTabBarController: UIViewController {
         return controllers[_selectedIndex]
     }
 
+    public var onSelectionChanged: (() -> Void)?
+
     public private(set) var isTabBarHidden: Bool = false
 
     private let tabBar = ZynaTabBar(frame: .zero)
@@ -150,6 +152,7 @@ public class ZynaTabBarController: UIViewController {
                 if oldIndex >= 0, oldIndex < self.controllers.count {
                     self.controllers[oldIndex].view.removeFromSuperview()
                 }
+                self.onSelectionChanged?()
                 completion?()
             }
 
@@ -167,6 +170,7 @@ public class ZynaTabBarController: UIViewController {
 
             setNeedsStatusBarAppearanceUpdate()
         } else {
+            onSelectionChanged?()
             completion?()
         }
 

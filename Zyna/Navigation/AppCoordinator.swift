@@ -27,6 +27,9 @@ final class AppCoordinator {
     private weak var notificationPrePromptAlert: UIAlertController?
 
     func start() {
+        if let window {
+            AppBannerCenter.shared.attach(to: window)
+        }
         OutgoingTextOutboxService.shared.start()
         OutgoingImageOutboxService.shared.start()
         OutgoingVideoOutboxService.shared.start()
@@ -95,6 +98,7 @@ final class AppCoordinator {
     // MARK: - Navigation
 
     private func showAuth() {
+        AppBannerCenter.shared.dismissAll()
         isShowingSessionRecovery = false
         let viewModel = AuthViewModel()
         viewModel.onAuthenticated = { [weak self] in
@@ -382,6 +386,7 @@ final class AppCoordinator {
         PresenceTracker.shared.disconnect()
         mainCoordinator?.stopVoicePlayback()
         mainCoordinator = nil
+        AppBannerCenter.shared.dismissAll()
 
         let viewModel = SessionRecoveryViewModel(
             credentials: MatrixClientService.shared.sessionRecoveryCredentials,
