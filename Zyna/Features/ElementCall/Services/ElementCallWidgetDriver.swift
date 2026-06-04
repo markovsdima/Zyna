@@ -69,9 +69,14 @@ final class ElementCallWidgetDriver: WidgetCapabilitiesProvider, @unchecked Send
         self.deviceID = deviceID
     }
 
-    func start(baseURL: URL, clientID: String, theme: String) async -> Result<URL, ElementCallWidgetDriverError> {
+    func start(
+        baseURL: URL,
+        clientID: String,
+        theme: String,
+        voiceOnly: Bool = false
+    ) async -> Result<URL, ElementCallWidgetDriverError> {
         let useEncryption = (try? await room.latestEncryptionState() == .encrypted) ?? false
-        let intent = await room.zynaElementCallIntent()
+        let intent = await room.zynaElementCallIntent(voiceOnly: voiceOnly)
 
         let widgetSettings: WidgetSettings
         do {

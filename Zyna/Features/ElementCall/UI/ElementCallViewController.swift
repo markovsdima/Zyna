@@ -22,6 +22,7 @@ final class ElementCallViewController: UIViewController {
     private let room: Room
     private let roomName: String
     private let deviceID: String?
+    private let voiceOnly: Bool
     private let webView: WKWebView
     private let staticServer = ElementCallStaticServer()
     private let statusLabel = UILabel()
@@ -31,11 +32,13 @@ final class ElementCallViewController: UIViewController {
     init(
         room: Room,
         roomName: String,
-        deviceID: String?
+        deviceID: String?,
+        voiceOnly: Bool = false
     ) {
         self.room = room
         self.roomName = roomName
         self.deviceID = deviceID
+        self.voiceOnly = voiceOnly
 
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
@@ -159,17 +162,23 @@ final class ElementCallViewController: UIViewController {
 
         let callBaseURL = baseURL.appendingPathComponent("room")
         let theme = view.traitCollection.userInterfaceStyle == .light ? "light" : "dark"
+        let voiceOnly = self.voiceOnly
         Task { [weak self, widgetDriver] in
             let result = await widgetDriver.start(
                 baseURL: callBaseURL,
                 clientID: "com.zyna.ios",
-                theme: theme
+                theme: theme,
+                voiceOnly: voiceOnly
             )
 
             await MainActor.run {
                 guard let self else { return }
                 switch result {
                 case .success(let widgetURL):
+                    ElementCallKitService.shared.setupCallSession(
+                        roomID: self.room.id(),
+                        roomDisplayName: self.roomName
+                    )
                     logElementCall("Loading Embedded Element Call \(EmbeddedElementCall.version) widget for room \(self.roomName) from \(widgetURL)")
                     self.webView.load(URLRequest(url: widgetURL))
                 case .failure(let error):
@@ -191,6 +200,7 @@ final class ElementCallViewController: UIViewController {
     private func dismissElementCall() {
         guard !isDismissing else { return }
         isDismissing = true
+        ElementCallKitService.shared.tearDownCallSession()
         staticServer.stop()
         onDismiss?()
     }

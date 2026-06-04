@@ -4,6 +4,7 @@
 //
 
 import AsyncDisplayKit
+import Combine
 import MatrixRustSDK
 
 final class MainCoordinator {
@@ -16,6 +17,10 @@ final class MainCoordinator {
     private var contactsCoordinator: ContactsCoordinator?
     private var callsCoordinator: CallsCoordinator?
     private var profileCoordinator: ProfileCoordinator?
+    private var cancellables = Set<AnyCancellable>()
+    private var pendingElementCallRoute: (roomID: String, isVoiceCall: Bool)?
+    private var pendingElementCallRetryWorkItem: DispatchWorkItem?
+    private var pendingElementCallRetryCount = 0
 
     func start() {
         let chats = ChatsCoordinator(audioPlayer: voicePlayback)
@@ -81,6 +86,9 @@ final class MainCoordinator {
         calls.onRoomSelected = { [weak self] roomId in
             self?.routeToCallHistory(roomId: roomId)
         }
+
+        observeElementCallKitActions()
+        observeMatrixClientState()
     }
 
     // MARK: - Route entry points
@@ -160,6 +168,94 @@ final class MainCoordinator {
         selectChatsTab(chats) { [weak chats] in
             chats?.showChatAndCall(room: room)
         }
+    }
+
+    private func observeElementCallKitActions() {
+        ElementCallKitService.shared.actions
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] action in
+                switch action {
+                case .receivedIncomingCallRequest:
+                    break
+                case .startCall(let roomID, let isVoiceCall):
+                    self?.presentElementCall(roomID: roomID, isVoiceCall: isVoiceCall)
+                case .endCall, .setAudioEnabled:
+                    break
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func observeMatrixClientState() {
+        MatrixClientService.shared.stateSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.flushPendingElementCallRoute()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func presentElementCall(roomID: String, isVoiceCall: Bool) {
+        guard let client = MatrixClientService.shared.client,
+              let room = try? client.getRoom(roomId: roomID) else {
+            queuePendingElementCallRoute(roomID: roomID, isVoiceCall: isVoiceCall)
+            ScopedLog(.call, prefix: "[ElementCallKit]")("Failed to resolve room \(roomID) for Element Call")
+            return
+        }
+
+        pendingElementCallRoute = nil
+        pendingElementCallRetryWorkItem?.cancel()
+        pendingElementCallRetryWorkItem = nil
+        pendingElementCallRetryCount = 0
+        presentElementCall(room: room, isVoiceCall: isVoiceCall)
+    }
+
+    private func flushPendingElementCallRoute() {
+        guard let route = pendingElementCallRoute else { return }
+        presentElementCall(roomID: route.roomID, isVoiceCall: route.isVoiceCall)
+    }
+
+    private func queuePendingElementCallRoute(roomID: String, isVoiceCall: Bool) {
+        if pendingElementCallRoute?.roomID != roomID {
+            pendingElementCallRetryCount = 0
+        }
+        pendingElementCallRoute = (roomID, isVoiceCall)
+        schedulePendingElementCallRetry()
+    }
+
+    private func schedulePendingElementCallRetry() {
+        pendingElementCallRetryWorkItem?.cancel()
+        guard pendingElementCallRetryCount < 20 else { return }
+
+        pendingElementCallRetryCount += 1
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.flushPendingElementCallRoute()
+        }
+        pendingElementCallRetryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+    }
+
+    private func presentElementCall(room: Room, isVoiceCall: Bool) {
+        let credentials = MatrixClientService.shared.sessionRecoveryCredentials
+        let callVC = ElementCallViewController(
+            room: room,
+            roomName: room.displayName() ?? "Call",
+            deviceID: credentials?.deviceId,
+            voiceOnly: isVoiceCall
+        )
+        callVC.onDismiss = { [weak callVC] in
+            callVC?.dismiss(animated: true)
+        }
+
+        topPresentationController().present(callVC, animated: true)
+    }
+
+    private func topPresentationController() -> UIViewController {
+        var controller: UIViewController = tabBarController
+        while let presented = controller.presentedViewController {
+            controller = presented
+        }
+        return controller
     }
 
     private func selectChatsTab(

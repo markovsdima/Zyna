@@ -13,6 +13,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         _ = DatabaseService.shared
+        ElementCallKitService.shared.start()
         return true
     }
 

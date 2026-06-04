@@ -24,11 +24,16 @@ final class NotificationService: UNNotificationServiceExtension {
 
         let payload = NSEPushPayload(userInfo: request.content.userInfo)
         processingTask = Task { [weak self] in
-            let prepared = await NSEMatrixBootstrap().run(payload: payload)
-            if let prepared {
+            let result = await NSEMatrixBootstrap().run(payload: payload)
+            switch result {
+            case .display(let prepared):
                 Self.apply(prepared, to: bestAttemptContent)
+                self?.finish(with: bestAttemptContent)
+            case .discard:
+                self?.finish(with: UNMutableNotificationContent())
+            case nil:
+                self?.finish(with: bestAttemptContent)
             }
-            self?.finish(with: bestAttemptContent)
         }
     }
 

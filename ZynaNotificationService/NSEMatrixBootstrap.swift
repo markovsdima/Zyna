@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import CallKit
 import MatrixRustSDK
 import os.log
 @preconcurrency import KeychainAccess
@@ -52,6 +53,11 @@ private enum NSESecurityConfig {
     }
 }
 
+enum NSEProcessedNotification: Sendable {
+    case display(NSEPreparedNotification)
+    case discard
+}
+
 /// Builds the minimal Matrix runtime inside the Notification Service Extension
 /// so a push payload can be resolved into locally decrypted notification text.
 final class NSEMatrixBootstrap {
@@ -95,9 +101,11 @@ final class NSEMatrixBootstrap {
         }
     }
 
+    private static let callNotificationDiscardDelta: TimeInterval = 15
+
     private let decoder = JSONDecoder()
 
-    func run(payload: NSEPushPayload) async -> NSEPreparedNotification? {
+    func run(payload: NSEPushPayload) async -> NSEProcessedNotification? {
         log(
             "start roomId=\(payload.roomId ?? "nil") eventId=\(payload.eventId ?? "nil") clientId=\(payload.pusherNotificationClientIdentifier ?? "nil")"
         )
@@ -121,9 +129,21 @@ final class NSEMatrixBootstrap {
             let status = try await notificationClient.getNotification(roomId: roomId, eventId: eventId)
             switch status {
             case .event(let item):
-                let prepared = Self.makePreparedNotification(from: item)
-                log("notification ready title=\(prepared?.title.isEmpty == false ? "set" : "nil") body=\(prepared?.body.isEmpty == false ? "set" : "nil")")
-                return prepared
+                let result = await makeProcessedNotification(
+                    from: item,
+                    roomID: roomId,
+                    eventID: eventId,
+                    client: client
+                )
+                switch result {
+                case .display(let prepared):
+                    log("notification ready title=\(prepared.title.isEmpty ? "nil" : "set") body=\(prepared.body.isEmpty ? "nil" : "set")")
+                case .discard:
+                    log("notification processed and discarded")
+                case nil:
+                    log("notification produced no display content")
+                }
+                return result
             case .eventNotFound:
                 log("notification event not found")
                 return nil
@@ -140,7 +160,12 @@ final class NSEMatrixBootstrap {
         }
     }
 
-    private static func makePreparedNotification(from item: NotificationItem) -> NSEPreparedNotification? {
+    private func makeProcessedNotification(
+        from item: NotificationItem,
+        roomID: String,
+        eventID: String,
+        client: Client
+    ) async -> NSEProcessedNotification? {
         let roomDisplayName = item.roomInfo.displayName
         let senderDisplayName = item.senderInfo.displayName ?? roomDisplayName
         let isNoisy = item.isNoisy ?? false
@@ -155,24 +180,117 @@ final class NSEMatrixBootstrap {
             } else {
                 body = "Invited you to a room"
             }
-            return NSEPreparedNotification(
-                title: senderDisplayName,
-                subtitle: nil,
-                body: body,
-                isNoisy: isNoisy
+            return .display(
+                NSEPreparedNotification(
+                    title: senderDisplayName,
+                    subtitle: nil,
+                    body: body,
+                    isNoisy: isNoisy
+                )
             )
         case .timeline(let event):
             guard case let .messageLike(messageContent) = (try? event.content()),
-                  let body = bodyForMessageContent(messageContent, senderDisplayName: senderDisplayName) else {
+                  let result = await processedMessageLikeNotification(
+                    messageContent,
+                    event: event,
+                    roomID: roomID,
+                    eventID: eventID,
+                    roomDisplayName: roomDisplayName,
+                    senderDisplayName: senderDisplayName,
+                    isNoisy: isNoisy,
+                    client: client
+                  ) else {
                 return nil
             }
-            let subtitle: String? = senderDisplayName == roomDisplayName ? nil : roomDisplayName
-            return NSEPreparedNotification(
+            return result
+        }
+    }
+
+    private func processedMessageLikeNotification(
+        _ content: MessageLikeEventContent,
+        event: TimelineEvent,
+        roomID: String,
+        eventID: String,
+        roomDisplayName: String,
+        senderDisplayName: String,
+        isNoisy: Bool,
+        client: Client
+    ) async -> NSEProcessedNotification? {
+        if case let .rtcNotification(notificationType, expirationTimestamp, callIntent) = content,
+           await handleCallNotification(
+            notificationType: notificationType,
+            rtcNotifyEventID: eventID,
+            timestamp: event.timestamp(),
+            expirationTimestamp: expirationTimestamp,
+            roomID: roomID,
+            roomDisplayName: roomDisplayName,
+            callIntent: callIntent,
+            client: client
+           ) {
+            return .discard
+        }
+
+        guard let body = Self.bodyForMessageContent(content, senderDisplayName: senderDisplayName) else {
+            return nil
+        }
+
+        let subtitle: String? = senderDisplayName == roomDisplayName ? nil : roomDisplayName
+        return .display(
+            NSEPreparedNotification(
                 title: senderDisplayName,
                 subtitle: subtitle,
                 body: body,
                 isNoisy: isNoisy
             )
+        )
+    }
+
+    private func handleCallNotification(
+        notificationType: RtcNotificationType,
+        rtcNotifyEventID: String,
+        timestamp: Timestamp,
+        expirationTimestamp: Timestamp,
+        roomID: String,
+        roomDisplayName: String,
+        callIntent: RtcCallIntent?,
+        client: Client
+    ) async -> Bool {
+        guard notificationType == .ring else {
+            log("non-ringing call notification; keeping regular notification")
+            return false
+        }
+
+        let eventDate = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
+        guard abs(eventDate.timeIntervalSinceNow) < Self.callNotificationDiscardDelta else {
+            log("call notification is too old; keeping regular notification")
+            return false
+        }
+
+        let expirationDate = Date(timeIntervalSince1970: TimeInterval(expirationTimestamp) / 1000)
+        guard expirationDate > Date() else {
+            log("call notification is expired; keeping regular notification")
+            return false
+        }
+
+        if let room = try? client.getRoom(roomId: roomID), !room.hasActiveRoomCall() {
+            log("room has no active call yet; relying on fresh RTC ring payload")
+        }
+
+        let payload = [
+            "roomID": roomID,
+            "roomDisplayName": roomDisplayName,
+            "expirationDate": expirationDate,
+            "rtcNotifyEventID": rtcNotifyEventID,
+            "isVoiceCall": callIntent == .audio
+        ] as [String: Any]
+
+        do {
+            try await CXProvider.reportNewIncomingVoIPPushPayload(payload)
+            log("call notification delegated to CallKit")
+            return true
+        } catch {
+            log("failed delegating call notification to CallKit: \(error)")
+            return false
         }
     }
 
@@ -322,7 +440,7 @@ final class NSEMatrixBootstrap {
     }
 
     private func log(_ message: String) {
-        os_log("%{public}@", log: .default, type: .debug, "[nse] \(message)")
+        os_log("%{public}@", log: .default, type: .default, "[nse] \(message)")
     }
 }
 
