@@ -276,17 +276,13 @@ final class MainCoordinator {
 
     private func presentElementCall(room: Room, isVoiceCall: Bool) {
         let credentials = MatrixClientService.shared.sessionRecoveryCredentials
-        let callVC = ElementCallViewController(
+        ElementCallPresentationManager.shared.present(
             room: room,
-            roomName: room.displayName() ?? "Call",
+            roomDisplayName: room.displayName() ?? "Call",
             deviceID: credentials?.deviceId,
-            voiceOnly: isVoiceCall
+            voiceOnly: isVoiceCall,
+            from: topPresentationController()
         )
-        callVC.onDismiss = { [weak callVC] in
-            callVC?.dismiss(animated: true)
-        }
-
-        topPresentationController().present(callVC, animated: true)
     }
 
     private func topPresentationController() -> UIViewController {

@@ -20,6 +20,7 @@ final class ElementCallViewController: UIViewController {
         static let widgetAction = "elementCallWidgetAction"
         static let showNativeOutputDevicePicker = "elementCallShowNativeOutputDevicePicker"
         static let onOutputDeviceSelect = "elementCallOnOutputDeviceSelect"
+        static let onBackButtonPressed = "elementCallOnBackButtonPressed"
     }
 
     private struct WidgetControlMessage: Codable {
@@ -48,15 +49,26 @@ final class ElementCallViewController: UIViewController {
     }
 
     var onDismiss: (() -> Void)?
+    var onPictureInPictureStarted: (() -> Void)?
+    var onPictureInPictureStopped: (() -> Void)?
+    var onPictureInPictureRestoreRequested: ((@escaping (Bool) -> Void) -> Void)?
+    var roomID: String { room.id() }
+    var isPictureInPictureActive: Bool {
+        pictureInPictureController?.isPictureInPictureActive == true
+    }
 
     private let room: Room
     private let roomName: String
     private let deviceID: String?
     private let voiceOnly: Bool
     private let webView: WKWebView
+    private let webViewContainerView = UIView()
+    private let pictureInPictureViewController = AVPictureInPictureVideoCallViewController()
     private let staticServer = ElementCallStaticServer()
     private let statusLabel = UILabel()
+    private let minimizeButton = UIButton(type: .system)
     private let routePickerView = AVRoutePickerView(frame: .zero)
+    private var pictureInPictureController: AVPictureInPictureController?
     private var widgetDriver: ElementCallWidgetDriver?
     private var isDismissing = false
     private var widgetURL: URL?
@@ -76,6 +88,7 @@ final class ElementCallViewController: UIViewController {
 
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
+        configuration.allowsPictureInPictureMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
@@ -88,6 +101,7 @@ final class ElementCallViewController: UIViewController {
         configuration.userContentController.add(self, name: ScriptMessageName.widgetAction)
         configuration.userContentController.add(self, name: ScriptMessageName.showNativeOutputDevicePicker)
         configuration.userContentController.add(self, name: ScriptMessageName.onOutputDeviceSelect)
+        configuration.userContentController.add(self, name: ScriptMessageName.onBackButtonPressed)
 
         modalPresentationStyle = .fullScreen
     }
@@ -101,6 +115,7 @@ final class ElementCallViewController: UIViewController {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.widgetAction)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.showNativeOutputDevicePicker)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.onOutputDeviceSelect)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.onBackButtonPressed)
         staticServer.stop()
     }
 
@@ -109,6 +124,7 @@ final class ElementCallViewController: UIViewController {
 
         view.backgroundColor = .black
         setupWebView()
+        setupPictureInPicture()
         setupOverlay()
         bindSystemActions()
         loadElementCall()
@@ -116,10 +132,24 @@ final class ElementCallViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        webView.frame = view.bounds
+        webViewContainerView.frame = view.bounds
+        if webView.superview === webViewContainerView {
+            webView.frame = webViewContainerView.bounds
+        }
+        bringOverlayToFront()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        bringOverlayToFront()
     }
 
     private func setupWebView() {
+        webViewContainerView.backgroundColor = .black
+        webViewContainerView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webViewContainerView.frame = view.bounds
+        view.addSubview(webViewContainerView)
+
         webView.backgroundColor = .black
         webView.isOpaque = false
         #if DEBUG
@@ -129,14 +159,36 @@ final class ElementCallViewController: UIViewController {
         webView.uiDelegate = self
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.translatesAutoresizingMaskIntoConstraints = true
-        view.addSubview(webView)
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webView.frame = webViewContainerView.bounds
+        webViewContainerView.addSubview(webView)
 
         routePickerView.isHidden = true
         routePickerView.isUserInteractionEnabled = false
         webView.addSubview(routePickerView)
     }
 
+    private func setupPictureInPicture() {
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            logElementCall("Embedded Element Call Picture in Picture is not supported on this device")
+            return
+        }
+
+        pictureInPictureViewController.preferredContentSize = CGSize(width: 1920, height: 1080)
+        pictureInPictureViewController.view.backgroundColor = .black
+
+        let contentSource = AVPictureInPictureController.ContentSource(
+            activeVideoCallSourceView: webViewContainerView,
+            contentViewController: pictureInPictureViewController
+        )
+        let controller = AVPictureInPictureController(contentSource: contentSource)
+        controller.delegate = self
+        pictureInPictureController = controller
+    }
+
     private func setupOverlay() {
+        setupMinimizeButton()
+
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.text = String(localized: "Loading")
         statusLabel.textColor = .secondaryLabel
@@ -152,6 +204,50 @@ final class ElementCallViewController: UIViewController {
             statusLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
             statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24)
         ])
+    }
+
+    private func setupMinimizeButton() {
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: "arrow.down.right.and.arrow.up.left")
+        configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
+            pointSize: 16,
+            weight: .semibold
+        )
+        configuration.contentInsets = .zero
+        configuration.baseForegroundColor = .white
+        configuration.background.backgroundColor = UIColor.black.withAlphaComponent(0.58)
+        configuration.background.cornerRadius = 22
+
+        minimizeButton.configuration = configuration
+        minimizeButton.tintColor = .white
+        minimizeButton.backgroundColor = .clear
+        minimizeButton.layer.cornerRadius = 22
+        minimizeButton.layer.cornerCurve = .continuous
+        minimizeButton.layer.zPosition = 1000
+        minimizeButton.layer.shadowColor = UIColor.black.cgColor
+        minimizeButton.layer.shadowOpacity = 0.25
+        minimizeButton.layer.shadowRadius = 8
+        minimizeButton.layer.shadowOffset = CGSize(width: 0, height: 2)
+        minimizeButton.layer.borderColor = UIColor.white.withAlphaComponent(0.22).cgColor
+        minimizeButton.layer.borderWidth = 0.5
+        minimizeButton.clipsToBounds = false
+        minimizeButton.accessibilityLabel = String(localized: "Minimize")
+        minimizeButton.accessibilityIdentifier = "elementCallMinimizeButton"
+        minimizeButton.translatesAutoresizingMaskIntoConstraints = false
+        minimizeButton.addTarget(self, action: #selector(minimizeButtonTapped), for: .touchUpInside)
+        view.addSubview(minimizeButton)
+
+        NSLayoutConstraint.activate([
+            minimizeButton.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            minimizeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            minimizeButton.widthAnchor.constraint(equalToConstant: 44),
+            minimizeButton.heightAnchor.constraint(equalToConstant: 44)
+        ])
+    }
+
+    private func bringOverlayToFront() {
+        view.bringSubviewToFront(minimizeButton)
+        view.bringSubviewToFront(statusLabel)
     }
 
     private func loadElementCall() {
@@ -317,6 +413,60 @@ final class ElementCallViewController: UIViewController {
         )
     }
 
+    @objc private func minimizeButtonTapped() {
+        requestPictureInPicture()
+    }
+
+    func stopPictureInPicture() {
+        guard isPictureInPictureActive else { return }
+        pictureInPictureController?.stopPictureInPicture()
+    }
+
+    private func requestPictureInPicture() {
+        guard let pictureInPictureController else {
+            logElementCall("Embedded Element Call Picture in Picture controller is unavailable")
+            return
+        }
+
+        guard !pictureInPictureController.isPictureInPictureActive else { return }
+
+        guard pictureInPictureController.isPictureInPicturePossible else {
+            logElementCall("Embedded Element Call Picture in Picture is not possible yet")
+            return
+        }
+
+        webView.evaluateJavaScript("window.controls?.canEnterPip?.() === true") { [weak pictureInPictureController] result, error in
+            guard let pictureInPictureController else { return }
+            if let error {
+                logElementCall("Embedded Element Call Picture in Picture eligibility failed: \(error)")
+                return
+            }
+
+            guard result as? Bool == true else {
+                logElementCall("Embedded Element Call widget declined Picture in Picture")
+                return
+            }
+
+            pictureInPictureController.startPictureInPicture()
+        }
+    }
+
+    private func evaluatePictureInPictureJavaScript(_ source: String) {
+        webView.evaluateJavaScript(source) { _, error in
+            if let error {
+                logElementCall("Embedded Element Call Picture in Picture JS failed: \(error)")
+            }
+        }
+    }
+
+    private func moveWebView(to containerView: UIView) {
+        webView.removeFromSuperview()
+        webView.translatesAutoresizingMaskIntoConstraints = true
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webView.frame = containerView.bounds
+        containerView.addSubview(webView)
+    }
+
     private func tapRoutePickerView() {
         guard let button = routePickerView.subviews.first(where: { $0 is UIButton }) as? UIButton else {
             return
@@ -363,6 +513,7 @@ final class ElementCallViewController: UIViewController {
     private func dismissElementCall() {
         guard !isDismissing else { return }
         isDismissing = true
+        stopPictureInPicture()
         ElementCallKitService.shared.tearDownCallSession()
         UIDevice.current.isProximityMonitoringEnabled = false
         staticServer.stop()
@@ -411,7 +562,9 @@ final class ElementCallViewController: UIViewController {
           window.controls.onOutputDeviceSelect = (id) => {
             window.webkit.messageHandlers.\(ScriptMessageName.onOutputDeviceSelect).postMessage(String(id));
           };
-          window.controls.onBackButtonPressed = () => {};
+          window.controls.onBackButtonPressed = () => {
+            window.webkit.messageHandlers.\(ScriptMessageName.onBackButtonPressed).postMessage("");
+          };
 
           window.addEventListener("message", (event) => {
             const data = event.data;
@@ -435,6 +588,7 @@ extension ElementCallViewController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         statusLabel.isHidden = true
+        bringOverlayToFront()
         logElementCall("Embedded Element Call finished loading")
         updateOutputsListOnWeb()
         logPageDiagnostics(after: 0.3)
@@ -510,6 +664,11 @@ extension ElementCallViewController: WKScriptMessageHandler {
             return
         }
 
+        if message.name == ScriptMessageName.onBackButtonPressed {
+            requestPictureInPicture()
+            return
+        }
+
         guard message.name == ScriptMessageName.diagnostics,
               let payload = message.body as? [String: Any] else {
             return
@@ -517,6 +676,54 @@ extension ElementCallViewController: WKScriptMessageHandler {
         let type = payload["type"] as? String ?? "unknown"
         let body = payload["payload"] as? String ?? ""
         logElementCall("Embedded Element Call JS \(type): \(body)")
+    }
+}
+
+extension ElementCallViewController: AVPictureInPictureControllerDelegate {
+
+    func pictureInPictureControllerWillStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        moveWebView(to: pictureInPictureViewController.view)
+        evaluatePictureInPictureJavaScript("window.controls?.enablePip?.()")
+    }
+
+    func pictureInPictureControllerDidStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        guard !isDismissing else { return }
+        onPictureInPictureStarted?()
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        moveWebView(to: webViewContainerView)
+        evaluatePictureInPictureJavaScript("window.controls?.disablePip?.()")
+        logElementCall("Embedded Element Call Picture in Picture failed: \(error)")
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
+    ) {
+        guard !isDismissing else {
+            completionHandler(false)
+            return
+        }
+
+        onPictureInPictureRestoreRequested?(completionHandler) ?? completionHandler(false)
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        moveWebView(to: webViewContainerView)
+        evaluatePictureInPictureJavaScript("window.controls?.disablePip?.()")
+
+        guard !isDismissing else { return }
+        onPictureInPictureStopped?()
     }
 }
 

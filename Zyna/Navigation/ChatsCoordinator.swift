@@ -842,15 +842,12 @@ final class ChatsCoordinator {
 
     func presentElementCallScreen(room: Room, voiceOnly: Bool) {
         let credentials = MatrixClientService.shared.sessionRecoveryCredentials
-        let callVC = ElementCallViewController(
+        ElementCallPresentationManager.shared.present(
             room: room,
-            roomName: room.displayName() ?? "Call",
+            roomDisplayName: room.displayName() ?? "Call",
             deviceID: credentials?.deviceId,
-            voiceOnly: voiceOnly
+            voiceOnly: voiceOnly,
+            from: navigationController
         )
-        callVC.onDismiss = { [weak self] in
-            self?.navigationController.dismiss(animated: true)
-        }
-        navigationController.present(callVC, animated: true)
     }
 }
