@@ -509,7 +509,7 @@ final class ChatsCoordinator {
         vc.onCallTapped = { [weak self] in
             guard let room = viewModel.liveRoom,
                   let timelineService = viewModel.liveTimelineService else { return }
-            self?.startCall(in: room, timelineService: timelineService)
+            self?.startCall(in: room, timelineService: timelineService, voiceOnly: true)
         }
         vc.onTitleTapped = { [weak self] userId in
             self?.showProfile(userId: userId)
@@ -775,19 +775,19 @@ final class ChatsCoordinator {
         let (vc, viewModel) = makeChatScreen(target: .live(room))
         navigationController.push(vc, animated: false)
         if let timelineService = viewModel.liveTimelineService {
-            startCall(in: room, timelineService: timelineService)
+            startCall(in: room, timelineService: timelineService, voiceOnly: true)
         }
     }
 
     // MARK: - Calls
 
-    private func startCall(in room: Room, timelineService: TimelineService) {
+    private func startCall(in room: Room, timelineService: TimelineService, voiceOnly: Bool) {
         guard canSendEncryptedEvents(in: room) else {
             presentVerificationRequiredForCall()
             return
         }
         if CallBackendPreferenceStore.shared.usesMatrixRTC {
-            presentElementCallScreen(room: room)
+            presentElementCallScreen(room: room, voiceOnly: voiceOnly)
             return
         }
         CallService.shared.startCall(room: room, timelineService: timelineService)
@@ -840,12 +840,13 @@ final class ChatsCoordinator {
         navigationController.present(callVC, animated: true)
     }
 
-    func presentElementCallScreen(room: Room) {
+    func presentElementCallScreen(room: Room, voiceOnly: Bool) {
         let credentials = MatrixClientService.shared.sessionRecoveryCredentials
         let callVC = ElementCallViewController(
             room: room,
             roomName: room.displayName() ?? "Call",
-            deviceID: credentials?.deviceId
+            deviceID: credentials?.deviceId,
+            voiceOnly: voiceOnly
         )
         callVC.onDismiss = { [weak self] in
             self?.navigationController.dismiss(animated: true)
