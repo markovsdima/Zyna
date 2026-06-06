@@ -198,6 +198,79 @@ import Testing
     #expect(membership.callIntent == "m.video")
 }
 
+@Test func buildsLegacyOwnMembershipStateKey() {
+    #expect(MatrixRTCLegacyCallMembershipStateEvent.stateKey(
+        userId: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        slot: .matrixCallRoom
+    ) == "_@alice:example.org_ALICEDEVICE_m.call")
+
+    #expect(MatrixRTCLegacyCallMembershipStateEvent.stateKey(
+        userId: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        slot: .init(application: "m.call", id: "breakout")
+    ) == "_@alice:example.org_ALICEDEVICE_m.callbreakout")
+
+    #expect(MatrixRTCLegacyCallMembershipStateEvent.stateKey(
+        userId: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        slot: .matrixCallRoom,
+        roomVersion: "org.matrix.msc3757.10"
+    ) == "@alice:example.org_ALICEDEVICE_m.call")
+}
+
+@Test func buildsLegacyOwnMembershipContent() throws {
+    let event = MatrixRTCLegacyCallMembershipStateEvent(
+        userId: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        focusSelection: .multiSFU,
+        fociPreferred: [
+            .liveKit(serviceURL: "https://livekit.example.org"),
+        ],
+        createdTimestamp: 123_456,
+        expires: 14_400_000,
+        callIntent: "m.audio"
+    )
+
+    let content = try MatrixRTCLegacyCallMembershipContent(contentJSON: event.contentJSON())
+
+    #expect(event.identity == .init(
+        userId: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        memberId: "@alice:example.org:ALICEDEVICE"
+    ))
+    #expect(event.stateKey == "_@alice:example.org_ALICEDEVICE_m.call")
+    #expect(content.application == "m.call")
+    #expect(content.callId == "")
+    #expect(content.scope == "m.room")
+    #expect(content.deviceId == "ALICEDEVICE")
+    #expect(content.membershipID == "@alice:example.org:ALICEDEVICE")
+    #expect(content.focusActive.type == "livekit")
+    #expect(content.focusActive.focusSelection == .multiSFU)
+    #expect(content.fociPreferred.first?.liveKitServiceURL == "https://livekit.example.org")
+    #expect(content.createdTimestamp == 123_456)
+    #expect(content.expires == 14_400_000)
+    #expect(content.callIntent == "m.audio")
+}
+
+@Test func buildsLegacyOwnJoinContentWithoutCreatedTimestamp() throws {
+    let event = MatrixRTCLegacyCallMembershipStateEvent(
+        userId: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        focusSelection: .oldestMembership,
+        fociPreferred: [],
+        createdTimestamp: nil,
+        callIntent: nil
+    )
+
+    let content = try MatrixRTCLegacyCallMembershipContent(contentJSON: event.contentJSON())
+
+    #expect(content.createdTimestamp == nil)
+    #expect(content.callIntent == nil)
+    #expect(content.expires == MatrixRTCCallMembership.defaultExpireDurationMilliseconds)
+    #expect(MatrixRTCLegacyCallMembershipStateEvent.leaveContentJSON == "{}")
+}
+
 private func legacyEvent(
     eventId: String,
     sender: String,

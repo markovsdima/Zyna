@@ -16,6 +16,12 @@ public struct MatrixRTCTransport: Codable, Equatable, Sendable {
         raw["livekit_service_url"]?.stringValue
     }
 
+    public static func liveKit(serviceURL: String) -> Self {
+        Self(type: "livekit", raw: [
+            "livekit_service_url": .string(serviceURL),
+        ])
+    }
+
     public init(from decoder: Decoder) throws {
         let raw = try [String: MatrixRTCJSONValue](from: decoder)
         guard let type = raw["type"]?.stringValue, !type.isEmpty else {

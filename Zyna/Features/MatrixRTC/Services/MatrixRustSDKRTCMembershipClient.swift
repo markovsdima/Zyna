@@ -61,6 +61,66 @@ final class MatrixRustSDKRTCMembershipClient: @unchecked Sendable {
         )
     }
 
+    @discardableResult
+    func publishOwnLegacyMembership(
+        room: Room,
+        slot: MatrixRTCSlotDescription = .matrixCallRoom,
+        roomVersion: String? = nil,
+        focusSelection: MatrixRTCLegacyCallMembershipFocusSelection = .oldestMembership,
+        fociPreferred: [MatrixRTCTransport],
+        createdTimestamp: Int64? = nil,
+        expires: Int64 = MatrixRTCCallMembership.defaultExpireDurationMilliseconds,
+        callIntent: String? = nil
+    ) async throws -> MatrixRustSDKRTCPublishedMembership {
+        let userId = try client.userId()
+        let deviceId = try client.deviceId()
+        let stateEvent = MatrixRTCLegacyCallMembershipStateEvent(
+            userId: userId,
+            deviceId: deviceId,
+            slot: slot,
+            roomVersion: roomVersion,
+            focusSelection: focusSelection,
+            fociPreferred: fociPreferred,
+            createdTimestamp: createdTimestamp,
+            expires: expires,
+            callIntent: callIntent
+        )
+        let eventId = try await room.sendStateEventRaw(
+            eventType: MatrixRTCRawMembershipEvent.legacyCallMemberEventType,
+            stateKey: stateEvent.stateKey,
+            content: stateEvent.contentJSON()
+        )
+
+        return MatrixRustSDKRTCPublishedMembership(
+            eventId: eventId,
+            identity: stateEvent.identity,
+            stateKey: stateEvent.stateKey,
+            createdTimestamp: createdTimestamp
+        )
+    }
+
+    @discardableResult
+    func leaveOwnLegacyMembership(
+        room: Room,
+        slot: MatrixRTCSlotDescription = .matrixCallRoom,
+        roomVersion: String? = nil
+    ) async throws -> String {
+        let userId = try client.userId()
+        let deviceId = try client.deviceId()
+        let stateKey = MatrixRTCLegacyCallMembershipStateEvent.stateKey(
+            userId: userId,
+            deviceId: deviceId,
+            slot: slot,
+            roomVersion: roomVersion
+        )
+
+        return try await room.sendStateEventRaw(
+            eventType: MatrixRTCRawMembershipEvent.legacyCallMemberEventType,
+            stateKey: stateKey,
+            content: MatrixRTCLegacyCallMembershipStateEvent.leaveContentJSON
+        )
+    }
+
     private func matrixRequest(path: String) async throws -> Data {
         let session = try client.session()
         let url = try Self.matrixURL(homeserverUrl: session.homeserverUrl, percentEncodedPath: path)
@@ -107,6 +167,13 @@ final class MatrixRustSDKRTCMembershipClient: @unchecked Sendable {
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
+}
+
+struct MatrixRustSDKRTCPublishedMembership: Sendable {
+    let eventId: String
+    let identity: MatrixRTCMembershipIdentity
+    let stateKey: String
+    let createdTimestamp: Int64?
 }
 
 private struct RawStateEvent: Decodable {
