@@ -1,6 +1,12 @@
 import Testing
 @testable import MatrixRTC
 
-@Test func example() async throws {
-    // Write your test here and use APIs like `#expect(...)` to check expected conditions.
+@Test func computesRtcBackendIdentity() {
+    let identity = MatrixRTCMembershipIdentity(
+        userId: "@alice:example.com",
+        deviceId: "DEVICE123",
+        memberId: "memberABC"
+    )
+
+    #expect(identity.rtcBackendIdentity == "J+T45tGruxc+HrUOqJJlyQSV33m728Cme4+vt8/SWrU")
 }

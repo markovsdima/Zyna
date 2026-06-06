@@ -1,6 +1,15 @@
 {
-  "originHash" : "7bc94c15ab3cfcf800e3f692aa02132326d4be7ff9c2fd7a152802c47a3cc0f2",
+  "originHash" : "bc38b62bc595b750dbf66b16a4d4a110583c5c53da83c86990885c97ba6fa550",
   "pins" : [
+    {
+      "identity" : "client-sdk-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/livekit/client-sdk-swift.git",
+      "state" : {
+        "revision" : "326eefab4e61ac56e1330edf0ce0a33e8eb7bde7",
+        "version" : "2.14.1"
+      }
+    },
     {
       "identity" : "element-call-swift",
       "kind" : "remoteSourceControl",
@@ -29,6 +38,15 @@
       }
     },
     {
+      "identity" : "livekit-uniffi-xcframework",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/livekit/livekit-uniffi-xcframework.git",
+      "state" : {
+        "revision" : "7c161254ce7cd55debc48023f69a917076b12a26",
+        "version" : "0.0.6"
+      }
+    },
+    {
       "identity" : "matrix-rust-components-swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/markovsdima/matrix-rust-components-swift",
@@ -47,12 +65,30 @@
       }
     },
     {
+      "identity" : "swift-protobuf",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-protobuf.git",
+      "state" : {
+        "revision" : "f6506eaa86ed2e01cb0ae14a75035b7fdbf0918f",
+        "version" : "1.38.0"
+      }
+    },
+    {
       "identity" : "webrtc",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stasel/WebRTC/",
       "state" : {
         "revision" : "820d216010b6bb5695139852ec6740edd6f790ff",
         "version" : "138.0.0"
+      }
+    },
+    {
+      "identity" : "webrtc-xcframework",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/livekit/webrtc-xcframework.git",
+      "state" : {
+        "revision" : "6a5f458cf55a598e4590cb30b739ab545fdbfcb1",
+        "version" : "144.7559.6"
       }
     }
   ],
