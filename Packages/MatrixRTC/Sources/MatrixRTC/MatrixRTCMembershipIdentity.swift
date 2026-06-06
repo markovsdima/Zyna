@@ -16,10 +16,18 @@ public struct MatrixRTCMembershipIdentity: Equatable, Hashable, Sendable {
         Self.rtcBackendIdentity(userId: userId, deviceId: deviceId, memberId: memberId)
     }
 
+    public var legacyRTCBackendIdentity: String {
+        Self.legacyRTCBackendIdentity(userId: userId, deviceId: deviceId)
+    }
+
     public static func rtcBackendIdentity(userId: String, deviceId: String, memberId: String) -> String {
         let payload = encodeIdentityPayload(userId: userId, deviceId: deviceId, memberId: memberId)
         let digest = SHA256.hash(data: payload)
         return Data(digest).base64EncodedString().trimmingCharacters(in: CharacterSet(charactersIn: "="))
+    }
+
+    public static func legacyRTCBackendIdentity(userId: String, deviceId: String) -> String {
+        "\(userId):\(deviceId)"
     }
 
     private static func encodeIdentityPayload(userId: String, deviceId: String, memberId: String) -> Data {
