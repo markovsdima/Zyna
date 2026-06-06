@@ -16,6 +16,7 @@
 		322E76E32DADAA97003921EC /* PINRemoteImage.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76E12DADAA97003921EC /* PINRemoteImage.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		322E77762DB083AE003921EC /* AsyncDisplayKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; };
 		322E77772DB083AE003921EC /* AsyncDisplayKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		3293134B2FD4BC3F00D0298C /* MatrixRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 3293134A2FD4BC3F00D0298C /* MatrixRTC */; };
 		3293F7982FCDF4C700D0298C /* ZynaNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 3293F7912FCDF4C600D0298C /* ZynaNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		3293F7A02FCF000100D0298C /* MatrixRustSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */; };
 		3293F7A12FCF000100D0298C /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
@@ -143,6 +144,7 @@
 				322E76DC2DADAA7E003921EC /* PINCache.xcframework in Frameworks */,
 				322E77762DB083AE003921EC /* AsyncDisplayKit.xcframework in Frameworks */,
 				3293FDB02FD0BA2E00D0298C /* EmbeddedElementCall in Frameworks */,
+				3293134B2FD4BC3F00D0298C /* MatrixRTC in Frameworks */,
 				322C5EE22FB6531C00F29FB7 /* MatrixRustSDK in Frameworks */,
 				322E76DF2DADAA8B003921EC /* PINOperation.xcframework in Frameworks */,
 				32E8235E2FB4EEE800A86B57 /* GRDB in Frameworks */,
@@ -242,6 +244,7 @@
 				32E8235D2FB4EEE800A86B57 /* GRDB */,
 				322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */,
 				3293FDAF2FD0BA2E00D0298C /* EmbeddedElementCall */,
+				3293134A2FD4BC3F00D0298C /* MatrixRTC */,
 			);
 			productName = Zyna;
 			productReference = 324E19562DAD578A00CB5769 /* Zyna.app */;
@@ -333,6 +336,7 @@
 				32E8235C2FB4EEE800A86B57 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 				322C5EE02FB6531C00F29FB7 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */,
 				3293FDAE2FD0BA2E00D0298C /* XCRemoteSwiftPackageReference "element-call-swift" */,
+				329313492FD4BC3F00D0298C /* XCLocalSwiftPackageReference "Packages/MatrixRTC" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 324E19572DAD578A00CB5769 /* Products */;
@@ -773,6 +777,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		329313492FD4BC3F00D0298C /* XCLocalSwiftPackageReference "Packages/MatrixRTC" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/MatrixRTC;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		322C5EE02FB6531C00F29FB7 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -821,6 +832,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 322C5EE02FB6531C00F29FB7 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */;
 			productName = MatrixRustSDK;
+		};
+		3293134A2FD4BC3F00D0298C /* MatrixRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MatrixRTC;
 		};
 		3293FDAF2FD0BA2E00D0298C /* EmbeddedElementCall */ = {
 			isa = XCSwiftPackageProductDependency;
