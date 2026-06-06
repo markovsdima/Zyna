@@ -273,7 +273,11 @@ final class NSEMatrixBootstrap {
         }
 
         if let room = try? client.getRoom(roomId: roomID), !room.hasActiveRoomCall() {
-            log("room has no active call yet; relying on fresh RTC ring payload")
+            log("room has no active call yet; waiting for room call state")
+            guard await waitForActiveRoomCall(in: room, timeout: 5) else {
+                log("room still has no active call; keeping regular notification")
+                return false
+            }
         }
 
         let payload = [
@@ -312,6 +316,10 @@ final class NSEMatrixBootstrap {
              .keyVerificationDone, .reactionContent, .roomRedaction:
             return nil
         }
+    }
+
+    private func waitForActiveRoomCall(in room: Room, timeout: TimeInterval) async -> Bool {
+        await NSEActiveRoomCallWaiter(room: room).wait(timeout: timeout)
     }
 
     private static func bodyForMessageType(_ messageType: MessageType, senderDisplayName: String) -> String {
@@ -441,6 +449,61 @@ final class NSEMatrixBootstrap {
 
     private func log(_ message: String) {
         os_log("%{public}@", log: .default, type: .default, "[nse] \(message)")
+    }
+}
+
+private final class NSEActiveRoomCallWaiter: @unchecked Sendable, RoomInfoListener {
+    private let room: Room
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var handle: TaskHandle?
+
+    init(room: Room) {
+        self.room = room
+    }
+
+    func wait(timeout: TimeInterval) async -> Bool {
+        if room.hasActiveRoomCall() {
+            return true
+        }
+
+        return await withCheckedContinuation { continuation in
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+
+            let handle = room.subscribeToRoomInfoUpdates(listener: self)
+            lock.lock()
+            if self.continuation == nil {
+                lock.unlock()
+                handle.cancel()
+            } else {
+                self.handle = handle
+                lock.unlock()
+            }
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+                guard let self else { return }
+                self.finish(room.hasActiveRoomCall())
+            }
+        }
+    }
+
+    func call(roomInfo: RoomInfo) {
+        guard roomInfo.hasRoomCall else { return }
+        finish(true)
+    }
+
+    private func finish(_ result: Bool) {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        let handle = handle
+        self.handle = nil
+        lock.unlock()
+
+        handle?.cancel()
+        continuation?.resume(returning: result)
     }
 }
 

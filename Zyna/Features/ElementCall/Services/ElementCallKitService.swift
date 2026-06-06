@@ -38,7 +38,7 @@ final class ElementCallKitService: NSObject {
 
     let ongoingCallRoomIDSubject = CurrentValueSubject<String?, Never>(nil)
 
-    private struct CallID {
+    private struct CallID: Sendable {
         let callKitID: UUID
         let roomID: String
         let rtcNotificationID: String?
@@ -57,6 +57,9 @@ final class ElementCallKitService: NSObject {
         }
     }
     private var endUnansweredCallWorkItem: DispatchWorkItem?
+    private var incomingRoomInfoHandle: TaskHandle?
+    private var incomingDeclineHandle: TaskHandle?
+    private var incomingRoomCallBecameActive = false
 
     private override init() {
         pushRegistry = PKPushRegistry(queue: .main)
@@ -101,7 +104,7 @@ final class ElementCallKitService: NSObject {
             )
         }
 
-        incomingCallID = nil
+        clearIncomingCall()
         ongoingCallID = callID
         logElementCallKit("Element Call session started for room \(roomID) (\(roomDisplayName))")
 
@@ -114,6 +117,10 @@ final class ElementCallKitService: NSObject {
         ongoingCallID = nil
         cancelUnansweredCallTimeout()
         logElementCallKit("Element Call session cleared")
+    }
+
+    func retryObservingIncomingCall() {
+        observeIncomingCallIfPossible()
     }
 
     func setAudioEnabled(_ enabled: Bool, roomID: String) {
@@ -139,6 +146,16 @@ final class ElementCallKitService: NSObject {
         endUnansweredCallWorkItem = nil
     }
 
+    private func clearIncomingCall() {
+        incomingCallID = nil
+        incomingRoomCallBecameActive = false
+        cancelUnansweredCallTimeout()
+        incomingRoomInfoHandle?.cancel()
+        incomingRoomInfoHandle = nil
+        incomingDeclineHandle?.cancel()
+        incomingDeclineHandle = nil
+    }
+
     private func reportUnansweredCall(_ callID: CallID, after ringDuration: TimeInterval) {
         cancelUnansweredCallTimeout()
 
@@ -147,11 +164,112 @@ final class ElementCallKitService: NSObject {
             guard incomingCallID?.callKitID == callID.callKitID else { return }
             logElementCallKit("Incoming call timed out for room \(callID.roomID)")
             callProvider.reportCall(with: callID.callKitID, endedAt: nil, reason: .unanswered)
-            incomingCallID = nil
+            clearIncomingCall()
         }
 
         endUnansweredCallWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + ringDuration, execute: workItem)
+    }
+
+    private func observeIncomingCallIfPossible() {
+        incomingRoomInfoHandle?.cancel()
+        incomingRoomInfoHandle = nil
+        incomingDeclineHandle?.cancel()
+        incomingDeclineHandle = nil
+        incomingRoomCallBecameActive = false
+
+        guard let incomingCallID else { return }
+        guard let client = MatrixClientService.shared.client,
+              let room = try? client.getRoom(roomId: incomingCallID.roomID) else {
+            logElementCallKit("Cannot observe incoming call yet: room \(incomingCallID.roomID) is unavailable")
+            return
+        }
+
+        let ownUserID = room.ownUserId()
+        incomingRoomCallBecameActive = room.hasActiveRoomCall()
+
+        let roomInfoListener = ElementCallRoomInfoListener { [weak self] info in
+            DispatchQueue.main.async {
+                self?.handleIncomingRoomInfo(
+                    info,
+                    callID: incomingCallID,
+                    ownUserID: ownUserID
+                )
+            }
+        }
+        incomingRoomInfoHandle = room.subscribeToRoomInfoUpdates(listener: roomInfoListener)
+
+        if let rtcNotificationID = incomingCallID.rtcNotificationID {
+            let declineListener = ElementCallDeclineListener { [weak self] senderID in
+                DispatchQueue.main.async {
+                    guard senderID == ownUserID else { return }
+                    self?.reportIncomingCallEnded(
+                        incomingCallID,
+                        reason: .declinedElsewhere,
+                        logMessage: "Incoming call declined elsewhere"
+                    )
+                }
+            }
+
+            do {
+                incomingDeclineHandle = try room.subscribeToCallDeclineEvents(
+                    rtcNotificationEventId: rtcNotificationID,
+                    listener: declineListener
+                )
+            } catch {
+                logElementCallKit("Failed observing RTC decline events for \(rtcNotificationID): \(error)")
+            }
+        }
+
+        let weakSelf = WeakRef(self)
+        Task { [weakSelf, room, incomingCallID, ownUserID] in
+            guard let info = try? await room.roomInfo() else { return }
+            await MainActor.run {
+                weakSelf.value?.handleIncomingRoomInfo(
+                    info,
+                    callID: incomingCallID,
+                    ownUserID: ownUserID
+                )
+            }
+        }
+    }
+
+    private func handleIncomingRoomInfo(
+        _ info: RoomInfo,
+        callID: CallID,
+        ownUserID: String
+    ) {
+        guard incomingCallID?.callKitID == callID.callKitID else { return }
+
+        if info.hasRoomCall {
+            incomingRoomCallBecameActive = true
+            if info.activeRoomCallParticipants.contains(ownUserID) {
+                reportIncomingCallEnded(
+                    callID,
+                    reason: .answeredElsewhere,
+                    logMessage: "Incoming call answered elsewhere"
+                )
+            }
+            return
+        }
+
+        guard incomingRoomCallBecameActive else { return }
+        reportIncomingCallEnded(
+            callID,
+            reason: .remoteEnded,
+            logMessage: "Incoming call cancelled by remote"
+        )
+    }
+
+    private func reportIncomingCallEnded(
+        _ callID: CallID,
+        reason: CXCallEndedReason,
+        logMessage: String
+    ) {
+        guard incomingCallID?.callKitID == callID.callKitID else { return }
+        logElementCallKit(logMessage)
+        callProvider.reportCall(with: callID.callKitID, endedAt: nil, reason: reason)
+        clearIncomingCall()
     }
 
     private func sendDeclineCallEvent(_ callID: CallID) async {
@@ -231,6 +349,7 @@ extension ElementCallKitService: PKPushRegistryDelegate {
             isVoiceCall: isVoiceCall
         )
         incomingCallID = callID
+        observeIncomingCallIfPossible()
 
         let update = CXCallUpdate()
         update.hasVideo = true
@@ -270,9 +389,8 @@ extension ElementCallKitService: CXProviderDelegate {
 
     func providerDidReset(_ provider: CXProvider) {
         logElementCallKit("CallKit provider reset")
-        incomingCallID = nil
+        clearIncomingCall()
         ongoingCallID = nil
-        cancelUnansweredCallTimeout()
     }
 
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
@@ -315,9 +433,8 @@ extension ElementCallKitService: CXProviderDelegate {
             }
         }
 
-        incomingCallID = nil
+        clearIncomingCall()
         ongoingCallID = nil
-        cancelUnansweredCallTimeout()
         action.fulfill()
         #endif
     }
@@ -329,5 +446,29 @@ extension ElementCallKitService: CXProviderDelegate {
             logElementCallKit("Failed handling CallKit mute action: missing ongoingCallID")
         }
         action.fulfill()
+    }
+}
+
+private final class ElementCallRoomInfoListener: @unchecked Sendable, RoomInfoListener {
+    private let callback: (RoomInfo) -> Void
+
+    init(callback: @escaping (RoomInfo) -> Void) {
+        self.callback = callback
+    }
+
+    func call(roomInfo: RoomInfo) {
+        callback(roomInfo)
+    }
+}
+
+private final class ElementCallDeclineListener: @unchecked Sendable, CallDeclineListener {
+    private let callback: (String) -> Void
+
+    init(callback: @escaping (String) -> Void) {
+        self.callback = callback
+    }
+
+    func call(declinerUserId: String) {
+        callback(declinerUserId)
     }
 }

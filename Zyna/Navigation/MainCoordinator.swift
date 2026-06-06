@@ -21,6 +21,8 @@ final class MainCoordinator {
     private var pendingElementCallRoute: (roomID: String, isVoiceCall: Bool)?
     private var pendingElementCallRetryWorkItem: DispatchWorkItem?
     private var pendingElementCallRetryCount = 0
+    private var incomingCallSyncBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var incomingCallSyncEndWorkItem: DispatchWorkItem?
 
     func start() {
         let chats = ChatsCoordinator(audioPlayer: voicePlayback)
@@ -176,7 +178,7 @@ final class MainCoordinator {
             .sink { [weak self] action in
                 switch action {
                 case .receivedIncomingCallRequest:
-                    break
+                    self?.startIncomingCallSyncKeepalive()
                 case .startCall(let roomID, let isVoiceCall):
                     self?.presentElementCall(roomID: roomID, isVoiceCall: isVoiceCall)
                 case .endCall, .setAudioEnabled:
@@ -184,6 +186,43 @@ final class MainCoordinator {
                 }
             }
             .store(in: &cancellables)
+    }
+
+    private func startIncomingCallSyncKeepalive() {
+        beginIncomingCallBackgroundTaskIfNeeded()
+
+        Task {
+            await MatrixClientService.shared.ensureSyncRunningForIncomingCall()
+            await MainActor.run {
+                ElementCallKitService.shared.retryObservingIncomingCall()
+            }
+        }
+
+        incomingCallSyncEndWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.endIncomingCallBackgroundTask()
+        }
+        incomingCallSyncEndWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: workItem)
+    }
+
+    private func beginIncomingCallBackgroundTaskIfNeeded() {
+        guard incomingCallSyncBackgroundTask == .invalid else { return }
+        incomingCallSyncBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "Incoming Element Call Sync"
+        ) { [weak self] in
+            DispatchQueue.main.async {
+                self?.endIncomingCallBackgroundTask()
+            }
+        }
+    }
+
+    private func endIncomingCallBackgroundTask() {
+        incomingCallSyncEndWorkItem?.cancel()
+        incomingCallSyncEndWorkItem = nil
+        guard incomingCallSyncBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(incomingCallSyncBackgroundTask)
+        incomingCallSyncBackgroundTask = .invalid
     }
 
     private func observeMatrixClientState() {

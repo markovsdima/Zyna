@@ -5,6 +5,9 @@
 
 import EmbeddedElementCall
 import MatrixRustSDK
+import AVFoundation
+import AVKit
+import Combine
 import UIKit
 import WebKit
 
@@ -15,6 +18,33 @@ final class ElementCallViewController: UIViewController {
     private enum ScriptMessageName {
         static let diagnostics = "elementCallDiagnostics"
         static let widgetAction = "elementCallWidgetAction"
+        static let showNativeOutputDevicePicker = "elementCallShowNativeOutputDevicePicker"
+        static let onOutputDeviceSelect = "elementCallOnOutputDeviceSelect"
+    }
+
+    private struct WidgetControlMessage: Codable {
+
+        struct Data: Codable {
+            var audioEnabled: Bool?
+
+            enum CodingKeys: String, CodingKey {
+                case audioEnabled = "audio_enabled"
+            }
+        }
+
+        let direction: String
+        let action: String
+        var data = Data()
+        let widgetId: String
+        var requestId = "widgetapi-\(UUID())"
+
+        enum CodingKeys: String, CodingKey {
+            case direction = "api"
+            case action
+            case data
+            case widgetId
+            case requestId
+        }
     }
 
     var onDismiss: (() -> Void)?
@@ -26,8 +56,12 @@ final class ElementCallViewController: UIViewController {
     private let webView: WKWebView
     private let staticServer = ElementCallStaticServer()
     private let statusLabel = UILabel()
+    private let routePickerView = AVRoutePickerView(frame: .zero)
     private var widgetDriver: ElementCallWidgetDriver?
     private var isDismissing = false
+    private var widgetURL: URL?
+    private var cancellables = Set<AnyCancellable>()
+    private static let earpieceID = "earpiece-id"
 
     init(
         room: Room,
@@ -52,6 +86,8 @@ final class ElementCallViewController: UIViewController {
         super.init(nibName: nil, bundle: nil)
         configuration.userContentController.add(self, name: ScriptMessageName.diagnostics)
         configuration.userContentController.add(self, name: ScriptMessageName.widgetAction)
+        configuration.userContentController.add(self, name: ScriptMessageName.showNativeOutputDevicePicker)
+        configuration.userContentController.add(self, name: ScriptMessageName.onOutputDeviceSelect)
 
         modalPresentationStyle = .fullScreen
     }
@@ -63,6 +99,8 @@ final class ElementCallViewController: UIViewController {
     deinit {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.diagnostics)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.widgetAction)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.showNativeOutputDevicePicker)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: ScriptMessageName.onOutputDeviceSelect)
         staticServer.stop()
     }
 
@@ -72,6 +110,7 @@ final class ElementCallViewController: UIViewController {
         view.backgroundColor = .black
         setupWebView()
         setupOverlay()
+        bindSystemActions()
         loadElementCall()
     }
 
@@ -91,6 +130,10 @@ final class ElementCallViewController: UIViewController {
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.translatesAutoresizingMaskIntoConstraints = true
         view.addSubview(webView)
+
+        routePickerView.isHidden = true
+        routePickerView.isUserInteractionEnabled = false
+        webView.addSubview(routePickerView)
     }
 
     private func setupOverlay() {
@@ -159,6 +202,15 @@ final class ElementCallViewController: UIViewController {
                 self?.dismissElementCall()
             }
         }
+        widgetDriver.onMediaStateChanged = { [weak self] audioEnabled, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                ElementCallKitService.shared.setAudioEnabled(
+                    audioEnabled,
+                    roomID: self.room.id()
+                )
+            }
+        }
 
         let callBaseURL = baseURL.appendingPathComponent("room")
         let theme = view.traitCollection.userInterfaceStyle == .light ? "light" : "dark"
@@ -175,6 +227,7 @@ final class ElementCallViewController: UIViewController {
                 guard let self else { return }
                 switch result {
                 case .success(let widgetURL):
+                    self.widgetURL = widgetURL
                     ElementCallKitService.shared.setupCallSession(
                         roomID: self.room.id(),
                         roomDisplayName: self.roomName
@@ -197,10 +250,121 @@ final class ElementCallViewController: UIViewController {
         }
     }
 
+    private func postControlMessageToWidget(_ message: WidgetControlMessage) {
+        do {
+            let data = try JSONEncoder().encode(message)
+            guard let json = String(data: data, encoding: .utf8) else {
+                logElementCall("Embedded Element Call control message was not UTF-8")
+                return
+            }
+            postMessageToWidget(json)
+        } catch {
+            logElementCall("Embedded Element Call control message encoding failed: \(error)")
+        }
+    }
+
+    private func bindSystemActions() {
+        ElementCallKitService.shared.actions
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] action in
+                guard let self else { return }
+                switch action {
+                case .endCall(let roomID):
+                    guard roomID == self.room.id() else { return }
+                    self.hangupAndDismiss()
+                case .setAudioEnabled(let enabled, let roomID):
+                    guard roomID == self.room.id() else { return }
+                    self.setWidgetAudioEnabled(enabled)
+                case .receivedIncomingCallRequest, .startCall:
+                    break
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateOutputsListOnWeb()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func hangupAndDismiss() {
+        guard let widgetDriver else {
+            dismissElementCall()
+            return
+        }
+
+        postControlMessageToWidget(
+            WidgetControlMessage(
+                direction: "fromWidget",
+                action: "im.vector.hangup",
+                widgetId: widgetDriver.widgetID
+            )
+        )
+        dismissElementCall()
+    }
+
+    private func setWidgetAudioEnabled(_ enabled: Bool) {
+        guard let widgetDriver else { return }
+        postControlMessageToWidget(
+            WidgetControlMessage(
+                direction: "toWidget",
+                action: "io.element.device_mute",
+                data: .init(audioEnabled: enabled),
+                widgetId: widgetDriver.widgetID
+            )
+        )
+    }
+
+    private func tapRoutePickerView() {
+        guard let button = routePickerView.subviews.first(where: { $0 is UIButton }) as? UIButton else {
+            return
+        }
+        button.sendActions(for: .touchUpInside)
+    }
+
+    private func handleOutputDeviceSelected(deviceID: String) {
+        UIDevice.current.isProximityMonitoringEnabled = deviceID == Self.earpieceID
+    }
+
+    private func updateOutputsListOnWeb() {
+        guard let currentOutput = AVAudioSession.sharedInstance().currentRoute.outputs.first else {
+            return
+        }
+
+        let devices: [[String: Any]]
+        if currentOutput.portType == .builtInSpeaker {
+            devices = [[
+                "id": currentOutput.uid,
+                "name": currentOutput.portName,
+                "forEarpiece": true,
+                "isSpeaker": true
+            ]]
+        } else {
+            devices = [[
+                "id": "dummy",
+                "name": "dummy"
+            ]]
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: devices),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+
+        webView.evaluateJavaScript("window.controls?.setAvailableOutputDevices?.(\(json))") { _, error in
+            if let error {
+                logElementCall("Embedded Element Call output device update failed: \(error)")
+            }
+        }
+    }
+
     private func dismissElementCall() {
         guard !isDismissing else { return }
         isDismissing = true
         ElementCallKitService.shared.tearDownCallSession()
+        UIDevice.current.isProximityMonitoringEnabled = false
         staticServer.stop()
         onDismiss?()
     }
@@ -241,6 +405,12 @@ final class ElementCallViewController: UIViewController {
         let source = """
         (() => {
           window.controls = window.controls || {};
+          window.controls.showNativeOutputDevicePicker = () => {
+            window.webkit.messageHandlers.\(ScriptMessageName.showNativeOutputDevicePicker).postMessage("");
+          };
+          window.controls.onOutputDeviceSelect = (id) => {
+            window.webkit.messageHandlers.\(ScriptMessageName.onOutputDeviceSelect).postMessage(String(id));
+          };
           window.controls.onBackButtonPressed = () => {};
 
           window.addEventListener("message", (event) => {
@@ -266,6 +436,7 @@ extension ElementCallViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         statusLabel.isHidden = true
         logElementCall("Embedded Element Call finished loading")
+        updateOutputsListOnWeb()
         logPageDiagnostics(after: 0.3)
     }
 
@@ -321,13 +492,26 @@ extension ElementCallViewController: WKScriptMessageHandler {
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
+        if message.name == ScriptMessageName.widgetAction, let body = message.body as? String {
+            Task { [weak self] in
+                await self?.widgetDriver?.handleMessage(body)
+            }
+            return
+        }
+
+        if message.name == ScriptMessageName.showNativeOutputDevicePicker {
+            tapRoutePickerView()
+            return
+        }
+
+        if message.name == ScriptMessageName.onOutputDeviceSelect,
+           let deviceID = message.body as? String {
+            handleOutputDeviceSelected(deviceID: deviceID)
+            return
+        }
+
         guard message.name == ScriptMessageName.diagnostics,
               let payload = message.body as? [String: Any] else {
-            if message.name == ScriptMessageName.widgetAction, let body = message.body as? String {
-                Task { [weak self] in
-                    await self?.widgetDriver?.handleMessage(body)
-                }
-            }
             return
         }
         let type = payload["type"] as? String ?? "unknown"
@@ -345,6 +529,17 @@ extension ElementCallViewController: WKUIDelegate {
         type: WKMediaCaptureType,
         decisionHandler: @escaping (WKPermissionDecision) -> Void
     ) {
+        guard let widgetURL else {
+            decisionHandler(.deny)
+            return
+        }
+
+        guard origin.host == widgetURL.host else {
+            decisionHandler(.deny)
+            return
+        }
+
+        updateOutputsListOnWeb()
         decisionHandler(.grant)
     }
 }

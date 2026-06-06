@@ -627,6 +627,27 @@ final class MatrixClientService {
         logSync("Sync started")
     }
 
+    func ensureSyncRunningForIncomingCall() async {
+        do {
+            if client == nil {
+                try await restoreSession()
+                return
+            }
+
+            guard syncService == nil else {
+                stateSubject.send(.syncing)
+                return
+            }
+
+            try await startSyncForAuthenticatedSession(
+                session: currentOrStoredSession(),
+                context: "Incoming call"
+            )
+        } catch {
+            logSync("Incoming call sync start failed: \(error)")
+        }
+    }
+
     func stopSync() async {
         await syncService?.stop()
         syncServiceStateHandle = nil

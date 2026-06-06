@@ -24,6 +24,7 @@ private struct ElementCallWidgetMessage: Codable {
     }
 
     enum Action: String, Codable {
+        case hangup = "im.vector.hangup"
         case close = "io.element.close"
         case mediaState = "io.element.device_mute"
     }
@@ -59,6 +60,7 @@ final class ElementCallWidgetDriver: WidgetCapabilitiesProvider, @unchecked Send
 
     var onMessageToWidget: (@Sendable (String) -> Void)?
     var onCallEnded: (@Sendable () -> Void)?
+    var onMediaStateChanged: (@Sendable (_ audioEnabled: Bool, _ videoEnabled: Bool) -> Void)?
 
     private let room: Room
     private let deviceID: String
@@ -183,8 +185,21 @@ final class ElementCallWidgetDriver: WidgetCapabilitiesProvider, @unchecked Send
 
         do {
             let widgetMessage = try JSONDecoder().decode(ElementCallWidgetMessage.self, from: data)
-            if widgetMessage.direction == .fromWidget, widgetMessage.action == .close {
+            guard widgetMessage.direction == .fromWidget else { return }
+
+            switch widgetMessage.action {
+            case .hangup:
+                // Ignore hangup echoes; close/callEnded is the signal that dismisses the UI.
+                break
+            case .close:
                 onCallEnded?()
+            case .mediaState:
+                guard let audioEnabled = widgetMessage.data.audioEnabled else {
+                    logElementCallWidget("Ignored Element Call media state without audio data")
+                    return
+                }
+                let videoEnabled = widgetMessage.data.videoEnabled ?? true
+                onMediaStateChanged?(audioEnabled, videoEnabled)
             }
         } catch {
             logElementCallWidget("Ignored unsupported Element Call widget message: \(error)")
