@@ -215,6 +215,8 @@ final class FakeCustomToDeviceClient: MatrixRTCCustomToDeviceEncrypting, @unchec
     var sentEventType: String?
     var sentTargets: [MatrixRTCToDeviceTarget]?
     var sentContentJSON: String?
+    var sentTargetsHistory: [[MatrixRTCToDeviceTarget]] = []
+    var sentContentJSONHistory: [String] = []
     var sendCount = 0
     var sendFailures: [MatrixRTCCustomToDeviceSendFailure] = []
 
@@ -231,6 +233,8 @@ final class FakeCustomToDeviceClient: MatrixRTCCustomToDeviceEncrypting, @unchec
         sentEventType = eventType
         sentTargets = targets
         sentContentJSON = contentJSON
+        sentTargetsHistory.append(targets)
+        sentContentJSONHistory.append(contentJSON)
         return sendFailures
     }
 

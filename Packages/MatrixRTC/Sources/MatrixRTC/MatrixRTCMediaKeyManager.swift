@@ -41,6 +41,19 @@ public struct MatrixRTCMediaKeyShareResult: Equatable, Sendable {
     }
 }
 
+public struct MatrixRTCMediaKeyRotationConfiguration: Equatable, Sendable {
+    public let useKeyDelayMilliseconds: UInt64
+    public let keyRotationGracePeriodMilliseconds: Int64
+
+    public init(
+        useKeyDelayMilliseconds: UInt64 = 1_000,
+        keyRotationGracePeriodMilliseconds: Int64 = 10_000
+    ) {
+        self.useKeyDelayMilliseconds = useKeyDelayMilliseconds
+        self.keyRotationGracePeriodMilliseconds = keyRotationGracePeriodMilliseconds
+    }
+}
+
 public struct MatrixRTCMediaKeyMapKey: Hashable, Sendable {
     public let userId: String
     public let deviceId: String
@@ -87,13 +100,17 @@ public final class MatrixRTCMediaKeyManager: @unchecked Sendable {
     private let ownMembership: MatrixRTCCallMembership
     private let transport: MatrixRTCToDeviceKeyTransport
     private let keyGenerator: any MatrixRTCMediaKeyGenerating
+    private let rotationConfiguration: MatrixRTCMediaKeyRotationConfiguration
+    private let timestampProvider: @Sendable () -> Int64
     private let onKeyChanged: KeyChangedHandler
     private let onError: ErrorHandler?
     private let lock = NSLock()
+    private let distributionQueue = MatrixRTCAsyncSerialExecutor()
 
     private var memberships: [MatrixRTCCallMembership]
     private var inboundKeys: [MatrixRTCMediaKeyMapKey: [MatrixRTCMediaKey]] = [:]
-    private var pendingInboundKeys: [MatrixRTCMediaKey] = []
+    private var pendingInboundKeys: [MatrixRTCReceivedCallEncryptionKey] = []
+    private var inboundKeyTimestamps: [MatrixRTCInboundMediaKeyTimestampKey: Int64] = [:]
     private var outboundSession: MatrixRTCOutboundMediaKeySession?
 
     public init(
@@ -101,6 +118,10 @@ public final class MatrixRTCMediaKeyManager: @unchecked Sendable {
         memberships: [MatrixRTCCallMembership] = [],
         transport: MatrixRTCToDeviceKeyTransport,
         keyGenerator: any MatrixRTCMediaKeyGenerating = MatrixRTCRandomMediaKeyGenerator(),
+        rotationConfiguration: MatrixRTCMediaKeyRotationConfiguration = .init(),
+        timestampProvider: @escaping @Sendable () -> Int64 = {
+            Int64(Date().timeIntervalSince1970 * 1000)
+        },
         onKeyChanged: @escaping KeyChangedHandler,
         onError: ErrorHandler? = nil
     ) {
@@ -108,6 +129,8 @@ public final class MatrixRTCMediaKeyManager: @unchecked Sendable {
         self.memberships = memberships
         self.transport = transport
         self.keyGenerator = keyGenerator
+        self.rotationConfiguration = rotationConfiguration
+        self.timestampProvider = timestampProvider
         self.onKeyChanged = onKeyChanged
         self.onError = onError
         self.transport.setReceivedKeyHandler { [weak self] result in
@@ -183,7 +206,8 @@ public final class MatrixRTCMediaKeyManager: @unchecked Sendable {
                     keyIndex: 0,
                     membership: ownMembership.identity,
                     rtcBackendIdentity: ownMembership.rtcBackendIdentity
-                )
+                ),
+                createdTimestamp: timestampProvider()
             )
             outboundSession = session
             addKeyLocked(session.mediaKey)
@@ -195,6 +219,19 @@ public final class MatrixRTCMediaKeyManager: @unchecked Sendable {
         }
 
         return result.mediaKey
+    }
+
+    @discardableResult
+    public func ensureKeyDistribution(
+        with memberships: [MatrixRTCCallMembership]? = nil
+    ) async throws -> MatrixRTCMediaKeyShareResult {
+        if let memberships {
+            updateMemberships(memberships)
+        }
+
+        return try await distributionQueue.run { [self] in
+            try await self.rolloutOutboundKey()
+        }
     }
 
     @discardableResult
@@ -243,13 +280,150 @@ public final class MatrixRTCMediaKeyManager: @unchecked Sendable {
 }
 
 private extension MatrixRTCMediaKeyManager {
+    static let liveKitUnsupportedOutboundKeyIndex = 255
+
     func withLock<T>(_ operation: () -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
         return operation()
     }
 
+    func rolloutOutboundKey() async throws -> MatrixRTCMediaKeyShareResult {
+        _ = ensureOutboundSession()
+
+        guard let rollout = withLock({ makeOutboundRolloutLocked(now: timestampProvider()) }) else {
+            return .init(failures: [], sharedWith: [])
+        }
+
+        let targets = rollout.shareTargets.map(\.target)
+        let failures: [MatrixRTCCustomToDeviceSendFailure]
+        if targets.isEmpty {
+            failures = []
+        } else {
+            failures = try await transport.sendKey(
+                keyBase64Encoded: rollout.mediaKey.keyBase64Encoded,
+                index: rollout.mediaKey.keyIndex,
+                targets: targets
+            )
+        }
+
+        let failedTargets = Set(failures.map { MatrixRTCToDeviceTarget(userId: $0.userId, deviceId: $0.deviceId) })
+        let successfulShareTargets = rollout.shareTargets.filter { !failedTargets.contains($0.target) }
+        if !successfulShareTargets.isEmpty {
+            withLock {
+                for shareTarget in successfulShareTargets {
+                    outboundSession?.sharedWith.insert(shareTarget.participant)
+                }
+            }
+        }
+
+        if rollout.shouldApplyLocallyAfterDelay {
+            try await sleepForKeyDelay()
+            withLock {
+                addKeyLocked(rollout.mediaKey)
+            }
+            onKeyChanged(.init(key: rollout.mediaKey))
+        }
+
+        return .init(
+            failures: failures,
+            sharedWith: targets
+        )
+    }
+
+    func sleepForKeyDelay() async throws {
+        guard rotationConfiguration.useKeyDelayMilliseconds > 0 else {
+            return
+        }
+
+        try await Task.sleep(nanoseconds: rotationConfiguration.useKeyDelayMilliseconds * 1_000_000)
+    }
+
+    func makeOutboundRolloutLocked(now: Int64) -> MatrixRTCOutboundMediaKeyRollout? {
+        guard var session = outboundSession else {
+            return nil
+        }
+
+        let shareTargets = allShareTargets(for: memberships)
+        let currentParticipants = Set(shareTargets.map(\.participant))
+        let resetSharedWith = session.sharedWith.filter { sharedParticipant in
+            !currentParticipants.contains {
+                $0.userId == sharedParticipant.userId
+                    && $0.deviceId == sharedParticipant.deviceId
+                    && $0.createdTimestamp != sharedParticipant.createdTimestamp
+            }
+        }
+        outboundSession?.sharedWith = resetSharedWith
+        session.sharedWith = resetSharedWith
+
+        let leftParticipants = resetSharedWith.filter { !currentParticipants.contains($0) }
+        let joinedShareTargets = shareTargets.filter { !resetSharedWith.contains($0.participant) }
+
+        if !leftParticipants.isEmpty {
+            let newSession = createNewOutboundSessionLocked(now: now)
+            return .init(
+                mediaKey: newSession.mediaKey,
+                shareTargets: shareTargets,
+                shouldApplyLocallyAfterDelay: true
+            )
+        }
+
+        guard !joinedShareTargets.isEmpty else {
+            return nil
+        }
+
+        let keyAge = now - session.createdTimestamp
+        if keyAge < rotationConfiguration.keyRotationGracePeriodMilliseconds {
+            return .init(
+                mediaKey: session.mediaKey,
+                shareTargets: joinedShareTargets,
+                shouldApplyLocallyAfterDelay: false
+            )
+        }
+
+        let newSession = createNewOutboundSessionLocked(now: now)
+        return .init(
+            mediaKey: newSession.mediaKey,
+            shareTargets: shareTargets,
+            shouldApplyLocallyAfterDelay: true
+        )
+    }
+
+    func createNewOutboundSessionLocked(now: Int64) -> MatrixRTCOutboundMediaKeySession {
+        let session = MatrixRTCOutboundMediaKeySession(
+            mediaKey: .init(
+                keyBase64Encoded: keyGenerator.generateMediaKeyBase64Encoded(),
+                keyIndex: nextOutboundKeyIndexLocked(),
+                membership: ownMembership.identity,
+                rtcBackendIdentity: ownMembership.rtcBackendIdentity
+            ),
+            createdTimestamp: now
+        )
+        outboundSession = session
+        return session
+    }
+
+    func nextOutboundKeyIndexLocked() -> Int {
+        guard let outboundSession else {
+            return 0
+        }
+
+        var nextIndex = (outboundSession.mediaKey.keyIndex + 1) % 256
+        // LiveKitWebRTC currently crashes on outbound index 255. Keep the MatrixRTC
+        // ring compatible by wrapping past it until the native provider is fixed.
+        if nextIndex == Self.liveKitUnsupportedOutboundKeyIndex {
+            nextIndex = 0
+        }
+        return nextIndex
+    }
+
     func shareTargets(for memberships: [MatrixRTCCallMembership]) -> [MatrixRTCMediaKeyShareTarget] {
+        allShareTargets(for: memberships).filter { shareTarget in
+            outboundSession?.sharedWith.contains(shareTarget.participant) != true
+        }
+    }
+
+    func allShareTargets(for memberships: [MatrixRTCCallMembership]) -> [MatrixRTCMediaKeyShareTarget] {
         var seen = Set<MatrixRTCToDeviceTarget>()
         return memberships.compactMap { membership in
             guard membership.userId != ownMembership.userId || membership.deviceId != ownMembership.deviceId else {
@@ -261,9 +435,6 @@ private extension MatrixRTCMediaKeyManager {
                 deviceId: membership.deviceId,
                 createdTimestamp: membership.createdTimestamp
             )
-            guard outboundSession?.sharedWith.contains(participant) != true else {
-                return nil
-            }
 
             let target = membership.toDeviceTarget
             guard seen.insert(target).inserted else {
@@ -301,7 +472,11 @@ private extension MatrixRTCMediaKeyManager {
         }
 
         guard !mediaKey.rtcBackendIdentity.isEmpty else {
-            pendingInboundKeys.append(mediaKey)
+            pendingInboundKeys.append(receivedKey)
+            return nil
+        }
+
+        guard !isOutdatedInboundKeyLocked(mediaKey: mediaKey, sentTimestamp: receivedKey.sentTimestamp) else {
             return nil
         }
 
@@ -318,21 +493,30 @@ private extension MatrixRTCMediaKeyManager {
         pendingInboundKeys = []
         var changedKeys: [MatrixRTCMediaKey] = []
 
-        for pendingKey in pendingKeys {
-            let receivedKey = MatrixRTCReceivedCallEncryptionKey(
-                sender: pendingKey.membership.userId,
-                membership: pendingKey.membership,
-                keyBase64Encoded: pendingKey.keyBase64Encoded,
-                keyIndex: pendingKey.keyIndex,
-                sentTimestamp: nil,
-                encryptionInfo: nil
-            )
+        for receivedKey in pendingKeys {
             if let changedKey = addOrQueueInboundKeyLocked(receivedKey) {
                 changedKeys.append(changedKey)
             }
         }
 
         return changedKeys
+    }
+
+    func isOutdatedInboundKeyLocked(mediaKey: MatrixRTCMediaKey, sentTimestamp: Int64?) -> Bool {
+        guard let sentTimestamp else {
+            return false
+        }
+
+        let timestampKey = MatrixRTCInboundMediaKeyTimestampKey(
+            mapKey: .init(membership: mediaKey.membership),
+            keyIndex: mediaKey.keyIndex
+        )
+        if let latestTimestamp = inboundKeyTimestamps[timestampKey], latestTimestamp > sentTimestamp {
+            return true
+        }
+
+        inboundKeyTimestamps[timestampKey] = sentTimestamp
+        return false
     }
 
     func addKeyLocked(_ mediaKey: MatrixRTCMediaKey) {
@@ -346,7 +530,14 @@ private extension MatrixRTCMediaKeyManager {
 
 private struct MatrixRTCOutboundMediaKeySession: Sendable {
     let mediaKey: MatrixRTCMediaKey
+    let createdTimestamp: Int64
     var sharedWith: Set<MatrixRTCParticipantDevice> = []
+}
+
+private struct MatrixRTCOutboundMediaKeyRollout: Sendable {
+    let mediaKey: MatrixRTCMediaKey
+    let shareTargets: [MatrixRTCMediaKeyShareTarget]
+    let shouldApplyLocallyAfterDelay: Bool
 }
 
 private struct MatrixRTCParticipantDevice: Hashable, Sendable {
@@ -355,7 +546,28 @@ private struct MatrixRTCParticipantDevice: Hashable, Sendable {
     let createdTimestamp: Int64
 }
 
+private struct MatrixRTCInboundMediaKeyTimestampKey: Hashable, Sendable {
+    let mapKey: MatrixRTCMediaKeyMapKey
+    let keyIndex: Int
+}
+
 private struct MatrixRTCMediaKeyShareTarget: Sendable {
     let participant: MatrixRTCParticipantDevice
     let target: MatrixRTCToDeviceTarget
+}
+
+private actor MatrixRTCAsyncSerialExecutor {
+    private var previousTask: Task<Void, Never>?
+
+    func run<T: Sendable>(_ operation: @Sendable @escaping () async throws -> T) async throws -> T {
+        let previousTask = previousTask
+        let task = Task {
+            await previousTask?.value
+            return try await operation()
+        }
+        self.previousTask = Task {
+            _ = try? await task.value
+        }
+        return try await task.value
+    }
 }

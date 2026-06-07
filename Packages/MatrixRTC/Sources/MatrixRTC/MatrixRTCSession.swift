@@ -45,6 +45,7 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
     public let expires: Int64
     public let callIntent: String?
     public let joinedUserIds: Set<String>?
+    public let mediaKeyRotationConfiguration: MatrixRTCMediaKeyRotationConfiguration
 
     public init(
         slot: MatrixRTCSlotDescription = .matrixCallRoom,
@@ -53,7 +54,8 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
         fociPreferred: [MatrixRTCTransport],
         expires: Int64 = MatrixRTCCallMembership.defaultExpireDurationMilliseconds,
         callIntent: String? = nil,
-        joinedUserIds: Set<String>? = nil
+        joinedUserIds: Set<String>? = nil,
+        mediaKeyRotationConfiguration: MatrixRTCMediaKeyRotationConfiguration = .init()
     ) {
         self.slot = slot
         self.roomVersion = roomVersion
@@ -62,6 +64,7 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
         self.expires = expires
         self.callIntent = callIntent
         self.joinedUserIds = joinedUserIds
+        self.mediaKeyRotationConfiguration = mediaKeyRotationConfiguration
     }
 }
 
@@ -173,13 +176,15 @@ public final class MatrixRTCSession {
                 memberships: activeMemberships,
                 transport: keyTransportFactory(ownMembership.identity),
                 keyGenerator: keyGenerator,
+                rotationConfiguration: configuration.mediaKeyRotationConfiguration,
+                timestampProvider: timestampProvider,
                 onKeyChanged: onKeyChanged,
                 onError: onError
             )
             manager.start()
             startedMediaKeyManager = manager
 
-            let keyShareResult = try await manager.shareCurrentKey(with: activeMemberships)
+            let keyShareResult = try await manager.ensureKeyDistribution(with: activeMemberships)
 
             self.ownMembership = ownMembership
             memberships = activeMemberships
@@ -222,8 +227,7 @@ public final class MatrixRTCSession {
         )
         let activeMemberships = Self.memberships(loadedMemberships, including: ownMembership)
 
-        mediaKeyManager.updateMemberships(activeMemberships)
-        let keyShareResult = try await mediaKeyManager.shareCurrentKey(with: activeMemberships)
+        let keyShareResult = try await mediaKeyManager.ensureKeyDistribution(with: activeMemberships)
         memberships = activeMemberships
 
         return .init(
