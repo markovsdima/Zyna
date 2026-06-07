@@ -81,7 +81,9 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 endpointVersion: .legacy
             )
 
-            let liveKit = MatrixRTCLiveKitRoomSession()
+            let liveKit = MatrixRTCLiveKitRoomSession(onEvent: { event in
+                log("LiveKit \(Self.liveKitEventDescription(event))")
+            })
             liveKitSession = liveKit
 
             let toDeviceClient = MatrixRustSDKRTCToDeviceClient(client: client)
@@ -248,6 +250,57 @@ private extension NativeMatrixRTCCallService {
             deviceId: deviceId
         )
         return .init(userId: userId, deviceId: deviceId, memberId: memberId)
+    }
+
+    static func liveKitEventDescription(_ event: MatrixRTCLiveKitRoomSessionEvent) -> String {
+        switch event {
+        case .connectionStateChanged(let state, let previousState):
+            return "connectionState \(previousState) -> \(state)"
+        case .connected:
+            return "connected"
+        case .disconnected(let error):
+            return "disconnected error=\(error ?? "nil")"
+        case .failedToConnect(let error):
+            return "failedToConnect error=\(error ?? "nil")"
+        case .localTrackPublished(let publication):
+            return "localTrackPublished \(trackDescription(publication))"
+        case .localTrackUnpublished(let publication):
+            return "localTrackUnpublished \(trackDescription(publication))"
+        case .localTrackSubscribedByRemote(let publication):
+            return "localTrackSubscribedByRemote \(trackDescription(publication))"
+        case .remoteParticipantJoined(let participant):
+            return "remoteParticipantJoined \(participantDescription(participant))"
+        case .remoteParticipantLeft(let participant):
+            return "remoteParticipantLeft \(participantDescription(participant))"
+        case .remoteTrackPublished(let participant, let publication):
+            return "remoteTrackPublished participant=\(participantDescription(participant)) \(trackDescription(publication))"
+        case .remoteTrackUnpublished(let participant, let publication):
+            return "remoteTrackUnpublished participant=\(participantDescription(participant)) \(trackDescription(publication))"
+        case .remoteTrackSubscribed(let participant, let publication):
+            return "remoteTrackSubscribed participant=\(participantDescription(participant)) \(trackDescription(publication))"
+        case .remoteTrackUnsubscribed(let participant, let publication):
+            return "remoteTrackUnsubscribed participant=\(participantDescription(participant)) \(trackDescription(publication))"
+        case .remoteTrackSubscriptionFailed(let participant, let trackSid, let error):
+            return "remoteTrackSubscriptionFailed participant=\(participantDescription(participant)) sid=\(trackSid) error=\(error)"
+        case .trackMutedChanged(let participant, let publication, let isMuted):
+            return "trackMutedChanged participant=\(participantDescription(participant)) \(trackDescription(publication)) muted=\(isMuted)"
+        case .remoteTrackStreamStateChanged(let participant, let publication, let state):
+            return "remoteTrackStreamStateChanged participant=\(participantDescription(participant)) \(trackDescription(publication)) state=\(state)"
+        case .trackE2EEStateChanged(let publication, let state):
+            return "trackE2EEStateChanged \(trackDescription(publication)) state=\(state)"
+        case .mediaKeyApplied(let keyIndex, let participantId):
+            return "mediaKeyApplied participant=\(participantId) keyIndex=\(keyIndex)"
+        }
+    }
+
+    static func participantDescription(_ participant: MatrixRTCLiveKitParticipantInfo) -> String {
+        let identity = participant.identity ?? "nil"
+        let sid = participant.sid ?? "nil"
+        return "identity=\(identity) sid=\(sid)"
+    }
+
+    static func trackDescription(_ publication: MatrixRTCLiveKitTrackPublicationInfo) -> String {
+        "sid=\(publication.sid) name=\(publication.name) kind=\(publication.kind) source=\(publication.source) muted=\(publication.isMuted) subscribed=\(publication.isSubscribed)"
     }
 }
 

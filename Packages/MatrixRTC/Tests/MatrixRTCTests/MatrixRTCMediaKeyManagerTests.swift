@@ -136,6 +136,60 @@ import Testing
     #expect(storedKeys?.map(\.keyBase64Encoded) == ["bob-key"])
 }
 
+@Test func matchesInboundMediaKeyByUserDeviceWhenMemberIdDiffers() throws {
+    let client = FakeCustomToDeviceClient()
+    let ownMembership = try legacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 1_000
+    )
+    let bobMembership = try legacyMembership(
+        eventId: "$bob",
+        sender: "@bob:example.org",
+        deviceId: "BOBDEVICE",
+        createdTimestamp: 2_000
+    )
+    let receivedMembership = MatrixRTCMembershipIdentity(
+        userId: "@bob:example.org",
+        deviceId: "BOBDEVICE",
+        memberId: "element-call-member-id"
+    )
+    let keyBox = MediaKeyEventBox()
+    let manager = MatrixRTCMediaKeyManager(
+        ownMembership: ownMembership,
+        memberships: [ownMembership, bobMembership],
+        transport: .init(
+            roomId: "!room:example.org",
+            ownIdentity: ownMembership.identity,
+            client: client,
+            onReceivedKey: { _ in }
+        ),
+        keyGenerator: StaticMediaKeyGenerator(key: "own-key"),
+        onKeyChanged: { event in
+            keyBox.events.append(event)
+        }
+    )
+
+    manager.handleReceivedKey(.init(
+        sender: "@bob:example.org",
+        membership: receivedMembership,
+        keyBase64Encoded: "bob-key",
+        keyIndex: 8,
+        sentTimestamp: 12_345,
+        encryptionInfo: nil
+    ))
+
+    let changedKey = try #require(keyBox.events.first?.key)
+    #expect(changedKey.keyBase64Encoded == "bob-key")
+    #expect(changedKey.keyIndex == 8)
+    #expect(changedKey.membership == bobMembership.identity)
+    #expect(changedKey.rtcBackendIdentity == "@bob:example.org:BOBDEVICE")
+
+    let storedKeys = manager.encryptionKeys()[.init(membership: bobMembership.identity)]
+    #expect(storedKeys?.map(\.keyBase64Encoded) == ["bob-key"])
+}
+
 @Test func handlesInboundMediaKeysReceivedThroughTransport() throws {
     let client = FakeCustomToDeviceClient()
     let ownMembership = try legacyMembership(

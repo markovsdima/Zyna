@@ -278,7 +278,6 @@ private extension MatrixRTCMediaKeyManager {
         guard let membership = memberships.first(where: {
             $0.userId == receivedKey.membership.userId
                 && $0.deviceId == receivedKey.membership.deviceId
-                && $0.memberId == receivedKey.membership.memberId
         }) else {
             return .init(
                 keyBase64Encoded: receivedKey.keyBase64Encoded,

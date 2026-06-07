@@ -7,12 +7,16 @@ import Testing
 @Test func connectsLiveKitRoomWithMatrixRTCEncryptionOptions() async throws {
     let box = RoomSessionTestBox()
     let keyProvider = MatrixRTCLiveKitKeyProvider()
+    let eventBox = RoomSessionEventBox()
     let session = MatrixRTCLiveKitRoomSession(
         keyProvider: keyProvider,
         connectOptions: ConnectOptions(autoSubscribe: false),
         roomFactory: { roomOptions in
             box.roomOptions = roomOptions
             return box.room
+        },
+        onEvent: { event in
+            eventBox.append(event)
         }
     )
 
@@ -26,10 +30,15 @@ import Testing
     #expect(box.room.connectCalls[0].roomOptions === session.roomOptions)
     #expect(box.roomOptions?.encryptionOptions?.keyProvider === keyProvider.baseKeyProvider)
     #expect(box.roomOptions?.encryptionOptions?.encryptionType == .gcm)
+    #expect(box.room.addedDelegates.count == 1)
+    #expect(eventBox.events.isEmpty)
 }
 
 @Test func appliesMediaKeysToLiveKitKeyProvider() throws {
-    let session = MatrixRTCLiveKitRoomSession()
+    let eventBox = RoomSessionEventBox()
+    let session = MatrixRTCLiveKitRoomSession(onEvent: { event in
+        eventBox.append(event)
+    })
     let rawKey = Data((0..<16).map(UInt8.init))
     let mediaKey = MatrixRTCMediaKey(
         keyBase64Encoded: rawKey.base64EncodedString(),
@@ -48,6 +57,9 @@ import Testing
         index: 3
     ))
     #expect(exportedKey == rawKey)
+    #expect(eventBox.events == [
+        .mediaKeyApplied(keyIndex: 3, participantId: membership.legacyRTCBackendIdentity)
+    ])
 }
 
 @Test func publishesAudioWhenRequested() async throws {
@@ -103,6 +115,23 @@ private final class RoomSessionTestBox: @unchecked Sendable {
     var roomOptions: RoomOptions?
 }
 
+private final class RoomSessionEventBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _events: [MatrixRTCLiveKitRoomSessionEvent] = []
+
+    var events: [MatrixRTCLiveKitRoomSessionEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _events
+    }
+
+    func append(_ event: MatrixRTCLiveKitRoomSessionEvent) {
+        lock.lock()
+        defer { lock.unlock() }
+        _events.append(event)
+    }
+}
+
 private final class MockLiveKitRoom: MatrixRTCLiveKitRoomControlling, @unchecked Sendable {
     struct ConnectCall {
         let url: String
@@ -114,6 +143,8 @@ private final class MockLiveKitRoom: MatrixRTCLiveKitRoomControlling, @unchecked
     var connectCalls: [ConnectCall] = []
     var disconnectCalls = 0
     var microphoneEnabledCalls: [Bool] = []
+    var addedDelegates: [RoomDelegate] = []
+    var removedDelegates: [RoomDelegate] = []
     var connectError: Error?
     var microphoneError: Error?
 
@@ -145,5 +176,13 @@ private final class MockLiveKitRoom: MatrixRTCLiveKitRoomControlling, @unchecked
         }
 
         microphoneEnabledCalls.append(enabled)
+    }
+
+    func add(delegate: RoomDelegate) {
+        addedDelegates.append(delegate)
+    }
+
+    func remove(delegate: RoomDelegate) {
+        removedDelegates.append(delegate)
     }
 }
