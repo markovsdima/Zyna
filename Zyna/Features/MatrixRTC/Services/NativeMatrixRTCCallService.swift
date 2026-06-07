@@ -406,6 +406,8 @@ private extension NativeMatrixRTCCallService {
             return "remoteTrackPublished"
         case .remoteTrackSubscribed:
             return "remoteTrackSubscribed"
+        case .remoteVideoTrackSubscribed:
+            return "remoteVideoTrackSubscribed"
         default:
             return nil
         }
@@ -439,6 +441,10 @@ private extension NativeMatrixRTCCallService {
             return "remoteTrackSubscribed participant=\(participantDescription(participant)) \(trackDescription(publication))"
         case .remoteTrackUnsubscribed(let participant, let publication):
             return "remoteTrackUnsubscribed participant=\(participantDescription(participant)) \(trackDescription(publication))"
+        case .remoteVideoTrackSubscribed(let participant, let publication, let videoTrack):
+            return "remoteVideoTrackSubscribed participant=\(participantDescription(participant)) \(trackDescription(publication)) videoTrack=\(videoTrack.id)"
+        case .remoteVideoTrackUnsubscribed(let participant, let publication):
+            return "remoteVideoTrackUnsubscribed participant=\(participantDescription(participant)) \(trackDescription(publication))"
         case .remoteTrackSubscriptionFailed(let participant, let trackSid, let error):
             return "remoteTrackSubscriptionFailed participant=\(participantDescription(participant)) sid=\(trackSid) error=\(error)"
         case .trackMutedChanged(let participant, let publication, let isMuted):

@@ -16,6 +16,7 @@ struct NativeMatrixRTCCallTrackState: Equatable, Sendable {
     var e2eeState: String?
     var streamState: String?
     var subscriptionError: String?
+    var remoteVideoTrack: MatrixRTCLiveKitRemoteVideoTrack? = nil
 
     var isAudio: Bool {
         source.localizedCaseInsensitiveContains("microphone")
@@ -94,6 +95,17 @@ struct NativeMatrixRTCCallParticipantsSnapshot: Equatable, Sendable {
             }.count
         }
     }
+
+    var primaryRemoteVideoTrack: MatrixRTCLiveKitRemoteVideoTrack? {
+        for participant in remoteParticipants {
+            for track in participant.sortedTracks where track.isVideo && track.isSubscribed {
+                if let remoteVideoTrack = track.remoteVideoTrack {
+                    return remoteVideoTrack
+                }
+            }
+        }
+        return nil
+    }
 }
 
 struct NativeMatrixRTCCallParticipantStore: Equatable, Sendable {
@@ -144,6 +156,16 @@ struct NativeMatrixRTCCallParticipantStore: Equatable, Sendable {
 
         case .remoteTrackUnsubscribed(let participant, let publication):
             upsertRemoteTrack(participant: participant, publication: publication)
+
+        case .remoteVideoTrackSubscribed(let participant, let publication, let videoTrack):
+            upsertRemoteVideoTrack(
+                participant: participant,
+                publication: publication,
+                videoTrack: videoTrack
+            )
+
+        case .remoteVideoTrackUnsubscribed(let participant, let publication):
+            clearRemoteVideoTrack(participant: participant, publication: publication)
 
         case .remoteTrackSubscriptionFailed(let participant, let trackSid, let error):
             markRemoteTrackSubscriptionFailed(
@@ -208,6 +230,34 @@ private extension NativeMatrixRTCCallParticipantStore {
         var track = participantState.tracks[publication.sid] ?? trackState(from: publication)
         track.update(from: publication)
         track.subscriptionError = nil
+        participantState.tracks[publication.sid] = track
+        snapshot.remoteParticipantsById[id] = participantState
+    }
+
+    mutating func upsertRemoteVideoTrack(
+        participant: MatrixRTCLiveKitParticipantInfo,
+        publication: MatrixRTCLiveKitTrackPublicationInfo,
+        videoTrack: MatrixRTCLiveKitRemoteVideoTrack
+    ) {
+        upsertRemoteTrack(participant: participant, publication: publication)
+        let id = participant.participantStateId
+        guard var participantState = snapshot.remoteParticipantsById[id],
+              var track = participantState.tracks[publication.sid]
+        else { return }
+        track.remoteVideoTrack = videoTrack
+        participantState.tracks[publication.sid] = track
+        snapshot.remoteParticipantsById[id] = participantState
+    }
+
+    mutating func clearRemoteVideoTrack(
+        participant: MatrixRTCLiveKitParticipantInfo,
+        publication: MatrixRTCLiveKitTrackPublicationInfo
+    ) {
+        let id = participant.participantStateId
+        guard var participantState = snapshot.remoteParticipantsById[id],
+              var track = participantState.tracks[publication.sid]
+        else { return }
+        track.remoteVideoTrack = nil
         participantState.tracks[publication.sid] = track
         snapshot.remoteParticipantsById[id] = participantState
     }

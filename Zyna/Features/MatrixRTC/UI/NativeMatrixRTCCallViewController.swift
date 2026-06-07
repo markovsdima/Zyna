@@ -4,6 +4,7 @@
 //
 
 import Combine
+import MatrixRTCLiveKit
 import MatrixRustSDK
 import UIKit
 
@@ -18,6 +19,8 @@ final class NativeMatrixRTCCallViewController: UIViewController {
     private let roomDisplayName: String
     private let callService: NativeMatrixRTCCallService
 
+    private let remoteVideoContainerView = UIView()
+    private let remoteVideoView = MatrixRTCLiveKitVideoView()
     private let avatarView = UIView()
     private let avatarImageView = UIImageView()
     private let titleLabel = UILabel()
@@ -36,6 +39,9 @@ final class NativeMatrixRTCCallViewController: UIViewController {
     private var isEndingCall = false
     private var didRequestDismiss = false
     private var participantsSnapshot = NativeMatrixRTCCallParticipantsSnapshot.empty
+    private var currentRemoteVideoTrackId: String?
+    private var titleBelowAvatarConstraint: NSLayoutConstraint?
+    private var titleBelowVideoConstraint: NSLayoutConstraint?
     private var isMuted = false {
         didSet {
             updateMuteButton()
@@ -76,6 +82,16 @@ final class NativeMatrixRTCCallViewController: UIViewController {
 private extension NativeMatrixRTCCallViewController {
     func setupView() {
         view.backgroundColor = .systemBackground
+
+        remoteVideoContainerView.translatesAutoresizingMaskIntoConstraints = false
+        remoteVideoContainerView.backgroundColor = .black
+        remoteVideoContainerView.layer.cornerRadius = 8
+        remoteVideoContainerView.clipsToBounds = true
+        remoteVideoContainerView.isHidden = true
+
+        remoteVideoView.translatesAutoresizingMaskIntoConstraints = false
+        remoteVideoView.layoutMode = .fit
+        remoteVideoView.backgroundColor = .black
 
         avatarView.translatesAutoresizingMaskIntoConstraints = false
         avatarView.backgroundColor = .secondarySystemFill
@@ -137,6 +153,8 @@ private extension NativeMatrixRTCCallViewController {
         endCallButton.accessibilityLabel = "End Call"
         endCallButton.addTarget(self, action: #selector(endCallTapped), for: .touchUpInside)
 
+        view.addSubview(remoteVideoContainerView)
+        remoteVideoContainerView.addSubview(remoteVideoView)
         view.addSubview(avatarView)
         avatarView.addSubview(avatarImageView)
         view.addSubview(titleLabel)
@@ -147,7 +165,27 @@ private extension NativeMatrixRTCCallViewController {
         controlsStack.addArrangedSubview(muteButton)
         controlsStack.addArrangedSubview(endCallButton)
 
+        titleBelowAvatarConstraint = titleLabel.topAnchor.constraint(
+            equalTo: avatarView.bottomAnchor,
+            constant: 28
+        )
+        titleBelowVideoConstraint = titleLabel.topAnchor.constraint(
+            equalTo: remoteVideoContainerView.bottomAnchor,
+            constant: 18
+        )
+        titleBelowVideoConstraint?.isActive = false
+
         NSLayoutConstraint.activate([
+            remoteVideoContainerView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
+            remoteVideoContainerView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            remoteVideoContainerView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            remoteVideoContainerView.heightAnchor.constraint(equalTo: remoteVideoContainerView.widthAnchor, multiplier: 9.0 / 16.0),
+
+            remoteVideoView.topAnchor.constraint(equalTo: remoteVideoContainerView.topAnchor),
+            remoteVideoView.leadingAnchor.constraint(equalTo: remoteVideoContainerView.leadingAnchor),
+            remoteVideoView.trailingAnchor.constraint(equalTo: remoteVideoContainerView.trailingAnchor),
+            remoteVideoView.bottomAnchor.constraint(equalTo: remoteVideoContainerView.bottomAnchor),
+
             avatarView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             avatarView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 96),
             avatarView.widthAnchor.constraint(equalToConstant: 112),
@@ -156,7 +194,7 @@ private extension NativeMatrixRTCCallViewController {
             avatarImageView.centerXAnchor.constraint(equalTo: avatarView.centerXAnchor),
             avatarImageView.centerYAnchor.constraint(equalTo: avatarView.centerYAnchor),
 
-            titleLabel.topAnchor.constraint(equalTo: avatarView.bottomAnchor, constant: 28),
+            titleBelowAvatarConstraint!,
             titleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
             titleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
 
@@ -283,6 +321,7 @@ private extension NativeMatrixRTCCallViewController {
         }
 
         participantsSnapshot = snapshot
+        updateRemoteVideo(snapshot.primaryRemoteVideoTrack)
         updateConnectedStatus()
     }
 
@@ -292,6 +331,29 @@ private extension NativeMatrixRTCCallViewController {
         return totalCount == 2
             ? "2 participants"
             : "\(totalCount) participants"
+    }
+
+    func updateRemoteVideo(_ remoteVideoTrack: MatrixRTCLiveKitRemoteVideoTrack?) {
+        let nextTrackId = remoteVideoTrack?.id
+        guard currentRemoteVideoTrackId != nextTrackId else { return }
+
+        currentRemoteVideoTrackId = nextTrackId
+        log("Native MatrixRTC remote video \(nextTrackId == nil ? "hidden" : "shown id=\(nextTrackId!)")")
+        remoteVideoView.setRemoteVideoTrack(remoteVideoTrack)
+
+        let hasRemoteVideo = remoteVideoTrack != nil
+        remoteVideoContainerView.isHidden = !hasRemoteVideo
+        avatarView.isHidden = hasRemoteVideo
+        titleBelowAvatarConstraint?.isActive = !hasRemoteVideo
+        titleBelowVideoConstraint?.isActive = hasRemoteVideo
+
+        UIView.animate(
+            withDuration: 0.18,
+            delay: 0,
+            options: [.allowUserInteraction, .beginFromCurrentState, .curveEaseOut]
+        ) {
+            self.view.layoutIfNeeded()
+        }
     }
 
     func setStatus(_ status: String, isBusy: Bool) {

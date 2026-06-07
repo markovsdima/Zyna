@@ -64,6 +64,8 @@ public enum MatrixRTCLiveKitRoomSessionEvent: Equatable, Sendable {
     case remoteTrackUnpublished(participant: MatrixRTCLiveKitParticipantInfo, publication: MatrixRTCLiveKitTrackPublicationInfo)
     case remoteTrackSubscribed(participant: MatrixRTCLiveKitParticipantInfo, publication: MatrixRTCLiveKitTrackPublicationInfo)
     case remoteTrackUnsubscribed(participant: MatrixRTCLiveKitParticipantInfo, publication: MatrixRTCLiveKitTrackPublicationInfo)
+    case remoteVideoTrackSubscribed(participant: MatrixRTCLiveKitParticipantInfo, publication: MatrixRTCLiveKitTrackPublicationInfo, videoTrack: MatrixRTCLiveKitRemoteVideoTrack)
+    case remoteVideoTrackUnsubscribed(participant: MatrixRTCLiveKitParticipantInfo, publication: MatrixRTCLiveKitTrackPublicationInfo)
     case remoteTrackSubscriptionFailed(participant: MatrixRTCLiveKitParticipantInfo, trackSid: String, error: String)
     case trackMutedChanged(participant: MatrixRTCLiveKitParticipantInfo, publication: MatrixRTCLiveKitTrackPublicationInfo, isMuted: Bool)
     case remoteTrackStreamStateChanged(participant: MatrixRTCLiveKitParticipantInfo, publication: MatrixRTCLiveKitTrackPublicationInfo, state: String)
@@ -304,16 +306,37 @@ private final class MatrixRTCLiveKitRoomObserver: NSObject, RoomDelegate, @unche
     }
 
     func room(_ room: Room, participant: RemoteParticipant, didSubscribeTrack publication: RemoteTrackPublication) {
+        let participantInfo = MatrixRTCLiveKitParticipantInfo(participant: participant)
+        let publicationInfo = MatrixRTCLiveKitTrackPublicationInfo(publication: publication)
         onEvent?(.remoteTrackSubscribed(
-            participant: .init(participant: participant),
-            publication: .init(publication: publication)
+            participant: participantInfo,
+            publication: publicationInfo
+        ))
+
+        guard let videoTrack = publication.track as? RemoteVideoTrack else { return }
+        onEvent?(.remoteVideoTrackSubscribed(
+            participant: participantInfo,
+            publication: publicationInfo,
+            videoTrack: .init(
+                participant: participant,
+                publication: publication,
+                videoTrack: videoTrack
+            )
         ))
     }
 
     func room(_ room: Room, participant: RemoteParticipant, didUnsubscribeTrack publication: RemoteTrackPublication) {
+        let participantInfo = MatrixRTCLiveKitParticipantInfo(participant: participant)
+        let publicationInfo = MatrixRTCLiveKitTrackPublicationInfo(publication: publication)
         onEvent?(.remoteTrackUnsubscribed(
-            participant: .init(participant: participant),
-            publication: .init(publication: publication)
+            participant: participantInfo,
+            publication: publicationInfo
+        ))
+
+        guard publicationInfo.kind.localizedCaseInsensitiveContains("video") else { return }
+        onEvent?(.remoteVideoTrackUnsubscribed(
+            participant: participantInfo,
+            publication: publicationInfo
         ))
     }
 
