@@ -38,6 +38,7 @@ struct NativeMatrixRTCCallStartResult: Sendable {
 
 final class NativeMatrixRTCCallService: @unchecked Sendable {
     static let shared = NativeMatrixRTCCallService()
+    private static let audioCallIntent = "audio"
 
     let stateSubject = CurrentValueSubject<NativeMatrixRTCCallServiceState, Never>(.idle)
 
@@ -103,7 +104,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 configuration: .init(
                     focusSelection: .oldestMembership,
                     fociPreferred: [discoveredTransport.transport],
-                    callIntent: "m.audio"
+                    callIntent: Self.audioCallIntent
                 ),
                 membershipClient: sessionMembershipClient,
                 keyTransportFactory: { identity in
@@ -123,6 +124,8 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             matrixRTCSession = session
 
             let joinResult = try await session.join()
+            try Task.checkCancellation()
+            await sendCallNotificationIfNeeded(room: room, joinResult: joinResult)
             try Task.checkCancellation()
             try await liveKit.connect(sfuConfig: sfuConfig, publishAudio: true)
             try Task.checkCancellation()
@@ -250,6 +253,30 @@ private extension NativeMatrixRTCCallService {
         withLock { activeCall }
     }
 
+    func sendCallNotificationIfNeeded(
+        room: Room,
+        joinResult: MatrixRTCSessionJoinResult
+    ) async {
+        guard Self.shouldSendCallNotification(
+            ownMembership: joinResult.ownMembership,
+            memberships: joinResult.memberships
+        ) else {
+            return
+        }
+
+        do {
+            let result = try await MatrixRustSDKRTCCallNotificationClient(room: room).sendCallNotification(
+                parentEventId: joinResult.ownMembership.eventId,
+                slot: joinResult.ownMembership.slot,
+                notificationType: .ring,
+                callIntent: Self.audioCallIntent
+            )
+            log("Sent MatrixRTC call notification for room \(room.id()) parent=\(joinResult.ownMembership.eventId) notification=\(result.sentNotification) notificationEventId=\(result.notificationEventId ?? "nil") legacy=\(result.sentLegacyFallback) legacyEventId=\(result.legacyFallbackEventId ?? "nil") legacyCallId=\(joinResult.ownMembership.slot.id)")
+        } catch {
+            log("Failed sending MatrixRTC call notification for room \(room.id()): \(error)")
+        }
+    }
+
     func scheduleActiveMembershipRefresh(reason: String) {
         let call = withLock { activeCall }
         guard let call else { return }
@@ -326,6 +353,17 @@ private extension NativeMatrixRTCCallService {
             deviceId: deviceId
         )
         return .init(userId: userId, deviceId: deviceId, memberId: memberId)
+    }
+
+    static func shouldSendCallNotification(
+        ownMembership: MatrixRTCCallMembership,
+        memberships: [MatrixRTCCallMembership]
+    ) -> Bool {
+        !memberships.contains { membership in
+            membership.userId != ownMembership.userId
+                || membership.deviceId != ownMembership.deviceId
+                || membership.memberId != ownMembership.memberId
+        }
     }
 
     static func membershipRefreshReason(for event: MatrixRTCLiveKitRoomSessionEvent) -> String? {

@@ -11,7 +11,7 @@ import MatrixRustSDK
 import PushKit
 import UIKit
 
-private let logElementCallKit = ScopedLog(.call, prefix: "[ElementCallKit]")
+private let logElementCallKit = ScopedLog(.call, prefix: "[ElementCallKit][matrixrtc]")
 
 enum ElementCallKitAction {
     case receivedIncomingCallRequest
@@ -305,6 +305,8 @@ extension ElementCallKitService: PKPushRegistryDelegate {
         for type: PKPushType,
         completion: @escaping () -> Void
     ) {
+        logElementCallKit("Received PushKit payload type=\(type.rawValue) keys=\(payload.dictionaryPayload.keys.map { String(describing: $0) }.sorted())")
+
         guard type == .voIP else {
             completion()
             return

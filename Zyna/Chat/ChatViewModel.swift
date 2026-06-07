@@ -13,6 +13,7 @@ private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
 private let timelineHealthLog = ScopedLog(.database, prefix: "[TimelineHealth]")
+private let logMatrixRTCChat = ScopedLog(.call, prefix: "[matrixrtc-chat]")
 
 private protocol OutgoingOutboxFailureEvent {
     var roomId: String { get }
@@ -83,6 +84,11 @@ final class ChatViewModel {
     struct ActiveRoomCallState: Equatable {
         var isActive = false
         var participantCount = 0
+    }
+
+    private struct MatrixRTCRingOverride {
+        let eventId: String
+        let expiresAt: Date
     }
 
     private struct RedactionTransitionCandidate {
@@ -209,6 +215,8 @@ final class ChatViewModel {
     private var sendPermissionTask: Task<Void, Never>?
     private var pinnedMessagesTask: Task<Void, Never>?
     private var roomInfoSubscription: TaskHandle?
+    private var matrixRTCRingOverride: MatrixRTCRingOverride?
+    private var matrixRTCRingExpiryWorkItem: DispatchWorkItem?
     private var currentMatrixClientState = MatrixClientService.shared.state
     private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
     private var canSendRoomMessages = true
@@ -280,6 +288,7 @@ final class ChatViewModel {
         roomResolutionTask?.cancel()
         sendPermissionTask?.cancel()
         pinnedMessagesTask?.cancel()
+        matrixRTCRingExpiryWorkItem?.cancel()
     }
 
     private func bindCommonServices() {
@@ -313,7 +322,54 @@ final class ChatViewModel {
 
         bindOutgoingUpdates()
         bindWindow()
+        bindMatrixRTCCallNotifications()
         refreshComposerSendPermission()
+    }
+
+    private func bindMatrixRTCCallNotifications() {
+        CallNotificationListener.matrixRTCIncomingCallSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                self?.handleIncomingMatrixRTCCallNotification(notification)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func handleIncomingMatrixRTCCallNotification(_ notification: IncomingMatrixRTCCallNotification) {
+        guard notification.roomId == roomId else { return }
+        guard notification.expiresAt > Date() else { return }
+
+        matrixRTCRingOverride = MatrixRTCRingOverride(
+            eventId: notification.eventId,
+            expiresAt: notification.expiresAt
+        )
+        logMatrixRTCChat("Received MatrixRTC ring for open chat room=\(roomId) event=\(notification.eventId)")
+        applyActiveRoomCallState(mergedActiveRoomCallState(activeRoomCallState))
+        scheduleMatrixRTCRingOverrideExpiry(notification)
+    }
+
+    private func scheduleMatrixRTCRingOverrideExpiry(_ notification: IncomingMatrixRTCCallNotification) {
+        matrixRTCRingExpiryWorkItem?.cancel()
+
+        let eventId = notification.eventId
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.matrixRTCRingOverride?.eventId == eventId
+            else { return }
+
+            self.matrixRTCRingOverride = nil
+            logMatrixRTCChat("Expired MatrixRTC ring override room=\(self.roomId) event=\(eventId)")
+            if let room = self.room {
+                self.refreshActiveRoomCallState(room)
+            } else {
+                self.applyActiveRoomCallState(ActiveRoomCallState())
+            }
+        }
+        matrixRTCRingExpiryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0, notification.expiresAt.timeIntervalSinceNow),
+            execute: workItem
+        )
     }
 
     private func bindOutgoingUpdates() {
@@ -553,14 +609,14 @@ final class ChatViewModel {
     }
 
     private func refreshActiveRoomCallState(_ room: Room) {
-        activeRoomCallState = ActiveRoomCallState(
+        applyActiveRoomCallState(mergedActiveRoomCallState(ActiveRoomCallState(
             isActive: room.hasActiveRoomCall(),
             participantCount: activeRoomCallState.participantCount
-        )
+        )))
     }
 
     private func updateActiveRoomCallState(from info: RoomInfo) {
-        applyActiveRoomCallState(Self.activeRoomCallState(from: info))
+        applyActiveRoomCallState(mergedActiveRoomCallState(Self.activeRoomCallState(from: info)))
     }
 
     private static func activeRoomCallState(from info: RoomInfo) -> ActiveRoomCallState {
@@ -573,6 +629,19 @@ final class ChatViewModel {
     private func applyActiveRoomCallState(_ state: ActiveRoomCallState) {
         guard activeRoomCallState != state else { return }
         activeRoomCallState = state
+    }
+
+    private func mergedActiveRoomCallState(_ state: ActiveRoomCallState) -> ActiveRoomCallState {
+        guard let ringOverride = matrixRTCRingOverride else { return state }
+        guard ringOverride.expiresAt > Date() else {
+            matrixRTCRingOverride = nil
+            return state
+        }
+
+        return ActiveRoomCallState(
+            isActive: true,
+            participantCount: max(1, state.participantCount)
+        )
     }
 
     private func updatePinnedMessages(

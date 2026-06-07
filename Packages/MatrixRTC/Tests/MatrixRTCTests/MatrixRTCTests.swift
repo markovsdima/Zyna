@@ -30,6 +30,38 @@ import Testing
     #expect(decoded.sentTimestamp == 123_456)
 }
 
+@Test func encodesCallNotificationContent() throws {
+    let content = MatrixRTCCallNotificationContent(
+        parentEventId: "$membership",
+        notificationType: .ring,
+        senderTimestamp: 123_456,
+        callIntent: "audio"
+    )
+
+    let decoded = try MatrixRTCCallNotificationContent(contentJSON: content.jsonString())
+
+    #expect(decoded.mentions == .roomWide)
+    #expect(decoded.notificationType == .ring)
+    #expect(decoded.relation == .reference(eventId: "$membership"))
+    #expect(decoded.senderTimestamp == 123_456)
+    #expect(decoded.lifetime == 30_000)
+    #expect(decoded.callIntent == "audio")
+}
+
+@Test func encodesLegacyCallNotifyContent() throws {
+    let content = MatrixRTCLegacyCallNotifyContent(
+        slot: .matrixCallRoom,
+        notificationType: .notification
+    )
+
+    let decoded = try MatrixRTCLegacyCallNotifyContent(contentJSON: content.jsonString())
+
+    #expect(decoded.application == "m.call")
+    #expect(decoded.mentions == .roomWide)
+    #expect(decoded.notifyType == "notify")
+    #expect(decoded.callId == "ROOM")
+}
+
 @Test func sendsCallEncryptionKeysToExactTargets() async throws {
     let client = FakeCustomToDeviceClient()
     let transport = MatrixRTCToDeviceKeyTransport(
