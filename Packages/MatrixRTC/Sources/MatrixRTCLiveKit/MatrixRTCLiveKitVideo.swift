@@ -12,13 +12,22 @@ public final class MatrixRTCLiveKitLocalVideoTrack: @unchecked Sendable, Equatab
         "local:\(trackSid)"
     }
 
-    init(
-        publication: LocalTrackPublication,
-        videoTrack: LocalVideoTrack
+    private init(
+        trackSid: String,
+        trackName: String,
+        videoTrack: LocalVideoTrack?
     ) {
-        self.trackSid = publication.sid.stringValue
-        self.trackName = publication.name
+        self.trackSid = trackSid
+        self.trackName = trackName
         self.videoTrack = videoTrack
+    }
+
+    convenience init(publication: LocalTrackPublication, videoTrack: LocalVideoTrack) {
+        self.init(
+            trackSid: publication.sid.stringValue,
+            trackName: publication.name,
+            videoTrack: videoTrack
+        )
     }
 
     public static func == (
@@ -26,6 +35,19 @@ public final class MatrixRTCLiveKitLocalVideoTrack: @unchecked Sendable, Equatab
         rhs: MatrixRTCLiveKitLocalVideoTrack
     ) -> Bool {
         lhs.id == rhs.id
+    }
+}
+
+@_spi(Testing) public extension MatrixRTCLiveKitLocalVideoTrack {
+    static func testing(
+        trackSid: String,
+        trackName: String = ""
+    ) -> MatrixRTCLiveKitLocalVideoTrack {
+        MatrixRTCLiveKitLocalVideoTrack(
+            trackSid: trackSid,
+            trackName: trackName,
+            videoTrack: nil
+        )
     }
 }
 
@@ -41,16 +63,32 @@ public final class MatrixRTCLiveKitRemoteVideoTrack: @unchecked Sendable, Equata
         "\(participantIdentity ?? participantSid ?? "unknown"):\(trackSid)"
     }
 
-    init(
+    private init(
+        participantIdentity: String?,
+        participantSid: String?,
+        trackSid: String,
+        trackName: String,
+        videoTrack: RemoteVideoTrack?
+    ) {
+        self.participantIdentity = participantIdentity
+        self.participantSid = participantSid
+        self.trackSid = trackSid
+        self.trackName = trackName
+        self.videoTrack = videoTrack
+    }
+
+    convenience init(
         participant: RemoteParticipant,
         publication: RemoteTrackPublication,
         videoTrack: RemoteVideoTrack
     ) {
-        self.participantIdentity = participant.identity?.stringValue
-        self.participantSid = participant.sid?.stringValue
-        self.trackSid = publication.sid.stringValue
-        self.trackName = publication.name
-        self.videoTrack = videoTrack
+        self.init(
+            participantIdentity: participant.identity?.stringValue,
+            participantSid: participant.sid?.stringValue,
+            trackSid: publication.sid.stringValue,
+            trackName: publication.name,
+            videoTrack: videoTrack
+        )
     }
 
     public static func == (
@@ -58,6 +96,23 @@ public final class MatrixRTCLiveKitRemoteVideoTrack: @unchecked Sendable, Equata
         rhs: MatrixRTCLiveKitRemoteVideoTrack
     ) -> Bool {
         lhs.id == rhs.id
+    }
+}
+
+@_spi(Testing) public extension MatrixRTCLiveKitRemoteVideoTrack {
+    static func testing(
+        participantIdentity: String?,
+        participantSid: String? = nil,
+        trackSid: String,
+        trackName: String = ""
+    ) -> MatrixRTCLiveKitRemoteVideoTrack {
+        MatrixRTCLiveKitRemoteVideoTrack(
+            participantIdentity: participantIdentity,
+            participantSid: participantSid,
+            trackSid: trackSid,
+            trackName: trackName,
+            videoTrack: nil
+        )
     }
 }
 
