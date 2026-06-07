@@ -37,7 +37,7 @@ public final class MatrixRTCToDeviceKeyTransport {
     private let ownIdentity: MatrixRTCMembershipIdentity
     private let client: any MatrixRTCCustomToDeviceEncrypting
     private let sentTimestampProvider: @Sendable () -> Int64
-    private let onReceivedKey: ReceivedKeyHandler
+    private var onReceivedKey: ReceivedKeyHandler
     private var listenerToken: (any MatrixRTCCancellable)?
 
     public init(
@@ -47,7 +47,7 @@ public final class MatrixRTCToDeviceKeyTransport {
         sentTimestampProvider: @escaping @Sendable () -> Int64 = {
             Int64(Date().timeIntervalSince1970 * 1000)
         },
-        onReceivedKey: @escaping ReceivedKeyHandler
+        onReceivedKey: @escaping ReceivedKeyHandler = { _ in }
     ) {
         self.roomId = roomId
         self.ownIdentity = ownIdentity
@@ -58,6 +58,10 @@ public final class MatrixRTCToDeviceKeyTransport {
 
     deinit {
         stop()
+    }
+
+    public func setReceivedKeyHandler(_ onReceivedKey: @escaping ReceivedKeyHandler) {
+        self.onReceivedKey = onReceivedKey
     }
 
     public func start() {
