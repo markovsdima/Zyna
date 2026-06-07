@@ -388,6 +388,17 @@ private extension NativeMatrixRTCCallViewController {
 
     func handleStartFailure(_ error: Error) {
         log("Failed starting native MatrixRTC call in room \(roomID): \(error)")
+        if case NativeMatrixRTCCallServiceError.alreadyActive(let activeRoomId) = error,
+           activeRoomId == roomID {
+            setStatus("Finishing previous call...", isBusy: true)
+            updateControls(canToggleMedia: false, canHangUp: false)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.dismissOnce()
+            }
+            return
+        }
+
         setStatus("Could not start call", isBusy: false)
         updateControls(canToggleMedia: false, canHangUp: false)
 
@@ -398,6 +409,11 @@ private extension NativeMatrixRTCCallViewController {
 
     func updateConnectedStatus() {
         guard case .connected(let roomId) = callService.state, roomId == roomID else { return }
+        guard participantsSnapshot.remoteParticipantCount > 0 else {
+            setStatus("Calling...", isBusy: true)
+            return
+        }
+
         let baseStatus = isMuted
             ? "Microphone muted"
             : "Connected"

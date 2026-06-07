@@ -48,6 +48,8 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    // Local generation id used to ignore stale events from canceled join attempts.
+    private var currentCallAttemptID: UUID?
     private var activeCall: NativeMatrixRTCCall?
     private var membershipRefreshTask: Task<Void, Never>?
     private var participantStore = NativeMatrixRTCCallParticipantStore()
@@ -61,7 +63,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
         fallbackLiveKitServiceURL: String? = nil
     ) async throws -> NativeMatrixRTCCallStartResult {
         let roomId = room.id()
-        try beginJoining(roomId: roomId)
+        let attemptID = try beginJoining(roomId: roomId)
         resetParticipantState(roomId: roomId)
 
         var matrixRTCSession: MatrixRTCSession?
@@ -93,9 +95,10 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
 
             let liveKit = MatrixRTCLiveKitRoomSession(onEvent: { [weak self] event in
                 log("LiveKit \(Self.liveKitEventDescription(event))")
-                self?.handleLiveKitEvent(event)
+                self?.handleLiveKitEvent(event, attemptID: attemptID)
+                self?.handleLiveKitLifecycleEvent(event, attemptID: attemptID)
                 guard let reason = Self.membershipRefreshReason(for: event) else { return }
-                self?.scheduleActiveMembershipRefresh(reason: reason)
+                self?.scheduleActiveMembershipRefresh(reason: reason, attemptID: attemptID)
             })
             liveKitSession = liveKit
 
@@ -138,13 +141,23 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             try await liveKit.connect(sfuConfig: sfuConfig, publishAudio: true)
             try Task.checkCancellation()
 
-            finishJoined(.init(
+            let call = NativeMatrixRTCCall(
+                attemptID: attemptID,
                 roomId: roomId,
                 matrixRTCSession: session,
                 liveKitSession: liveKit,
                 discoveredTransport: discoveredTransport,
                 sfuConfig: sfuConfig
-            ))
+            )
+            guard finishJoined(call) else {
+                liveKitSession = nil
+                matrixRTCSession = nil
+                await liveKit.disconnect()
+                _ = try? await session.leave()
+                audioSessionController.deactivateAfterCall()
+                log("Ignored stale MatrixRTC join completion in room \(roomId)")
+                throw CancellationError()
+            }
 
             log("Joined native MatrixRTC audio call in room \(roomId)")
             return .init(
@@ -166,7 +179,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 _ = try? await matrixRTCSession.leave()
             }
             audioSessionController.deactivateAfterCall()
-            finishFailed()
+            finishFailed(attemptID: attemptID)
             throw error
         }
     }
@@ -217,77 +230,194 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
     }
 
     func leaveActiveCall() async throws {
-        guard let call = beginLeaving() else {
-            return
-        }
+        _ = try await leaveActiveCall(reason: "user")
+    }
 
-        await call.liveKitSession.disconnect()
-        defer {
-            audioSessionController.deactivateAfterCall()
-            finishLeft()
+    @discardableResult
+    func endActiveCall(reason: String) async -> Bool {
+        do {
+            return try await leaveActiveCall(reason: reason)
+        } catch {
+            log("Failed ending native MatrixRTC call reason=\(reason): \(error)")
+            return false
         }
-
-        _ = try await call.matrixRTCSession.leave()
-        log("Left native MatrixRTC call in room \(call.roomId)")
     }
 }
 
 private extension NativeMatrixRTCCallService {
-    func beginJoining(roomId: String) throws {
+    func handleLiveKitLifecycleEvent(_ event: MatrixRTCLiveKitRoomSessionEvent, attemptID: UUID) {
+        switch event {
+        case .disconnected(let error):
+            scheduleActiveCallEnd(reason: "liveKitDisconnected(\(error ?? "nil"))", attemptID: attemptID)
+        case .failedToConnect(let error):
+            scheduleActiveCallEnd(reason: "liveKitFailedToConnect(\(error ?? "nil"))", attemptID: attemptID)
+        default:
+            break
+        }
+    }
+
+    func scheduleActiveCallEnd(reason: String, attemptID: UUID) {
+        guard shouldEndActiveCallForLifecycleEvent(attemptID: attemptID) else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.endActiveCall(reason: reason, attemptID: attemptID)
+        }
+    }
+
+    func shouldEndActiveCallForLifecycleEvent(attemptID: UUID) -> Bool {
+        withLock {
+            guard activeCall?.attemptID == attemptID else { return false }
+            switch stateSubject.value {
+            case .connected:
+                return true
+            case .idle, .joining, .leaving:
+                return false
+            }
+        }
+    }
+
+    @discardableResult
+    func endActiveCall(reason: String, attemptID: UUID) async -> Bool {
+        do {
+            return try await leaveActiveCall(reason: reason, attemptID: attemptID)
+        } catch {
+            log("Failed ending native MatrixRTC call reason=\(reason): \(error)")
+            return false
+        }
+    }
+
+    @discardableResult
+    func leaveActiveCall(reason: String) async throws -> Bool {
+        guard let call = beginLeaving(reason: reason) else {
+            return false
+        }
+
+        return try await leave(call: call, reason: reason)
+    }
+
+    @discardableResult
+    func leaveActiveCall(reason: String, attemptID: UUID) async throws -> Bool {
+        guard let call = beginLeaving(reason: reason, attemptID: attemptID) else {
+            return false
+        }
+
+        return try await leave(call: call, reason: reason)
+    }
+
+    @discardableResult
+    func leave(call: NativeMatrixRTCCall, reason: String) async throws -> Bool {
+        await call.liveKitSession.disconnect()
+        defer {
+            audioSessionController.deactivateAfterCall()
+            finishLeft(attemptID: call.attemptID)
+        }
+
+        _ = try await call.matrixRTCSession.leave()
+        log("Left native MatrixRTC call in room \(call.roomId) reason=\(reason)")
+        return true
+    }
+
+    func beginJoining(roomId: String) throws -> UUID {
         try withLock {
             if let activeCall {
                 throw NativeMatrixRTCCallServiceError.alreadyActive(roomId: activeCall.roomId)
             }
 
+            if currentCallAttemptID != nil {
+                throw NativeMatrixRTCCallServiceError.alreadyActive(roomId: stateSubject.value.roomId ?? roomId)
+            }
+
             switch stateSubject.value {
             case .idle:
+                let attemptID = UUID()
+                currentCallAttemptID = attemptID
                 stateSubject.send(.joining(roomId: roomId))
+                return attemptID
             case .joining(let roomId), .connected(let roomId), .leaving(let roomId):
                 throw NativeMatrixRTCCallServiceError.alreadyActive(roomId: roomId)
             }
         }
     }
 
-    func finishJoined(_ call: NativeMatrixRTCCall) {
+    func finishJoined(_ call: NativeMatrixRTCCall) -> Bool {
         withLock {
+            guard currentCallAttemptID == call.attemptID else { return false }
+            guard case .joining = stateSubject.value else { return false }
             activeCall = call
             stateSubject.send(.connected(roomId: call.roomId))
+            return true
         }
     }
 
-    func finishFailed() {
-        let snapshot = withLock {
+    func finishFailed(attemptID: UUID) {
+        let snapshot: NativeMatrixRTCCallParticipantsSnapshot? = withLock {
+            guard currentCallAttemptID == attemptID else { return nil }
             membershipRefreshTask?.cancel()
             membershipRefreshTask = nil
+            currentCallAttemptID = nil
             activeCall = nil
             stateSubject.send(.idle)
             return participantStore.reset(roomId: nil)
         }
+        guard let snapshot else { return }
         participantsSubject.send(snapshot)
     }
 
-    func beginLeaving() -> NativeMatrixRTCCall? {
+    func beginLeaving(reason: String) -> NativeMatrixRTCCall? {
+        beginLeaving(reason: reason, attemptID: nil)
+    }
+
+    func beginLeaving(reason: String, attemptID: UUID?) -> NativeMatrixRTCCall? {
         withLock {
-            guard let activeCall else {
-                stateSubject.send(.idle)
+            if let attemptID, currentCallAttemptID != attemptID {
                 return nil
             }
 
-            membershipRefreshTask?.cancel()
-            membershipRefreshTask = nil
-            stateSubject.send(.leaving(roomId: activeCall.roomId))
-            return activeCall
+            guard let activeCall else {
+                guard currentCallAttemptID != nil else {
+                    stateSubject.send(.idle)
+                    return nil
+                }
+
+                switch stateSubject.value {
+                case .joining(let roomId):
+                    membershipRefreshTask?.cancel()
+                    membershipRefreshTask = nil
+                    stateSubject.send(.leaving(roomId: roomId))
+                    log("Ending native MatrixRTC call in room \(roomId) reason=\(reason)")
+                case .idle:
+                    stateSubject.send(.idle)
+                case .connected(let roomId), .leaving(let roomId):
+                    stateSubject.send(.leaving(roomId: roomId))
+                }
+                return nil
+            }
+
+            switch stateSubject.value {
+            case .leaving:
+                return nil
+            case .idle, .joining, .connected:
+                membershipRefreshTask?.cancel()
+                membershipRefreshTask = nil
+                stateSubject.send(.leaving(roomId: activeCall.roomId))
+                log("Ending native MatrixRTC call in room \(activeCall.roomId) reason=\(reason)")
+                return activeCall
+            }
         }
     }
 
-    func finishLeft() {
-        let snapshot = withLock {
+    func finishLeft(attemptID: UUID) {
+        let snapshot: NativeMatrixRTCCallParticipantsSnapshot? = withLock {
+            guard currentCallAttemptID == attemptID else { return nil }
             membershipRefreshTask?.cancel()
             membershipRefreshTask = nil
+            currentCallAttemptID = nil
             activeCall = nil
             stateSubject.send(.idle)
             return participantStore.reset(roomId: nil)
         }
+        guard let snapshot else { return }
         participantsSubject.send(snapshot)
     }
 
@@ -309,8 +439,9 @@ private extension NativeMatrixRTCCallService {
         participantsSubject.send(snapshot)
     }
 
-    func handleLiveKitEvent(_ event: MatrixRTCLiveKitRoomSessionEvent) {
+    func handleLiveKitEvent(_ event: MatrixRTCLiveKitRoomSessionEvent, attemptID: UUID) {
         let snapshot: NativeMatrixRTCCallParticipantsSnapshot? = withLock {
+            guard currentCallAttemptID == attemptID else { return nil }
             guard participantStore.snapshot.roomId != nil else { return nil }
             return participantStore.apply(event)
         }
@@ -342,8 +473,8 @@ private extension NativeMatrixRTCCallService {
         }
     }
 
-    func scheduleActiveMembershipRefresh(reason: String) {
-        let call = withLock { activeCall }
+    func scheduleActiveMembershipRefresh(reason: String, attemptID: UUID) {
+        let call = withLock { activeCall?.attemptID == attemptID ? activeCall : nil }
         guard let call else { return }
 
         let refreshTask = Task { [weak self] in
@@ -382,7 +513,7 @@ private extension NativeMatrixRTCCallService {
             }
 
             guard !Task.isCancelled else { return }
-            guard currentActiveCall()?.roomId == call.roomId else { return }
+            guard currentActiveCall()?.attemptID == call.attemptID else { return }
 
             do {
                 let result = try await call.matrixRTCSession.refreshMemberships()
@@ -507,9 +638,21 @@ private extension NativeMatrixRTCCallService {
 }
 
 private struct NativeMatrixRTCCall {
+    let attemptID: UUID
     let roomId: String
     let matrixRTCSession: MatrixRTCSession
     let liveKitSession: MatrixRTCLiveKitRoomSession
     let discoveredTransport: MatrixRTCLiveKitDiscoveredTransport
     let sfuConfig: MatrixRTCLiveKitSFUConfig
+}
+
+private extension NativeMatrixRTCCallServiceState {
+    var roomId: String? {
+        switch self {
+        case .idle:
+            return nil
+        case .joining(let roomId), .connected(let roomId), .leaving(let roomId):
+            return roomId
+        }
+    }
 }
