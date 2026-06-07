@@ -7635,12 +7635,20 @@
         }
       }
     },
+    "Call" : {},
     "Call Backend" : {},
-    "Could Not Start Native Call" : {},
+    "Connected" : {},
+    "Connecting..." : {},
+    "Could not start call" : {},
     "Element Call Web" : {},
+    "End Call" : {},
+    "Leaving..." : {},
     "Minimize" : {},
+    "Microphone muted" : {},
+    "Mute" : {},
     "Native MatrixRTC" : {},
     "Selected" : {},
+    "Unmute" : {},
     "Zyna Direct" : {}
   },
   "version" : "1.1"

@@ -47,6 +47,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
 
     private let lock = NSLock()
     private var activeCall: NativeMatrixRTCCall?
+    private var membershipRefreshTask: Task<Void, Never>?
 
     private init() {}
 
@@ -65,6 +66,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             guard let client = MatrixClientService.shared.client else {
                 throw NativeMatrixRTCCallServiceError.missingMatrixClient
             }
+            try Task.checkCancellation()
 
             let focusClient = MatrixRustSDKRTCLiveKitFocusClient(client: client)
             guard let discoveredTransport = try await focusClient.discoverPreferredTransport(
@@ -72,6 +74,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             ) else {
                 throw NativeMatrixRTCCallServiceError.missingLiveKitTransport
             }
+            try Task.checkCancellation()
 
             let ownIdentity = try Self.legacyMembershipIdentity(client: client)
             let sfuConfig = try await focusClient.sfuConfig(
@@ -80,9 +83,12 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 roomId: roomId,
                 endpointVersion: .legacy
             )
+            try Task.checkCancellation()
 
-            let liveKit = MatrixRTCLiveKitRoomSession(onEvent: { event in
+            let liveKit = MatrixRTCLiveKitRoomSession(onEvent: { [weak self] event in
                 log("LiveKit \(Self.liveKitEventDescription(event))")
+                guard let reason = Self.membershipRefreshReason(for: event) else { return }
+                self?.scheduleActiveMembershipRefresh(reason: reason)
             })
             liveKitSession = liveKit
 
@@ -117,7 +123,9 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             matrixRTCSession = session
 
             let joinResult = try await session.join()
+            try Task.checkCancellation()
             try await liveKit.connect(sfuConfig: sfuConfig, publishAudio: true)
+            try Task.checkCancellation()
 
             finishJoined(.init(
                 roomId: roomId,
@@ -208,6 +216,8 @@ private extension NativeMatrixRTCCallService {
 
     func finishFailed() {
         withLock {
+            membershipRefreshTask?.cancel()
+            membershipRefreshTask = nil
             activeCall = nil
             stateSubject.send(.idle)
         }
@@ -220,6 +230,8 @@ private extension NativeMatrixRTCCallService {
                 return nil
             }
 
+            membershipRefreshTask?.cancel()
+            membershipRefreshTask = nil
             stateSubject.send(.leaving(roomId: activeCall.roomId))
             return activeCall
         }
@@ -227,6 +239,8 @@ private extension NativeMatrixRTCCallService {
 
     func finishLeft() {
         withLock {
+            membershipRefreshTask?.cancel()
+            membershipRefreshTask = nil
             activeCall = nil
             stateSubject.send(.idle)
         }
@@ -234,6 +248,68 @@ private extension NativeMatrixRTCCallService {
 
     func currentActiveCall() -> NativeMatrixRTCCall? {
         withLock { activeCall }
+    }
+
+    func scheduleActiveMembershipRefresh(reason: String) {
+        let call = withLock { activeCall }
+        guard let call else { return }
+
+        let refreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshActiveMembershipsAfterRemoteJoin(
+                call: call,
+                reason: reason
+            )
+        }
+
+        withLock {
+            membershipRefreshTask?.cancel()
+            membershipRefreshTask = refreshTask
+        }
+    }
+
+    func refreshActiveMembershipsAfterRemoteJoin(
+        call: NativeMatrixRTCCall,
+        reason: String
+    ) async {
+        let delaysNanoseconds: [UInt64] = [
+            0,
+            1_000_000_000,
+            2_000_000_000,
+            4_000_000_000
+        ]
+
+        for attemptIndex in delaysNanoseconds.indices {
+            let delay = delaysNanoseconds[attemptIndex]
+            if delay > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+            }
+
+            guard !Task.isCancelled else { return }
+            guard currentActiveCall()?.roomId == call.roomId else { return }
+
+            do {
+                let result = try await call.matrixRTCSession.refreshMemberships()
+                let sharedCount = result.keyShareResult.sharedWith.count
+                let failureCount = result.keyShareResult.failures.count
+                log(
+                    "Refreshed MatrixRTC memberships reason=\(reason) attempt=\(attemptIndex + 1) memberships=\(result.memberships.count) sharedKeys=\(sharedCount) failures=\(failureCount)"
+                )
+
+                if sharedCount > 0 {
+                    return
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                log(
+                    "Failed refreshing MatrixRTC memberships reason=\(reason) attempt=\(attemptIndex + 1): \(error)"
+                )
+            }
+        }
     }
 
     func withLock<T>(_ operation: () throws -> T) rethrows -> T {
@@ -250,6 +326,19 @@ private extension NativeMatrixRTCCallService {
             deviceId: deviceId
         )
         return .init(userId: userId, deviceId: deviceId, memberId: memberId)
+    }
+
+    static func membershipRefreshReason(for event: MatrixRTCLiveKitRoomSessionEvent) -> String? {
+        switch event {
+        case .remoteParticipantJoined:
+            return "remoteParticipantJoined"
+        case .remoteTrackPublished:
+            return "remoteTrackPublished"
+        case .remoteTrackSubscribed:
+            return "remoteTrackSubscribed"
+        default:
+            return nil
+        }
     }
 
     static func liveKitEventDescription(_ event: MatrixRTCLiveKitRoomSessionEvent) -> String {

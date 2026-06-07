@@ -855,15 +855,10 @@ final class ChatsCoordinator {
     }
 
     private func startNativeMatrixRTCAudioCall(room: Room) {
-        Task { @MainActor [weak self] in
-            do {
-                _ = try await NativeMatrixRTCCallService.shared.startAudioCall(room: room)
-            } catch {
-                self?.presentSimpleAlert(
-                    title: String(localized: "Could Not Start Native Call"),
-                    message: String(describing: error)
-                )
-            }
-        }
+        NativeMatrixRTCCallPresentationManager.shared.present(
+            room: room,
+            roomDisplayName: room.displayName() ?? "Call",
+            from: navigationController
+        )
     }
 }
