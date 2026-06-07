@@ -149,6 +149,27 @@ public final class MatrixRTCMediaKeyManager: @unchecked Sendable {
         }
     }
 
+    public func reemitEncryptionKeys() {
+        let keys = withLock {
+            inboundKeys.values.flatMap { $0 }.sorted { lhs, rhs in
+                if lhs.membership.userId != rhs.membership.userId {
+                    return lhs.membership.userId < rhs.membership.userId
+                }
+                if lhs.membership.deviceId != rhs.membership.deviceId {
+                    return lhs.membership.deviceId < rhs.membership.deviceId
+                }
+                if lhs.membership.memberId != rhs.membership.memberId {
+                    return lhs.membership.memberId < rhs.membership.memberId
+                }
+                return lhs.keyIndex < rhs.keyIndex
+            }
+        }
+
+        for key in keys {
+            onKeyChanged(.init(key: key))
+        }
+    }
+
     @discardableResult
     public func ensureOutboundSession() -> MatrixRTCMediaKey {
         let result = withLock {

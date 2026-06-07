@@ -22,6 +22,36 @@ public struct MatrixRTCCallMembership: Equatable, Sendable {
     public let focusSelection: String?
     public let callIntent: String?
 
+    public init(
+        kind: Kind,
+        eventId: String,
+        eventType: String,
+        stateKey: String?,
+        sender: String,
+        identity: MatrixRTCMembershipIdentity,
+        slot: MatrixRTCSlotDescription,
+        createdTimestamp: Int64,
+        absoluteExpiryTimestamp: Int64?,
+        rtcBackendIdentity: String,
+        transports: [MatrixRTCTransport],
+        focusSelection: String?,
+        callIntent: String?
+    ) {
+        self.kind = kind
+        self.eventId = eventId
+        self.eventType = eventType
+        self.stateKey = stateKey
+        self.sender = sender
+        self.identity = identity
+        self.slot = slot
+        self.createdTimestamp = createdTimestamp
+        self.absoluteExpiryTimestamp = absoluteExpiryTimestamp
+        self.rtcBackendIdentity = rtcBackendIdentity
+        self.transports = transports
+        self.focusSelection = focusSelection
+        self.callIntent = callIntent
+    }
+
     public var userId: String {
         identity.userId
     }
