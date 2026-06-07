@@ -443,6 +443,10 @@ private extension NativeMatrixRTCCallService {
             return "localTrackPublished \(trackDescription(publication))"
         case .localTrackUnpublished(let publication):
             return "localTrackUnpublished \(trackDescription(publication))"
+        case .localVideoTrackPublished(let publication, let videoTrack):
+            return "localVideoTrackPublished \(trackDescription(publication)) videoTrack=\(videoTrack.id)"
+        case .localVideoTrackUnpublished(let publication):
+            return "localVideoTrackUnpublished \(trackDescription(publication))"
         case .localTrackSubscribedByRemote(let publication):
             return "localTrackSubscribedByRemote \(trackDescription(publication))"
         case .remoteParticipantJoined(let participant):

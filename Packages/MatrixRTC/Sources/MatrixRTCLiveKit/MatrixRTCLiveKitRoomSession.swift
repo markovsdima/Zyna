@@ -58,6 +58,8 @@ public enum MatrixRTCLiveKitRoomSessionEvent: Equatable, Sendable {
     case failedToConnect(error: String?)
     case localTrackPublished(MatrixRTCLiveKitTrackPublicationInfo)
     case localTrackUnpublished(MatrixRTCLiveKitTrackPublicationInfo)
+    case localVideoTrackPublished(publication: MatrixRTCLiveKitTrackPublicationInfo, videoTrack: MatrixRTCLiveKitLocalVideoTrack)
+    case localVideoTrackUnpublished(MatrixRTCLiveKitTrackPublicationInfo)
     case localTrackSubscribedByRemote(MatrixRTCLiveKitTrackPublicationInfo)
     case remoteParticipantJoined(MatrixRTCLiveKitParticipantInfo)
     case remoteParticipantLeft(MatrixRTCLiveKitParticipantInfo)
@@ -326,11 +328,25 @@ private final class MatrixRTCLiveKitRoomObserver: NSObject, RoomDelegate, @unche
     }
 
     func room(_ room: Room, participant: LocalParticipant, didPublishTrack publication: LocalTrackPublication) {
-        onEvent?(.localTrackPublished(.init(publication: publication)))
+        let publicationInfo = MatrixRTCLiveKitTrackPublicationInfo(publication: publication)
+        onEvent?(.localTrackPublished(publicationInfo))
+
+        guard let videoTrack = publication.track as? LocalVideoTrack else { return }
+        onEvent?(.localVideoTrackPublished(
+            publication: publicationInfo,
+            videoTrack: .init(
+                publication: publication,
+                videoTrack: videoTrack
+            )
+        ))
     }
 
     func room(_ room: Room, participant: LocalParticipant, didUnpublishTrack publication: LocalTrackPublication) {
-        onEvent?(.localTrackUnpublished(.init(publication: publication)))
+        let publicationInfo = MatrixRTCLiveKitTrackPublicationInfo(publication: publication)
+        onEvent?(.localTrackUnpublished(publicationInfo))
+
+        guard publicationInfo.kind.localizedCaseInsensitiveContains("video") else { return }
+        onEvent?(.localVideoTrackUnpublished(publicationInfo))
     }
 
     func room(_ room: Room, participant: LocalParticipant, remoteDidSubscribeTrack publication: LocalTrackPublication) {

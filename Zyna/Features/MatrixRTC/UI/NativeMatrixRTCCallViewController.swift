@@ -20,7 +20,9 @@ final class NativeMatrixRTCCallViewController: UIViewController {
     private let callService: NativeMatrixRTCCallService
 
     private let remoteVideoContainerView = UIView()
-    private let remoteVideoView = MatrixRTCLiveKitVideoView()
+    private let remoteVideoGridView = NativeMatrixRTCRemoteVideoGridView()
+    private let localVideoContainerView = UIView()
+    private let localVideoView = MatrixRTCLiveKitVideoView()
     private let avatarView = UIView()
     private let avatarImageView = UIImageView()
     private let titleLabel = UILabel()
@@ -41,9 +43,12 @@ final class NativeMatrixRTCCallViewController: UIViewController {
     private var isEndingCall = false
     private var didRequestDismiss = false
     private var participantsSnapshot = NativeMatrixRTCCallParticipantsSnapshot.empty
-    private var currentRemoteVideoTrackId: String?
+    private var currentRemoteVideoTrackIds: [String] = []
+    private var currentLocalVideoTrackId: String?
     private var titleBelowAvatarConstraint: NSLayoutConstraint?
     private var titleBelowVideoConstraint: NSLayoutConstraint?
+    private var localVideoFullConstraints: [NSLayoutConstraint] = []
+    private var localVideoPreviewConstraints: [NSLayoutConstraint] = []
     private var isMuted = false {
         didSet {
             updateMuteButton()
@@ -97,9 +102,21 @@ private extension NativeMatrixRTCCallViewController {
         remoteVideoContainerView.clipsToBounds = true
         remoteVideoContainerView.isHidden = true
 
-        remoteVideoView.translatesAutoresizingMaskIntoConstraints = false
-        remoteVideoView.layoutMode = .fit
-        remoteVideoView.backgroundColor = .black
+        remoteVideoGridView.translatesAutoresizingMaskIntoConstraints = false
+        remoteVideoGridView.backgroundColor = .black
+
+        localVideoContainerView.translatesAutoresizingMaskIntoConstraints = false
+        localVideoContainerView.backgroundColor = .black
+        localVideoContainerView.layer.cornerRadius = 8
+        localVideoContainerView.layer.borderColor = UIColor.separator.cgColor
+        localVideoContainerView.layer.borderWidth = 1
+        localVideoContainerView.clipsToBounds = true
+        localVideoContainerView.isHidden = true
+
+        localVideoView.translatesAutoresizingMaskIntoConstraints = false
+        localVideoView.layoutMode = .fit
+        localVideoView.mirrorMode = .auto
+        localVideoView.backgroundColor = .black
 
         avatarView.translatesAutoresizingMaskIntoConstraints = false
         avatarView.backgroundColor = .secondarySystemFill
@@ -180,7 +197,9 @@ private extension NativeMatrixRTCCallViewController {
         endCallButton.addTarget(self, action: #selector(endCallTapped), for: .touchUpInside)
 
         view.addSubview(remoteVideoContainerView)
-        remoteVideoContainerView.addSubview(remoteVideoView)
+        remoteVideoContainerView.addSubview(remoteVideoGridView)
+        remoteVideoContainerView.addSubview(localVideoContainerView)
+        localVideoContainerView.addSubview(localVideoView)
         view.addSubview(avatarView)
         avatarView.addSubview(avatarImageView)
         view.addSubview(titleLabel)
@@ -202,6 +221,18 @@ private extension NativeMatrixRTCCallViewController {
             constant: 18
         )
         titleBelowVideoConstraint?.isActive = false
+        localVideoFullConstraints = [
+            localVideoContainerView.topAnchor.constraint(equalTo: remoteVideoContainerView.topAnchor),
+            localVideoContainerView.leadingAnchor.constraint(equalTo: remoteVideoContainerView.leadingAnchor),
+            localVideoContainerView.trailingAnchor.constraint(equalTo: remoteVideoContainerView.trailingAnchor),
+            localVideoContainerView.bottomAnchor.constraint(equalTo: remoteVideoContainerView.bottomAnchor)
+        ]
+        localVideoPreviewConstraints = [
+            localVideoContainerView.trailingAnchor.constraint(equalTo: remoteVideoContainerView.trailingAnchor, constant: -10),
+            localVideoContainerView.bottomAnchor.constraint(equalTo: remoteVideoContainerView.bottomAnchor, constant: -10),
+            localVideoContainerView.widthAnchor.constraint(equalToConstant: 112),
+            localVideoContainerView.heightAnchor.constraint(equalTo: localVideoContainerView.widthAnchor, multiplier: 4.0 / 3.0)
+        ]
 
         NSLayoutConstraint.activate([
             remoteVideoContainerView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
@@ -209,10 +240,15 @@ private extension NativeMatrixRTCCallViewController {
             remoteVideoContainerView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             remoteVideoContainerView.heightAnchor.constraint(equalTo: remoteVideoContainerView.widthAnchor, multiplier: 9.0 / 16.0),
 
-            remoteVideoView.topAnchor.constraint(equalTo: remoteVideoContainerView.topAnchor),
-            remoteVideoView.leadingAnchor.constraint(equalTo: remoteVideoContainerView.leadingAnchor),
-            remoteVideoView.trailingAnchor.constraint(equalTo: remoteVideoContainerView.trailingAnchor),
-            remoteVideoView.bottomAnchor.constraint(equalTo: remoteVideoContainerView.bottomAnchor),
+            remoteVideoGridView.topAnchor.constraint(equalTo: remoteVideoContainerView.topAnchor),
+            remoteVideoGridView.leadingAnchor.constraint(equalTo: remoteVideoContainerView.leadingAnchor),
+            remoteVideoGridView.trailingAnchor.constraint(equalTo: remoteVideoContainerView.trailingAnchor),
+            remoteVideoGridView.bottomAnchor.constraint(equalTo: remoteVideoContainerView.bottomAnchor),
+
+            localVideoView.topAnchor.constraint(equalTo: localVideoContainerView.topAnchor),
+            localVideoView.leadingAnchor.constraint(equalTo: localVideoContainerView.leadingAnchor),
+            localVideoView.trailingAnchor.constraint(equalTo: localVideoContainerView.trailingAnchor),
+            localVideoView.bottomAnchor.constraint(equalTo: localVideoContainerView.bottomAnchor),
 
             avatarView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             avatarView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 96),
@@ -350,7 +386,10 @@ private extension NativeMatrixRTCCallViewController {
         }
 
         participantsSnapshot = snapshot
-        updateRemoteVideo(snapshot.primaryRemoteVideoTrack)
+        updateVideoSurface(
+            localVideoTrack: snapshot.localVideoTrack,
+            remoteVideoTracks: snapshot.remoteVideoTracks
+        )
         updateConnectedStatus()
     }
 
@@ -362,19 +401,41 @@ private extension NativeMatrixRTCCallViewController {
             : "\(totalCount) participants"
     }
 
-    func updateRemoteVideo(_ remoteVideoTrack: MatrixRTCLiveKitRemoteVideoTrack?) {
-        let nextTrackId = remoteVideoTrack?.id
-        guard currentRemoteVideoTrackId != nextTrackId else { return }
+    func updateVideoSurface(
+        localVideoTrack: MatrixRTCLiveKitLocalVideoTrack?,
+        remoteVideoTracks: [MatrixRTCLiveKitRemoteVideoTrack]
+    ) {
+        let nextLocalTrackId = localVideoTrack?.id
+        let nextRemoteTrackIds = remoteVideoTracks.map(\.id)
+        let didChange = currentLocalVideoTrackId != nextLocalTrackId
+            || currentRemoteVideoTrackIds != nextRemoteTrackIds
 
-        currentRemoteVideoTrackId = nextTrackId
-        log("Native MatrixRTC remote video \(nextTrackId == nil ? "hidden" : "shown id=\(nextTrackId!)")")
-        remoteVideoView.setRemoteVideoTrack(remoteVideoTrack)
+        currentLocalVideoTrackId = nextLocalTrackId
+        currentRemoteVideoTrackIds = nextRemoteTrackIds
 
-        let hasRemoteVideo = remoteVideoTrack != nil
-        remoteVideoContainerView.isHidden = !hasRemoteVideo
-        avatarView.isHidden = hasRemoteVideo
-        titleBelowAvatarConstraint?.isActive = !hasRemoteVideo
-        titleBelowVideoConstraint?.isActive = hasRemoteVideo
+        if didChange {
+            log("Native MatrixRTC video surface local=\(nextLocalTrackId ?? "nil") remote=\(nextRemoteTrackIds)")
+        }
+
+        remoteVideoGridView.setRemoteVideoTracks(remoteVideoTracks)
+        localVideoView.setLocalVideoTrack(localVideoTrack)
+
+        let hasLocalVideo = localVideoTrack != nil
+        let hasRemoteVideo = !remoteVideoTracks.isEmpty
+        let hasAnyVideo = hasLocalVideo || hasRemoteVideo
+
+        remoteVideoGridView.isHidden = !hasRemoteVideo
+        localVideoContainerView.isHidden = !hasLocalVideo
+        remoteVideoContainerView.isHidden = !hasAnyVideo
+        avatarView.isHidden = hasAnyVideo
+        titleBelowAvatarConstraint?.isActive = !hasAnyVideo
+        titleBelowVideoConstraint?.isActive = hasAnyVideo
+
+        NSLayoutConstraint.deactivate(localVideoFullConstraints)
+        NSLayoutConstraint.deactivate(localVideoPreviewConstraints)
+        if hasLocalVideo {
+            NSLayoutConstraint.activate(hasRemoteVideo ? localVideoPreviewConstraints : localVideoFullConstraints)
+        }
 
         UIView.animate(
             withDuration: 0.18,
@@ -508,6 +569,76 @@ private extension NativeMatrixRTCCallViewController {
                 log("Failed leaving native MatrixRTC call in room \(roomID): \(error)")
             }
             dismissOnce()
+        }
+    }
+}
+
+private final class NativeMatrixRTCRemoteVideoGridView: UIView {
+    private var orderedTrackIds: [String] = []
+    private var tileViewsByTrackId: [String: MatrixRTCLiveKitVideoView] = [:]
+
+    func setRemoteVideoTracks(_ remoteVideoTracks: [MatrixRTCLiveKitRemoteVideoTrack]) {
+        let nextTrackIds = remoteVideoTracks.map(\.id)
+        let nextTrackIdSet = Set(nextTrackIds)
+
+        for trackId in Array(tileViewsByTrackId.keys) where !nextTrackIdSet.contains(trackId) {
+            guard let tileView = tileViewsByTrackId.removeValue(forKey: trackId) else { continue }
+            tileView.setRemoteVideoTrack(nil)
+            tileView.removeFromSuperview()
+        }
+
+        for remoteVideoTrack in remoteVideoTracks {
+            let tileView = tileViewsByTrackId[remoteVideoTrack.id] ?? makeTileView()
+            tileView.setRemoteVideoTrack(remoteVideoTrack)
+            tileViewsByTrackId[remoteVideoTrack.id] = tileView
+        }
+
+        orderedTrackIds = nextTrackIds
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        guard !orderedTrackIds.isEmpty else { return }
+        let layout = gridLayout(for: orderedTrackIds.count)
+        let spacing: CGFloat = 6
+        let tileWidth = (bounds.width - CGFloat(layout.columns - 1) * spacing) / CGFloat(layout.columns)
+        let tileHeight = (bounds.height - CGFloat(layout.rows - 1) * spacing) / CGFloat(layout.rows)
+
+        for index in orderedTrackIds.indices {
+            guard let tileView = tileViewsByTrackId[orderedTrackIds[index]] else { continue }
+            let row = index / layout.columns
+            let column = index % layout.columns
+            tileView.frame = CGRect(
+                x: CGFloat(column) * (tileWidth + spacing),
+                y: CGFloat(row) * (tileHeight + spacing),
+                width: tileWidth,
+                height: tileHeight
+            )
+        }
+    }
+
+    private func makeTileView() -> MatrixRTCLiveKitVideoView {
+        let tileView = MatrixRTCLiveKitVideoView()
+        tileView.backgroundColor = .black
+        tileView.layoutMode = .fit
+        addSubview(tileView)
+        return tileView
+    }
+
+    private func gridLayout(for count: Int) -> (columns: Int, rows: Int) {
+        switch count {
+        case 0, 1:
+            return (1, 1)
+        case 2:
+            return bounds.width >= bounds.height ? (2, 1) : (1, 2)
+        case 3, 4:
+            return (2, 2)
+        default:
+            let columns = 3
+            let rows = Int(ceil(Double(count) / Double(columns)))
+            return (columns, rows)
         }
     }
 }

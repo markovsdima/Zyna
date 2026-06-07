@@ -2,6 +2,33 @@ import CoreGraphics
 import Foundation
 import LiveKit
 
+public final class MatrixRTCLiveKitLocalVideoTrack: @unchecked Sendable, Equatable {
+    public let trackSid: String
+    public let trackName: String
+
+    weak var videoTrack: LocalVideoTrack?
+
+    public var id: String {
+        "local:\(trackSid)"
+    }
+
+    init(
+        publication: LocalTrackPublication,
+        videoTrack: LocalVideoTrack
+    ) {
+        self.trackSid = publication.sid.stringValue
+        self.trackName = publication.name
+        self.videoTrack = videoTrack
+    }
+
+    public static func == (
+        lhs: MatrixRTCLiveKitLocalVideoTrack,
+        rhs: MatrixRTCLiveKitLocalVideoTrack
+    ) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
 public final class MatrixRTCLiveKitRemoteVideoTrack: @unchecked Sendable, Equatable {
     public let participantIdentity: String?
     public let participantSid: String?
@@ -50,6 +77,15 @@ public final class MatrixRTCLiveKitVideoView: NativeView {
     public var layoutMode: VideoView.LayoutMode {
         get { videoView.layoutMode }
         set { videoView.layoutMode = newValue }
+    }
+
+    public var mirrorMode: VideoView.MirrorMode {
+        get { videoView.mirrorMode }
+        set { videoView.mirrorMode = newValue }
+    }
+
+    public func setLocalVideoTrack(_ localVideoTrack: MatrixRTCLiveKitLocalVideoTrack?) {
+        videoView.track = localVideoTrack?.videoTrack
     }
 
     public func setRemoteVideoTrack(_ remoteVideoTrack: MatrixRTCLiveKitRemoteVideoTrack?) {

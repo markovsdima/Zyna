@@ -16,6 +16,7 @@ struct NativeMatrixRTCCallTrackState: Equatable, Sendable {
     var e2eeState: String?
     var streamState: String?
     var subscriptionError: String?
+    var localVideoTrack: MatrixRTCLiveKitLocalVideoTrack? = nil
     var remoteVideoTrack: MatrixRTCLiveKitRemoteVideoTrack? = nil
 
     var isAudio: Bool {
@@ -96,15 +97,38 @@ struct NativeMatrixRTCCallParticipantsSnapshot: Equatable, Sendable {
         }
     }
 
-    var primaryRemoteVideoTrack: MatrixRTCLiveKitRemoteVideoTrack? {
-        for participant in remoteParticipants {
-            for track in participant.sortedTracks where track.isVideo && track.isSubscribed {
-                if let remoteVideoTrack = track.remoteVideoTrack {
-                    return remoteVideoTrack
-                }
+    var localVideoTrack: MatrixRTCLiveKitLocalVideoTrack? {
+        for track in sortedLocalTracks where track.isVideo && track.isSubscribed && !track.isMuted {
+            if let localVideoTrack = track.localVideoTrack {
+                return localVideoTrack
             }
         }
         return nil
+    }
+
+    var remoteVideoTracks: [MatrixRTCLiveKitRemoteVideoTrack] {
+        var videoTracks: [MatrixRTCLiveKitRemoteVideoTrack] = []
+        for participant in remoteParticipants {
+            for track in participant.sortedTracks where track.isVideo && track.isSubscribed {
+                if let remoteVideoTrack = track.remoteVideoTrack {
+                    videoTracks.append(remoteVideoTrack)
+                }
+            }
+        }
+        return videoTracks
+    }
+
+    var primaryRemoteVideoTrack: MatrixRTCLiveKitRemoteVideoTrack? {
+        remoteVideoTracks.first
+    }
+
+    private var sortedLocalTracks: [NativeMatrixRTCCallTrackState] {
+        localTracks.values.sorted { lhs, rhs in
+            if lhs.source != rhs.source {
+                return lhs.source < rhs.source
+            }
+            return lhs.sid < rhs.sid
+        }
     }
 }
 
@@ -137,6 +161,12 @@ struct NativeMatrixRTCCallParticipantStore: Equatable, Sendable {
 
         case .localTrackUnpublished(let publication):
             snapshot.localTracks.removeValue(forKey: publication.sid)
+
+        case .localVideoTrackPublished(let publication, let videoTrack):
+            upsertLocalVideoTrack(publication, videoTrack: videoTrack)
+
+        case .localVideoTrackUnpublished(let publication):
+            clearLocalVideoTrack(publication)
 
         case .localTrackSubscribedByRemote(let publication):
             upsertLocalTrack(publication)
@@ -204,6 +234,22 @@ private extension NativeMatrixRTCCallParticipantStore {
     mutating func upsertLocalTrack(_ publication: MatrixRTCLiveKitTrackPublicationInfo) {
         var track = snapshot.localTracks[publication.sid] ?? trackState(from: publication)
         track.update(from: publication)
+        snapshot.localTracks[publication.sid] = track
+    }
+
+    mutating func upsertLocalVideoTrack(
+        _ publication: MatrixRTCLiveKitTrackPublicationInfo,
+        videoTrack: MatrixRTCLiveKitLocalVideoTrack
+    ) {
+        var track = snapshot.localTracks[publication.sid] ?? trackState(from: publication)
+        track.update(from: publication)
+        track.localVideoTrack = videoTrack
+        snapshot.localTracks[publication.sid] = track
+    }
+
+    mutating func clearLocalVideoTrack(_ publication: MatrixRTCLiveKitTrackPublicationInfo) {
+        guard var track = snapshot.localTracks[publication.sid] else { return }
+        track.localVideoTrack = nil
         snapshot.localTracks[publication.sid] = track
     }
 
