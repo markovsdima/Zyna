@@ -41,6 +41,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
     private static let audioCallIntent = "audio"
 
     let stateSubject = CurrentValueSubject<NativeMatrixRTCCallServiceState, Never>(.idle)
+    let participantsSubject = CurrentValueSubject<NativeMatrixRTCCallParticipantsSnapshot, Never>(.empty)
 
     var state: NativeMatrixRTCCallServiceState {
         stateSubject.value
@@ -49,6 +50,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
     private let lock = NSLock()
     private var activeCall: NativeMatrixRTCCall?
     private var membershipRefreshTask: Task<Void, Never>?
+    private var participantStore = NativeMatrixRTCCallParticipantStore()
 
     private init() {}
 
@@ -59,6 +61,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
     ) async throws -> NativeMatrixRTCCallStartResult {
         let roomId = room.id()
         try beginJoining(roomId: roomId)
+        resetParticipantState(roomId: roomId)
 
         var matrixRTCSession: MatrixRTCSession?
         var liveKitSession: MatrixRTCLiveKitRoomSession?
@@ -84,10 +87,12 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 roomId: roomId,
                 endpointVersion: .legacy
             )
+            setLocalParticipantIdentity(sfuConfig.liveKitIdentity)
             try Task.checkCancellation()
 
             let liveKit = MatrixRTCLiveKitRoomSession(onEvent: { [weak self] event in
                 log("LiveKit \(Self.liveKitEventDescription(event))")
+                self?.handleLiveKitEvent(event)
                 guard let reason = Self.membershipRefreshReason(for: event) else { return }
                 self?.scheduleActiveMembershipRefresh(reason: reason)
             })
@@ -218,12 +223,14 @@ private extension NativeMatrixRTCCallService {
     }
 
     func finishFailed() {
-        withLock {
+        let snapshot = withLock {
             membershipRefreshTask?.cancel()
             membershipRefreshTask = nil
             activeCall = nil
             stateSubject.send(.idle)
+            return participantStore.reset(roomId: nil)
         }
+        participantsSubject.send(snapshot)
     }
 
     func beginLeaving() -> NativeMatrixRTCCall? {
@@ -241,16 +248,41 @@ private extension NativeMatrixRTCCallService {
     }
 
     func finishLeft() {
-        withLock {
+        let snapshot = withLock {
             membershipRefreshTask?.cancel()
             membershipRefreshTask = nil
             activeCall = nil
             stateSubject.send(.idle)
+            return participantStore.reset(roomId: nil)
         }
+        participantsSubject.send(snapshot)
     }
 
     func currentActiveCall() -> NativeMatrixRTCCall? {
         withLock { activeCall }
+    }
+
+    func resetParticipantState(roomId: String?) {
+        let snapshot = withLock {
+            participantStore.reset(roomId: roomId)
+        }
+        participantsSubject.send(snapshot)
+    }
+
+    func setLocalParticipantIdentity(_ identity: String?) {
+        let snapshot = withLock {
+            participantStore.setLocalIdentity(identity)
+        }
+        participantsSubject.send(snapshot)
+    }
+
+    func handleLiveKitEvent(_ event: MatrixRTCLiveKitRoomSessionEvent) {
+        let snapshot: NativeMatrixRTCCallParticipantsSnapshot? = withLock {
+            guard participantStore.snapshot.roomId != nil else { return nil }
+            return participantStore.apply(event)
+        }
+        guard let snapshot else { return }
+        participantsSubject.send(snapshot)
     }
 
     func sendCallNotificationIfNeeded(

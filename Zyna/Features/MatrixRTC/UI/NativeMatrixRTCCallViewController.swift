@@ -35,6 +35,7 @@ final class NativeMatrixRTCCallViewController: UIViewController {
     private var hasSeenActiveState = false
     private var isEndingCall = false
     private var didRequestDismiss = false
+    private var participantsSnapshot = NativeMatrixRTCCallParticipantsSnapshot.empty
     private var isMuted = false {
         didSet {
             updateMuteButton()
@@ -206,6 +207,13 @@ private extension NativeMatrixRTCCallViewController {
                 self?.update(for: state)
             }
             .store(in: &cancellables)
+
+        callService.participantsSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] snapshot in
+                self?.updateParticipants(snapshot)
+            }
+            .store(in: &cancellables)
     }
 
     func startCall() {
@@ -261,10 +269,29 @@ private extension NativeMatrixRTCCallViewController {
 
     func updateConnectedStatus() {
         guard case .connected(let roomId) = callService.state, roomId == roomID else { return }
-        let status = isMuted
+        let baseStatus = isMuted
             ? "Microphone muted"
             : "Connected"
+        let status = participantStatusSuffix().map { "\(baseStatus) - \($0)" }
+            ?? baseStatus
         setStatus(status, isBusy: false)
+    }
+
+    func updateParticipants(_ snapshot: NativeMatrixRTCCallParticipantsSnapshot) {
+        if let roomId = snapshot.roomId, roomId != roomID {
+            return
+        }
+
+        participantsSnapshot = snapshot
+        updateConnectedStatus()
+    }
+
+    func participantStatusSuffix() -> String? {
+        let totalCount = participantsSnapshot.totalParticipantCount
+        guard totalCount > 1 else { return nil }
+        return totalCount == 2
+            ? "2 participants"
+            : "\(totalCount) participants"
     }
 
     func setStatus(_ status: String, isBusy: Bool) {
