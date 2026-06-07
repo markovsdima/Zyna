@@ -51,6 +51,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
     private var activeCall: NativeMatrixRTCCall?
     private var membershipRefreshTask: Task<Void, Never>?
     private var participantStore = NativeMatrixRTCCallParticipantStore()
+    private let audioSessionController = NativeMatrixRTCAudioSessionController.shared
 
     private init() {}
 
@@ -132,6 +133,8 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             try Task.checkCancellation()
             await sendCallNotificationIfNeeded(room: room, joinResult: joinResult)
             try Task.checkCancellation()
+            try audioSessionController.configureForCall()
+            try Task.checkCancellation()
             try await liveKit.connect(sfuConfig: sfuConfig, publishAudio: true)
             try Task.checkCancellation()
 
@@ -162,6 +165,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             if let matrixRTCSession {
                 _ = try? await matrixRTCSession.leave()
             }
+            audioSessionController.deactivateAfterCall()
             finishFailed()
             throw error
         }
@@ -200,6 +204,18 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
         _ = try await activeCall.liveKitSession.switchCameraPosition()
     }
 
+    func setSpeakerEnabled(_ enabled: Bool) throws {
+        guard currentActiveCall() != nil else {
+            throw NativeMatrixRTCCallServiceError.noActiveCall
+        }
+
+        try audioSessionController.setSpeakerEnabled(enabled)
+    }
+
+    var isSpeakerEnabled: Bool {
+        audioSessionController.isSpeakerEnabled
+    }
+
     func leaveActiveCall() async throws {
         guard let call = beginLeaving() else {
             return
@@ -207,6 +223,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
 
         await call.liveKitSession.disconnect()
         defer {
+            audioSessionController.deactivateAfterCall()
             finishLeft()
         }
 

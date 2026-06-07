@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
+import AVFoundation
 import Combine
 import MatrixRTCLiveKit
 import MatrixRustSDK
@@ -31,6 +32,7 @@ final class NativeMatrixRTCCallViewController: UIViewController {
     private let statusLabel = UILabel()
     private let controlsStack = UIStackView()
     private let muteButton = UIButton(type: .system)
+    private let speakerButton = UIButton(type: .system)
     private let cameraButton = UIButton(type: .system)
     private let switchCameraButton = UIButton(type: .system)
     private let endCallButton = UIButton(type: .system)
@@ -53,6 +55,11 @@ final class NativeMatrixRTCCallViewController: UIViewController {
         didSet {
             updateMuteButton()
             updateConnectedStatus()
+        }
+    }
+    private var isSpeakerEnabled = false {
+        didSet {
+            updateSpeakerButton()
         }
     }
     private var isCameraEnabled = false {
@@ -158,22 +165,31 @@ private extension NativeMatrixRTCCallViewController {
         controlsStack.axis = .horizontal
         controlsStack.alignment = .center
         controlsStack.distribution = .equalSpacing
-        controlsStack.spacing = 18
+        controlsStack.spacing = 8
 
         configureControlButton(
             muteButton,
             systemName: "mic.fill",
             backgroundColor: .systemGray,
-            size: 64
+            size: 56
         )
         muteButton.accessibilityLabel = "Mute"
         muteButton.addTarget(self, action: #selector(muteTapped), for: .touchUpInside)
 
         configureControlButton(
+            speakerButton,
+            systemName: "speaker.wave.2.fill",
+            backgroundColor: .systemGray,
+            size: 56
+        )
+        speakerButton.accessibilityLabel = "Speaker"
+        speakerButton.addTarget(self, action: #selector(speakerTapped), for: .touchUpInside)
+
+        configureControlButton(
             cameraButton,
             systemName: "video.fill",
             backgroundColor: .systemGray,
-            size: 64
+            size: 56
         )
         cameraButton.accessibilityLabel = "Camera"
         cameraButton.addTarget(self, action: #selector(cameraTapped), for: .touchUpInside)
@@ -191,7 +207,7 @@ private extension NativeMatrixRTCCallViewController {
             endCallButton,
             systemName: "phone.down.fill",
             backgroundColor: .systemRed,
-            size: 72
+            size: 64
         )
         endCallButton.accessibilityLabel = "End Call"
         endCallButton.addTarget(self, action: #selector(endCallTapped), for: .touchUpInside)
@@ -208,6 +224,7 @@ private extension NativeMatrixRTCCallViewController {
         statusStack.addArrangedSubview(statusLabel)
         view.addSubview(controlsStack)
         controlsStack.addArrangedSubview(muteButton)
+        controlsStack.addArrangedSubview(speakerButton)
         controlsStack.addArrangedSubview(cameraButton)
         controlsStack.addArrangedSubview(switchCameraButton)
         controlsStack.addArrangedSubview(endCallButton)
@@ -274,6 +291,7 @@ private extension NativeMatrixRTCCallViewController {
         setStatus("Connecting...", isBusy: true)
         updateControls(canToggleMedia: false, canHangUp: true)
         updateMuteButton()
+        updateSpeakerButton()
         updateCameraButton()
     }
 
@@ -317,6 +335,13 @@ private extension NativeMatrixRTCCallViewController {
                 self?.updateParticipants(snapshot)
             }
             .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshSpeakerRouteState()
+            }
+            .store(in: &cancellables)
     }
 
     func startCall() {
@@ -350,6 +375,7 @@ private extension NativeMatrixRTCCallViewController {
         case .connected(let roomId):
             guard roomId == roomID else { return }
             hasSeenActiveState = true
+            refreshSpeakerRouteState()
             updateConnectedStatus()
             updateControls(canToggleMedia: true, canHangUp: true)
 
@@ -458,6 +484,8 @@ private extension NativeMatrixRTCCallViewController {
     func updateControls(canToggleMedia: Bool, canHangUp: Bool) {
         muteButton.isEnabled = canToggleMedia
         muteButton.alpha = canToggleMedia ? 1.0 : 0.45
+        speakerButton.isEnabled = canToggleMedia
+        speakerButton.alpha = canToggleMedia ? 1.0 : 0.45
         cameraButton.isEnabled = canToggleMedia
         cameraButton.alpha = canToggleMedia ? 1.0 : 0.45
         switchCameraButton.isEnabled = canToggleMedia && isCameraEnabled
@@ -479,6 +507,19 @@ private extension NativeMatrixRTCCallViewController {
             : "Mute"
     }
 
+    func updateSpeakerButton() {
+        var configuration = speakerButton.configuration
+        configuration?.image = UIImage(
+            systemName: isSpeakerEnabled ? "speaker.wave.3.fill" : "speaker.wave.2.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .semibold)
+        )
+        configuration?.baseBackgroundColor = isSpeakerEnabled ? .systemBlue : .systemGray
+        speakerButton.configuration = configuration
+        speakerButton.accessibilityLabel = isSpeakerEnabled
+            ? "Speaker Off"
+            : "Speaker On"
+    }
+
     func updateCameraButton() {
         var configuration = cameraButton.configuration
         configuration?.image = UIImage(
@@ -490,6 +531,10 @@ private extension NativeMatrixRTCCallViewController {
         cameraButton.accessibilityLabel = isCameraEnabled
             ? "Turn Camera Off"
             : "Turn Camera On"
+    }
+
+    func refreshSpeakerRouteState() {
+        isSpeakerEnabled = callService.isSpeakerEnabled
     }
 
     func dismissOnce() {
@@ -509,6 +554,26 @@ private extension NativeMatrixRTCCallViewController {
                 isMuted = nextMutedState
             } catch {
                 log("Failed toggling native MatrixRTC microphone: \(error)")
+            }
+
+            if case .connected(let roomId) = callService.state, roomId == roomID {
+                updateControls(canToggleMedia: true, canHangUp: true)
+            }
+        }
+    }
+
+    @objc func speakerTapped() {
+        let nextSpeakerEnabledState = !isSpeakerEnabled
+        updateControls(canToggleMedia: false, canHangUp: true)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try callService.setSpeakerEnabled(nextSpeakerEnabledState)
+                isSpeakerEnabled = nextSpeakerEnabledState
+            } catch {
+                log("Failed toggling native MatrixRTC speaker output: \(error)")
+                refreshSpeakerRouteState()
             }
 
             if case .connected(let roomId) = callService.state, roomId == roomID {
