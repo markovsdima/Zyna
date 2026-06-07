@@ -20,8 +20,8 @@ let package = Package(
     ],
     dependencies: [
         .package(
-            url: "https://github.com/livekit/client-sdk-swift.git",
-            from: "2.14.1"
+            url: "https://github.com/markovsdima/client-sdk-swift.git",
+            exact: "2.15.0-zyna.1"
         ),
     ],
     targets: [
@@ -38,6 +38,13 @@ let package = Package(
         .testTarget(
             name: "MatrixRTCTests",
             dependencies: ["MatrixRTC"]
+        ),
+        .testTarget(
+            name: "MatrixRTCLiveKitTests",
+            dependencies: [
+                "MatrixRTC",
+                "MatrixRTCLiveKit",
+            ]
         ),
     ]
 )
