@@ -786,12 +786,15 @@ final class ChatsCoordinator {
             presentVerificationRequiredForCall()
             return
         }
-        if CallBackendPreferenceStore.shared.usesMatrixRTC {
+        switch CallBackendPreferenceStore.shared.selectedBackend {
+        case .zynaDirect:
+            CallService.shared.startCall(room: room, timelineService: timelineService)
+            presentCallScreen(roomName: room.displayName() ?? "Call")
+        case .elementCallWeb:
             presentElementCallScreen(room: room, voiceOnly: voiceOnly)
-            return
+        case .nativeMatrixRTC:
+            startNativeMatrixRTCAudioCall(room: room)
         }
-        CallService.shared.startCall(room: room, timelineService: timelineService)
-        presentCallScreen(roomName: room.displayName() ?? "Call")
     }
 
     private func canSendEncryptedEvents(in room: Room) -> Bool {
@@ -849,5 +852,18 @@ final class ChatsCoordinator {
             voiceOnly: voiceOnly,
             from: navigationController
         )
+    }
+
+    private func startNativeMatrixRTCAudioCall(room: Room) {
+        Task { @MainActor [weak self] in
+            do {
+                _ = try await NativeMatrixRTCCallService.shared.startAudioCall(room: room)
+            } catch {
+                self?.presentSimpleAlert(
+                    title: String(localized: "Could Not Start Native Call"),
+                    message: String(describing: error)
+                )
+            }
+        }
     }
 }

@@ -689,7 +689,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func shouldShowActiveCallBanner() -> Bool {
         guard !isPreviewMode else { return false }
         return viewModel.activeRoomCallState.isActive
-            && CallBackendPreferenceStore.shared.usesMatrixRTC
+            && CallBackendPreferenceStore.shared.selectedBackend.usesMatrixRTCRoomCalls
             && !viewModel.isInvited
             && searchBar.isHidden
     }

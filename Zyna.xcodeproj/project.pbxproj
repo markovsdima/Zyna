@@ -17,7 +17,6 @@
 		322E77762DB083AE003921EC /* AsyncDisplayKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; };
 		322E77772DB083AE003921EC /* AsyncDisplayKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 322E76D72DADAA72003921EC /* AsyncDisplayKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		3293134B2FD4BC3F00D0298C /* MatrixRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 3293134A2FD4BC3F00D0298C /* MatrixRTC */; };
-		722725D2C4A84F3398DBF210 /* MatrixRTCLiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 17F6680F004E472A946D8BDA /* MatrixRTCLiveKit */; };
 		3293F7982FCDF4C700D0298C /* ZynaNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 3293F7912FCDF4C600D0298C /* ZynaNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		3293F7A02FCF000100D0298C /* MatrixRustSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */; };
 		3293F7A12FCF000100D0298C /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
@@ -26,6 +25,7 @@
 		32E8235E2FB4EEE800A86B57 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 32E8235D2FB4EEE800A86B57 /* GRDB */; };
 		32ED2F0E2F59FA7E0080ED2A /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 32ED2F0D2F59FA7E0080ED2A /* WebRTC */; };
 		32F7D31A2E3EE41A009282C3 /* KeychainAccess in Frameworks */ = {isa = PBXBuildFile; productRef = 32F7D3192E3EE41A009282C3 /* KeychainAccess */; };
+		722725D2C4A84F3398DBF210 /* MatrixRTCLiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 17F6680F004E472A946D8BDA /* MatrixRTCLiveKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -831,6 +831,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		17F6680F004E472A946D8BDA /* MatrixRTCLiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MatrixRTCLiveKit;
+		};
 		322C5EE12FB6531C00F29FB7 /* MatrixRustSDK */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 322C5EE02FB6531C00F29FB7 /* XCRemoteSwiftPackageReference "matrix-rust-components-swift" */;
@@ -839,10 +843,6 @@
 		3293134A2FD4BC3F00D0298C /* MatrixRTC */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MatrixRTC;
-		};
-		17F6680F004E472A946D8BDA /* MatrixRTCLiveKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = MatrixRTCLiveKit;
 		};
 		3293FDAF2FD0BA2E00D0298C /* EmbeddedElementCall */ = {
 			isa = XCSwiftPackageProductDependency;

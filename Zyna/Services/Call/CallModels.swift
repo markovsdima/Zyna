@@ -9,14 +9,26 @@ import Foundation
 
 enum CallBackend: String, CaseIterable {
     case zynaDirect = "zyna_direct"
-    case matrixRTC = "matrix_rtc"
+    case elementCallWeb = "matrix_rtc"
+    case nativeMatrixRTC = "native_matrix_rtc"
 
     var title: String {
         switch self {
         case .zynaDirect:
             return String(localized: "Zyna Direct")
-        case .matrixRTC:
-            return String(localized: "MatrixRTC")
+        case .elementCallWeb:
+            return String(localized: "Element Call Web")
+        case .nativeMatrixRTC:
+            return String(localized: "Native MatrixRTC")
+        }
+    }
+
+    var usesMatrixRTCRoomCalls: Bool {
+        switch self {
+        case .zynaDirect:
+            return false
+        case .elementCallWeb, .nativeMatrixRTC:
+            return true
         }
     }
 }
@@ -42,11 +54,6 @@ final class CallBackendPreferenceStore {
         set {
             defaults.set(newValue.rawValue, forKey: defaultsKey)
         }
-    }
-
-    var usesMatrixRTC: Bool {
-        get { selectedBackend == .matrixRTC }
-        set { selectedBackend = newValue ? .matrixRTC : .zynaDirect }
     }
 }
 

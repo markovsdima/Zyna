@@ -245,14 +245,10 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             cell.detailTextLabel?.text = String(localized: "Manage sessions")
             cell.accessoryType = .disclosureIndicator
         case .callBackend:
-            cell.textLabel?.text = String(localized: "Use MatrixRTC Calls")
-            cell.detailTextLabel?.text = String(localized: "Off keeps the current Zyna direct call implementation")
-            cell.accessoryType = .none
-            cell.selectionStyle = .none
-            let toggle = UISwitch()
-            toggle.isOn = CallBackendPreferenceStore.shared.usesMatrixRTC
-            toggle.addTarget(self, action: #selector(callBackendSwitchChanged(_:)), for: .valueChanged)
-            cell.accessoryView = toggle
+            let backend = CallBackendPreferenceStore.shared.selectedBackend
+            cell.textLabel?.text = String(localized: "Call Backend")
+            cell.detailTextLabel?.text = backend.title
+            cell.accessoryType = .disclosureIndicator
         case .repairLocalMessageCache:
             cell.textLabel?.text = String(localized: "Repair Local Message Cache")
             cell.detailTextLabel?.text = String(localized: "Fix duplicate or stuck local timeline rows")
@@ -262,9 +258,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             cell.detailTextLabel?.text = String(localized: "Preserve keys and show re-login")
             cell.accessoryType = .none
         }
-        if row != .callBackend {
-            cell.selectionStyle = .default
-        }
+        cell.selectionStyle = .default
         cell.backgroundColor = .secondarySystemGroupedBackground
         return cell
     }
@@ -281,7 +275,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case .devices:
             onDevicesTapped?()
         case .callBackend:
-            break
+            let cell = tableView.cellForRow(at: indexPath)
+            presentCallBackendPicker(sourceView: cell ?? tableView)
         case .repairLocalMessageCache:
             confirmRepairLocalMessageCache()
         case .simulateSoftLogout:
@@ -298,8 +293,31 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
 
 private extension SettingsViewController {
 
-    @objc func callBackendSwitchChanged(_ sender: UISwitch) {
-        CallBackendPreferenceStore.shared.usesMatrixRTC = sender.isOn
+    func presentCallBackendPicker(sourceView: UIView) {
+        let selectedBackend = CallBackendPreferenceStore.shared.selectedBackend
+        let alert = UIAlertController(
+            title: String(localized: "Call Backend"),
+            message: nil,
+            preferredStyle: .actionSheet
+        )
+
+        for backend in CallBackend.allCases {
+            let title = backend == selectedBackend
+                ? "\(backend.title) (\(String(localized: "Selected")))"
+                : backend.title
+            alert.addAction(UIAlertAction(title: title, style: .default) { [weak self] _ in
+                CallBackendPreferenceStore.shared.selectedBackend = backend
+                self?.tableView.reloadRows(
+                    at: [IndexPath(row: 0, section: Section.diagnostics.rawValue)],
+                    with: .none
+                )
+            })
+        }
+
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        alert.popoverPresentationController?.sourceView = sourceView
+        alert.popoverPresentationController?.sourceRect = sourceView.bounds
+        present(alert, animated: true)
     }
 
     func confirmRepairLocalMessageCache() {

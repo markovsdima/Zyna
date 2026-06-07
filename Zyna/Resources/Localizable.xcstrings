@@ -7635,10 +7635,12 @@
         }
       }
     },
-    "MatrixRTC" : {},
+    "Call Backend" : {},
+    "Could Not Start Native Call" : {},
+    "Element Call Web" : {},
     "Minimize" : {},
-    "Off keeps the current Zyna direct call implementation" : {},
-    "Use MatrixRTC Calls" : {},
+    "Native MatrixRTC" : {},
+    "Selected" : {},
     "Zyna Direct" : {}
   },
   "version" : "1.1"
