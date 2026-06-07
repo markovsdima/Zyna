@@ -184,6 +184,22 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
         try await activeCall.liveKitSession.setMicrophoneEnabled(enabled)
     }
 
+    func setCameraEnabled(_ enabled: Bool) async throws {
+        guard let activeCall = currentActiveCall() else {
+            throw NativeMatrixRTCCallServiceError.noActiveCall
+        }
+
+        try await activeCall.liveKitSession.setCameraEnabled(enabled)
+    }
+
+    func switchCameraPosition() async throws {
+        guard let activeCall = currentActiveCall() else {
+            throw NativeMatrixRTCCallServiceError.noActiveCall
+        }
+
+        _ = try await activeCall.liveKitSession.switchCameraPosition()
+    }
+
     func leaveActiveCall() async throws {
         guard let call = beginLeaving() else {
             return

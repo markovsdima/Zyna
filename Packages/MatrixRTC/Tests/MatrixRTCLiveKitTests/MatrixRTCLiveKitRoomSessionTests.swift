@@ -97,6 +97,53 @@ import Testing
     }
 }
 
+@Test func togglesCameraAfterConnect() async throws {
+    let box = RoomSessionTestBox()
+    let session = MatrixRTCLiveKitRoomSession(roomFactory: { _ in box.room })
+
+    try await session.connect(sfuConfig: sfuConfig)
+    try await session.setCameraEnabled(true)
+
+    #expect(session.isCameraEnabled)
+
+    try await session.setCameraEnabled(false)
+
+    #expect(session.isCameraEnabled == false)
+    #expect(box.room.cameraEnabledCalls == [true, false])
+}
+
+@Test func rejectsCameraChangesBeforeConnect() async throws {
+    let session = MatrixRTCLiveKitRoomSession()
+
+    await #expect(throws: MatrixRTCLiveKitRoomSessionError.notConnected) {
+        try await session.setCameraEnabled(true)
+    }
+}
+
+@Test func switchesCameraPositionAfterCameraEnabled() async throws {
+    let box = RoomSessionTestBox()
+    let session = MatrixRTCLiveKitRoomSession(roomFactory: { _ in box.room })
+
+    try await session.connect(sfuConfig: sfuConfig)
+    try await session.setCameraEnabled(true)
+
+    let didSwitch = try await session.switchCameraPosition()
+
+    #expect(didSwitch)
+    #expect(box.room.cameraSwitchCalls == 1)
+}
+
+@Test func rejectsCameraPositionSwitchBeforeCameraEnabled() async throws {
+    let box = RoomSessionTestBox()
+    let session = MatrixRTCLiveKitRoomSession(roomFactory: { _ in box.room })
+
+    try await session.connect(sfuConfig: sfuConfig)
+
+    await #expect(throws: MatrixRTCLiveKitRoomSessionError.cameraNotEnabled) {
+        try await session.switchCameraPosition()
+    }
+}
+
 private let sfuConfig = MatrixRTCLiveKitSFUConfig(
     url: "wss://livekit.example.org",
     jwt: "jwt-token",
@@ -143,10 +190,15 @@ private final class MockLiveKitRoom: MatrixRTCLiveKitRoomControlling, @unchecked
     var connectCalls: [ConnectCall] = []
     var disconnectCalls = 0
     var microphoneEnabledCalls: [Bool] = []
+    var cameraEnabledCalls: [Bool] = []
+    var cameraSwitchCalls = 0
+    var cameraSwitchResult = true
     var addedDelegates: [RoomDelegate] = []
     var removedDelegates: [RoomDelegate] = []
     var connectError: Error?
     var microphoneError: Error?
+    var cameraError: Error?
+    var cameraSwitchError: Error?
 
     func connect(
         url: String,
@@ -176,6 +228,23 @@ private final class MockLiveKitRoom: MatrixRTCLiveKitRoomControlling, @unchecked
         }
 
         microphoneEnabledCalls.append(enabled)
+    }
+
+    func setCamera(enabled: Bool) async throws {
+        if let cameraError {
+            throw cameraError
+        }
+
+        cameraEnabledCalls.append(enabled)
+    }
+
+    func switchCameraPosition() async throws -> Bool {
+        if let cameraSwitchError {
+            throw cameraSwitchError
+        }
+
+        cameraSwitchCalls += 1
+        return cameraSwitchResult
     }
 
     func add(delegate: RoomDelegate) {

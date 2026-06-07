@@ -13,6 +13,7 @@ public enum MatrixRTCLiveKitRoomSessionError: Error, Equatable {
     case alreadyConnecting
     case alreadyConnected
     case notConnected
+    case cameraNotEnabled
 }
 
 public struct MatrixRTCLiveKitParticipantInfo: Equatable, Sendable {
@@ -83,6 +84,8 @@ public protocol MatrixRTCLiveKitRoomControlling: AnyObject, Sendable {
 
     func disconnect() async
     func setMicrophone(enabled: Bool) async throws
+    func setCamera(enabled: Bool) async throws
+    func switchCameraPosition() async throws -> Bool
     func add(delegate: RoomDelegate)
     func remove(delegate: RoomDelegate)
 }
@@ -90,6 +93,20 @@ public protocol MatrixRTCLiveKitRoomControlling: AnyObject, Sendable {
 extension Room: MatrixRTCLiveKitRoomControlling {
     public func setMicrophone(enabled: Bool) async throws {
         try await localParticipant.setMicrophone(enabled: enabled)
+    }
+
+    public func setCamera(enabled: Bool) async throws {
+        try await localParticipant.setCamera(enabled: enabled)
+    }
+
+    public func switchCameraPosition() async throws -> Bool {
+        guard let cameraTrack = localParticipant.firstCameraVideoTrack as? LocalVideoTrack,
+              let cameraCapturer = cameraTrack.capturer as? CameraCapturer
+        else {
+            throw MatrixRTCLiveKitRoomSessionError.cameraNotEnabled
+        }
+
+        return try await cameraCapturer.switchCameraPosition()
     }
 }
 
@@ -109,6 +126,7 @@ public final class MatrixRTCLiveKitRoomSession: @unchecked Sendable {
     private let lock = NSLock()
     private var _state: MatrixRTCLiveKitRoomSessionState = .idle
     private var _isMicrophoneEnabled = false
+    private var _isCameraEnabled = false
 
     public var state: MatrixRTCLiveKitRoomSessionState {
         withLock { _state }
@@ -116,6 +134,10 @@ public final class MatrixRTCLiveKitRoomSession: @unchecked Sendable {
 
     public var isMicrophoneEnabled: Bool {
         withLock { _isMicrophoneEnabled }
+    }
+
+    public var isCameraEnabled: Bool {
+        withLock { _isCameraEnabled }
     }
 
     public init(
@@ -175,6 +197,7 @@ public final class MatrixRTCLiveKitRoomSession: @unchecked Sendable {
         await room.disconnect()
         withLock {
             _isMicrophoneEnabled = false
+            _isCameraEnabled = false
             _state = .disconnected
         }
     }
@@ -188,6 +211,29 @@ public final class MatrixRTCLiveKitRoomSession: @unchecked Sendable {
         withLock {
             _isMicrophoneEnabled = enabled
         }
+    }
+
+    public func setCameraEnabled(_ enabled: Bool) async throws {
+        guard state == .connected else {
+            throw MatrixRTCLiveKitRoomSessionError.notConnected
+        }
+
+        try await room.setCamera(enabled: enabled)
+        withLock {
+            _isCameraEnabled = enabled
+        }
+    }
+
+    @discardableResult
+    public func switchCameraPosition() async throws -> Bool {
+        guard state == .connected else {
+            throw MatrixRTCLiveKitRoomSessionError.notConnected
+        }
+        guard isCameraEnabled else {
+            throw MatrixRTCLiveKitRoomSessionError.cameraNotEnabled
+        }
+
+        return try await room.switchCameraPosition()
     }
 
     @discardableResult

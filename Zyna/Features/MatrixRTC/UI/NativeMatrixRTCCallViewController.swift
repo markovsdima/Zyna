@@ -29,6 +29,8 @@ final class NativeMatrixRTCCallViewController: UIViewController {
     private let statusLabel = UILabel()
     private let controlsStack = UIStackView()
     private let muteButton = UIButton(type: .system)
+    private let cameraButton = UIButton(type: .system)
+    private let switchCameraButton = UIButton(type: .system)
     private let endCallButton = UIButton(type: .system)
 
     private var cancellables = Set<AnyCancellable>()
@@ -45,6 +47,12 @@ final class NativeMatrixRTCCallViewController: UIViewController {
     private var isMuted = false {
         didSet {
             updateMuteButton()
+            updateConnectedStatus()
+        }
+    }
+    private var isCameraEnabled = false {
+        didSet {
+            updateCameraButton()
             updateConnectedStatus()
         }
     }
@@ -133,7 +141,7 @@ private extension NativeMatrixRTCCallViewController {
         controlsStack.axis = .horizontal
         controlsStack.alignment = .center
         controlsStack.distribution = .equalSpacing
-        controlsStack.spacing = 36
+        controlsStack.spacing = 18
 
         configureControlButton(
             muteButton,
@@ -143,6 +151,24 @@ private extension NativeMatrixRTCCallViewController {
         )
         muteButton.accessibilityLabel = "Mute"
         muteButton.addTarget(self, action: #selector(muteTapped), for: .touchUpInside)
+
+        configureControlButton(
+            cameraButton,
+            systemName: "video.fill",
+            backgroundColor: .systemGray,
+            size: 64
+        )
+        cameraButton.accessibilityLabel = "Camera"
+        cameraButton.addTarget(self, action: #selector(cameraTapped), for: .touchUpInside)
+
+        configureControlButton(
+            switchCameraButton,
+            systemName: "camera.rotate.fill",
+            backgroundColor: .systemGray,
+            size: 56
+        )
+        switchCameraButton.accessibilityLabel = "Switch Camera"
+        switchCameraButton.addTarget(self, action: #selector(switchCameraTapped), for: .touchUpInside)
 
         configureControlButton(
             endCallButton,
@@ -163,6 +189,8 @@ private extension NativeMatrixRTCCallViewController {
         statusStack.addArrangedSubview(statusLabel)
         view.addSubview(controlsStack)
         controlsStack.addArrangedSubview(muteButton)
+        controlsStack.addArrangedSubview(cameraButton)
+        controlsStack.addArrangedSubview(switchCameraButton)
         controlsStack.addArrangedSubview(endCallButton)
 
         titleBelowAvatarConstraint = titleLabel.topAnchor.constraint(
@@ -208,8 +236,9 @@ private extension NativeMatrixRTCCallViewController {
         ])
 
         setStatus("Connecting...", isBusy: true)
-        updateControls(canToggleMute: false, canHangUp: true)
+        updateControls(canToggleMedia: false, canHangUp: true)
         updateMuteButton()
+        updateCameraButton()
     }
 
     func configureControlButton(
@@ -280,25 +309,25 @@ private extension NativeMatrixRTCCallViewController {
             guard roomId == roomID else { return }
             hasSeenActiveState = true
             setStatus("Connecting...", isBusy: true)
-            updateControls(canToggleMute: false, canHangUp: true)
+            updateControls(canToggleMedia: false, canHangUp: true)
 
         case .connected(let roomId):
             guard roomId == roomID else { return }
             hasSeenActiveState = true
             updateConnectedStatus()
-            updateControls(canToggleMute: true, canHangUp: true)
+            updateControls(canToggleMedia: true, canHangUp: true)
 
         case .leaving(let roomId):
             guard roomId == roomID else { return }
             setStatus("Leaving...", isBusy: true)
-            updateControls(canToggleMute: false, canHangUp: false)
+            updateControls(canToggleMedia: false, canHangUp: false)
         }
     }
 
     func handleStartFailure(_ error: Error) {
         log("Failed starting native MatrixRTC call in room \(roomID): \(error)")
         setStatus("Could not start call", isBusy: false)
-        updateControls(canToggleMute: false, canHangUp: false)
+        updateControls(canToggleMedia: false, canHangUp: false)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
             self?.dismissOnce()
@@ -365,9 +394,13 @@ private extension NativeMatrixRTCCallViewController {
         }
     }
 
-    func updateControls(canToggleMute: Bool, canHangUp: Bool) {
-        muteButton.isEnabled = canToggleMute
-        muteButton.alpha = canToggleMute ? 1.0 : 0.45
+    func updateControls(canToggleMedia: Bool, canHangUp: Bool) {
+        muteButton.isEnabled = canToggleMedia
+        muteButton.alpha = canToggleMedia ? 1.0 : 0.45
+        cameraButton.isEnabled = canToggleMedia
+        cameraButton.alpha = canToggleMedia ? 1.0 : 0.45
+        switchCameraButton.isEnabled = canToggleMedia && isCameraEnabled
+        switchCameraButton.alpha = canToggleMedia && isCameraEnabled ? 1.0 : 0.35
         endCallButton.isEnabled = canHangUp
         endCallButton.alpha = canHangUp ? 1.0 : 0.45
     }
@@ -385,6 +418,19 @@ private extension NativeMatrixRTCCallViewController {
             : "Mute"
     }
 
+    func updateCameraButton() {
+        var configuration = cameraButton.configuration
+        configuration?.image = UIImage(
+            systemName: isCameraEnabled ? "video.fill" : "video.slash.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 24, weight: .semibold)
+        )
+        configuration?.baseBackgroundColor = isCameraEnabled ? .systemBlue : .systemGray
+        cameraButton.configuration = configuration
+        cameraButton.accessibilityLabel = isCameraEnabled
+            ? "Turn Camera Off"
+            : "Turn Camera On"
+    }
+
     func dismissOnce() {
         guard !didRequestDismiss else { return }
         didRequestDismiss = true
@@ -393,7 +439,7 @@ private extension NativeMatrixRTCCallViewController {
 
     @objc func muteTapped() {
         let nextMutedState = !isMuted
-        updateControls(canToggleMute: false, canHangUp: true)
+        updateControls(canToggleMedia: false, canHangUp: true)
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -405,7 +451,44 @@ private extension NativeMatrixRTCCallViewController {
             }
 
             if case .connected(let roomId) = callService.state, roomId == roomID {
-                updateControls(canToggleMute: true, canHangUp: true)
+                updateControls(canToggleMedia: true, canHangUp: true)
+            }
+        }
+    }
+
+    @objc func cameraTapped() {
+        let nextCameraEnabledState = !isCameraEnabled
+        updateControls(canToggleMedia: false, canHangUp: true)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await callService.setCameraEnabled(nextCameraEnabledState)
+                isCameraEnabled = nextCameraEnabledState
+            } catch {
+                log("Failed toggling native MatrixRTC camera: \(error)")
+            }
+
+            if case .connected(let roomId) = callService.state, roomId == roomID {
+                updateControls(canToggleMedia: true, canHangUp: true)
+            }
+        }
+    }
+
+    @objc func switchCameraTapped() {
+        guard isCameraEnabled else { return }
+        updateControls(canToggleMedia: false, canHangUp: true)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await callService.switchCameraPosition()
+            } catch {
+                log("Failed switching native MatrixRTC camera position: \(error)")
+            }
+
+            if case .connected(let roomId) = callService.state, roomId == roomID {
+                updateControls(canToggleMedia: true, canHangUp: true)
             }
         }
     }
@@ -415,7 +498,7 @@ private extension NativeMatrixRTCCallViewController {
         isEndingCall = true
         startTask?.cancel()
         setStatus("Leaving...", isBusy: true)
-        updateControls(canToggleMute: false, canHangUp: false)
+        updateControls(canToggleMedia: false, canHangUp: false)
 
         leaveTask = Task { @MainActor [weak self] in
             guard let self else { return }
