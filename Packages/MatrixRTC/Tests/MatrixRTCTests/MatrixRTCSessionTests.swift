@@ -112,6 +112,54 @@ import Testing
     #expect(toDeviceClient.sendCount == 1)
 }
 
+@Test func refreshOwnMembershipExpiryExtendsExpiresWithoutChangingCreatedTimestamp() async throws {
+    let membershipClient = FakeSessionMembershipClient()
+    let toDeviceClient = FakeCustomToDeviceClient()
+    let ownMembership = sessionLegacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 10_000,
+        expires: 10_000
+    )
+    let refreshedMembership = sessionLegacyMembership(
+        eventId: "$own-refresh",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 10_000,
+        expires: 20_000
+    )
+    membershipClient.publishResults = [ownMembership, refreshedMembership]
+    membershipClient.activeMembershipResponses = [[]]
+    let session = MatrixRTCSession(
+        configuration: .init(
+            fociPreferred: [],
+            expires: 10_000
+        ),
+        membershipClient: membershipClient,
+        keyTransportFactory: { identity in
+            MatrixRTCToDeviceKeyTransport(
+                roomId: "!room:example.org",
+                ownIdentity: identity,
+                client: toDeviceClient
+            )
+        },
+        keyGenerator: StaticSessionMediaKeyGenerator(key: "own-key"),
+        timestampProvider: { 10_000 },
+        onKeyChanged: { _ in }
+    )
+
+    try await session.join()
+    let refreshed = try await session.refreshOwnMembershipExpiry()
+
+    #expect(refreshed == refreshedMembership)
+    #expect(session.ownMembership == refreshedMembership)
+    #expect(session.memberships.map(\.identity) == [refreshedMembership.identity])
+    #expect(membershipClient.publishCount == 2)
+    #expect(membershipClient.publishedCreatedTimestampHistory == [10_000, 10_000])
+    #expect(membershipClient.publishedExpiresHistory == [10_000, 20_000])
+}
+
 @Test func leavesSessionAndClearsLocalState() async throws {
     let membershipClient = FakeSessionMembershipClient()
     let toDeviceClient = FakeCustomToDeviceClient()
@@ -186,6 +234,7 @@ import Testing
 
 private final class FakeSessionMembershipClient: MatrixRTCSessionMembershipClient, @unchecked Sendable {
     var publishResult: MatrixRTCCallMembership?
+    var publishResults: [MatrixRTCCallMembership] = []
     var activeMembershipResponses: [[MatrixRTCCallMembership]] = []
     var leaveEventId = "$leave"
 
@@ -195,6 +244,8 @@ private final class FakeSessionMembershipClient: MatrixRTCSessionMembershipClien
 
     var publishedFociPreferred: [MatrixRTCTransport]?
     var publishedCreatedTimestamp: Int64?
+    var publishedCreatedTimestampHistory: [Int64?] = []
+    var publishedExpiresHistory: [Int64] = []
     var publishedCallIntent: String?
 
     @discardableResult
@@ -210,7 +261,12 @@ private final class FakeSessionMembershipClient: MatrixRTCSessionMembershipClien
         publishCount += 1
         publishedFociPreferred = fociPreferred
         publishedCreatedTimestamp = createdTimestamp
+        publishedCreatedTimestampHistory.append(createdTimestamp)
+        publishedExpiresHistory.append(expires)
         publishedCallIntent = callIntent
+        if !publishResults.isEmpty {
+            return publishResults.removeFirst()
+        }
         return try #require(publishResult)
     }
 
@@ -255,7 +311,8 @@ private func sessionLegacyMembership(
     eventId: String,
     sender: String,
     deviceId: String,
-    createdTimestamp: Int64
+    createdTimestamp: Int64,
+    expires: Int64 = MatrixRTCCallMembership.defaultExpireDurationMilliseconds
 ) -> MatrixRTCCallMembership {
     let identity = MatrixRTCMembershipIdentity(
         userId: sender,
@@ -271,7 +328,7 @@ private func sessionLegacyMembership(
         identity: identity,
         slot: .matrixCallRoom,
         createdTimestamp: createdTimestamp,
-        absoluteExpiryTimestamp: createdTimestamp + MatrixRTCCallMembership.defaultExpireDurationMilliseconds,
+        absoluteExpiryTimestamp: createdTimestamp + expires,
         rtcBackendIdentity: identity.legacyRTCBackendIdentity,
         transports: [],
         focusSelection: MatrixRTCLegacyCallMembershipFocusSelection.oldestMembership.rawValue,
