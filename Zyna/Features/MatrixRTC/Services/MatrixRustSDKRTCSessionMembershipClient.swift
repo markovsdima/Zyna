@@ -90,4 +90,30 @@ final class MatrixRustSDKRTCSessionMembershipClient: MatrixRTCSessionMembershipC
             roomVersion: roomVersion ?? self.roomVersion
         )
     }
+
+    @discardableResult
+    func scheduleDelayedLeaveOwnLegacyMembership(
+        slot: MatrixRTCSlotDescription,
+        roomVersion: String?,
+        delayMilliseconds: UInt64
+    ) async throws -> String {
+        try await membershipClient.scheduleDelayedLeaveOwnLegacyMembership(
+            room: room,
+            slot: slot,
+            roomVersion: roomVersion ?? self.roomVersion,
+            delayMilliseconds: delayMilliseconds
+        )
+    }
+
+    func restartDelayedEvent(delayId: String) async throws {
+        try await membershipClient.restartDelayedEvent(delayId: delayId)
+    }
+
+    func sendDelayedEvent(delayId: String) async throws {
+        try await membershipClient.sendDelayedEvent(delayId: delayId)
+    }
+
+    func cancelDelayedEvent(delayId: String) async throws {
+        try await membershipClient.cancelDelayedEvent(delayId: delayId)
+    }
 }

@@ -7,6 +7,8 @@ import Foundation
 import MatrixRTC
 import MatrixRustSDK
 
+private let log = ScopedLog(.call, prefix: "[matrixrtc-native]")
+
 final class MatrixRustSDKRTCMembershipClient: @unchecked Sendable {
     private let client: Client
 
@@ -121,6 +123,62 @@ final class MatrixRustSDKRTCMembershipClient: @unchecked Sendable {
         )
     }
 
+    @discardableResult
+    func scheduleDelayedLeaveOwnLegacyMembership(
+        room: Room,
+        slot: MatrixRTCSlotDescription = .matrixCallRoom,
+        roomVersion: String? = nil,
+        delayMilliseconds: UInt64
+    ) async throws -> String {
+        let userId = try client.userId()
+        let deviceId = try client.deviceId()
+        let stateKey = MatrixRTCLegacyCallMembershipStateEvent.stateKey(
+            userId: userId,
+            deviceId: deviceId,
+            slot: slot,
+            roomVersion: roomVersion
+        )
+
+        do {
+            let delayId = try await client.scheduleDelayedStateEvent(
+                roomId: room.id(),
+                eventType: MatrixRTCRawMembershipEvent.legacyCallMemberEventType,
+                stateKey: stateKey,
+                contentJson: MatrixRTCLegacyCallMembershipStateEvent.leaveContentJSON,
+                delayMs: delayMilliseconds
+            )
+            log("Scheduled MatrixRTC delayed leave room=\(room.id()) delayId=\(delayId) delayMs=\(delayMilliseconds)")
+            return delayId
+        } catch let error as DelayedEventError {
+            throw Self.matrixRTCSessionDelayedEventError(from: error)
+        }
+    }
+
+    func restartDelayedEvent(delayId: String) async throws {
+        do {
+            try await client.restartDelayedEvent(delayId: delayId)
+        } catch let error as DelayedEventError {
+            throw Self.matrixRTCSessionDelayedEventError(from: error)
+        }
+    }
+
+    func sendDelayedEvent(delayId: String) async throws {
+        do {
+            try await client.sendDelayedEvent(delayId: delayId)
+            log("Sent scheduled MatrixRTC delayed leave delayId=\(delayId)")
+        } catch let error as DelayedEventError {
+            throw Self.matrixRTCSessionDelayedEventError(from: error)
+        }
+    }
+
+    func cancelDelayedEvent(delayId: String) async throws {
+        do {
+            try await client.cancelDelayedEvent(delayId: delayId)
+        } catch let error as DelayedEventError {
+            throw Self.matrixRTCSessionDelayedEventError(from: error)
+        }
+    }
+
     private func matrixRequest(path: String) async throws -> Data {
         let session = try client.session()
         let url = try Self.matrixURL(homeserverUrl: session.homeserverUrl, percentEncodedPath: path)
@@ -166,6 +224,26 @@ final class MatrixRustSDKRTCMembershipClient: @unchecked Sendable {
     private static func percentEncodedPathComponent(_ value: String) -> String {
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private static func matrixRTCSessionDelayedEventError(
+        from error: DelayedEventError
+    ) -> MatrixRTCSessionDelayedEventError {
+        switch error {
+        case .DelayedEventsUnsupported:
+            return .unsupported
+        case .NotFound:
+            return .notFound
+        case .RateLimited(let retryAfterMs):
+            return .rateLimited(retryAfterMilliseconds: retryAfterMs)
+        case .MaxDelayExceeded(let maxDelayMs):
+            return .maxDelayExceeded(maxDelayMilliseconds: maxDelayMs)
+        case .Generic(let msg, let details):
+            if let details, !details.isEmpty {
+                return .generic("\(msg): \(details)")
+            }
+            return .generic(msg)
+        }
     }
 }
 

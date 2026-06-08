@@ -197,6 +197,112 @@ import Testing
     #expect(session.encryptionKeys().isEmpty)
 }
 
+@Test func joinSchedulesDelayedLeaveWhenSupported() async throws {
+    let membershipClient = FakeSessionMembershipClient()
+    let toDeviceClient = FakeCustomToDeviceClient()
+    let ownMembership = sessionLegacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 10_000
+    )
+    membershipClient.publishResult = ownMembership
+    membershipClient.activeMembershipResponses = [[]]
+    membershipClient.delayedLeaveEventId = "delay-1"
+    let session = MatrixRTCSession(
+        configuration: .init(fociPreferred: []),
+        membershipClient: membershipClient,
+        keyTransportFactory: { identity in
+            MatrixRTCToDeviceKeyTransport(
+                roomId: "!room:example.org",
+                ownIdentity: identity,
+                client: toDeviceClient
+            )
+        },
+        keyGenerator: StaticSessionMediaKeyGenerator(key: "own-key"),
+        timestampProvider: { 10_000 },
+        onKeyChanged: { _ in }
+    )
+
+    try await session.join()
+
+    #expect(membershipClient.scheduledDelayedLeaveSlots == [.matrixCallRoom])
+    #expect(membershipClient.scheduledDelayedLeaveRoomVersions == [nil])
+    #expect(membershipClient.scheduledDelayedLeaveDelays == [18_000])
+}
+
+@Test func leaveSendsScheduledDelayedLeaveWhenAvailable() async throws {
+    let membershipClient = FakeSessionMembershipClient()
+    let toDeviceClient = FakeCustomToDeviceClient()
+    let ownMembership = sessionLegacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 10_000
+    )
+    membershipClient.publishResult = ownMembership
+    membershipClient.activeMembershipResponses = [[]]
+    membershipClient.delayedLeaveEventId = "delay-1"
+    let session = MatrixRTCSession(
+        configuration: .init(fociPreferred: []),
+        membershipClient: membershipClient,
+        keyTransportFactory: { identity in
+            MatrixRTCToDeviceKeyTransport(
+                roomId: "!room:example.org",
+                ownIdentity: identity,
+                client: toDeviceClient
+            )
+        },
+        keyGenerator: StaticSessionMediaKeyGenerator(key: "own-key"),
+        timestampProvider: { 10_000 },
+        onKeyChanged: { _ in }
+    )
+
+    try await session.join()
+    let leaveEventId = try await session.leave()
+
+    #expect(leaveEventId == nil)
+    #expect(membershipClient.sentDelayedEventIds == ["delay-1"])
+    #expect(membershipClient.leaveCount == 0)
+    #expect(session.state == .left)
+}
+
+@Test func leaveFallsBackToImmediateLeaveWhenScheduledDelayedLeaveFails() async throws {
+    let membershipClient = FakeSessionMembershipClient()
+    let toDeviceClient = FakeCustomToDeviceClient()
+    let ownMembership = sessionLegacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 10_000
+    )
+    membershipClient.publishResult = ownMembership
+    membershipClient.activeMembershipResponses = [[]]
+    membershipClient.delayedLeaveEventId = "delay-1"
+    membershipClient.sendDelayedEventError = MatrixRTCSessionDelayedEventError.notFound
+    let session = MatrixRTCSession(
+        configuration: .init(fociPreferred: []),
+        membershipClient: membershipClient,
+        keyTransportFactory: { identity in
+            MatrixRTCToDeviceKeyTransport(
+                roomId: "!room:example.org",
+                ownIdentity: identity,
+                client: toDeviceClient
+            )
+        },
+        keyGenerator: StaticSessionMediaKeyGenerator(key: "own-key"),
+        timestampProvider: { 10_000 },
+        onKeyChanged: { _ in }
+    )
+
+    try await session.join()
+    let leaveEventId = try await session.leave()
+
+    #expect(leaveEventId == "$leave")
+    #expect(membershipClient.sentDelayedEventIds == ["delay-1"])
+    #expect(membershipClient.leaveCount == 1)
+}
+
 @Test func reemitsKnownSessionEncryptionKeys() async throws {
     let membershipClient = FakeSessionMembershipClient()
     let toDeviceClient = FakeCustomToDeviceClient()
@@ -237,6 +343,8 @@ private final class FakeSessionMembershipClient: MatrixRTCSessionMembershipClien
     var publishResults: [MatrixRTCCallMembership] = []
     var activeMembershipResponses: [[MatrixRTCCallMembership]] = []
     var leaveEventId = "$leave"
+    var delayedLeaveEventId: String?
+    var sendDelayedEventError: Error?
 
     var publishCount = 0
     var loadCount = 0
@@ -247,6 +355,12 @@ private final class FakeSessionMembershipClient: MatrixRTCSessionMembershipClien
     var publishedCreatedTimestampHistory: [Int64?] = []
     var publishedExpiresHistory: [Int64] = []
     var publishedCallIntent: String?
+    var scheduledDelayedLeaveSlots: [MatrixRTCSlotDescription] = []
+    var scheduledDelayedLeaveRoomVersions: [String?] = []
+    var scheduledDelayedLeaveDelays: [UInt64] = []
+    var restartedDelayedEventIds: [String] = []
+    var sentDelayedEventIds: [String] = []
+    var canceledDelayedEventIds: [String] = []
 
     @discardableResult
     func publishOwnLegacyMembership(
@@ -292,6 +406,36 @@ private final class FakeSessionMembershipClient: MatrixRTCSessionMembershipClien
     ) async throws -> String {
         leaveCount += 1
         return leaveEventId
+    }
+
+    @discardableResult
+    func scheduleDelayedLeaveOwnLegacyMembership(
+        slot: MatrixRTCSlotDescription,
+        roomVersion: String?,
+        delayMilliseconds: UInt64
+    ) async throws -> String {
+        scheduledDelayedLeaveSlots.append(slot)
+        scheduledDelayedLeaveRoomVersions.append(roomVersion)
+        scheduledDelayedLeaveDelays.append(delayMilliseconds)
+        guard let delayedLeaveEventId else {
+            throw MatrixRTCSessionDelayedEventError.unsupported
+        }
+        return delayedLeaveEventId
+    }
+
+    func restartDelayedEvent(delayId: String) async throws {
+        restartedDelayedEventIds.append(delayId)
+    }
+
+    func sendDelayedEvent(delayId: String) async throws {
+        sentDelayedEventIds.append(delayId)
+        if let sendDelayedEventError {
+            throw sendDelayedEventError
+        }
+    }
+
+    func cancelDelayedEvent(delayId: String) async throws {
+        canceledDelayedEventIds.append(delayId)
     }
 }
 

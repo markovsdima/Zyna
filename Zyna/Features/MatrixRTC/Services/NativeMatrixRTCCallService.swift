@@ -127,7 +127,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                     log("Failed to apply media key: \(error)")
                 },
                 onError: { error in
-                    log("MatrixRTC media key transport error: \(error)")
+                    log("MatrixRTC session error: \(error)")
                 }
             )
             matrixRTCSession = session

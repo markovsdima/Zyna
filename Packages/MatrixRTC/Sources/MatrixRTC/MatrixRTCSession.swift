@@ -23,6 +23,42 @@ public protocol MatrixRTCSessionMembershipClient: Sendable {
         slot: MatrixRTCSlotDescription,
         roomVersion: String?
     ) async throws -> String
+
+    @discardableResult
+    func scheduleDelayedLeaveOwnLegacyMembership(
+        slot: MatrixRTCSlotDescription,
+        roomVersion: String?,
+        delayMilliseconds: UInt64
+    ) async throws -> String
+
+    func restartDelayedEvent(delayId: String) async throws
+
+    func sendDelayedEvent(delayId: String) async throws
+
+    func cancelDelayedEvent(delayId: String) async throws
+}
+
+public extension MatrixRTCSessionMembershipClient {
+    @discardableResult
+    func scheduleDelayedLeaveOwnLegacyMembership(
+        slot: MatrixRTCSlotDescription,
+        roomVersion: String?,
+        delayMilliseconds: UInt64
+    ) async throws -> String {
+        throw MatrixRTCSessionDelayedEventError.unsupported
+    }
+
+    func restartDelayedEvent(delayId: String) async throws {
+        throw MatrixRTCSessionDelayedEventError.unsupported
+    }
+
+    func sendDelayedEvent(delayId: String) async throws {
+        throw MatrixRTCSessionDelayedEventError.unsupported
+    }
+
+    func cancelDelayedEvent(delayId: String) async throws {
+        throw MatrixRTCSessionDelayedEventError.unsupported
+    }
 }
 
 public enum MatrixRTCSessionState: Equatable, Sendable {
@@ -37,6 +73,14 @@ public enum MatrixRTCSessionError: Error, Equatable {
     case notJoined
 }
 
+public enum MatrixRTCSessionDelayedEventError: Error, Equatable, Sendable {
+    case unsupported
+    case notFound
+    case rateLimited(retryAfterMilliseconds: UInt64?)
+    case maxDelayExceeded(maxDelayMilliseconds: UInt64?)
+    case generic(String)
+}
+
 public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
     public let slot: MatrixRTCSlotDescription
     public let roomVersion: String?
@@ -45,6 +89,8 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
     public let expires: Int64
     public let membershipEventExpiryHeadroomMilliseconds: Int64
     public let membershipEventExpiryRefreshRetryDelayMilliseconds: UInt64
+    public let delayedLeaveEventDelayMilliseconds: UInt64?
+    public let delayedLeaveEventRestartMilliseconds: UInt64
     public let callIntent: String?
     public let joinedUserIds: Set<String>?
     public let mediaKeyRotationConfiguration: MatrixRTCMediaKeyRotationConfiguration
@@ -57,6 +103,8 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
         expires: Int64 = MatrixRTCCallMembership.defaultExpireDurationMilliseconds,
         membershipEventExpiryHeadroomMilliseconds: Int64 = 5_000,
         membershipEventExpiryRefreshRetryDelayMilliseconds: UInt64 = 5_000,
+        delayedLeaveEventDelayMilliseconds: UInt64? = 18_000,
+        delayedLeaveEventRestartMilliseconds: UInt64 = 4_000,
         callIntent: String? = nil,
         joinedUserIds: Set<String>? = nil,
         mediaKeyRotationConfiguration: MatrixRTCMediaKeyRotationConfiguration = .init()
@@ -68,6 +116,8 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
         self.expires = expires
         self.membershipEventExpiryHeadroomMilliseconds = membershipEventExpiryHeadroomMilliseconds
         self.membershipEventExpiryRefreshRetryDelayMilliseconds = membershipEventExpiryRefreshRetryDelayMilliseconds
+        self.delayedLeaveEventDelayMilliseconds = delayedLeaveEventDelayMilliseconds
+        self.delayedLeaveEventRestartMilliseconds = delayedLeaveEventRestartMilliseconds
         self.callIntent = callIntent
         self.joinedUserIds = joinedUserIds
         self.mediaKeyRotationConfiguration = mediaKeyRotationConfiguration
@@ -156,6 +206,7 @@ public final class MatrixRTCSession: @unchecked Sendable {
 
     deinit {
         stopMembershipExpiryRefresh()
+        stopDelayedLeaveRefresh()
         withStateLock {
             mutableState.mediaKeyManager
         }?.stop()
@@ -174,6 +225,7 @@ public final class MatrixRTCSession: @unchecked Sendable {
 
             var publishedOwnMembership: MatrixRTCCallMembership?
             var startedMediaKeyManager: MatrixRTCMediaKeyManager?
+            var scheduledDelayedLeaveEventID: String?
 
             do {
                 let createdTimestamp = timestampProvider()
@@ -187,6 +239,7 @@ public final class MatrixRTCSession: @unchecked Sendable {
                     callIntent: configuration.callIntent
                 )
                 publishedOwnMembership = ownMembership
+                scheduledDelayedLeaveEventID = await scheduleDelayedLeaveIfPossible()
 
                 let loadedMemberships = try await membershipClient.loadActiveMemberships(
                     slot: configuration.slot,
@@ -214,9 +267,11 @@ public final class MatrixRTCSession: @unchecked Sendable {
                     mutableState.ownMembership = ownMembership
                     mutableState.memberships = activeMemberships
                     mutableState.mediaKeyManager = manager
+                    mutableState.delayedLeaveEventID = scheduledDelayedLeaveEventID
                     mutableState.state = .joined
                 }
                 startMembershipExpiryRefresh()
+                startDelayedLeaveRefresh()
 
                 return .init(
                     ownMembership: ownMembership,
@@ -226,16 +281,15 @@ public final class MatrixRTCSession: @unchecked Sendable {
             } catch {
                 startedMediaKeyManager?.stop()
                 if publishedOwnMembership != nil {
-                    _ = try? await membershipClient.leaveOwnLegacyMembership(
-                        slot: configuration.slot,
-                        roomVersion: configuration.roomVersion
-                    )
+                    _ = try? await leaveOwnLegacyMembership(delayedLeaveEventID: scheduledDelayedLeaveEventID)
                 }
                 stopMembershipExpiryRefresh()
+                stopDelayedLeaveRefresh()
                 withStateLock {
                     mutableState.ownMembership = nil
                     mutableState.memberships = []
                     mutableState.mediaKeyManager = nil
+                    mutableState.delayedLeaveEventID = nil
                     mutableState.state = .idle
                 }
                 throw error
@@ -343,24 +397,26 @@ public final class MatrixRTCSession: @unchecked Sendable {
             }
 
             stopMembershipExpiryRefresh()
+            stopDelayedLeaveRefresh()
 
-            let stoppedMediaKeyManager = withStateLock {
-                mutableState.mediaKeyManager
+            let snapshot = withStateLock {
+                (
+                    mediaKeyManager: mutableState.mediaKeyManager,
+                    delayedLeaveEventID: mutableState.delayedLeaveEventID
+                )
             }
             defer {
-                stoppedMediaKeyManager?.stop()
+                snapshot.mediaKeyManager?.stop()
                 withStateLock {
                     mutableState.mediaKeyManager = nil
                     mutableState.ownMembership = nil
                     mutableState.memberships = []
+                    mutableState.delayedLeaveEventID = nil
                     mutableState.state = .left
                 }
             }
 
-            return try await membershipClient.leaveOwnLegacyMembership(
-                slot: configuration.slot,
-                roomVersion: configuration.roomVersion
-            )
+            return try await leaveOwnLegacyMembership(delayedLeaveEventID: snapshot.delayedLeaveEventID)
         }
     }
 
@@ -442,6 +498,162 @@ public final class MatrixRTCSession: @unchecked Sendable {
         task?.cancel()
     }
 
+    private func startDelayedLeaveRefresh() {
+        stopDelayedLeaveRefresh()
+
+        let shouldStart = withStateLock {
+            mutableState.delayedLeaveEventID != nil
+        }
+        guard shouldStart, configuration.delayedLeaveEventRestartMilliseconds > 0 else {
+            return
+        }
+
+        let task = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let restartDelay = self?.configuration.delayedLeaveEventRestartMilliseconds else {
+                    return
+                }
+
+                do {
+                    try await Self.sleep(milliseconds: restartDelay)
+                    try Task.checkCancellation()
+                    guard await self?.restartDelayedLeaveEvent() == true else {
+                        return
+                    }
+                } catch {
+                    return
+                }
+            }
+        }
+        withStateLock {
+            mutableState.delayedLeaveRefreshTask = task
+        }
+    }
+
+    private func stopDelayedLeaveRefresh() {
+        let task = withStateLock {
+            let task = mutableState.delayedLeaveRefreshTask
+            mutableState.delayedLeaveRefreshTask = nil
+            return task
+        }
+        task?.cancel()
+    }
+
+    private func scheduleDelayedLeaveIfPossible(delayMilliseconds: UInt64? = nil) async -> String? {
+        guard let configuredDelay = configuration.delayedLeaveEventDelayMilliseconds else {
+            return nil
+        }
+
+        let effectiveDelay = delayMilliseconds ?? configuredDelay
+        do {
+            return try await membershipClient.scheduleDelayedLeaveOwnLegacyMembership(
+                slot: configuration.slot,
+                roomVersion: configuration.roomVersion,
+                delayMilliseconds: effectiveDelay
+            )
+        } catch MatrixRTCSessionDelayedEventError.maxDelayExceeded(let maxDelayMilliseconds) {
+            guard let maxDelayMilliseconds,
+                  maxDelayMilliseconds > 0,
+                  maxDelayMilliseconds < effectiveDelay else {
+                reportDelayedLeaveError(MatrixRTCSessionDelayedEventError.maxDelayExceeded(maxDelayMilliseconds: maxDelayMilliseconds))
+                return nil
+            }
+
+            return await scheduleDelayedLeaveIfPossible(delayMilliseconds: maxDelayMilliseconds)
+        } catch {
+            reportDelayedLeaveError(error)
+            return nil
+        }
+    }
+
+    private func restartDelayedLeaveEvent() async -> Bool {
+        let snapshot = withStateLock {
+            (
+                state: mutableState.state,
+                delayedLeaveEventID: mutableState.delayedLeaveEventID
+            )
+        }
+        guard snapshot.state == .joined else {
+            return false
+        }
+        guard let delayedLeaveEventID = snapshot.delayedLeaveEventID else {
+            return false
+        }
+
+        do {
+            try await membershipClient.restartDelayedEvent(delayId: delayedLeaveEventID)
+            return true
+        } catch MatrixRTCSessionDelayedEventError.notFound {
+            guard let rescheduledID = await scheduleDelayedLeaveIfPossible() else {
+                withStateLock {
+                    if mutableState.delayedLeaveEventID == delayedLeaveEventID {
+                        mutableState.delayedLeaveEventID = nil
+                    }
+                }
+                return false
+            }
+
+            return withStateLock {
+                guard mutableState.state == .joined,
+                      mutableState.delayedLeaveEventID == delayedLeaveEventID else {
+                    return false
+                }
+                mutableState.delayedLeaveEventID = rescheduledID
+                return true
+            }
+        } catch {
+            if Self.isDelayedEventsUnsupported(error) {
+                withStateLock {
+                    if mutableState.delayedLeaveEventID == delayedLeaveEventID {
+                        mutableState.delayedLeaveEventID = nil
+                    }
+                }
+                return false
+            }
+
+            reportDelayedLeaveError(error)
+            return true
+        }
+    }
+
+    private func leaveOwnLegacyMembership(delayedLeaveEventID: String?) async throws -> String? {
+        guard let delayedLeaveEventID else {
+            return try await membershipClient.leaveOwnLegacyMembership(
+                slot: configuration.slot,
+                roomVersion: configuration.roomVersion
+            )
+        }
+
+        do {
+            try await membershipClient.sendDelayedEvent(delayId: delayedLeaveEventID)
+            return nil
+        } catch {
+            reportDelayedLeaveError(error)
+            return try await membershipClient.leaveOwnLegacyMembership(
+                slot: configuration.slot,
+                roomVersion: configuration.roomVersion
+            )
+        }
+    }
+
+    private func reportDelayedLeaveError(_ error: Error) {
+        guard !Self.isDelayedEventsUnsupported(error) else {
+            return
+        }
+        onError?(error)
+    }
+
+    private static func isDelayedEventsUnsupported(_ error: Error) -> Bool {
+        guard let error = error as? MatrixRTCSessionDelayedEventError else {
+            return false
+        }
+
+        if case .unsupported = error {
+            return true
+        }
+        return false
+    }
+
     private func membershipExpiryRefreshDelayMilliseconds() -> UInt64 {
         let snapshot = withStateLock {
             (
@@ -498,6 +710,8 @@ private struct MatrixRTCSessionMutableState {
     var mediaKeyManager: MatrixRTCMediaKeyManager?
     var membershipExpiryRefreshTask: Task<Void, Never>?
     var membershipExpiryRefreshIteration: Int64 = 1
+    var delayedLeaveEventID: String?
+    var delayedLeaveRefreshTask: Task<Void, Never>?
 }
 
 private actor MatrixRTCSessionAsyncSerialExecutor {
