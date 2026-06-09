@@ -34,6 +34,7 @@ private enum NSESecurityConfig {
     static let sessionKeychainService = "com.zyna.matrix.session"
     static let passphraseKeychainService = "com.zyna.matrix.crypto"
     static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
+    static let matrixCryptoStoreDatabaseName = "matrix-sdk-crypto.sqlite3"
 
     private static let keychainAccessGroupInfoPlistKey = "ZynaKeychainAccessGroup"
     private static let fallbackKeychainAccessGroup = "UM3QPHF8E3.com.app.zyna.shared"
@@ -80,7 +81,7 @@ final class NSEMatrixBootstrap {
 
     private enum BootstrapError: Error, CustomStringConvertible {
         case appGroupUnavailable
-        case matrixStoreUnavailable(dataHasContents: Bool, cacheHasContents: Bool)
+        case matrixStoreUnavailable(dataHasContents: Bool, cacheHasContents: Bool, cryptoStoreExists: Bool)
         case userIdUnavailable
         case sessionUnavailable(String)
         case passphraseUnavailable
@@ -89,8 +90,8 @@ final class NSEMatrixBootstrap {
             switch self {
             case .appGroupUnavailable:
                 return "App Group container is unavailable"
-            case .matrixStoreUnavailable(let dataHasContents, let cacheHasContents):
-                return "Matrix store is unavailable data=\(dataHasContents) cache=\(cacheHasContents)"
+            case .matrixStoreUnavailable(let dataHasContents, let cacheHasContents, let cryptoStoreExists):
+                return "Matrix store is unavailable data=\(dataHasContents) cache=\(cacheHasContents) crypto=\(cryptoStoreExists)"
             case .userIdUnavailable:
                 return "Last Matrix userId is unavailable"
             case .sessionUnavailable(let userId):
@@ -366,10 +367,12 @@ final class NSEMatrixBootstrap {
 
         let dataHasContents = directoryHasContents(dataDirectory)
         let cacheHasContents = directoryHasContents(cacheDirectory)
-        guard dataHasContents, cacheHasContents else {
+        let cryptoStoreExists = matrixCryptoStoreExists(in: dataDirectory)
+        guard dataHasContents, cacheHasContents, cryptoStoreExists else {
             throw BootstrapError.matrixStoreUnavailable(
                 dataHasContents: dataHasContents,
-                cacheHasContents: cacheHasContents
+                cacheHasContents: cacheHasContents,
+                cryptoStoreExists: cryptoStoreExists
             )
         }
 
@@ -445,6 +448,22 @@ final class NSEMatrixBootstrap {
         }
 
         return !contents.isEmpty
+    }
+
+    private func matrixCryptoStoreExists(in directory: URL) -> Bool {
+        let databaseURL = directory.appendingPathComponent(
+            NSESecurityConfig.matrixCryptoStoreDatabaseName,
+            isDirectory: false
+        )
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: databaseURL.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let resourceValues = try? databaseURL.resourceValues(forKeys: [.fileSizeKey]),
+              let fileSize = resourceValues.fileSize else {
+            return false
+        }
+
+        return fileSize > 0
     }
 
     private func log(_ message: String) {

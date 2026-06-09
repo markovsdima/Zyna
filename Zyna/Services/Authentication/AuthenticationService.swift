@@ -15,6 +15,8 @@ enum AuthenticationError: LocalizedError {
     case invalidCredentials
     case networkError
     case sessionNotFound
+    case localCryptoStoreMissing
+    case localCryptoIdentityMismatch
     case sessionPersistenceFailed(String)
     case invalidOAuthURL
     case registrationNotSupported
@@ -31,6 +33,10 @@ enum AuthenticationError: LocalizedError {
             return "Network connection error"
         case .sessionNotFound:
             return "No saved session found"
+        case .localCryptoStoreMissing:
+            return "Local encryption store is missing"
+        case .localCryptoIdentityMismatch:
+            return "Local encryption identity changed for the saved device"
         case .sessionPersistenceFailed(let message):
             return "Failed to save session: \(message)"
         case .invalidOAuthURL:
