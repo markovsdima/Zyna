@@ -54,10 +54,12 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
     let pickupStateSubject = CurrentValueSubject<NativeMatrixRTCCallPickupState, Never>(.inactive)
 
     var state: NativeMatrixRTCCallServiceState {
-        stateSubject.value
+        withLock { serviceState }
     }
 
     private let lock = NSLock()
+    private var serviceState: NativeMatrixRTCCallServiceState = .idle
+    private var pickupState: NativeMatrixRTCCallPickupState = .inactive
     // Local generation id used to ignore stale events from canceled join attempts.
     private var currentCallAttemptID: UUID?
     private var activeCall: NativeMatrixRTCCall?
@@ -300,7 +302,7 @@ private extension NativeMatrixRTCCallService {
     func shouldEndActiveCallForLifecycleEvent(attemptID: UUID) -> Bool {
         withLock {
             guard activeCall?.attemptID == attemptID else { return false }
-            switch stateSubject.value {
+            switch serviceState {
             case .connected:
                 return true
             case .idle, .joining, .leaving:
@@ -351,51 +353,70 @@ private extension NativeMatrixRTCCallService {
     }
 
     func beginJoining(roomId: String) throws -> UUID {
-        try withLock {
+        let nextState = NativeMatrixRTCCallServiceState.joining(roomId: roomId)
+        let attemptID = try withLock {
             if let activeCall {
                 throw NativeMatrixRTCCallServiceError.alreadyActive(roomId: activeCall.roomId)
             }
 
             if currentCallAttemptID != nil {
-                throw NativeMatrixRTCCallServiceError.alreadyActive(roomId: stateSubject.value.roomId ?? roomId)
+                throw NativeMatrixRTCCallServiceError.alreadyActive(roomId: serviceState.roomId ?? roomId)
             }
 
-            switch stateSubject.value {
+            switch serviceState {
             case .idle:
                 let attemptID = UUID()
                 currentCallAttemptID = attemptID
-                stateSubject.send(.joining(roomId: roomId))
+                serviceState = nextState
                 return attemptID
             case .joining(let roomId), .connected(let roomId), .leaving(let roomId):
                 throw NativeMatrixRTCCallServiceError.alreadyActive(roomId: roomId)
             }
         }
+        stateSubject.send(nextState)
+        return attemptID
     }
 
     func finishJoined(_ call: NativeMatrixRTCCall) -> Bool {
-        withLock {
+        let nextState = NativeMatrixRTCCallServiceState.connected(roomId: call.roomId)
+        let joined = withLock {
             guard currentCallAttemptID == call.attemptID else { return false }
-            guard case .joining = stateSubject.value else { return false }
+            guard case .joining = serviceState else { return false }
             activeCall = call
-            stateSubject.send(.connected(roomId: call.roomId))
+            serviceState = nextState
             return true
         }
+        if joined {
+            stateSubject.send(nextState)
+        }
+        return joined
     }
 
     func finishFailed(attemptID: UUID) {
-        let snapshot: NativeMatrixRTCCallParticipantsSnapshot? = withLock {
+        let result: (
+            snapshot: NativeMatrixRTCCallParticipantsSnapshot,
+            state: NativeMatrixRTCCallServiceState,
+            pickupState: NativeMatrixRTCCallPickupState,
+            tasksToCancel: NativeMatrixRTCCallTasksToCancel
+        )? = withLock {
             guard currentCallAttemptID == attemptID else { return nil }
-            membershipRefreshTask?.cancel()
-            membershipRefreshTask = nil
-            cancelCallPickupTrackingLocked()
+            let tasksToCancel = takeCallTasksLocked()
             currentCallAttemptID = nil
             activeCall = nil
-            stateSubject.send(.idle)
-            pickupStateSubject.send(.inactive)
-            return participantStore.reset(roomId: nil)
+            serviceState = .idle
+            pickupState = .inactive
+            return (
+                snapshot: participantStore.reset(roomId: nil),
+                state: serviceState,
+                pickupState: pickupState,
+                tasksToCancel: tasksToCancel
+            )
         }
-        guard let snapshot else { return }
-        participantsSubject.send(snapshot)
+        guard let result else { return }
+        result.tasksToCancel.cancel()
+        stateSubject.send(result.state)
+        pickupStateSubject.send(result.pickupState)
+        participantsSubject.send(result.snapshot)
     }
 
     func beginLeaving(reason: String) -> NativeMatrixRTCCall? {
@@ -403,60 +424,86 @@ private extension NativeMatrixRTCCallService {
     }
 
     func beginLeaving(reason: String, attemptID: UUID?) -> NativeMatrixRTCCall? {
-        withLock {
+        let result: (
+            call: NativeMatrixRTCCall?,
+            state: NativeMatrixRTCCallServiceState?,
+            logRoomId: String?,
+            tasksToCancel: NativeMatrixRTCCallTasksToCancel
+        ) = withLock {
             if let attemptID, currentCallAttemptID != attemptID {
-                return nil
+                return (call: nil, state: nil, logRoomId: nil, tasksToCancel: .empty)
             }
 
             guard let activeCall else {
                 guard currentCallAttemptID != nil else {
-                    stateSubject.send(.idle)
-                    return nil
+                    serviceState = .idle
+                    return (call: nil, state: serviceState, logRoomId: nil, tasksToCancel: .empty)
                 }
 
-                switch stateSubject.value {
+                switch serviceState {
                 case .joining(let roomId):
-                    membershipRefreshTask?.cancel()
-                    membershipRefreshTask = nil
-                    cancelCallPickupTrackingLocked()
-                    stateSubject.send(.leaving(roomId: roomId))
-                    log("Ending native MatrixRTC call in room \(roomId) reason=\(reason)")
+                    let tasksToCancel = takeCallTasksLocked()
+                    serviceState = .leaving(roomId: roomId)
+                    return (call: nil, state: serviceState, logRoomId: roomId, tasksToCancel: tasksToCancel)
                 case .idle:
-                    stateSubject.send(.idle)
+                    serviceState = .idle
+                    return (call: nil, state: serviceState, logRoomId: nil, tasksToCancel: .empty)
                 case .connected(let roomId), .leaving(let roomId):
-                    stateSubject.send(.leaving(roomId: roomId))
+                    serviceState = .leaving(roomId: roomId)
+                    return (call: nil, state: serviceState, logRoomId: nil, tasksToCancel: .empty)
                 }
-                return nil
             }
 
-            switch stateSubject.value {
+            switch serviceState {
             case .leaving:
-                return nil
+                return (call: nil, state: nil, logRoomId: nil, tasksToCancel: .empty)
             case .idle, .joining, .connected:
-                membershipRefreshTask?.cancel()
-                membershipRefreshTask = nil
-                cancelCallPickupTrackingLocked()
-                stateSubject.send(.leaving(roomId: activeCall.roomId))
-                log("Ending native MatrixRTC call in room \(activeCall.roomId) reason=\(reason)")
-                return activeCall
+                let tasksToCancel = takeCallTasksLocked()
+                serviceState = .leaving(roomId: activeCall.roomId)
+                return (
+                    call: activeCall,
+                    state: serviceState,
+                    logRoomId: activeCall.roomId,
+                    tasksToCancel: tasksToCancel
+                )
             }
         }
+
+        result.tasksToCancel.cancel()
+        if let state = result.state {
+            stateSubject.send(state)
+        }
+        if let roomId = result.logRoomId {
+            log("Ending native MatrixRTC call in room \(roomId) reason=\(reason)")
+        }
+        return result.call
     }
 
     func finishLeft(attemptID: UUID) {
-        let snapshot: NativeMatrixRTCCallParticipantsSnapshot? = withLock {
+        let result: (
+            snapshot: NativeMatrixRTCCallParticipantsSnapshot,
+            state: NativeMatrixRTCCallServiceState,
+            pickupState: NativeMatrixRTCCallPickupState,
+            tasksToCancel: NativeMatrixRTCCallTasksToCancel
+        )? = withLock {
             guard currentCallAttemptID == attemptID else { return nil }
-            membershipRefreshTask?.cancel()
-            membershipRefreshTask = nil
-            cancelCallPickupTrackingLocked()
+            let tasksToCancel = takeCallTasksLocked()
             currentCallAttemptID = nil
             activeCall = nil
-            stateSubject.send(.idle)
-            pickupStateSubject.send(.inactive)
-            return participantStore.reset(roomId: nil)
+            serviceState = .idle
+            pickupState = .inactive
+            return (
+                snapshot: participantStore.reset(roomId: nil),
+                state: serviceState,
+                pickupState: pickupState,
+                tasksToCancel: tasksToCancel
+            )
         }
-        guard let snapshot else { return }
-        participantsSubject.send(snapshot)
+        guard let result else { return }
+        result.tasksToCancel.cancel()
+        stateSubject.send(result.state)
+        pickupStateSubject.send(result.pickupState)
+        participantsSubject.send(result.snapshot)
     }
 
     func currentActiveCall() -> NativeMatrixRTCCall? {
@@ -516,14 +563,15 @@ private extension NativeMatrixRTCCallService {
             await self.autoLeaveWhenOthersLeftIfConfirmed(call: call)
         }
 
-        withLock {
+        let taskToCancel: Task<Void, Never>? = withLock {
             guard activeCall?.attemptID == attemptID else {
-                task.cancel()
-                return
+                return task
             }
-            autoLeaveWhenOthersLeftTask?.cancel()
+            let previousTask = autoLeaveWhenOthersLeftTask
             autoLeaveWhenOthersLeftTask = task
+            return previousTask
         }
+        taskToCancel?.cancel()
     }
 
     func autoLeaveWhenOthersLeftIfConfirmed(call: NativeMatrixRTCCall) async {
@@ -590,16 +638,18 @@ private extension NativeMatrixRTCCallService {
 
         let remainingNanoseconds = Self.remainingNanoseconds(until: pickupAttempt.expiresAt)
         guard remainingNanoseconds > 0 else {
+            let nextPickupState = NativeMatrixRTCCallPickupState.ringing(
+                roomId: call.roomId,
+                notificationEventId: pickupAttempt.notificationEventId,
+                expiresAt: pickupAttempt.expiresAt
+            )
             let started = withLock {
                 guard activeCall?.attemptID == call.attemptID else { return false }
-                pickupStateSubject.send(.ringing(
-                    roomId: call.roomId,
-                    notificationEventId: pickupAttempt.notificationEventId,
-                    expiresAt: pickupAttempt.expiresAt
-                ))
+                pickupState = nextPickupState
                 return true
             }
             guard started else { return }
+            pickupStateSubject.send(nextPickupState)
             Task { [weak self] in
                 await self?.handleCallPickupTimeout(
                     attemptID: call.attemptID,
@@ -627,21 +677,31 @@ private extension NativeMatrixRTCCallService {
             log("Failed observing MatrixRTC pickup decline room=\(call.roomId) notificationEventId=\(pickupAttempt.notificationEventId): \(error)")
         }
 
-        let started = withLock {
-            guard activeCall?.attemptID == call.attemptID else { return false }
-            pickupDeclineHandle?.cancel()
-            pickupTimeoutTask?.cancel()
+        let nextPickupState = NativeMatrixRTCCallPickupState.ringing(
+            roomId: call.roomId,
+            notificationEventId: pickupAttempt.notificationEventId,
+            expiresAt: pickupAttempt.expiresAt
+        )
+        let startResult: (
+            previousDeclineHandle: TaskHandle?,
+            previousTimeoutTask: Task<Void, Never>?
+        )? = withLock {
+            guard activeCall?.attemptID == call.attemptID else { return nil }
+            let previousDeclineHandle = pickupDeclineHandle
+            let previousTimeoutTask = pickupTimeoutTask
             pickupDeclineHandle = declineHandle
             pickupTimeoutTask = timeoutTask
-            pickupStateSubject.send(.ringing(
-                roomId: call.roomId,
-                notificationEventId: pickupAttempt.notificationEventId,
-                expiresAt: pickupAttempt.expiresAt
-            ))
-            return true
+            pickupState = nextPickupState
+            return (
+                previousDeclineHandle: previousDeclineHandle,
+                previousTimeoutTask: previousTimeoutTask
+            )
         }
 
-        if started {
+        if let startResult {
+            startResult.previousDeclineHandle?.cancel()
+            startResult.previousTimeoutTask?.cancel()
+            pickupStateSubject.send(nextPickupState)
             log("Started MatrixRTC pickup wait room=\(call.roomId) notificationEventId=\(pickupAttempt.notificationEventId) timeoutMs=\(pickupAttempt.lifetimeMilliseconds)")
         } else {
             declineHandle?.cancel()
@@ -654,24 +714,35 @@ private extension NativeMatrixRTCCallService {
         notificationEventId: String,
         declinerUserId: String
     ) {
-        let shouldEnd = withLock {
+        let result: (
+            pickupState: NativeMatrixRTCCallPickupState,
+            timeoutTask: Task<Void, Never>?,
+            declineHandle: TaskHandle?
+        )? = withLock {
             guard let activeCall,
                   activeCall.attemptID == attemptID,
                   activeCall.pickupAttempt?.notificationEventId == notificationEventId,
                   declinerUserId != activeCall.ownUserId,
-                  pickupStateSubject.value.isRinging else {
-                return false
+                  pickupState.isRinging else {
+                return nil
             }
 
-            pickupTimeoutTask?.cancel()
+            let timeoutTask = pickupTimeoutTask
+            let declineHandle = pickupDeclineHandle
             pickupTimeoutTask = nil
-            pickupDeclineHandle?.cancel()
             pickupDeclineHandle = nil
-            pickupStateSubject.send(.declined(roomId: activeCall.roomId))
-            return true
+            pickupState = .declined(roomId: activeCall.roomId)
+            return (
+                pickupState: pickupState,
+                timeoutTask: timeoutTask,
+                declineHandle: declineHandle
+            )
         }
 
-        guard shouldEnd else { return }
+        guard let result else { return }
+        result.timeoutTask?.cancel()
+        result.declineHandle?.cancel()
+        pickupStateSubject.send(result.pickupState)
         log("MatrixRTC pickup declined notificationEventId=\(notificationEventId) sender=\(declinerUserId)")
         Task { [weak self] in
             await self?.endActiveCall(reason: "pickupDeclined", attemptID: attemptID)
@@ -682,22 +753,30 @@ private extension NativeMatrixRTCCallService {
         attemptID: UUID,
         notificationEventId: String
     ) async {
-        let shouldEnd = withLock {
+        let result: (
+            pickupState: NativeMatrixRTCCallPickupState,
+            declineHandle: TaskHandle?
+        )? = withLock {
             guard let activeCall,
                   activeCall.attemptID == attemptID,
                   activeCall.pickupAttempt?.notificationEventId == notificationEventId,
-                  pickupStateSubject.value.isRinging else {
-                return false
+                  pickupState.isRinging else {
+                return nil
             }
 
             pickupTimeoutTask = nil
-            pickupDeclineHandle?.cancel()
+            let declineHandle = pickupDeclineHandle
             pickupDeclineHandle = nil
-            pickupStateSubject.send(.timedOut(roomId: activeCall.roomId))
-            return true
+            pickupState = .timedOut(roomId: activeCall.roomId)
+            return (
+                pickupState: pickupState,
+                declineHandle: declineHandle
+            )
         }
 
-        guard shouldEnd else { return }
+        guard let result else { return }
+        result.declineHandle?.cancel()
+        pickupStateSubject.send(result.pickupState)
         log("MatrixRTC pickup timed out notificationEventId=\(notificationEventId)")
         await endActiveCall(reason: "pickupTimeout", attemptID: attemptID)
     }
@@ -764,7 +843,7 @@ private extension NativeMatrixRTCCallService {
             guard let activeCall,
                   activeCall.attemptID == attemptID,
                   activeCall.pickupAttempt?.notificationEventId == notificationEventId,
-                  pickupStateSubject.value.isRinging else {
+                  pickupState.isRinging else {
                 return false
             }
             return true
@@ -779,24 +858,34 @@ private extension NativeMatrixRTCCallService {
             return
         }
 
-        let answered = withLock {
+        let result: (
+            pickupState: NativeMatrixRTCCallPickupState,
+            timeoutTask: Task<Void, Never>?,
+            declineHandle: TaskHandle?
+        )? = withLock {
             guard activeCall?.attemptID == call.attemptID,
                   call.pickupAttempt != nil,
-                  pickupStateSubject.value.isRinging else {
-                return false
+                  pickupState.isRinging else {
+                return nil
             }
 
-            pickupTimeoutTask?.cancel()
+            let timeoutTask = pickupTimeoutTask
+            let declineHandle = pickupDeclineHandle
             pickupTimeoutTask = nil
-            pickupDeclineHandle?.cancel()
             pickupDeclineHandle = nil
-            pickupStateSubject.send(.answered(roomId: call.roomId))
-            return true
+            pickupState = .answered(roomId: call.roomId)
+            return (
+                pickupState: pickupState,
+                timeoutTask: timeoutTask,
+                declineHandle: declineHandle
+            )
         }
 
-        if answered {
-            log("MatrixRTC pickup answered room=\(call.roomId)")
-        }
+        guard let result else { return }
+        result.timeoutTask?.cancel()
+        result.declineHandle?.cancel()
+        pickupStateSubject.send(result.pickupState)
+        log("MatrixRTC pickup answered room=\(call.roomId)")
     }
 
     func sendCallNotificationIfNeeded(
@@ -828,10 +917,10 @@ private extension NativeMatrixRTCCallService {
     }
 
     func scheduleActiveMediaKeyReshare(reason: String, attemptID: UUID) {
-        withLock {
+        let callToStart: NativeMatrixRTCCall? = withLock {
             guard let call = activeCall,
                   call.attemptID == attemptID else {
-                return
+                return nil
             }
 
             pendingMediaKeyReshareReason = Self.coalescedMediaKeyReshareReason(
@@ -839,15 +928,26 @@ private extension NativeMatrixRTCCallService {
                 reason
             )
             guard mediaKeyReshareTask == nil else {
-                return
+                return nil
             }
+            return call
+        }
+        guard let callToStart else { return }
 
-            let reshareTask = Task { [weak self] in
-                guard let self else { return }
-                await self.runCoalescedMediaKeyReshares(call: call)
+        let reshareTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runCoalescedMediaKeyReshares(call: callToStart)
+        }
+
+        let taskToCancel: Task<Void, Never>? = withLock {
+            guard activeCall?.attemptID == attemptID,
+                  mediaKeyReshareTask == nil else {
+                return reshareTask
             }
             mediaKeyReshareTask = reshareTask
+            return nil
         }
+        taskToCancel?.cancel()
     }
 
     func runCoalescedMediaKeyReshares(call: NativeMatrixRTCCall) async {
@@ -925,10 +1025,15 @@ private extension NativeMatrixRTCCallService {
             )
         }
 
-        withLock {
-            membershipRefreshTask?.cancel()
+        let taskToCancel: Task<Void, Never>? = withLock {
+            guard activeCall?.attemptID == attemptID else {
+                return refreshTask
+            }
+            let previousTask = membershipRefreshTask
             membershipRefreshTask = refreshTask
+            return previousTask
         }
+        taskToCancel?.cancel()
     }
 
     func refreshActiveMembershipsAfterRemoteJoin(
@@ -983,16 +1088,21 @@ private extension NativeMatrixRTCCallService {
     }
 
     // Must be called while holding lock.
-    func cancelCallPickupTrackingLocked() {
-        mediaKeyReshareTask?.cancel()
+    func takeCallTasksLocked() -> NativeMatrixRTCCallTasksToCancel {
+        let tasks = NativeMatrixRTCCallTasksToCancel(
+            membershipRefreshTask: membershipRefreshTask,
+            mediaKeyReshareTask: mediaKeyReshareTask,
+            pickupTimeoutTask: pickupTimeoutTask,
+            pickupDeclineHandle: pickupDeclineHandle,
+            autoLeaveWhenOthersLeftTask: autoLeaveWhenOthersLeftTask
+        )
+        membershipRefreshTask = nil
         mediaKeyReshareTask = nil
         pendingMediaKeyReshareReason = nil
-        pickupTimeoutTask?.cancel()
         pickupTimeoutTask = nil
-        pickupDeclineHandle?.cancel()
         pickupDeclineHandle = nil
-        autoLeaveWhenOthersLeftTask?.cancel()
         autoLeaveWhenOthersLeftTask = nil
+        return tasks
     }
 
     static func legacyMembershipIdentity(client: Client) throws -> MatrixRTCMembershipIdentity {
@@ -1182,6 +1292,24 @@ private struct NativeMatrixRTCCall {
     let sfuConfig: MatrixRTCLiveKitSFUConfig
     let autoLeaveWhenOthersLeft: Bool
     let pickupAttempt: NativeMatrixRTCCallPickupAttempt?
+}
+
+private struct NativeMatrixRTCCallTasksToCancel {
+    static let empty = NativeMatrixRTCCallTasksToCancel()
+
+    var membershipRefreshTask: Task<Void, Never>? = nil
+    var mediaKeyReshareTask: Task<Void, Never>? = nil
+    var pickupTimeoutTask: Task<Void, Never>? = nil
+    var pickupDeclineHandle: TaskHandle? = nil
+    var autoLeaveWhenOthersLeftTask: Task<Void, Never>? = nil
+
+    func cancel() {
+        membershipRefreshTask?.cancel()
+        mediaKeyReshareTask?.cancel()
+        pickupTimeoutTask?.cancel()
+        pickupDeclineHandle?.cancel()
+        autoLeaveWhenOthersLeftTask?.cancel()
+    }
 }
 
 private struct NativeMatrixRTCCallPickupAttempt {
