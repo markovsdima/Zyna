@@ -107,6 +107,10 @@ final class NSEMatrixBootstrap {
     private let decoder = JSONDecoder()
 
     func run(payload: NSEPushPayload) async -> NSEProcessedNotification? {
+        #if DEBUG
+        NSEMatrixRustSDKTracing.setupOnce()
+        #endif
+
         log(
             "start roomId=\(payload.roomId ?? "nil") eventId=\(payload.eventId ?? "nil") clientId=\(payload.pusherNotificationClientIdentifier ?? "nil")"
         )
