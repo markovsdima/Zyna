@@ -71,6 +71,7 @@ public enum MatrixRTCSessionState: Equatable, Sendable {
 public enum MatrixRTCSessionError: Error, Equatable {
     case alreadyJoined
     case notJoined
+    case ownMembershipIdentityMismatch(expected: MatrixRTCMembershipIdentity, actual: MatrixRTCMembershipIdentity)
 }
 
 public enum MatrixRTCSessionDelayedEventError: Error, Equatable, Sendable {
@@ -84,6 +85,7 @@ public enum MatrixRTCSessionDelayedEventError: Error, Equatable, Sendable {
 public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
     public let slot: MatrixRTCSlotDescription
     public let roomVersion: String?
+    public let ownMembershipIdentity: MatrixRTCMembershipIdentity?
     public let focusSelection: MatrixRTCLegacyCallMembershipFocusSelection
     public let fociPreferred: [MatrixRTCTransport]
     public let expires: Int64
@@ -98,6 +100,7 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
     public init(
         slot: MatrixRTCSlotDescription = .matrixCallRoom,
         roomVersion: String? = nil,
+        ownMembershipIdentity: MatrixRTCMembershipIdentity? = nil,
         focusSelection: MatrixRTCLegacyCallMembershipFocusSelection = .oldestMembership,
         fociPreferred: [MatrixRTCTransport],
         expires: Int64 = MatrixRTCCallMembership.defaultExpireDurationMilliseconds,
@@ -111,6 +114,7 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
     ) {
         self.slot = slot
         self.roomVersion = roomVersion
+        self.ownMembershipIdentity = ownMembershipIdentity
         self.focusSelection = focusSelection
         self.fociPreferred = fociPreferred
         self.expires = expires
@@ -225,9 +229,20 @@ public final class MatrixRTCSession: @unchecked Sendable {
 
             var publishedOwnMembership: MatrixRTCCallMembership?
             var startedMediaKeyManager: MatrixRTCMediaKeyManager?
+            var prestartedKeyTransport: MatrixRTCToDeviceKeyTransport?
             var scheduledDelayedLeaveEventID: String?
+            let earlyReceivedKeys = MatrixRTCEarlyReceivedKeyBuffer()
 
             do {
+                if let ownMembershipIdentity = configuration.ownMembershipIdentity {
+                    let transport = keyTransportFactory(ownMembershipIdentity)
+                    transport.setReceivedKeyHandler { result in
+                        earlyReceivedKeys.append(result)
+                    }
+                    transport.start()
+                    prestartedKeyTransport = transport
+                }
+
                 let createdTimestamp = timestampProvider()
                 let ownMembership = try await membershipClient.publishOwnLegacyMembership(
                     slot: configuration.slot,
@@ -239,6 +254,13 @@ public final class MatrixRTCSession: @unchecked Sendable {
                     callIntent: configuration.callIntent
                 )
                 publishedOwnMembership = ownMembership
+                if let expectedIdentity = configuration.ownMembershipIdentity,
+                   expectedIdentity != ownMembership.identity {
+                    throw MatrixRTCSessionError.ownMembershipIdentityMismatch(
+                        expected: expectedIdentity,
+                        actual: ownMembership.identity
+                    )
+                }
                 scheduledDelayedLeaveEventID = await scheduleDelayedLeaveIfPossible()
 
                 let loadedMemberships = try await membershipClient.loadActiveMemberships(
@@ -251,15 +273,29 @@ public final class MatrixRTCSession: @unchecked Sendable {
                 let manager = MatrixRTCMediaKeyManager(
                     ownMembership: ownMembership,
                     memberships: activeMemberships,
-                    transport: keyTransportFactory(ownMembership.identity),
+                    transport: prestartedKeyTransport ?? keyTransportFactory(ownMembership.identity),
                     keyGenerator: keyGenerator,
                     rotationConfiguration: configuration.mediaKeyRotationConfiguration,
                     timestampProvider: timestampProvider,
                     onKeyChanged: onKeyChanged,
                     onError: onError
                 )
-                manager.start()
+                if prestartedKeyTransport == nil {
+                    manager.start()
+                }
                 startedMediaKeyManager = manager
+
+                let deliverReceivedKey: @Sendable (Result<MatrixRTCReceivedCallEncryptionKey, Error>) -> Void = { result in
+                    switch result {
+                    case .success(let receivedKey):
+                        manager.handleReceivedKey(receivedKey)
+                    case .failure(let error):
+                        self.onError?(error)
+                    }
+                }
+                for result in earlyReceivedKeys.drain(forwardingTo: deliverReceivedKey) {
+                    deliverReceivedKey(result)
+                }
 
                 let keyShareResult = try await manager.ensureKeyDistribution(with: activeMemberships)
 
@@ -280,6 +316,9 @@ public final class MatrixRTCSession: @unchecked Sendable {
                 )
             } catch {
                 startedMediaKeyManager?.stop()
+                if startedMediaKeyManager == nil {
+                    prestartedKeyTransport?.stop()
+                }
                 if publishedOwnMembership != nil {
                     _ = try? await leaveOwnLegacyMembership(delayedLeaveEventID: scheduledDelayedLeaveEventID)
                 }
@@ -299,6 +338,50 @@ public final class MatrixRTCSession: @unchecked Sendable {
 
     @discardableResult
     public func refreshMemberships(
+        joinedUserIds: Set<String>? = nil,
+        distributeKeys: Bool = true
+    ) async throws -> MatrixRTCSessionMembershipRefreshResult {
+        try await sessionUpdateQueue.run { [self] in
+            let snapshot = withStateLock {
+                (
+                    state: mutableState.state,
+                    ownMembership: mutableState.ownMembership,
+                    mediaKeyManager: mutableState.mediaKeyManager
+                )
+            }
+            guard snapshot.state == .joined,
+                  let ownMembership = snapshot.ownMembership,
+                  let mediaKeyManager = snapshot.mediaKeyManager else {
+                throw MatrixRTCSessionError.notJoined
+            }
+
+            let loadedMemberships = try await membershipClient.loadActiveMemberships(
+                slot: configuration.slot,
+                joinedUserIds: joinedUserIds ?? configuration.joinedUserIds,
+                now: timestampProvider()
+            )
+            let activeMemberships = Self.memberships(loadedMemberships, including: ownMembership)
+
+            let keyShareResult: MatrixRTCMediaKeyShareResult
+            if distributeKeys {
+                keyShareResult = try await mediaKeyManager.ensureKeyDistribution(with: activeMemberships)
+            } else {
+                mediaKeyManager.updateMemberships(activeMemberships)
+                keyShareResult = .init(failures: [], sharedWith: [])
+            }
+            withStateLock {
+                mutableState.memberships = activeMemberships
+            }
+
+            return .init(
+                memberships: activeMemberships,
+                keyShareResult: keyShareResult
+            )
+        }
+    }
+
+    @discardableResult
+    public func reshareCurrentMediaKey(
         joinedUserIds: Set<String>? = nil
     ) async throws -> MatrixRTCSessionMembershipRefreshResult {
         try await sessionUpdateQueue.run { [self] in
@@ -322,7 +405,7 @@ public final class MatrixRTCSession: @unchecked Sendable {
             )
             let activeMemberships = Self.memberships(loadedMemberships, including: ownMembership)
 
-            let keyShareResult = try await mediaKeyManager.ensureKeyDistribution(with: activeMemberships)
+            let keyShareResult = try await mediaKeyManager.reshareCurrentKey(with: activeMemberships)
             withStateLock {
                 mutableState.memberships = activeMemberships
             }
@@ -712,6 +795,35 @@ private struct MatrixRTCSessionMutableState {
     var membershipExpiryRefreshIteration: Int64 = 1
     var delayedLeaveEventID: String?
     var delayedLeaveRefreshTask: Task<Void, Never>?
+}
+
+private final class MatrixRTCEarlyReceivedKeyBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [Result<MatrixRTCReceivedCallEncryptionKey, Error>] = []
+    private var forwardingHandler: (@Sendable (Result<MatrixRTCReceivedCallEncryptionKey, Error>) -> Void)?
+
+    func append(_ result: Result<MatrixRTCReceivedCallEncryptionKey, Error>) {
+        lock.lock()
+        if let forwardingHandler {
+            lock.unlock()
+            forwardingHandler(result)
+            return
+        }
+
+        results.append(result)
+        lock.unlock()
+    }
+
+    func drain(
+        forwardingTo forwardingHandler: @escaping @Sendable (Result<MatrixRTCReceivedCallEncryptionKey, Error>) -> Void
+    ) -> [Result<MatrixRTCReceivedCallEncryptionKey, Error>] {
+        lock.lock()
+        defer { lock.unlock() }
+        let drained = results
+        results = []
+        self.forwardingHandler = forwardingHandler
+        return drained
+    }
 }
 
 private actor MatrixRTCSessionAsyncSerialExecutor {

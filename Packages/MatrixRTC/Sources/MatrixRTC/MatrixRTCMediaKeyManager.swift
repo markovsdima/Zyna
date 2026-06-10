@@ -248,15 +248,17 @@ public final class MatrixRTCMediaKeyManager: @unchecked Sendable {
             return .init(failures: [], sharedWith: [])
         }
 
+        let targets = shareTargets.map(\.target)
         let failures = try await transport.sendKey(
             keyBase64Encoded: outboundKey.keyBase64Encoded,
             index: outboundKey.keyIndex,
-            targets: shareTargets.map(\.target)
+            targets: targets
         )
 
-        if failures.isEmpty {
+        let successfulShareTargets = Self.successfulShareTargets(shareTargets, excluding: failures)
+        if !successfulShareTargets.isEmpty {
             withLock {
-                for shareTarget in shareTargets {
+                for shareTarget in successfulShareTargets {
                     outboundSession?.sharedWith.insert(shareTarget.participant)
                 }
             }
@@ -264,8 +266,21 @@ public final class MatrixRTCMediaKeyManager: @unchecked Sendable {
 
         return .init(
             failures: failures,
-            sharedWith: shareTargets.map(\.target)
+            sharedWith: successfulShareTargets.map(\.target)
         )
+    }
+
+    @discardableResult
+    public func reshareCurrentKey(
+        with memberships: [MatrixRTCCallMembership]? = nil
+    ) async throws -> MatrixRTCMediaKeyShareResult {
+        if let memberships {
+            updateMemberships(memberships)
+        }
+
+        return try await distributionQueue.run { [self] in
+            try await self.forceShareCurrentKey(with: memberships ?? withLock { self.memberships })
+        }
     }
 
     public func handleReceivedKey(_ receivedKey: MatrixRTCReceivedCallEncryptionKey) {
@@ -307,8 +322,7 @@ private extension MatrixRTCMediaKeyManager {
             )
         }
 
-        let failedTargets = Set(failures.map { MatrixRTCToDeviceTarget(userId: $0.userId, deviceId: $0.deviceId) })
-        let successfulShareTargets = rollout.shareTargets.filter { !failedTargets.contains($0.target) }
+        let successfulShareTargets = Self.successfulShareTargets(rollout.shareTargets, excluding: failures)
         if !successfulShareTargets.isEmpty {
             withLock {
                 for shareTarget in successfulShareTargets {
@@ -327,7 +341,7 @@ private extension MatrixRTCMediaKeyManager {
 
         return .init(
             failures: failures,
-            sharedWith: targets
+            sharedWith: successfulShareTargets.map(\.target)
         )
     }
 
@@ -337,6 +351,46 @@ private extension MatrixRTCMediaKeyManager {
         }
 
         try await Task.sleep(nanoseconds: rotationConfiguration.useKeyDelayMilliseconds * 1_000_000)
+    }
+
+    func forceShareCurrentKey(with memberships: [MatrixRTCCallMembership]) async throws -> MatrixRTCMediaKeyShareResult {
+        let outboundKey = ensureOutboundSession()
+        let shareTargets = withLock {
+            self.allShareTargets(for: memberships)
+        }
+
+        guard !shareTargets.isEmpty else {
+            return .init(failures: [], sharedWith: [])
+        }
+
+        let targets = shareTargets.map(\.target)
+        let failures = try await transport.sendKey(
+            keyBase64Encoded: outboundKey.keyBase64Encoded,
+            index: outboundKey.keyIndex,
+            targets: targets
+        )
+
+        let successfulShareTargets = Self.successfulShareTargets(shareTargets, excluding: failures)
+        if !successfulShareTargets.isEmpty {
+            withLock {
+                for shareTarget in successfulShareTargets {
+                    outboundSession?.sharedWith.insert(shareTarget.participant)
+                }
+            }
+        }
+
+        return .init(
+            failures: failures,
+            sharedWith: successfulShareTargets.map(\.target)
+        )
+    }
+
+    static func successfulShareTargets(
+        _ shareTargets: [MatrixRTCMediaKeyShareTarget],
+        excluding failures: [MatrixRTCCustomToDeviceSendFailure]
+    ) -> [MatrixRTCMediaKeyShareTarget] {
+        let failedTargets = Set(failures.map { MatrixRTCToDeviceTarget(userId: $0.userId, deviceId: $0.deviceId) })
+        return shareTargets.filter { !failedTargets.contains($0.target) }
     }
 
     func makeOutboundRolloutLocked(now: Int64) -> MatrixRTCOutboundMediaKeyRollout? {

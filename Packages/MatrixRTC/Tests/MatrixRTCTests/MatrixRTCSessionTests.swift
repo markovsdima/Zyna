@@ -112,6 +112,122 @@ import Testing
     #expect(toDeviceClient.sendCount == 1)
 }
 
+@Test func refreshMembershipsCanSkipKeyDistribution() async throws {
+    let membershipClient = FakeSessionMembershipClient()
+    let toDeviceClient = FakeCustomToDeviceClient()
+    let ownMembership = sessionLegacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 10_000
+    )
+    let bobMembership = sessionLegacyMembership(
+        eventId: "$bob",
+        sender: "@bob:example.org",
+        deviceId: "BOBDEVICE",
+        createdTimestamp: 20_000
+    )
+    membershipClient.publishResult = ownMembership
+    membershipClient.activeMembershipResponses = [[], [bobMembership], [bobMembership]]
+    let session = MatrixRTCSession(
+        configuration: .init(fociPreferred: []),
+        membershipClient: membershipClient,
+        keyTransportFactory: { identity in
+            MatrixRTCToDeviceKeyTransport(
+                roomId: "!room:example.org",
+                ownIdentity: identity,
+                client: toDeviceClient
+            )
+        },
+        keyGenerator: StaticSessionMediaKeyGenerator(key: "own-key"),
+        timestampProvider: { 10_000 },
+        onKeyChanged: { _ in }
+    )
+
+    try await session.join()
+    let readOnlyRefresh = try await session.refreshMemberships(distributeKeys: false)
+    #expect(readOnlyRefresh.memberships.map(\.identity) == [ownMembership.identity, bobMembership.identity])
+    #expect(readOnlyRefresh.keyShareResult.sharedWith.isEmpty)
+    #expect(toDeviceClient.sendCount == 0)
+
+    let distributingRefresh = try await session.refreshMemberships()
+    #expect(distributingRefresh.keyShareResult.sharedWith == [.init(userId: "@bob:example.org", deviceId: "BOBDEVICE")])
+    #expect(toDeviceClient.sendCount == 1)
+}
+
+@Test func joinAppliesMediaKeysReceivedBeforeManagerIsReady() async throws {
+    let membershipClient = FakeSessionMembershipClient()
+    let toDeviceClient = FakeCustomToDeviceClient()
+    let ownMembership = sessionLegacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 10_000
+    )
+    let bobMembership = sessionLegacyMembership(
+        eventId: "$bob",
+        sender: "@bob:example.org",
+        deviceId: "BOBDEVICE",
+        createdTimestamp: 20_000
+    )
+    membershipClient.publishResult = ownMembership
+    membershipClient.activeMembershipResponses = [[bobMembership]]
+    let keyBox = SessionMediaKeyEventBox()
+    let emittedBeforePublishReturned = SessionFlagBox()
+    membershipClient.publishHook = {
+        emittedBeforePublishReturned.value = toDeviceClient.listener != nil
+        let content = MatrixRTCCallEncryptionKeysContent(
+            keys: .init(index: 4, key: "bob-key"),
+            member: .init(id: bobMembership.memberId, claimedDeviceId: bobMembership.deviceId),
+            roomId: "!room:example.org",
+            sentTimestamp: 11_000
+        )
+        guard let contentJSON = try? content.jsonString() else { return }
+        toDeviceClient.emit(.init(
+            eventType: MatrixRTCCallEncryptionKeysContent.eventType,
+            sender: "@spoofed:example.org",
+            contentJSON: contentJSON,
+            rawJSON: "{}",
+            encryptionInfo: .init(
+                sender: bobMembership.userId,
+                senderDevice: bobMembership.deviceId,
+                senderCurve25519KeyBase64: "curve-key",
+                senderVerified: true
+            )
+        ))
+    }
+    let session = MatrixRTCSession(
+        configuration: .init(
+            ownMembershipIdentity: ownMembership.identity,
+            fociPreferred: []
+        ),
+        membershipClient: membershipClient,
+        keyTransportFactory: { identity in
+            MatrixRTCToDeviceKeyTransport(
+                roomId: "!room:example.org",
+                ownIdentity: identity,
+                client: toDeviceClient
+            )
+        },
+        keyGenerator: StaticSessionMediaKeyGenerator(key: "own-key"),
+        timestampProvider: { 10_000 },
+        onKeyChanged: { event in
+            keyBox.events.append(event)
+        }
+    )
+
+    try await session.join()
+
+    #expect(emittedBeforePublishReturned.value)
+    #expect(toDeviceClient.listenerEventType == MatrixRTCCallEncryptionKeysContent.eventType)
+    #expect(keyBox.events.contains { event in
+        event.key.membership == bobMembership.identity
+            && event.key.keyBase64Encoded == "bob-key"
+            && event.key.keyIndex == 4
+            && event.key.rtcBackendIdentity == bobMembership.rtcBackendIdentity
+    })
+}
+
 @Test func refreshOwnMembershipExpiryExtendsExpiresWithoutChangingCreatedTimestamp() async throws {
     let membershipClient = FakeSessionMembershipClient()
     let toDeviceClient = FakeCustomToDeviceClient()
@@ -345,6 +461,7 @@ private final class FakeSessionMembershipClient: MatrixRTCSessionMembershipClien
     var leaveEventId = "$leave"
     var delayedLeaveEventId: String?
     var sendDelayedEventError: Error?
+    var publishHook: (@Sendable () -> Void)?
 
     var publishCount = 0
     var loadCount = 0
@@ -378,6 +495,7 @@ private final class FakeSessionMembershipClient: MatrixRTCSessionMembershipClien
         publishedCreatedTimestampHistory.append(createdTimestamp)
         publishedExpiresHistory.append(expires)
         publishedCallIntent = callIntent
+        publishHook?()
         if !publishResults.isEmpty {
             return publishResults.removeFirst()
         }
@@ -449,6 +567,10 @@ private struct StaticSessionMediaKeyGenerator: MatrixRTCMediaKeyGenerating {
 
 private final class SessionMediaKeyEventBox: @unchecked Sendable {
     var events: [MatrixRTCMediaKeyChangedEvent] = []
+}
+
+private final class SessionFlagBox: @unchecked Sendable {
+    var value = false
 }
 
 private func sessionLegacyMembership(

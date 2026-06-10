@@ -39,6 +39,7 @@ struct NativeMatrixRTCCallStartResult: Sendable {
 final class NativeMatrixRTCCallService: @unchecked Sendable {
     static let shared = NativeMatrixRTCCallService()
     private static let audioCallIntent = "audio"
+    private static let mediaKeyReshareDebounceNanoseconds: UInt64 = 150_000_000
 
     let stateSubject = CurrentValueSubject<NativeMatrixRTCCallServiceState, Never>(.idle)
     let participantsSubject = CurrentValueSubject<NativeMatrixRTCCallParticipantsSnapshot, Never>(.empty)
@@ -52,6 +53,8 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
     private var currentCallAttemptID: UUID?
     private var activeCall: NativeMatrixRTCCall?
     private var membershipRefreshTask: Task<Void, Never>?
+    private var mediaKeyReshareTask: Task<Void, Never>?
+    private var pendingMediaKeyReshareReason: String?
     private var participantStore = NativeMatrixRTCCallParticipantStore()
     private let audioSessionController = NativeMatrixRTCAudioSessionController.shared
 
@@ -97,6 +100,9 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 log("LiveKit \(Self.liveKitEventDescription(event))")
                 self?.handleLiveKitEvent(event, attemptID: attemptID)
                 self?.handleLiveKitLifecycleEvent(event, attemptID: attemptID)
+                if let reason = Self.mediaKeyReshareReason(for: event) {
+                    self?.scheduleActiveMediaKeyReshare(reason: reason, attemptID: attemptID)
+                }
                 guard let reason = Self.membershipRefreshReason(for: event) else { return }
                 self?.scheduleActiveMembershipRefresh(reason: reason, attemptID: attemptID)
             })
@@ -111,6 +117,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
 
             let session = MatrixRTCSession(
                 configuration: .init(
+                    ownMembershipIdentity: ownIdentity,
                     focusSelection: .oldestMembership,
                     fociPreferred: [discoveredTransport.transport],
                     callIntent: Self.audioCallIntent
@@ -355,6 +362,9 @@ private extension NativeMatrixRTCCallService {
             guard currentCallAttemptID == attemptID else { return nil }
             membershipRefreshTask?.cancel()
             membershipRefreshTask = nil
+            mediaKeyReshareTask?.cancel()
+            mediaKeyReshareTask = nil
+            pendingMediaKeyReshareReason = nil
             currentCallAttemptID = nil
             activeCall = nil
             stateSubject.send(.idle)
@@ -384,6 +394,9 @@ private extension NativeMatrixRTCCallService {
                 case .joining(let roomId):
                     membershipRefreshTask?.cancel()
                     membershipRefreshTask = nil
+                    mediaKeyReshareTask?.cancel()
+                    mediaKeyReshareTask = nil
+                    pendingMediaKeyReshareReason = nil
                     stateSubject.send(.leaving(roomId: roomId))
                     log("Ending native MatrixRTC call in room \(roomId) reason=\(reason)")
                 case .idle:
@@ -400,6 +413,9 @@ private extension NativeMatrixRTCCallService {
             case .idle, .joining, .connected:
                 membershipRefreshTask?.cancel()
                 membershipRefreshTask = nil
+                mediaKeyReshareTask?.cancel()
+                mediaKeyReshareTask = nil
+                pendingMediaKeyReshareReason = nil
                 stateSubject.send(.leaving(roomId: activeCall.roomId))
                 log("Ending native MatrixRTC call in room \(activeCall.roomId) reason=\(reason)")
                 return activeCall
@@ -412,6 +428,9 @@ private extension NativeMatrixRTCCallService {
             guard currentCallAttemptID == attemptID else { return nil }
             membershipRefreshTask?.cancel()
             membershipRefreshTask = nil
+            mediaKeyReshareTask?.cancel()
+            mediaKeyReshareTask = nil
+            pendingMediaKeyReshareReason = nil
             currentCallAttemptID = nil
             activeCall = nil
             stateSubject.send(.idle)
@@ -473,6 +492,87 @@ private extension NativeMatrixRTCCallService {
         }
     }
 
+    func scheduleActiveMediaKeyReshare(reason: String, attemptID: UUID) {
+        withLock {
+            guard let call = activeCall,
+                  call.attemptID == attemptID else {
+                return
+            }
+
+            pendingMediaKeyReshareReason = Self.coalescedMediaKeyReshareReason(
+                pendingMediaKeyReshareReason,
+                reason
+            )
+            guard mediaKeyReshareTask == nil else {
+                return
+            }
+
+            let reshareTask = Task { [weak self] in
+                guard let self else { return }
+                await self.runCoalescedMediaKeyReshares(call: call)
+            }
+            mediaKeyReshareTask = reshareTask
+        }
+    }
+
+    func runCoalescedMediaKeyReshares(call: NativeMatrixRTCCall) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: Self.mediaKeyReshareDebounceNanoseconds)
+            } catch {
+                return
+            }
+
+            guard let reason = takePendingMediaKeyReshareReason(call: call) else {
+                if completeMediaKeyReshareTaskIfIdle(call: call) {
+                    return
+                }
+                continue
+            }
+
+            await reshareActiveMediaKey(call: call, reason: reason)
+        }
+    }
+
+    func reshareActiveMediaKey(
+        call: NativeMatrixRTCCall,
+        reason: String
+    ) async {
+        let delaysNanoseconds: [UInt64] = [
+            0,
+            1_000_000_000,
+            2_000_000_000
+        ]
+
+        for attemptIndex in delaysNanoseconds.indices {
+            let delay = delaysNanoseconds[attemptIndex]
+            if delay > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+            }
+
+            guard !Task.isCancelled else { return }
+            guard currentActiveCall()?.attemptID == call.attemptID else { return }
+
+            do {
+                let result = try await call.matrixRTCSession.reshareCurrentMediaKey()
+                let sharedCount = result.keyShareResult.sharedWith.count
+                let failureCount = result.keyShareResult.failures.count
+                log("Reshared MatrixRTC media key reason=\(reason) attempt=\(attemptIndex + 1) memberships=\(result.memberships.count) sharedKeys=\(sharedCount) failures=\(failureCount)")
+
+                if sharedCount > 0, failureCount == 0 {
+                    return
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                log("Failed resharing MatrixRTC media key reason=\(reason) attempt=\(attemptIndex + 1): \(error)")
+            }
+        }
+    }
+
     func scheduleActiveMembershipRefresh(reason: String, attemptID: UUID) {
         let call = withLock { activeCall?.attemptID == attemptID ? activeCall : nil }
         guard let call else { return }
@@ -523,7 +623,7 @@ private extension NativeMatrixRTCCallService {
                     "Refreshed MatrixRTC memberships reason=\(reason) attempt=\(attemptIndex + 1) memberships=\(result.memberships.count) sharedKeys=\(sharedCount) failures=\(failureCount)"
                 )
 
-                if sharedCount > 0 {
+                if sharedCount > 0, failureCount == 0 {
                     return
                 }
             } catch {
@@ -539,6 +639,50 @@ private extension NativeMatrixRTCCallService {
         lock.lock()
         defer { lock.unlock() }
         return try operation()
+    }
+
+    func takePendingMediaKeyReshareReason(call: NativeMatrixRTCCall) -> String? {
+        withLock {
+            guard activeCall?.attemptID == call.attemptID else {
+                pendingMediaKeyReshareReason = nil
+                return nil
+            }
+
+            let reason = pendingMediaKeyReshareReason
+            pendingMediaKeyReshareReason = nil
+            return reason
+        }
+    }
+
+    func completeMediaKeyReshareTaskIfIdle(call: NativeMatrixRTCCall) -> Bool {
+        withLock {
+            guard activeCall?.attemptID == call.attemptID else {
+                mediaKeyReshareTask = nil
+                pendingMediaKeyReshareReason = nil
+                return true
+            }
+
+            guard pendingMediaKeyReshareReason == nil else {
+                return false
+            }
+
+            mediaKeyReshareTask = nil
+            return true
+        }
+    }
+
+    static func coalescedMediaKeyReshareReason(_ current: String?, _ next: String) -> String {
+        guard let current else { return next }
+        return current == next ? current : "coalesced"
+    }
+
+    static func mediaKeyReshareReason(for event: MatrixRTCLiveKitRoomSessionEvent) -> String? {
+        switch event {
+        case .localTrackSubscribedByRemote:
+            return "localTrackSubscribedByRemote"
+        default:
+            return nil
+        }
     }
 
     static func legacyMembershipIdentity(client: Client) throws -> MatrixRTCMembershipIdentity {

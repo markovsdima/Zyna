@@ -87,6 +87,85 @@ import Testing
     #expect(client.sendCount == 1)
 }
 
+@Test func forceResharesCurrentOutboundMediaKeyToSameMembership() async throws {
+    let client = FakeCustomToDeviceClient()
+    let ownMembership = try legacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 1_000
+    )
+    let bobMembership = try legacyMembership(
+        eventId: "$bob",
+        sender: "@bob:example.org",
+        deviceId: "BOBDEVICE",
+        createdTimestamp: 2_000
+    )
+    let transport = MatrixRTCToDeviceKeyTransport(
+        roomId: "!room:example.org",
+        ownIdentity: ownMembership.identity,
+        client: client,
+        onReceivedKey: { _ in }
+    )
+    let manager = MatrixRTCMediaKeyManager(
+        ownMembership: ownMembership,
+        memberships: [ownMembership, bobMembership],
+        transport: transport,
+        keyGenerator: StaticMediaKeyGenerator(key: "own-key"),
+        onKeyChanged: { _ in }
+    )
+
+    _ = try await manager.shareCurrentKey()
+    let reshareResult = try await manager.reshareCurrentKey()
+
+    #expect(reshareResult.sharedWith == [.init(userId: "@bob:example.org", deviceId: "BOBDEVICE")])
+    #expect(client.sendCount == 2)
+    #expect(client.sentTargetsHistory == [
+        [.init(userId: "@bob:example.org", deviceId: "BOBDEVICE")],
+        [.init(userId: "@bob:example.org", deviceId: "BOBDEVICE")]
+    ])
+}
+
+@Test func failedForceReshareDoesNotReportTargetAsShared() async throws {
+    let client = FakeCustomToDeviceClient()
+    let ownMembership = try legacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 1_000
+    )
+    let bobMembership = try legacyMembership(
+        eventId: "$bob",
+        sender: "@bob:example.org",
+        deviceId: "BOBDEVICE",
+        createdTimestamp: 2_000
+    )
+    let transport = MatrixRTCToDeviceKeyTransport(
+        roomId: "!room:example.org",
+        ownIdentity: ownMembership.identity,
+        client: client,
+        onReceivedKey: { _ in }
+    )
+    let manager = MatrixRTCMediaKeyManager(
+        ownMembership: ownMembership,
+        memberships: [ownMembership, bobMembership],
+        transport: transport,
+        keyGenerator: StaticMediaKeyGenerator(key: "own-key"),
+        onKeyChanged: { _ in }
+    )
+
+    client.sendFailures = [.init(userId: "@bob:example.org", deviceId: "BOBDEVICE", reason: .sendFailed)]
+    let failedReshare = try await manager.reshareCurrentKey()
+    #expect(failedReshare.failures == [.init(userId: "@bob:example.org", deviceId: "BOBDEVICE", reason: .sendFailed)])
+    #expect(failedReshare.sharedWith.isEmpty)
+
+    client.sendFailures = []
+    let successfulReshare = try await manager.reshareCurrentKey()
+    #expect(successfulReshare.failures.isEmpty)
+    #expect(successfulReshare.sharedWith == [.init(userId: "@bob:example.org", deviceId: "BOBDEVICE")])
+    #expect(client.sendCount == 2)
+}
+
 @Test func sharesCurrentOutboundMediaKeyWithJoinerInsideGracePeriod() async throws {
     let client = FakeCustomToDeviceClient()
     let clock = MediaKeyTestClock(now: 10_000)

@@ -135,6 +135,49 @@ import Testing
     #expect(received.encryptionInfo?.senderVerified == true)
 }
 
+@Test func toDeviceTransportUsesUpdatedReceivedKeyHandlerAfterStart() throws {
+    let client = FakeCustomToDeviceClient()
+    let firstBox = ReceivedKeyBox()
+    let secondBox = ReceivedKeyBox()
+    let transport = MatrixRTCToDeviceKeyTransport(
+        roomId: "!room:example.org",
+        ownIdentity: .init(userId: "@alice:example.org", deviceId: "ALICEDEVICE", memberId: "alice-member"),
+        client: client,
+        onReceivedKey: { result in
+            firstBox.result = result
+        }
+    )
+    transport.start()
+    transport.setReceivedKeyHandler { result in
+        secondBox.result = result
+    }
+
+    let content = MatrixRTCCallEncryptionKeysContent(
+        keys: .init(index: 10, key: "remote-key"),
+        member: .init(id: "bob-member", claimedDeviceId: "BOBDEVICE"),
+        roomId: "!room:example.org",
+        sentTimestamp: 654_322
+    )
+    client.emit(.init(
+        eventType: MatrixRTCCallEncryptionKeysContent.eventType,
+        sender: "@spoofed:example.org",
+        contentJSON: try content.jsonString(),
+        rawJSON: "{}",
+        encryptionInfo: .init(
+            sender: "@bob:example.org",
+            senderDevice: "BOBDEVICE",
+            senderCurve25519KeyBase64: "curve-key",
+            senderVerified: true
+        )
+    ))
+
+    #expect(firstBox.result == nil)
+    let receivedResult = try #require(secondBox.result)
+    let received = try receivedResult.get()
+    #expect(received.keyIndex == 10)
+    #expect(received.membership == .init(userId: "@bob:example.org", deviceId: "BOBDEVICE", memberId: "bob-member"))
+}
+
 @Test func ignoresCallEncryptionKeysForOtherRooms() throws {
     let client = FakeCustomToDeviceClient()
     let receivedBox = ReceivedKeyBox()

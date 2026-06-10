@@ -30,13 +30,14 @@ public enum MatrixRTCToDeviceKeyTransportError: Error, Equatable {
     case missingSender
 }
 
-public final class MatrixRTCToDeviceKeyTransport {
+public final class MatrixRTCToDeviceKeyTransport: @unchecked Sendable {
     public typealias ReceivedKeyHandler = @Sendable (Result<MatrixRTCReceivedCallEncryptionKey, Error>) -> Void
 
     private let roomId: String
     private let ownIdentity: MatrixRTCMembershipIdentity
     private let client: any MatrixRTCCustomToDeviceEncrypting
     private let sentTimestampProvider: @Sendable () -> Int64
+    private let lock = NSLock()
     private var onReceivedKey: ReceivedKeyHandler
     private var listenerToken: (any MatrixRTCCancellable)?
 
@@ -61,24 +62,27 @@ public final class MatrixRTCToDeviceKeyTransport {
     }
 
     public func setReceivedKeyHandler(_ onReceivedKey: @escaping ReceivedKeyHandler) {
-        self.onReceivedKey = onReceivedKey
-    }
-
-    public func start() {
-        stop()
-
-        let handler = MatrixRTCToDeviceKeyEventHandler(roomId: roomId, onReceivedKey: onReceivedKey)
-        listenerToken = client.addCustomToDeviceEventListener(
-            eventType: MatrixRTCCallEncryptionKeysContent.eventType,
-            encryptedOnly: true
-        ) { event in
-            handler.handle(event: event)
+        withLock {
+            self.onReceivedKey = onReceivedKey
         }
     }
 
+    public func start() {
+        let previousToken = replaceListenerToken(with: nil)
+        previousToken?.cancel()
+
+        let token = client.addCustomToDeviceEventListener(
+            eventType: MatrixRTCCallEncryptionKeysContent.eventType,
+            encryptedOnly: true
+        ) { [weak self] event in
+            self?.handle(event: event)
+        }
+        replaceListenerToken(with: token)?.cancel()
+    }
+
     public func stop() {
-        listenerToken?.cancel()
-        listenerToken = nil
+        let token = replaceListenerToken(with: nil)
+        token?.cancel()
     }
 
     public func sendKey(
@@ -98,6 +102,31 @@ public final class MatrixRTCToDeviceKeyTransport {
             targets: targets,
             contentJSON: content.jsonString()
         )
+    }
+
+    private func handle(event: MatrixRTCCustomToDeviceEvent) {
+        MatrixRTCToDeviceKeyEventHandler(
+            roomId: roomId,
+            onReceivedKey: receivedKeyHandler()
+        ).handle(event: event)
+    }
+
+    private func receivedKeyHandler() -> ReceivedKeyHandler {
+        withLock { onReceivedKey }
+    }
+
+    private func replaceListenerToken(with token: (any MatrixRTCCancellable)?) -> (any MatrixRTCCancellable)? {
+        withLock {
+            let previousToken = listenerToken
+            listenerToken = token
+            return previousToken
+        }
+    }
+
+    private func withLock<T>(_ operation: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return operation()
     }
 }
 
