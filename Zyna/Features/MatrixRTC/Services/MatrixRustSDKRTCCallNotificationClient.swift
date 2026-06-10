@@ -14,6 +14,9 @@ struct MatrixRTCCallNotificationSendResult: Sendable {
     let notificationEventId: String?
     let sentLegacyFallback: Bool
     let legacyFallbackEventId: String?
+    let notificationType: MatrixRTCCallNotificationType
+    let senderTimestamp: Int64
+    let lifetimeMilliseconds: Int64
 }
 
 final class MatrixRustSDKRTCCallNotificationClient: @unchecked Sendable {
@@ -88,7 +91,10 @@ final class MatrixRustSDKRTCCallNotificationClient: @unchecked Sendable {
             sentNotification: sentNotification,
             notificationEventId: notificationEventId,
             sentLegacyFallback: sentLegacyFallback,
-            legacyFallbackEventId: legacyFallbackEventId
+            legacyFallbackEventId: legacyFallbackEventId,
+            notificationType: notificationType,
+            senderTimestamp: content.senderTimestamp,
+            lifetimeMilliseconds: content.lifetime
         )
     }
 }

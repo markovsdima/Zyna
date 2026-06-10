@@ -351,7 +351,12 @@ private extension NativeMatrixRTCCallViewController {
         startTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                _ = try await callService.startAudioCall(room: room)
+                let waitForPickup = await room.isDirect()
+                _ = try await callService.startAudioCall(
+                    room: room,
+                    waitForPickup: waitForPickup,
+                    autoLeaveWhenOthersLeft: waitForPickup
+                )
             } catch is CancellationError {
                 dismissOnce()
             } catch {
