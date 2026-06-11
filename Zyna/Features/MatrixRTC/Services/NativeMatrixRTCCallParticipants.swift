@@ -109,7 +109,7 @@ struct NativeMatrixRTCCallParticipantsSnapshot: Equatable, Sendable {
     var remoteVideoTracks: [MatrixRTCLiveKitRemoteVideoTrack] {
         var videoTracks: [MatrixRTCLiveKitRemoteVideoTrack] = []
         for participant in remoteParticipants {
-            for track in participant.sortedTracks where track.isVideo && track.isSubscribed {
+            for track in participant.sortedTracks where track.isVideo && track.isSubscribed && !track.isMuted {
                 if let remoteVideoTrack = track.remoteVideoTrack {
                     videoTracks.append(remoteVideoTrack)
                 }
