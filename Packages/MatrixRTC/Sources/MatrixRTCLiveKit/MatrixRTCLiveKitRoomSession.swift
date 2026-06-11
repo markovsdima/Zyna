@@ -31,6 +31,28 @@ public struct MatrixRTCLiveKitParticipantInfo: Equatable, Sendable {
     }
 }
 
+public struct MatrixRTCLiveKitSpeakingParticipantInfo: Equatable, Sendable {
+    public let identity: String?
+    public let sid: String?
+    public let isSpeaking: Bool
+    public let audioLevel: Float
+    public let lastSpokeAt: Date?
+
+    public init(
+        identity: String?,
+        sid: String?,
+        isSpeaking: Bool,
+        audioLevel: Float,
+        lastSpokeAt: Date?
+    ) {
+        self.identity = identity
+        self.sid = sid
+        self.isSpeaking = isSpeaking
+        self.audioLevel = audioLevel
+        self.lastSpokeAt = lastSpokeAt
+    }
+}
+
 public struct MatrixRTCLiveKitTrackPublicationInfo: Equatable, Sendable {
     public let sid: String
     public let name: String
@@ -77,6 +99,7 @@ public enum MatrixRTCLiveKitRoomSessionEvent: Equatable, Sendable {
     case remoteTrackSubscriptionFailed(participant: MatrixRTCLiveKitParticipantInfo, trackSid: String, error: String)
     case trackMutedChanged(participant: MatrixRTCLiveKitParticipantInfo, publication: MatrixRTCLiveKitTrackPublicationInfo, isMuted: Bool)
     case remoteTrackStreamStateChanged(participant: MatrixRTCLiveKitParticipantInfo, publication: MatrixRTCLiveKitTrackPublicationInfo, state: String)
+    case speakingParticipantsChanged([MatrixRTCLiveKitSpeakingParticipantInfo])
     case trackE2EEStateChanged(publication: MatrixRTCLiveKitTrackPublicationInfo, state: String)
     case mediaKeyApplied(keyIndex: Int32, participantId: String)
 }
@@ -340,6 +363,12 @@ private final class MatrixRTCLiveKitRoomObserver: NSObject, RoomDelegate, @unche
         onEvent?(.remoteParticipantLeft(.init(participant: participant)))
     }
 
+    func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
+        onEvent?(.speakingParticipantsChanged(
+            participants.map { MatrixRTCLiveKitSpeakingParticipantInfo(participant: $0) }
+        ))
+    }
+
     func room(_ room: Room, participant: LocalParticipant, didPublishTrack publication: LocalTrackPublication) {
         let publicationInfo = MatrixRTCLiveKitTrackPublicationInfo(publication: publication)
         onEvent?(.localTrackPublished(publicationInfo))
@@ -467,6 +496,18 @@ private extension MatrixRTCLiveKitParticipantInfo {
         self.init(
             identity: participant.identity?.stringValue,
             sid: participant.sid?.stringValue
+        )
+    }
+}
+
+private extension MatrixRTCLiveKitSpeakingParticipantInfo {
+    init(participant: Participant) {
+        self.init(
+            identity: participant.identity?.stringValue,
+            sid: participant.sid?.stringValue,
+            isSpeaking: participant.isSpeaking,
+            audioLevel: participant.audioLevel,
+            lastSpokeAt: participant.lastSpokeAt
         )
     }
 }

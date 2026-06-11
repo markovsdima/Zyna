@@ -534,48 +534,83 @@ private extension NativeMatrixRTCCallViewModel {
         from snapshot: NativeMatrixRTCCallParticipantsSnapshot,
         isMuted: Bool
     ) -> [NativeMatrixRTCParticipantTileState] {
-        var tiles: [NativeMatrixRTCParticipantTileState] = []
+        var candidates: [NativeMatrixRTCParticipantTileCandidate] = []
 
         for participant in snapshot.remoteParticipants {
             let identity = participant.identity ?? participant.sid ?? participant.id
+            let participantDisplayName = displayName(for: identity)
             let videoTrack = firstRemoteVideoTrack(in: participant).map {
                 NativeMatrixRTCVideoTrackHandle.remote($0)
             }
             let avatar = AvatarViewModel(
                 userId: identity,
-                displayName: displayName(for: identity),
+                displayName: participantDisplayName,
                 mxcAvatarURL: nil
             )
-            tiles.append(NativeMatrixRTCParticipantTileState(
-                id: participant.id,
-                displayName: displayName(for: identity),
-                avatar: avatar,
-                videoTrack: videoTrack,
-                isAudioMuted: !participant.hasSubscribedAudio,
-                isLocal: false,
-                statusText: participantStatusText(participant)
+            candidates.append(NativeMatrixRTCParticipantTileCandidate(
+                tile: NativeMatrixRTCParticipantTileState(
+                    id: participant.id,
+                    displayName: participantDisplayName,
+                    avatar: avatar,
+                    videoTrack: videoTrack,
+                    isAudioMuted: !participant.hasSubscribedAudio,
+                    isLocal: false,
+                    statusText: participantStatusText(participant)
+                ),
+                speaking: participant.speaking,
+                stableName: participantDisplayName
             ))
         }
 
         let identity = snapshot.localIdentity ?? "local"
+        let localDisplayName = String(localized: "You")
         let localVideoTrack = snapshot.localVideoTrack.map {
             NativeMatrixRTCVideoTrackHandle.local($0)
         }
-        tiles.append(NativeMatrixRTCParticipantTileState(
-            id: "local",
-            displayName: String(localized: "You"),
-            avatar: AvatarViewModel(
-                userId: identity,
-                displayName: String(localized: "You"),
-                mxcAvatarURL: nil
+        candidates.append(NativeMatrixRTCParticipantTileCandidate(
+            tile: NativeMatrixRTCParticipantTileState(
+                id: "local",
+                displayName: localDisplayName,
+                avatar: AvatarViewModel(
+                    userId: identity,
+                    displayName: localDisplayName,
+                    mxcAvatarURL: nil
+                ),
+                videoTrack: localVideoTrack,
+                isAudioMuted: isMuted,
+                isLocal: true,
+                statusText: nil
             ),
-            videoTrack: localVideoTrack,
-            isAudioMuted: isMuted,
-            isLocal: true,
-            statusText: nil
+            speaking: snapshot.localSpeaking,
+            stableName: localDisplayName
         ))
 
-        return tiles
+        return candidates.sorted(by: tileCandidatePrecedes).map(\.tile)
+    }
+
+    static func tileCandidatePrecedes(
+        _ lhs: NativeMatrixRTCParticipantTileCandidate,
+        _ rhs: NativeMatrixRTCParticipantTileCandidate
+    ) -> Bool {
+        if lhs.speaking.isSpeaking != rhs.speaking.isSpeaking {
+            return lhs.speaking.isSpeaking
+        }
+
+        switch (lhs.speaking.lastSpokeAt, rhs.speaking.lastSpokeAt) {
+        case (.some(let lhsDate), .some(let rhsDate)) where lhsDate != rhsDate:
+            return lhsDate > rhsDate
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        default:
+            break
+        }
+
+        if lhs.stableName != rhs.stableName {
+            return lhs.stableName < rhs.stableName
+        }
+        return lhs.tile.id < rhs.tile.id
     }
 
     static func firstRemoteVideoTrack(
@@ -603,6 +638,12 @@ private extension NativeMatrixRTCCallViewModel {
         guard !identity.isEmpty else { return String(localized: "Unknown") }
         return identity
     }
+}
+
+private struct NativeMatrixRTCParticipantTileCandidate {
+    let tile: NativeMatrixRTCParticipantTileState
+    let speaking: NativeMatrixRTCCallSpeakingState
+    let stableName: String
 }
 
 private extension NativeMatrixRTCCallPickupState {

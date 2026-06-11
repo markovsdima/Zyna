@@ -4,6 +4,7 @@
 //
 
 @_spi(Testing) import MatrixRTCLiveKit
+import Foundation
 import Testing
 @testable import Zyna
 
@@ -157,6 +158,63 @@ struct NativeMatrixRTCCallParticipantsTests {
         #expect(snapshot?.remoteParticipantsById[alice.identity!] != nil)
         #expect(snapshot?.remoteParticipantsById[bob.identity!] == nil)
     }
+
+    @Test("Speaking updates sort remote participants by activity and last spoke time")
+    func speakingUpdatesSortRemoteParticipants() {
+        var store = NativeMatrixRTCCallParticipantStore(roomId: roomId)
+        let alice = remoteParticipant(identity: "@alice:example.org", sid: "alice-sid")
+        let bob = remoteParticipant(identity: "@bob:example.org", sid: "bob-sid")
+        let aliceSpokeAt = Date(timeIntervalSince1970: 2_000)
+        let bobSpokeAt = Date(timeIntervalSince1970: 1_000)
+
+        _ = store.apply(.remoteParticipantJoined(alice))
+        _ = store.apply(.remoteParticipantJoined(bob))
+
+        var snapshot = store.apply(.speakingParticipantsChanged([
+            speakingParticipant(identity: bob.identity, sid: bob.sid, lastSpokeAt: bobSpokeAt)
+        ]))
+
+        #expect(snapshot?.remoteParticipants.map(\.identity) == [bob.identity, alice.identity])
+        #expect(snapshot?.remoteParticipantsById[bob.identity!]?.speaking.isSpeaking == true)
+
+        snapshot = store.apply(.speakingParticipantsChanged([]))
+
+        #expect(snapshot?.remoteParticipants.map(\.identity) == [bob.identity, alice.identity])
+        #expect(snapshot?.remoteParticipantsById[bob.identity!]?.speaking.isSpeaking == false)
+        #expect(snapshot?.remoteParticipantsById[bob.identity!]?.speaking.lastSpokeAt == bobSpokeAt)
+
+        snapshot = store.apply(.speakingParticipantsChanged([
+            speakingParticipant(identity: alice.identity, sid: alice.sid, lastSpokeAt: aliceSpokeAt)
+        ]))
+
+        #expect(snapshot?.remoteParticipants.map(\.identity) == [alice.identity, bob.identity])
+        #expect(snapshot?.remoteParticipantsById[alice.identity!]?.speaking.isSpeaking == true)
+        #expect(snapshot?.remoteParticipantsById[bob.identity!]?.speaking.isSpeaking == false)
+    }
+
+    @Test("Speaking updates track local participant activity")
+    func speakingUpdatesTrackLocalParticipant() {
+        var store = NativeMatrixRTCCallParticipantStore(roomId: roomId)
+        let spokeAt = Date(timeIntervalSince1970: 3_000)
+
+        _ = store.setLocalIdentity(localParticipant.identity)
+
+        var snapshot = store.apply(.speakingParticipantsChanged([
+            speakingParticipant(
+                identity: localParticipant.identity,
+                sid: localParticipant.sid,
+                lastSpokeAt: spokeAt
+            )
+        ]))
+
+        #expect(snapshot?.localSpeaking.isSpeaking == true)
+        #expect(snapshot?.localSpeaking.lastSpokeAt == spokeAt)
+
+        snapshot = store.apply(.speakingParticipantsChanged([]))
+
+        #expect(snapshot?.localSpeaking.isSpeaking == false)
+        #expect(snapshot?.localSpeaking.lastSpokeAt == spokeAt)
+    }
 }
 
 private let roomId = "!room:example.org"
@@ -188,5 +246,21 @@ private func trackPublication(
         source: source,
         isMuted: isMuted,
         isSubscribed: isSubscribed
+    )
+}
+
+private func speakingParticipant(
+    identity: String?,
+    sid: String?,
+    isSpeaking: Bool = true,
+    audioLevel: Float = 0.7,
+    lastSpokeAt: Date
+) -> MatrixRTCLiveKitSpeakingParticipantInfo {
+    MatrixRTCLiveKitSpeakingParticipantInfo(
+        identity: identity,
+        sid: sid,
+        isSpeaking: isSpeaking,
+        audioLevel: audioLevel,
+        lastSpokeAt: lastSpokeAt
     )
 }

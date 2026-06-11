@@ -31,12 +31,31 @@ struct NativeMatrixRTCCallTrackState: Equatable, Sendable {
     }
 }
 
+struct NativeMatrixRTCCallSpeakingState: Equatable, Sendable {
+    static let inactive = Self(isSpeaking: false, lastSpokeAt: nil)
+
+    var isSpeaking: Bool
+    var lastSpokeAt: Date?
+
+    mutating func update(from participant: MatrixRTCLiveKitSpeakingParticipantInfo) {
+        isSpeaking = participant.isSpeaking
+        if let lastSpokeAt = participant.lastSpokeAt {
+            self.lastSpokeAt = lastSpokeAt
+        }
+    }
+
+    mutating func stopSpeaking() {
+        isSpeaking = false
+    }
+}
+
 struct NativeMatrixRTCCallParticipantState: Equatable, Sendable, Identifiable {
     let id: String
     var identity: String?
     var sid: String?
     var tracks: [String: NativeMatrixRTCCallTrackState] = [:]
     var mediaKeyIndex: Int32?
+    var speaking = NativeMatrixRTCCallSpeakingState.inactive
 
     var sortedTracks: [NativeMatrixRTCCallTrackState] {
         tracks.values.sorted { lhs, rhs in
@@ -62,14 +81,13 @@ struct NativeMatrixRTCCallParticipantsSnapshot: Equatable, Sendable {
     var roomId: String?
     var localIdentity: String?
     var localTracks: [String: NativeMatrixRTCCallTrackState] = [:]
+    var localSpeaking = NativeMatrixRTCCallSpeakingState.inactive
     var remoteParticipantsById: [String: NativeMatrixRTCCallParticipantState] = [:]
     var mediaKeyIndexesByParticipantId: [String: Int32] = [:]
 
     var remoteParticipants: [NativeMatrixRTCCallParticipantState] {
         remoteParticipantsById.values.sorted { lhs, rhs in
-            let lhsName = lhs.identity ?? lhs.sid ?? lhs.id
-            let rhsName = rhs.identity ?? rhs.sid ?? rhs.id
-            return lhsName < rhsName
+            Self.participantPrecedes(lhs, rhs)
         }
     }
 
@@ -129,6 +147,33 @@ struct NativeMatrixRTCCallParticipantsSnapshot: Equatable, Sendable {
             }
             return lhs.sid < rhs.sid
         }
+    }
+
+    static func participantPrecedes(
+        _ lhs: NativeMatrixRTCCallParticipantState,
+        _ rhs: NativeMatrixRTCCallParticipantState
+    ) -> Bool {
+        if lhs.speaking.isSpeaking != rhs.speaking.isSpeaking {
+            return lhs.speaking.isSpeaking
+        }
+
+        switch (lhs.speaking.lastSpokeAt, rhs.speaking.lastSpokeAt) {
+        case (.some(let lhsDate), .some(let rhsDate)) where lhsDate != rhsDate:
+            return lhsDate > rhsDate
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        default:
+            break
+        }
+
+        let lhsName = lhs.identity ?? lhs.sid ?? lhs.id
+        let rhsName = rhs.identity ?? rhs.sid ?? rhs.id
+        if lhsName != rhsName {
+            return lhsName < rhsName
+        }
+        return lhs.id < rhs.id
     }
 }
 
@@ -217,6 +262,9 @@ struct NativeMatrixRTCCallParticipantStore: Equatable, Sendable {
                 publication: publication,
                 streamState: state
             )
+
+        case .speakingParticipantsChanged(let participants):
+            updateSpeakingParticipants(participants)
 
         case .trackE2EEStateChanged(let publication, let state):
             updateTrackE2EEState(publication: publication, e2eeState: state)
@@ -399,6 +447,30 @@ private extension NativeMatrixRTCCallParticipantStore {
         }
     }
 
+    mutating func updateSpeakingParticipants(_ participants: [MatrixRTCLiveKitSpeakingParticipantInfo]) {
+        let participantsById = Dictionary(
+            participants.map { ($0.participantStateId, $0) },
+            uniquingKeysWith: { lhs, _ in lhs }
+        )
+
+        if let localIdentity = snapshot.localIdentity,
+           let localParticipant = participantsById[localIdentity] {
+            snapshot.localSpeaking.update(from: localParticipant)
+        } else {
+            snapshot.localSpeaking.stopSpeaking()
+        }
+
+        for participantId in snapshot.remoteParticipantsById.keys {
+            guard var participant = snapshot.remoteParticipantsById[participantId] else { continue }
+            if let speakingParticipant = participantsById[participantId] {
+                participant.speaking.update(from: speakingParticipant)
+            } else {
+                participant.speaking.stopSpeaking()
+            }
+            snapshot.remoteParticipantsById[participantId] = participant
+        }
+    }
+
     mutating func updateParticipantMediaKeyIndex(participantId: String, keyIndex: Int32) {
         for id in snapshot.remoteParticipantsById.keys {
             guard var participant = snapshot.remoteParticipantsById[id],
@@ -434,6 +506,12 @@ private extension NativeMatrixRTCCallTrackState {
 }
 
 private extension MatrixRTCLiveKitParticipantInfo {
+    var participantStateId: String {
+        identity ?? sid ?? "unknown"
+    }
+}
+
+private extension MatrixRTCLiveKitSpeakingParticipantInfo {
     var participantStateId: String {
         identity ?? sid ?? "unknown"
     }

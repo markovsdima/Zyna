@@ -131,7 +131,9 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             let liveKit = MatrixRTCLiveKitRoomSession(
                 mediaEncryptionMode: mediaEncryptionEnabled ? .perParticipantKeys : .unencrypted,
                 onEvent: { [weak self] event in
-                    log("LiveKit \(Self.liveKitEventDescription(event))")
+                    if !Self.shouldSkipLiveKitEventLog(event) {
+                        log("LiveKit \(Self.liveKitEventDescription(event))")
+                    }
                     self?.handleLiveKitEvent(event, attemptID: attemptID)
                     self?.handleLiveKitLifecycleEvent(event, attemptID: attemptID)
                     if let reason = Self.mediaKeyReshareReason(for: event) {
@@ -541,7 +543,9 @@ private extension NativeMatrixRTCCallService {
             guard currentCallAttemptID == attemptID else { return nil }
             guard participantStore.snapshot.roomId != nil else { return nil }
             let previousRemoteParticipantCount = participantStore.snapshot.remoteParticipantCount
+            let previousSnapshot = participantStore.snapshot
             guard let snapshot = participantStore.apply(event) else { return nil }
+            guard snapshot != previousSnapshot else { return nil }
             subjectEmitter.enqueue(.participants(snapshot))
             let shouldCheckAutoLeave = activeCall?.attemptID == attemptID
                 && activeCall?.autoLeaveWhenOthersLeft == true
@@ -1235,6 +1239,13 @@ private extension NativeMatrixRTCCallService {
         }
     }
 
+    static func shouldSkipLiveKitEventLog(_ event: MatrixRTCLiveKitRoomSessionEvent) -> Bool {
+        if case .speakingParticipantsChanged = event {
+            return true
+        }
+        return false
+    }
+
     static func liveKitEventDescription(_ event: MatrixRTCLiveKitRoomSessionEvent) -> String {
         switch event {
         case .connectionStateChanged(let state, let previousState):
@@ -1277,6 +1288,8 @@ private extension NativeMatrixRTCCallService {
             return "trackMutedChanged participant=\(participantDescription(participant)) \(trackDescription(publication)) muted=\(isMuted)"
         case .remoteTrackStreamStateChanged(let participant, let publication, let state):
             return "remoteTrackStreamStateChanged participant=\(participantDescription(participant)) \(trackDescription(publication)) state=\(state)"
+        case .speakingParticipantsChanged(let participants):
+            return "speakingParticipantsChanged count=\(participants.count)"
         case .trackE2EEStateChanged(let publication, let state):
             return "trackE2EEStateChanged \(trackDescription(publication)) state=\(state)"
         case .mediaKeyApplied(let keyIndex, let participantId):
