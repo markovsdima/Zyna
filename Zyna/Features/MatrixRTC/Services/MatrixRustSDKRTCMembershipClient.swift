@@ -254,6 +254,139 @@ struct MatrixRustSDKRTCPublishedMembership: Sendable {
     let createdTimestamp: Int64?
 }
 
+enum MatrixRTCRoomPowerLevelPermissions {
+    static let requiredCallMemberEventTypes = [
+        MatrixRTCRawMembershipEvent.legacyCallMemberEventType
+    ]
+
+    static let callNotificationEventTypes = [
+        MatrixRTCCallNotificationContent.eventType,
+        MatrixRTCLegacyCallNotifyContent.eventType
+    ]
+
+    private static let callMemberEventTypesToWrite = [
+        MatrixRTCRawMembershipEvent.legacyCallMemberEventType,
+        MatrixRTCRawMembershipEvent.rtcMemberEventType
+    ]
+
+    static let callEventTypesToWrite = callMemberEventTypesToWrite + callNotificationEventTypes
+
+    static let defaultParticipantPowerLevel: Int32 = 0
+
+    static var participantCallEventOverrides: [String: Int32] {
+        Dictionary(uniqueKeysWithValues: callEventTypesToWrite.map { ($0, defaultParticipantPowerLevel) })
+    }
+
+    static func callPowerLevel(room: Room, client: Client) async throws -> Int64 {
+        let content = try await loadPowerLevelsContent(roomId: room.id(), client: client)
+        return callPowerLevel(from: content)
+    }
+
+    static func setCallPowerLevel(_ powerLevel: Int64, room: Room, client: Client) async throws {
+        var content = try await loadPowerLevelsContent(roomId: room.id(), client: client)
+        var events = content["events"] as? [String: Any] ?? [:]
+        for eventType in callEventTypesToWrite {
+            events[eventType] = Int(powerLevel)
+        }
+        content["events"] = events
+
+        _ = try await room.sendStateEventRaw(
+            eventType: "m.room.power_levels",
+            stateKey: "",
+            content: try jsonString(content)
+        )
+    }
+
+    private static func callPowerLevel(from content: [String: Any]) -> Int64 {
+        let events = content["events"] as? [String: Any] ?? [:]
+        let eventsDefault = intValue(content["events_default"]) ?? 0
+        let stateDefault = intValue(content["state_default"]) ?? 50
+
+        let memberPowerLevels = requiredCallMemberEventTypes.map { eventType in
+            intValue(events[eventType]) ?? stateDefault
+        }
+        let notificationPowerLevels = callNotificationEventTypes.map { eventType in
+            intValue(events[eventType]) ?? eventsDefault
+        }
+
+        return (memberPowerLevels + notificationPowerLevels).max() ?? stateDefault
+    }
+
+    private static func loadPowerLevelsContent(roomId: String, client: Client) async throws -> [String: Any] {
+        let path = "/_matrix/client/v3/rooms/\(percentEncodedPathComponent(roomId))/state/m.room.power_levels/"
+        let data = try await matrixRequest(path: path, client: client)
+        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    }
+
+    private static func matrixRequest(path: String, client: Client) async throws -> Data {
+        let session = try client.session()
+        let url = try matrixURL(homeserverUrl: session.homeserverUrl, percentEncodedPath: path)
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw MatrixRTCStateError.invalidResponse
+        }
+
+        guard (200..<300).contains(http.statusCode) else {
+            throw MatrixRTCStateError.httpStatus(http.statusCode)
+        }
+        return data
+    }
+
+    private static func matrixURL(homeserverUrl: String, percentEncodedPath: String) throws -> URL {
+        var raw = homeserverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        while raw.hasSuffix("/") { raw.removeLast() }
+        if !raw.contains("://") {
+            raw = "https://\(raw)"
+        }
+
+        guard var components = URLComponents(string: raw),
+              let scheme = components.scheme,
+              components.host != nil,
+              scheme == "http" || scheme == "https" else {
+            throw MatrixRTCStateError.invalidURL
+        }
+
+        components.percentEncodedPath = percentEncodedPath
+        components.query = nil
+        components.fragment = nil
+
+        guard let url = components.url else {
+            throw MatrixRTCStateError.invalidURL
+        }
+        return url
+    }
+
+    private static func percentEncodedPathComponent(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private static func intValue(_ value: Any?) -> Int64? {
+        if let value = value as? Int64 {
+            return value
+        }
+        if let value = value as? Int {
+            return Int64(value)
+        }
+        if let value = value as? NSNumber {
+            return value.int64Value
+        }
+        return nil
+    }
+
+    private static func jsonString(_ value: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        guard let string = String(data: data, encoding: .utf8) else {
+            throw MatrixRTCStateError.invalidUTF8
+        }
+        return string
+    }
+}
+
 private struct RawStateEvent: Decodable {
     let eventId: String?
     let type: String
