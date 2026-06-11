@@ -47,7 +47,7 @@ final class CallBackendPreferenceStore {
         get {
             guard let rawValue = defaults.string(forKey: defaultsKey),
                   let backend = CallBackend(rawValue: rawValue) else {
-                return .zynaDirect
+                return .nativeMatrixRTC
             }
             return backend
         }
