@@ -13,6 +13,7 @@ final class NativeMatrixRTCCallPresentationManager {
 
     private var activeCallViewController: NativeMatrixRTCCallViewController?
     private weak var presentingController: UIViewController?
+    private var pendingRoomID: String?
 
     private init() { }
 
@@ -33,6 +34,42 @@ final class NativeMatrixRTCCallPresentationManager {
         }
 
         let roomID = room.id()
+        if let activeCallViewController {
+            guard activeCallViewController.roomID == roomID else {
+                log("Ignored native MatrixRTC presentation for \(roomID): another call is active")
+                return
+            }
+
+            restore(activeCallViewController)
+            return
+        }
+
+        if let pendingRoomID {
+            guard pendingRoomID == roomID else {
+                log("Ignored native MatrixRTC presentation for \(roomID): another call presentation is pending")
+                return
+            }
+            return
+        }
+
+        pendingRoomID = roomID
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let context = await makeLaunchContext(
+                room: room,
+                roomDisplayName: roomDisplayName
+            )
+            guard pendingRoomID == context.roomID else { return }
+            pendingRoomID = nil
+            present(context: context, from: presenter)
+        }
+    }
+
+    private func present(
+        context: NativeMatrixRTCCallLaunchContext,
+        from presenter: UIViewController
+    ) {
+        let roomID = context.roomID
         presentingController = presenter
 
         if let activeCallViewController {
@@ -46,8 +83,7 @@ final class NativeMatrixRTCCallPresentationManager {
         }
 
         let callViewController = NativeMatrixRTCCallViewController(
-            room: room,
-            roomDisplayName: roomDisplayName
+            context: context
         )
         activeCallViewController = callViewController
 
@@ -57,6 +93,39 @@ final class NativeMatrixRTCCallPresentationManager {
         }
 
         topPresentationController(from: presenter).present(callViewController, animated: true)
+    }
+
+    private func makeLaunchContext(
+        room: Room,
+        roomDisplayName: String
+    ) async -> NativeMatrixRTCCallLaunchContext {
+        let avatar = AvatarViewModel(
+            userId: room.id(),
+            displayName: roomDisplayName,
+            mxcAvatarURL: room.avatarUrl()
+        )
+        let kind: NativeMatrixRTCCallKind
+        if await room.isDirect() {
+            kind = .direct(peer: NativeMatrixRTCCallPeer(
+                id: room.id(),
+                displayName: roomDisplayName,
+                avatar: avatar
+            ))
+        } else {
+            kind = .group(room: NativeMatrixRTCCallRoomInfo(
+                id: room.id(),
+                displayName: roomDisplayName,
+                avatar: avatar
+            ))
+        }
+
+        return NativeMatrixRTCCallLaunchContext(
+            room: room,
+            roomDisplayName: roomDisplayName,
+            kind: kind,
+            direction: .outgoing,
+            initialMedia: .audio
+        )
     }
 
     private func restore(_ callViewController: NativeMatrixRTCCallViewController) {
@@ -77,6 +146,7 @@ final class NativeMatrixRTCCallPresentationManager {
     private func finish(_ callViewController: NativeMatrixRTCCallViewController) {
         guard activeCallViewController === callViewController else { return }
         activeCallViewController = nil
+        pendingRoomID = nil
 
         if callViewController.presentingViewController != nil {
             callViewController.dismiss(animated: true)

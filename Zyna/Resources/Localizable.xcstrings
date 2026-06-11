@@ -7635,21 +7635,392 @@
         }
       }
     },
-    "Call" : {},
-    "Call Backend" : {},
-    "Connected" : {},
-    "Connecting..." : {},
-    "Could not start call" : {},
-    "Element Call Web" : {},
-    "End Call" : {},
-    "Leaving..." : {},
-    "Minimize" : {},
-    "Microphone muted" : {},
-    "Mute" : {},
-    "Native MatrixRTC" : {},
-    "Selected" : {},
-    "Unmute" : {},
-    "Zyna Direct" : {}
+    "Call Backend" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Система звонков"
+          }
+        }
+      }
+    },
+    "Connected" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подключено"
+          }
+        }
+      }
+    },
+    "Connecting..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Подключение..."
+          }
+        }
+      }
+    },
+    "Element Call Web" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Element Call Web"
+          }
+        }
+      }
+    },
+    "End Call" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Завершить звонок"
+          }
+        }
+      }
+    },
+    "Leaving..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Завершаем..."
+          }
+        }
+      }
+    },
+    "Minimize" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Свернуть"
+          }
+        }
+      }
+    },
+    "Mute" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выключить микрофон"
+          }
+        }
+      }
+    },
+    "Native MatrixRTC" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нативный MatrixRTC"
+          }
+        }
+      }
+    },
+    "Selected" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "выбрано"
+          }
+        }
+      }
+    },
+    "Unmute" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включить микрофон"
+          }
+        }
+      }
+    },
+    "Zyna Direct" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zyna Direct"
+          }
+        }
+      }
+    },
+    "%lld Participants" : {
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Participant"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Participants"
+                }
+              }
+            }
+          }
+        },
+        "ru" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld участника"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld участников"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld участник"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld участников"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "2 Participants" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "2 участника"
+          }
+        }
+      }
+    },
+    "Advanced destructive" : {},
+    "Calling..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вызываем..."
+          }
+        }
+      }
+    },
+    "Clear" : {},
+    "Clear logs" : {},
+    "Copy snapshot" : {},
+    "Corrupt crypto DB header" : {},
+    "Could Not Start Call" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось начать звонок"
+          }
+        }
+      }
+    },
+    "Crypto Diagnostics" : {},
+    "Declined" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отклонено"
+          }
+        }
+      }
+    },
+    "Exit" : {},
+    "Exit now" : {},
+    "Finishing Previous Call" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Завершаем предыдущий звонок"
+          }
+        }
+      }
+    },
+    "Generate safe snapshot" : {},
+    "Identity checks" : {},
+    "Keychain session" : {},
+    "Local identity vs server" : {},
+    "Matrix client is not available." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Matrix-клиент недоступен."
+          }
+        }
+      }
+    },
+    "Media unavailable" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Медиа недоступно"
+          }
+        }
+      }
+    },
+    "Microphone Muted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Микрофон выключен"
+          }
+        }
+      }
+    },
+    "No Answer" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет ответа"
+          }
+        }
+      }
+    },
+    "NSE readiness" : {},
+    "Output" : {},
+    "Paused" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "На паузе"
+          }
+        }
+      }
+    },
+    "Post-fix / destructive" : {},
+    "Post-fix missing-store test" : {},
+    "Quit and relaunch before opening the normal app or running another destructive operation." : {},
+    "Read local identity" : {},
+    "Restart required" : {},
+    "Ringing..." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Идёт вызов..."
+          }
+        }
+      }
+    },
+    "Run" : {},
+    "Safe reports" : {},
+    "SDK logs (rust tracing)" : {},
+    "SDK logs can contain Matrix metadata such as user IDs, room IDs, event IDs, device IDs, session IDs, and server names. Do not share them publicly." : {},
+    "Share logs" : {},
+    "Share SDK logs?" : {},
+    "Share snapshot" : {},
+    "Speaker Off" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выключить громкую связь"
+          }
+        }
+      }
+    },
+    "Speaker On" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включить громкую связь"
+          }
+        }
+      }
+    },
+    "Start and Join Calls" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Начинать звонки и присоединяться к ним"
+          }
+        }
+      }
+    },
+    "Store health" : {},
+    "Store was opened. Destructive operations are disabled until restart." : {},
+    "Stored fingerprint vs server" : {},
+    "Switch Camera" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Переключить камеру"
+          }
+        }
+      }
+    },
+    "Tracing status" : {},
+    "Turn Camera Off" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выключить камеру"
+          }
+        }
+      }
+    },
+    "Turn Camera On" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Включить камеру"
+          }
+        }
+      }
+    },
+    "UserDefaults markers" : {},
+    "Waiting for others" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ждём других участников"
+          }
+        }
+      }
+    },
+    "Wipe crypto store, keep keychain" : {},
+    "Wipe everything" : {},
+    "Wipe keychain session, keep store" : {}
   },
   "version" : "1.1"
 }
