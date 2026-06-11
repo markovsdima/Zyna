@@ -354,7 +354,7 @@ final class ChatViewModel {
             expiresAt: notification.expiresAt,
             hasObservedActiveCall: observedState.isActive
         )
-        logMatrixRTCChat("Received MatrixRTC ring for open chat room=\(roomId) event=\(notification.eventId)")
+        logMatrixRTCChat("Received MatrixRTC \(notification.kind.logLabel) for open chat room=\(roomId) event=\(notification.eventId)")
         applyActiveRoomCallState(mergedActiveRoomCallState(observedState))
         scheduleMatrixRTCRingOverrideExpiry(notification)
         scheduleMatrixRTCRingOverrideValidation(notification)

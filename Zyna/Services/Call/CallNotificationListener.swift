@@ -11,11 +11,26 @@ private let logCall = ScopedLog(.call)
 private let logMatrixRTC = ScopedLog(.call, prefix: "[matrixrtc-sync]")
 
 struct IncomingMatrixRTCCallNotification: Sendable {
+    enum Kind: Sendable {
+        case ring
+        case notification
+
+        var logLabel: String {
+            switch self {
+            case .ring:
+                return "ring"
+            case .notification:
+                return "notification"
+            }
+        }
+    }
+
     let eventId: String
     let roomId: String
     let senderId: String
     let senderName: String?
     let roomName: String
+    let kind: Kind
     let isVoiceCall: Bool
     let expiresAt: Date
 }
@@ -109,10 +124,17 @@ final class CallNotificationListener: SyncNotificationListener {
         roomId: String
     ) {
         guard case .messageLike(let msgType) = eventContent,
-              case .rtcNotification(let notificationType, let expirationTimestamp, let callIntent) = msgType,
-              notificationType == .ring
+              case .rtcNotification(let notificationType, let expirationTimestamp, let callIntent) = msgType
         else {
             return
+        }
+
+        let kind: IncomingMatrixRTCCallNotification.Kind
+        switch notificationType {
+        case .ring:
+            kind = .ring
+        case .notification:
+            kind = .notification
         }
 
         let ownUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
@@ -121,7 +143,7 @@ final class CallNotificationListener: SyncNotificationListener {
 
         let expirationDate = Date(timeIntervalSince1970: TimeInterval(expirationTimestamp) / 1000)
         guard expirationDate > Date() else {
-            logMatrixRTC("Ignoring expired MatrixRTC ring room=\(roomId) event=\(event.eventId())")
+            logMatrixRTC("Ignoring expired MatrixRTC \(kind.logLabel) room=\(roomId) event=\(event.eventId())")
             return
         }
 
@@ -136,11 +158,12 @@ final class CallNotificationListener: SyncNotificationListener {
             senderId: senderId,
             senderName: notification.senderInfo.displayName,
             roomName: notification.roomInfo.displayName,
+            kind: kind,
             isVoiceCall: callIntent == .audio,
             expiresAt: expirationDate
         )
 
-        logMatrixRTC("Incoming MatrixRTC ring room=\(roomId) event=\(eventId) sender=\(senderId) voice=\(incoming.isVoiceCall)")
+        logMatrixRTC("Incoming MatrixRTC \(kind.logLabel) room=\(roomId) event=\(eventId) sender=\(senderId) voice=\(incoming.isVoiceCall)")
         matrixRTCIncomingCallSubject.send(incoming)
     }
 
