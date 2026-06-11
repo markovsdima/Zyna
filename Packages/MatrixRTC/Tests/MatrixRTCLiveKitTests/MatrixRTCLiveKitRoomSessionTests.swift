@@ -34,6 +34,24 @@ import Testing
     #expect(eventBox.events.isEmpty)
 }
 
+@Test func connectsLiveKitRoomWithoutEncryptionOptionsWhenUnencrypted() async throws {
+    let box = RoomSessionTestBox()
+    let session = MatrixRTCLiveKitRoomSession(
+        mediaEncryptionMode: .unencrypted,
+        roomFactory: { roomOptions in
+            box.roomOptions = roomOptions
+            return box.room
+        }
+    )
+
+    try await session.connect(sfuConfig: sfuConfig)
+
+    #expect(session.state == .connected)
+    #expect(box.room.connectCalls.count == 1)
+    #expect(box.room.connectCalls[0].roomOptions === session.roomOptions)
+    #expect(box.roomOptions?.encryptionOptions == nil)
+}
+
 @Test func appliesMediaKeysToLiveKitKeyProvider() throws {
     let eventBox = RoomSessionEventBox()
     let session = MatrixRTCLiveKitRoomSession(onEvent: { event in

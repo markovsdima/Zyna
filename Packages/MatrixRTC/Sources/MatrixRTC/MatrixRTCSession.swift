@@ -82,6 +82,11 @@ public enum MatrixRTCSessionDelayedEventError: Error, Equatable, Sendable {
     case generic(String)
 }
 
+public enum MatrixRTCSessionMediaEncryptionMode: Equatable, Sendable {
+    case perParticipantKeys
+    case unencrypted
+}
+
 public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
     public let slot: MatrixRTCSlotDescription
     public let roomVersion: String?
@@ -95,6 +100,7 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
     public let delayedLeaveEventRestartMilliseconds: UInt64
     public let callIntent: String?
     public let joinedUserIds: Set<String>?
+    public let mediaEncryptionMode: MatrixRTCSessionMediaEncryptionMode
     public let mediaKeyRotationConfiguration: MatrixRTCMediaKeyRotationConfiguration
 
     public init(
@@ -110,6 +116,7 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
         delayedLeaveEventRestartMilliseconds: UInt64 = 4_000,
         callIntent: String? = nil,
         joinedUserIds: Set<String>? = nil,
+        mediaEncryptionMode: MatrixRTCSessionMediaEncryptionMode = .perParticipantKeys,
         mediaKeyRotationConfiguration: MatrixRTCMediaKeyRotationConfiguration = .init()
     ) {
         self.slot = slot
@@ -124,6 +131,7 @@ public struct MatrixRTCSessionConfiguration: Equatable, Sendable {
         self.delayedLeaveEventRestartMilliseconds = delayedLeaveEventRestartMilliseconds
         self.callIntent = callIntent
         self.joinedUserIds = joinedUserIds
+        self.mediaEncryptionMode = mediaEncryptionMode
         self.mediaKeyRotationConfiguration = mediaKeyRotationConfiguration
     }
 }
@@ -234,7 +242,8 @@ public final class MatrixRTCSession: @unchecked Sendable {
             let earlyReceivedKeys = MatrixRTCEarlyReceivedKeyBuffer()
 
             do {
-                if let ownMembershipIdentity = configuration.ownMembershipIdentity {
+                if configuration.mediaEncryptionMode == .perParticipantKeys,
+                   let ownMembershipIdentity = configuration.ownMembershipIdentity {
                     let transport = keyTransportFactory(ownMembershipIdentity)
                     transport.setReceivedKeyHandler { result in
                         earlyReceivedKeys.append(result)
@@ -270,34 +279,43 @@ public final class MatrixRTCSession: @unchecked Sendable {
                 )
                 let activeMemberships = Self.memberships(loadedMemberships, including: ownMembership)
 
-                let manager = MatrixRTCMediaKeyManager(
-                    ownMembership: ownMembership,
-                    memberships: activeMemberships,
-                    transport: prestartedKeyTransport ?? keyTransportFactory(ownMembership.identity),
-                    keyGenerator: keyGenerator,
-                    rotationConfiguration: configuration.mediaKeyRotationConfiguration,
-                    timestampProvider: timestampProvider,
-                    onKeyChanged: onKeyChanged,
-                    onError: onError
-                )
-                if prestartedKeyTransport == nil {
-                    manager.start()
-                }
-                startedMediaKeyManager = manager
-
-                let deliverReceivedKey: @Sendable (Result<MatrixRTCReceivedCallEncryptionKey, Error>) -> Void = { result in
-                    switch result {
-                    case .success(let receivedKey):
-                        manager.handleReceivedKey(receivedKey)
-                    case .failure(let error):
-                        self.onError?(error)
+                let manager: MatrixRTCMediaKeyManager?
+                let keyShareResult: MatrixRTCMediaKeyShareResult
+                switch configuration.mediaEncryptionMode {
+                case .perParticipantKeys:
+                    let mediaKeyManager = MatrixRTCMediaKeyManager(
+                        ownMembership: ownMembership,
+                        memberships: activeMemberships,
+                        transport: prestartedKeyTransport ?? keyTransportFactory(ownMembership.identity),
+                        keyGenerator: keyGenerator,
+                        rotationConfiguration: configuration.mediaKeyRotationConfiguration,
+                        timestampProvider: timestampProvider,
+                        onKeyChanged: onKeyChanged,
+                        onError: onError
+                    )
+                    if prestartedKeyTransport == nil {
+                        mediaKeyManager.start()
                     }
-                }
-                for result in earlyReceivedKeys.drain(forwardingTo: deliverReceivedKey) {
-                    deliverReceivedKey(result)
-                }
+                    startedMediaKeyManager = mediaKeyManager
 
-                let keyShareResult = try await manager.ensureKeyDistribution(with: activeMemberships)
+                    let deliverReceivedKey: @Sendable (Result<MatrixRTCReceivedCallEncryptionKey, Error>) -> Void = { result in
+                        switch result {
+                        case .success(let receivedKey):
+                            mediaKeyManager.handleReceivedKey(receivedKey)
+                        case .failure(let error):
+                            self.onError?(error)
+                        }
+                    }
+                    for result in earlyReceivedKeys.drain(forwardingTo: deliverReceivedKey) {
+                        deliverReceivedKey(result)
+                    }
+
+                    manager = mediaKeyManager
+                    keyShareResult = try await mediaKeyManager.ensureKeyDistribution(with: activeMemberships)
+                case .unencrypted:
+                    manager = nil
+                    keyShareResult = .init(failures: [], sharedWith: [])
+                }
 
                 withStateLock {
                     mutableState.ownMembership = ownMembership
@@ -350,8 +368,7 @@ public final class MatrixRTCSession: @unchecked Sendable {
                 )
             }
             guard snapshot.state == .joined,
-                  let ownMembership = snapshot.ownMembership,
-                  let mediaKeyManager = snapshot.mediaKeyManager else {
+                  let ownMembership = snapshot.ownMembership else {
                 throw MatrixRTCSessionError.notJoined
             }
 
@@ -363,10 +380,12 @@ public final class MatrixRTCSession: @unchecked Sendable {
             let activeMemberships = Self.memberships(loadedMemberships, including: ownMembership)
 
             let keyShareResult: MatrixRTCMediaKeyShareResult
-            if distributeKeys {
+            if let mediaKeyManager = snapshot.mediaKeyManager, distributeKeys {
                 keyShareResult = try await mediaKeyManager.ensureKeyDistribution(with: activeMemberships)
-            } else {
+            } else if let mediaKeyManager = snapshot.mediaKeyManager {
                 mediaKeyManager.updateMemberships(activeMemberships)
+                keyShareResult = .init(failures: [], sharedWith: [])
+            } else {
                 keyShareResult = .init(failures: [], sharedWith: [])
             }
             withStateLock {
@@ -393,8 +412,7 @@ public final class MatrixRTCSession: @unchecked Sendable {
                 )
             }
             guard snapshot.state == .joined,
-                  let ownMembership = snapshot.ownMembership,
-                  let mediaKeyManager = snapshot.mediaKeyManager else {
+                  let ownMembership = snapshot.ownMembership else {
                 throw MatrixRTCSessionError.notJoined
             }
 
@@ -405,7 +423,12 @@ public final class MatrixRTCSession: @unchecked Sendable {
             )
             let activeMemberships = Self.memberships(loadedMemberships, including: ownMembership)
 
-            let keyShareResult = try await mediaKeyManager.reshareCurrentKey(with: activeMemberships)
+            let keyShareResult: MatrixRTCMediaKeyShareResult
+            if let mediaKeyManager = snapshot.mediaKeyManager {
+                keyShareResult = try await mediaKeyManager.reshareCurrentKey(with: activeMemberships)
+            } else {
+                keyShareResult = .init(failures: [], sharedWith: [])
+            }
             withStateLock {
                 mutableState.memberships = activeMemberships
             }

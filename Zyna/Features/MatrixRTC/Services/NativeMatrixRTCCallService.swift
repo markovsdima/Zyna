@@ -117,6 +117,8 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             try Task.checkCancellation()
 
             let ownIdentity = try Self.legacyMembershipIdentity(client: client)
+            let mediaEncryptionEnabled = await Self.mediaEncryptionEnabled(for: room)
+            log("Starting native MatrixRTC call in room \(roomId) mediaEncryption=\(mediaEncryptionEnabled)")
             let sfuConfig = try await focusClient.sfuConfig(
                 for: ownIdentity,
                 transport: discoveredTransport.transport,
@@ -126,16 +128,19 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             setLocalParticipantIdentity(sfuConfig.liveKitIdentity)
             try Task.checkCancellation()
 
-            let liveKit = MatrixRTCLiveKitRoomSession(onEvent: { [weak self] event in
-                log("LiveKit \(Self.liveKitEventDescription(event))")
-                self?.handleLiveKitEvent(event, attemptID: attemptID)
-                self?.handleLiveKitLifecycleEvent(event, attemptID: attemptID)
-                if let reason = Self.mediaKeyReshareReason(for: event) {
-                    self?.scheduleActiveMediaKeyReshare(reason: reason, attemptID: attemptID)
+            let liveKit = MatrixRTCLiveKitRoomSession(
+                mediaEncryptionMode: mediaEncryptionEnabled ? .perParticipantKeys : .unencrypted,
+                onEvent: { [weak self] event in
+                    log("LiveKit \(Self.liveKitEventDescription(event))")
+                    self?.handleLiveKitEvent(event, attemptID: attemptID)
+                    self?.handleLiveKitLifecycleEvent(event, attemptID: attemptID)
+                    if let reason = Self.mediaKeyReshareReason(for: event) {
+                        self?.scheduleActiveMediaKeyReshare(reason: reason, attemptID: attemptID)
+                    }
+                    guard let reason = Self.membershipRefreshReason(for: event) else { return }
+                    self?.scheduleActiveMembershipRefresh(reason: reason, attemptID: attemptID)
                 }
-                guard let reason = Self.membershipRefreshReason(for: event) else { return }
-                self?.scheduleActiveMembershipRefresh(reason: reason, attemptID: attemptID)
-            })
+            )
             liveKitSession = liveKit
 
             let toDeviceClient = MatrixRustSDKRTCToDeviceClient(client: client)
@@ -144,13 +149,22 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 membershipClient: membershipClient,
                 room: room
             )
+            let keyChangedHandler: MatrixRTCSession.KeyChangedHandler
+            if mediaEncryptionEnabled {
+                keyChangedHandler = liveKit.keyChangedHandler { error in
+                    log("Failed to apply media key: \(error)")
+                }
+            } else {
+                keyChangedHandler = { _ in }
+            }
 
             let session = MatrixRTCSession(
                 configuration: .init(
                     ownMembershipIdentity: ownIdentity,
                     focusSelection: .oldestMembership,
                     fociPreferred: [discoveredTransport.transport],
-                    callIntent: Self.audioCallIntent
+                    callIntent: Self.audioCallIntent,
+                    mediaEncryptionMode: mediaEncryptionEnabled ? .perParticipantKeys : .unencrypted
                 ),
                 membershipClient: sessionMembershipClient,
                 keyTransportFactory: { identity in
@@ -160,9 +174,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                         client: toDeviceClient
                     )
                 },
-                onKeyChanged: liveKit.keyChangedHandler { error in
-                    log("Failed to apply media key: \(error)")
-                },
+                onKeyChanged: keyChangedHandler,
                 onError: { error in
                     log("MatrixRTC session error: \(error)")
                 }
@@ -190,6 +202,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 liveKitSession: liveKit,
                 discoveredTransport: discoveredTransport,
                 sfuConfig: sfuConfig,
+                mediaEncryptionEnabled: mediaEncryptionEnabled,
                 autoLeaveWhenOthersLeft: autoLeaveWhenOthersLeft,
                 pickupAttempt: Self.pickupAttempt(
                     from: callNotification,
@@ -910,7 +923,8 @@ private extension NativeMatrixRTCCallService {
     func scheduleActiveMediaKeyReshare(reason: String, attemptID: UUID) {
         let callToStart: NativeMatrixRTCCall? = withLock {
             guard let call = activeCall,
-                  call.attemptID == attemptID else {
+                  call.attemptID == attemptID,
+                  call.mediaEncryptionEnabled else {
                 return nil
             }
 
@@ -1106,6 +1120,14 @@ private extension NativeMatrixRTCCallService {
         return .init(userId: userId, deviceId: deviceId, memberId: memberId)
     }
 
+    static func mediaEncryptionEnabled(for room: Room) async -> Bool {
+        if let latestEncryptionState = try? await room.latestEncryptionState() {
+            return latestEncryptionState == .encrypted
+        }
+
+        return room.encryptionState() == .encrypted
+    }
+
     static func shouldSendCallNotification(
         ownMembership: MatrixRTCCallMembership,
         memberships: [MatrixRTCCallMembership]
@@ -1281,6 +1303,7 @@ private struct NativeMatrixRTCCall {
     let liveKitSession: MatrixRTCLiveKitRoomSession
     let discoveredTransport: MatrixRTCLiveKitDiscoveredTransport
     let sfuConfig: MatrixRTCLiveKitSFUConfig
+    let mediaEncryptionEnabled: Bool
     let autoLeaveWhenOthersLeft: Bool
     let pickupAttempt: NativeMatrixRTCCallPickupAttempt?
 }

@@ -68,6 +68,64 @@ import Testing
     #expect(ownKey.rtcBackendIdentity == "@alice:example.org:ALICEDEVICE")
 }
 
+@Test func joinsUnencryptedSessionWithoutMediaKeyTransport() async throws {
+    let membershipClient = FakeSessionMembershipClient()
+    let toDeviceClient = FakeCustomToDeviceClient()
+    let ownMembership = sessionLegacyMembership(
+        eventId: "$own",
+        sender: "@alice:example.org",
+        deviceId: "ALICEDEVICE",
+        createdTimestamp: 10_000
+    )
+    let bobMembership = sessionLegacyMembership(
+        eventId: "$bob",
+        sender: "@bob:example.org",
+        deviceId: "BOBDEVICE",
+        createdTimestamp: 20_000
+    )
+    membershipClient.publishResult = ownMembership
+    membershipClient.activeMembershipResponses = [[bobMembership]]
+    let keyBox = SessionMediaKeyEventBox()
+    let keyTransportFactoryCalled = SessionFlagBox()
+
+    let session = MatrixRTCSession(
+        configuration: .init(
+            fociPreferred: [.liveKit(serviceURL: "https://livekit.example.org")],
+            callIntent: "m.audio",
+            mediaEncryptionMode: .unencrypted
+        ),
+        membershipClient: membershipClient,
+        keyTransportFactory: { identity in
+            keyTransportFactoryCalled.value = true
+            return MatrixRTCToDeviceKeyTransport(
+                roomId: "!room:example.org",
+                ownIdentity: identity,
+                client: toDeviceClient
+            )
+        },
+        keyGenerator: StaticSessionMediaKeyGenerator(key: "own-key"),
+        timestampProvider: { 10_000 },
+        onKeyChanged: { event in
+            keyBox.events.append(event)
+        }
+    )
+
+    let joinResult = try await session.join()
+    let refreshResult = try await session.refreshMemberships()
+    let reshareResult = try await session.reshareCurrentMediaKey()
+
+    #expect(session.state == .joined)
+    #expect(joinResult.memberships.map(\.identity) == [ownMembership.identity, bobMembership.identity])
+    #expect(joinResult.keyShareResult.sharedWith.isEmpty)
+    #expect(refreshResult.keyShareResult.sharedWith.isEmpty)
+    #expect(reshareResult.keyShareResult.sharedWith.isEmpty)
+    #expect(keyTransportFactoryCalled.value == false)
+    #expect(toDeviceClient.listenerEventType == nil)
+    #expect(toDeviceClient.sendCount == 0)
+    #expect(keyBox.events.isEmpty)
+    #expect(session.encryptionKeys().isEmpty)
+}
+
 @Test func refreshSharesCurrentMediaKeyWithNewMembersOnly() async throws {
     let membershipClient = FakeSessionMembershipClient()
     let toDeviceClient = FakeCustomToDeviceClient()

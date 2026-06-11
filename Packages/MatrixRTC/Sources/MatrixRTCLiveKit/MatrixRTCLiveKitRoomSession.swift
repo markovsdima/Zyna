@@ -16,6 +16,11 @@ public enum MatrixRTCLiveKitRoomSessionError: Error, Equatable {
     case cameraNotEnabled
 }
 
+public enum MatrixRTCLiveKitMediaEncryptionMode: Equatable, Sendable {
+    case perParticipantKeys
+    case unencrypted
+}
+
 public struct MatrixRTCLiveKitParticipantInfo: Equatable, Sendable {
     public let identity: String?
     public let sid: String?
@@ -113,7 +118,7 @@ extension Room: MatrixRTCLiveKitRoomControlling {
 }
 
 public final class MatrixRTCLiveKitRoomSession: @unchecked Sendable {
-    public typealias RoomOptionsFactory = @Sendable (EncryptionOptions) -> RoomOptions
+    public typealias RoomOptionsFactory = @Sendable (EncryptionOptions?) -> RoomOptions
     public typealias RoomFactory = @Sendable (RoomOptions) -> any MatrixRTCLiveKitRoomControlling
     public typealias ErrorHandler = @Sendable (Error) -> Void
     public typealias EventHandler = @Sendable (MatrixRTCLiveKitRoomSessionEvent) -> Void
@@ -143,6 +148,7 @@ public final class MatrixRTCLiveKitRoomSession: @unchecked Sendable {
     }
 
     public init(
+        mediaEncryptionMode: MatrixRTCLiveKitMediaEncryptionMode = .perParticipantKeys,
         keyProvider: MatrixRTCLiveKitKeyProvider = MatrixRTCLiveKitKeyProvider(),
         connectOptions: ConnectOptions = ConnectOptions(),
         roomOptionsFactory: RoomOptionsFactory = {
@@ -155,7 +161,14 @@ public final class MatrixRTCLiveKitRoomSession: @unchecked Sendable {
     ) {
         self.keyProvider = keyProvider
         self.connectOptions = connectOptions
-        self.roomOptions = roomOptionsFactory(keyProvider.liveKitEncryptionOptions())
+        let encryptionOptions: EncryptionOptions?
+        switch mediaEncryptionMode {
+        case .perParticipantKeys:
+            encryptionOptions = keyProvider.liveKitEncryptionOptions()
+        case .unencrypted:
+            encryptionOptions = nil
+        }
+        self.roomOptions = roomOptionsFactory(encryptionOptions)
         self.room = roomFactory(roomOptions)
         self.eventHandler = onEvent
         self.roomObserver = MatrixRTCLiveKitRoomObserver(onEvent: onEvent)
