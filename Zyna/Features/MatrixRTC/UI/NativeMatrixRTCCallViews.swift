@@ -18,6 +18,7 @@ final class NativeMatrixRTCCallRootView: UIView {
     private let groupStageView = NativeMatrixRTCGroupCallStageView()
     private let topBar = NativeMatrixRTCCallTopBar()
     private let controlsBar = NativeMatrixRTCCallControlsBar()
+    private var controlsCount = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -46,6 +47,7 @@ final class NativeMatrixRTCCallRootView: UIView {
         }
 
         topBar.render(state.topBar)
+        controlsCount = state.controls.count
         controlsBar.render(state.controls)
         setNeedsLayout()
     }
@@ -59,7 +61,8 @@ final class NativeMatrixRTCCallRootView: UIView {
         let topInset = safeAreaInsets.top
         let bottomInset = safeAreaInsets.bottom
         let controlsHeight: CGFloat = 88
-        let controlsWidth = min(bounds.width - 24, 430)
+        let controlsMaxWidth: CGFloat = controlsCount > 5 ? 520 : 430
+        let controlsWidth = min(bounds.width - 12, controlsMaxWidth)
         controlsBar.frame = CGRect(
             x: (bounds.width - controlsWidth) / 2,
             y: bounds.height - bottomInset - controlsHeight - 18,
@@ -236,6 +239,7 @@ private final class NativeMatrixRTCDirectCallStageView: UIView {
                 ),
                 videoTrack: .local(localVideoTrack),
                 isAudioMuted: false,
+                isHandRaised: false,
                 isLocal: true,
                 statusText: nil
             ))
@@ -520,6 +524,7 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
     private let gradientLayer = CAGradientLayer()
     private let nameLabel = UILabel()
     private let statusLabel = UILabel()
+    private let handBadgeView = UIImageView()
     private let micBadgeView = UIImageView()
 
     override init(frame: CGRect) {
@@ -538,6 +543,8 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
         statusLabel.text = state.statusText
         statusLabel.isHidden = state.statusText == nil
         micBadgeView.isHidden = !state.isAudioMuted
+        handBadgeView.isHidden = !state.isHandRaised
+        accessibilityLabel = accessibilityLabel(for: state)
 
         if let videoTrack = state.videoTrack {
             videoView.isHidden = false
@@ -594,6 +601,14 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
         )
 
         let badgeSide: CGFloat = 30
+        handBadgeView.frame = CGRect(
+            x: 12,
+            y: 12,
+            width: badgeSide,
+            height: badgeSide
+        )
+        handBadgeView.layer.cornerRadius = badgeSide / 2
+
         micBadgeView.frame = CGRect(
             x: bounds.width - badgeSide - 12,
             y: 12,
@@ -631,6 +646,16 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
         statusLabel.numberOfLines = 1
         addSubview(statusLabel)
 
+        handBadgeView.image = UIImage(
+            systemName: "hand.raised.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        )
+        handBadgeView.tintColor = .black
+        handBadgeView.backgroundColor = .systemYellow
+        handBadgeView.contentMode = .center
+        handBadgeView.clipsToBounds = true
+        addSubview(handBadgeView)
+
         micBadgeView.image = UIImage(
             systemName: "mic.slash.fill",
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
@@ -640,6 +665,23 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
         micBadgeView.contentMode = .center
         micBadgeView.clipsToBounds = true
         addSubview(micBadgeView)
+    }
+
+    private func accessibilityLabel(for state: NativeMatrixRTCParticipantTileState) -> String {
+        var parts = [state.displayName]
+        if state.isLocal {
+            parts.append(String(localized: "You"))
+        }
+        if state.isHandRaised {
+            parts.append(String(localized: "Hand Raised"))
+        }
+        if state.isAudioMuted {
+            parts.append(String(localized: "Muted"))
+        }
+        if let statusText = state.statusText {
+            parts.append(statusText)
+        }
+        return parts.joined(separator: ", ")
     }
 }
 
@@ -710,6 +752,15 @@ private final class NativeMatrixRTCCallControlsBar: UIView {
     }
 
     func render(_ controls: [NativeMatrixRTCCallControlState]) {
+        let nextKinds = Set(controls.map(\.kind))
+        for (kind, button) in Array(buttonsByKind) where !nextKinds.contains(kind) {
+            button.removeFromSuperview()
+            buttonsByKind.removeValue(forKey: kind)
+            if let constraints = sizeConstraintsByKind.removeValue(forKey: kind) {
+                NSLayoutConstraint.deactivate([constraints.width, constraints.height])
+            }
+        }
+
         for control in controls {
             let button = buttonsByKind[control.kind] ?? makeButton(for: control.kind)
             configure(button, with: control)
@@ -734,7 +785,7 @@ private final class NativeMatrixRTCCallControlsBar: UIView {
         stackView.axis = .horizontal
         stackView.alignment = .center
         stackView.distribution = .equalSpacing
-        stackView.spacing = 8
+        stackView.spacing = 7
         addSubview(stackView)
     }
 
@@ -801,7 +852,8 @@ private extension NativeMatrixRTCCallControlKind {
         case .speaker: return 2
         case .camera: return 3
         case .switchCamera: return 4
-        case .end: return 5
+        case .raiseHand: return 5
+        case .end: return 6
         }
     }
 
@@ -811,7 +863,8 @@ private extension NativeMatrixRTCCallControlKind {
         case 2: self = .speaker
         case 3: self = .camera
         case 4: self = .switchCamera
-        case 5: self = .end
+        case 5: self = .raiseHand
+        case 6: self = .end
         default: return nil
         }
     }

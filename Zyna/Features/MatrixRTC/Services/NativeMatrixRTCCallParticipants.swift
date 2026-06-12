@@ -56,6 +56,7 @@ struct NativeMatrixRTCCallParticipantState: Equatable, Sendable, Identifiable {
     var tracks: [String: NativeMatrixRTCCallTrackState] = [:]
     var mediaKeyIndex: Int32?
     var speaking = NativeMatrixRTCCallSpeakingState.inactive
+    var raisedHand = NativeMatrixRTCCallRaisedHandState.lowered
 
     var sortedTracks: [NativeMatrixRTCCallTrackState] {
         tracks.values.sorted { lhs, rhs in
@@ -82,6 +83,8 @@ struct NativeMatrixRTCCallParticipantsSnapshot: Equatable, Sendable {
     var localIdentity: String?
     var localTracks: [String: NativeMatrixRTCCallTrackState] = [:]
     var localSpeaking = NativeMatrixRTCCallSpeakingState.inactive
+    var localRaisedHand = NativeMatrixRTCCallRaisedHandState.lowered
+    var raisedHandsByParticipantId: [String: NativeMatrixRTCCallRaisedHandState] = [:]
     var remoteParticipantsById: [String: NativeMatrixRTCCallParticipantState] = [:]
     var mediaKeyIndexesByParticipantId: [String: Int32] = [:]
 
@@ -191,6 +194,21 @@ struct NativeMatrixRTCCallParticipantStore: Equatable, Sendable {
 
     mutating func setLocalIdentity(_ identity: String?) -> NativeMatrixRTCCallParticipantsSnapshot {
         snapshot.localIdentity = identity
+        return snapshot
+    }
+
+    mutating func updateRaisedHands(
+        _ raisedHands: NativeMatrixRTCCallRaisedHandsSnapshot
+    ) -> NativeMatrixRTCCallParticipantsSnapshot {
+        snapshot.localRaisedHand = raisedHands.localHand
+        snapshot.raisedHandsByParticipantId = raisedHands.handsByParticipantId
+
+        for participantId in snapshot.remoteParticipantsById.keys {
+            guard var participant = snapshot.remoteParticipantsById[participantId] else { continue }
+            participant.raisedHand = raisedHands.handsByParticipantId[participant.identity ?? participant.id] ?? .lowered
+            snapshot.remoteParticipantsById[participantId] = participant
+        }
+
         return snapshot
     }
 
@@ -307,6 +325,11 @@ private extension NativeMatrixRTCCallParticipantStore {
             ?? NativeMatrixRTCCallParticipantState(id: id)
         state.identity = participant.identity
         state.sid = participant.sid
+        if let identity = participant.identity {
+            state.raisedHand = snapshot.raisedHandsByParticipantId[identity] ?? .lowered
+        } else {
+            state.raisedHand = .lowered
+        }
         if let identity = participant.identity,
            let keyIndex = snapshot.mediaKeyIndexesByParticipantId[identity] {
             state.mediaKeyIndex = keyIndex

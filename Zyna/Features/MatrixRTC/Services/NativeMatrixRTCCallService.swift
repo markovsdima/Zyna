@@ -70,6 +70,9 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
     private var pickupDeclineHandle: TaskHandle?
     private var autoLeaveWhenOthersLeftTask: Task<Void, Never>?
     private var participantStore = NativeMatrixRTCCallParticipantStore()
+    private var raisedHandStore = NativeMatrixRTCCallRaisedHandStore()
+    private var reactionWatcher: NativeMatrixRTCCallReactionWatcher?
+    private var reactionWatcherTask: Task<Void, Never>?
     private let subjectEmitter: NativeMatrixRTCCallSubjectEmitter
     private let audioSessionController = NativeMatrixRTCAudioSessionController.shared
 
@@ -93,7 +96,8 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
         room: Room,
         fallbackLiveKitServiceURL: String? = nil,
         waitForPickup: Bool = false,
-        autoLeaveWhenOthersLeft: Bool = false
+        autoLeaveWhenOthersLeft: Bool = false,
+        trackRaisedHands: Bool = true
     ) async throws -> NativeMatrixRTCCallStartResult {
         let roomId = room.id()
         let attemptID = try beginJoining(roomId: roomId)
@@ -198,6 +202,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
 
             let call = NativeMatrixRTCCall(
                 attemptID: attemptID,
+                room: room,
                 roomId: roomId,
                 ownUserId: ownIdentity.userId,
                 matrixRTCSession: session,
@@ -206,6 +211,7 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 sfuConfig: sfuConfig,
                 mediaEncryptionEnabled: mediaEncryptionEnabled,
                 autoLeaveWhenOthersLeft: autoLeaveWhenOthersLeft,
+                trackRaisedHands: trackRaisedHands,
                 pickupAttempt: Self.pickupAttempt(
                     from: callNotification,
                     waitForPickup: waitForPickup
@@ -221,6 +227,14 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
                 throw CancellationError()
             }
 
+            if trackRaisedHands {
+                startCallReactionLifecycle(
+                    room: room,
+                    ownMembership: joinResult.ownMembership,
+                    memberships: joinResult.memberships,
+                    attemptID: attemptID
+                )
+            }
             startCallPickupLifecycleIfNeeded(room: room, call: call)
             log("Joined native MatrixRTC audio call in room \(roomId)")
             return .init(
@@ -253,7 +267,9 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
             throw NativeMatrixRTCCallServiceError.noActiveCall
         }
 
-        return try await activeCall.matrixRTCSession.refreshMemberships()
+        let result = try await activeCall.matrixRTCSession.refreshMemberships()
+        updateRaisedHandMemberships(call: activeCall, memberships: result.memberships)
+        return result
     }
 
     func setMicrophoneEnabled(_ enabled: Bool) async throws {
@@ -278,6 +294,35 @@ final class NativeMatrixRTCCallService: @unchecked Sendable {
         }
 
         _ = try await activeCall.liveKitSession.switchCameraPosition()
+    }
+
+    func toggleRaisedHand() async throws {
+        let context = try raisedHandToggleContext()
+
+        switch context.action {
+        case .raise(let membershipEventId):
+            let reactionEventId = try await NativeMatrixRTCCallRaisedHandSender.raiseHand(
+                room: context.room,
+                membershipEventId: membershipEventId
+            )
+            applyOwnRaisedHand(
+                reactionEventId: reactionEventId,
+                membershipEventId: membershipEventId,
+                raisedAt: Date(),
+                attemptID: context.attemptID
+            )
+
+        case .lower(let reactionEventId, let membershipEventId):
+            _ = try await NativeMatrixRTCCallRaisedHandSender.lowerHand(
+                room: context.room,
+                reactionEventId: reactionEventId
+            )
+            applyOwnLoweredHand(
+                reactionEventId: reactionEventId,
+                membershipEventId: membershipEventId,
+                attemptID: context.attemptID
+            )
+        }
     }
 
     func setSpeakerEnabled(_ enabled: Bool) throws {
@@ -427,6 +472,7 @@ private extension NativeMatrixRTCCallService {
             activeCall = nil
             serviceState = .idle
             pickupState = .inactive
+            _ = raisedHandStore.reset()
             let snapshot = participantStore.reset(roomId: nil)
             subjectEmitter.enqueue([
                 .state(serviceState),
@@ -506,6 +552,7 @@ private extension NativeMatrixRTCCallService {
             activeCall = nil
             serviceState = .idle
             pickupState = .inactive
+            _ = raisedHandStore.reset()
             let snapshot = participantStore.reset(roomId: nil)
             subjectEmitter.enqueue([
                 .state(serviceState),
@@ -523,7 +570,169 @@ private extension NativeMatrixRTCCallService {
 
     func resetParticipantState(roomId: String?) {
         withLock {
+            _ = raisedHandStore.reset()
             let snapshot = participantStore.reset(roomId: roomId)
+            subjectEmitter.enqueue(.participants(snapshot))
+        }
+    }
+
+    func startCallReactionLifecycle(
+        room: Room,
+        ownMembership: MatrixRTCCallMembership,
+        memberships: [MatrixRTCCallMembership],
+        attemptID: UUID
+    ) {
+        let watcher = NativeMatrixRTCCallReactionWatcher(room: room) { [weak self] event in
+            self?.handleCallReactionEvent(event, attemptID: attemptID)
+        }
+
+        var shouldStartWatcher = false
+        let tasksToCancel: NativeMatrixRTCCallTasksToCancel = withLock {
+            guard activeCall?.attemptID == attemptID else {
+                return NativeMatrixRTCCallTasksToCancel(
+                    reactionWatcher: watcher
+                )
+            }
+
+            let previousTasks = NativeMatrixRTCCallTasksToCancel(
+                reactionWatcher: reactionWatcher,
+                reactionWatcherTask: reactionWatcherTask
+            )
+            reactionWatcher = watcher
+            reactionWatcherTask = nil
+            shouldStartWatcher = true
+
+            if let raisedHands = raisedHandStore.updateMemberships(
+                ownMembership: ownMembership,
+                memberships: memberships
+            ) {
+                let snapshot = participantStore.updateRaisedHands(raisedHands)
+                subjectEmitter.enqueue(.participants(snapshot))
+            }
+            return previousTasks
+        }
+        tasksToCancel.cancel()
+        guard shouldStartWatcher else { return }
+
+        let watcherTask = Task {
+            await watcher.start()
+            watcher.backfill(memberships: memberships + [ownMembership])
+        }
+        let staleWatcherTask: Task<Void, Never>? = withLock {
+            guard activeCall?.attemptID == attemptID,
+                  reactionWatcher === watcher else {
+                return watcherTask
+            }
+            reactionWatcherTask = watcherTask
+            return nil
+        }
+        staleWatcherTask?.cancel()
+    }
+
+    func handleCallReactionEvent(
+        _ event: NativeMatrixRTCCallReactionTimelineEvent,
+        attemptID: UUID
+    ) {
+        withLock {
+            guard activeCall?.attemptID == attemptID,
+                  let raisedHands = raisedHandStore.apply(event) else {
+                return
+            }
+            let snapshot = participantStore.updateRaisedHands(raisedHands)
+            subjectEmitter.enqueue(.participants(snapshot))
+        }
+    }
+
+    func updateRaisedHandMemberships(
+        call: NativeMatrixRTCCall,
+        memberships: [MatrixRTCCallMembership]
+    ) {
+        guard call.trackRaisedHands else { return }
+        guard let ownMembership = call.matrixRTCSession.ownMembership else { return }
+
+        var watcherToBackfill: NativeMatrixRTCCallReactionWatcher?
+        var membershipsToBackfill: [MatrixRTCCallMembership] = []
+        withLock {
+            guard activeCall?.attemptID == call.attemptID else {
+                return
+            }
+
+            watcherToBackfill = reactionWatcher
+            membershipsToBackfill = memberships + [ownMembership]
+
+            if let raisedHands = raisedHandStore.updateMemberships(
+                ownMembership: ownMembership,
+                memberships: memberships
+            ) {
+                let snapshot = participantStore.updateRaisedHands(raisedHands)
+                subjectEmitter.enqueue(.participants(snapshot))
+            }
+        }
+        watcherToBackfill?.backfill(memberships: membershipsToBackfill)
+    }
+
+    func raisedHandToggleContext() throws -> NativeMatrixRTCCallRaisedHandToggleContext {
+        try withLock {
+            guard let activeCall,
+                  activeCall.trackRaisedHands,
+                  let ownMembership = raisedHandStore.ownMembership else {
+                throw NativeMatrixRTCCallServiceError.noActiveCall
+            }
+
+            let localHand = raisedHandStore.snapshot.localHand
+            let action: NativeMatrixRTCCallRaisedHandToggleAction
+            if let reactionEventId = localHand.reactionEventId,
+               let membershipEventId = localHand.membershipEventId {
+                action = .lower(
+                    reactionEventId: reactionEventId,
+                    membershipEventId: membershipEventId
+                )
+            } else {
+                action = .raise(membershipEventId: ownMembership.eventId)
+            }
+
+            return NativeMatrixRTCCallRaisedHandToggleContext(
+                room: activeCall.room,
+                attemptID: activeCall.attemptID,
+                action: action
+            )
+        }
+    }
+
+    func applyOwnRaisedHand(
+        reactionEventId: String,
+        membershipEventId: String,
+        raisedAt: Date,
+        attemptID: UUID
+    ) {
+        withLock {
+            guard activeCall?.attemptID == attemptID,
+                  let raisedHands = raisedHandStore.applyOwnRaisedHand(
+                    reactionEventId: reactionEventId,
+                    membershipEventId: membershipEventId,
+                    raisedAt: raisedAt
+                  ) else {
+                return
+            }
+            let snapshot = participantStore.updateRaisedHands(raisedHands)
+            subjectEmitter.enqueue(.participants(snapshot))
+        }
+    }
+
+    func applyOwnLoweredHand(
+        reactionEventId: String,
+        membershipEventId: String,
+        attemptID: UUID
+    ) {
+        withLock {
+            guard activeCall?.attemptID == attemptID,
+                  let raisedHands = raisedHandStore.applyOwnLoweredHand(
+                    reactionEventId: reactionEventId,
+                    membershipEventId: membershipEventId
+                  ) else {
+                return
+            }
+            let snapshot = participantStore.updateRaisedHands(raisedHands)
             subjectEmitter.enqueue(.participants(snapshot))
         }
     }
@@ -613,6 +822,7 @@ private extension NativeMatrixRTCCallService {
             do {
                 let result = try await call.matrixRTCSession.refreshMemberships(distributeKeys: false)
                 guard isAutoLeaveWhenOthersLeftCheckNeeded(call: call) else { return }
+                updateRaisedHandMemberships(call: call, memberships: result.memberships)
                 if !Self.containsRemoteMembership(result.memberships, ownUserId: call.ownUserId) {
                     log("Confirmed MatrixRTC DM all others left memberships=\(result.memberships.count)")
                     await endActiveCall(reason: "allOthersLeft", attemptID: call.attemptID)
@@ -836,6 +1046,7 @@ private extension NativeMatrixRTCCallService {
 
         do {
             let result = try await call.matrixRTCSession.refreshMemberships(distributeKeys: false)
+            updateRaisedHandMemberships(call: call, memberships: result.memberships)
             handleMembershipRefreshForPickup(call: call, memberships: result.memberships)
         } catch {
             guard !Task.isCancelled else { return true }
@@ -1008,6 +1219,7 @@ private extension NativeMatrixRTCCallService {
                 log(
                     "Reshared MatrixRTC media key reason=\(reason) attempt=\(attemptIndex + 1) memberships=\(result.memberships.count) sharedKeys=\(sharedCount) failures=\(failureCount)"
                 )
+                updateRaisedHandMemberships(call: call, memberships: result.memberships)
                 handleMembershipRefreshForPickup(call: call, memberships: result.memberships)
 
                 if sharedCount > 0, failureCount == 0 {
@@ -1076,6 +1288,7 @@ private extension NativeMatrixRTCCallService {
                 log(
                     "Refreshed MatrixRTC memberships reason=\(reason) attempt=\(attemptIndex + 1) memberships=\(result.memberships.count) sharedKeys=\(sharedCount) failures=\(failureCount)"
                 )
+                updateRaisedHandMemberships(call: call, memberships: result.memberships)
                 handleMembershipRefreshForPickup(call: call, memberships: result.memberships)
 
                 if sharedCount > 0, failureCount == 0 {
@@ -1103,7 +1316,9 @@ private extension NativeMatrixRTCCallService {
             mediaKeyReshareTask: mediaKeyReshareTask,
             pickupTimeoutTask: pickupTimeoutTask,
             pickupDeclineHandle: pickupDeclineHandle,
-            autoLeaveWhenOthersLeftTask: autoLeaveWhenOthersLeftTask
+            autoLeaveWhenOthersLeftTask: autoLeaveWhenOthersLeftTask,
+            reactionWatcher: reactionWatcher,
+            reactionWatcherTask: reactionWatcherTask
         )
         membershipRefreshTask = nil
         mediaKeyReshareTask = nil
@@ -1111,6 +1326,8 @@ private extension NativeMatrixRTCCallService {
         pickupTimeoutTask = nil
         pickupDeclineHandle = nil
         autoLeaveWhenOthersLeftTask = nil
+        reactionWatcher = nil
+        reactionWatcherTask = nil
         return tasks
     }
 
@@ -1310,6 +1527,7 @@ private extension NativeMatrixRTCCallService {
 
 private struct NativeMatrixRTCCall {
     let attemptID: UUID
+    let room: Room
     let roomId: String
     let ownUserId: String
     let matrixRTCSession: MatrixRTCSession
@@ -1318,6 +1536,7 @@ private struct NativeMatrixRTCCall {
     let sfuConfig: MatrixRTCLiveKitSFUConfig
     let mediaEncryptionEnabled: Bool
     let autoLeaveWhenOthersLeft: Bool
+    let trackRaisedHands: Bool
     let pickupAttempt: NativeMatrixRTCCallPickupAttempt?
 }
 
@@ -1329,6 +1548,8 @@ private struct NativeMatrixRTCCallTasksToCancel {
     var pickupTimeoutTask: Task<Void, Never>? = nil
     var pickupDeclineHandle: TaskHandle? = nil
     var autoLeaveWhenOthersLeftTask: Task<Void, Never>? = nil
+    var reactionWatcher: NativeMatrixRTCCallReactionWatcher? = nil
+    var reactionWatcherTask: Task<Void, Never>? = nil
 
     func cancel() {
         membershipRefreshTask?.cancel()
@@ -1336,7 +1557,20 @@ private struct NativeMatrixRTCCallTasksToCancel {
         pickupTimeoutTask?.cancel()
         pickupDeclineHandle?.cancel()
         autoLeaveWhenOthersLeftTask?.cancel()
+        reactionWatcherTask?.cancel()
+        reactionWatcher?.cancel()
     }
+}
+
+private struct NativeMatrixRTCCallRaisedHandToggleContext {
+    let room: Room
+    let attemptID: UUID
+    let action: NativeMatrixRTCCallRaisedHandToggleAction
+}
+
+private enum NativeMatrixRTCCallRaisedHandToggleAction {
+    case raise(membershipEventId: String)
+    case lower(reactionEventId: String, membershipEventId: String)
 }
 
 private enum NativeMatrixRTCCallSubjectEmission: @unchecked Sendable {

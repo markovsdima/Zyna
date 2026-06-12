@@ -215,6 +215,45 @@ struct NativeMatrixRTCCallParticipantsTests {
         #expect(snapshot?.localSpeaking.isSpeaking == false)
         #expect(snapshot?.localSpeaking.lastSpokeAt == spokeAt)
     }
+
+    @Test("Raised hand updates local and remote participant state")
+    func raisedHandUpdatesParticipants() {
+        var store = NativeMatrixRTCCallParticipantStore(roomId: roomId)
+        let alice = remoteParticipant(identity: "@alice:example.org:ALICE", sid: "alice-sid")
+        let localRaisedAt = Date(timeIntervalSince1970: 4_000)
+        let aliceRaisedAt = Date(timeIntervalSince1970: 5_000)
+
+        _ = store.setLocalIdentity(localParticipant.identity)
+        _ = store.apply(.remoteParticipantJoined(alice))
+
+        var snapshot = store.updateRaisedHands(NativeMatrixRTCCallRaisedHandsSnapshot(
+            localHand: NativeMatrixRTCCallRaisedHandState(
+                reactionEventId: "$local-reaction",
+                membershipEventId: "$local-member",
+                raisedAt: localRaisedAt
+            ),
+            handsByParticipantId: [
+                localParticipant.identity!: NativeMatrixRTCCallRaisedHandState(
+                    reactionEventId: "$local-reaction",
+                    membershipEventId: "$local-member",
+                    raisedAt: localRaisedAt
+                ),
+                alice.identity!: NativeMatrixRTCCallRaisedHandState(
+                    reactionEventId: "$alice-reaction",
+                    membershipEventId: "$alice-member",
+                    raisedAt: aliceRaisedAt
+                )
+            ]
+        ))
+
+        #expect(snapshot.localRaisedHand.raisedAt == localRaisedAt)
+        #expect(snapshot.remoteParticipantsById[alice.identity!]?.raisedHand.raisedAt == aliceRaisedAt)
+
+        snapshot = store.updateRaisedHands(.empty)
+
+        #expect(snapshot.localRaisedHand == .lowered)
+        #expect(snapshot.remoteParticipantsById[alice.identity!]?.raisedHand == .lowered)
+    }
 }
 
 private let roomId = "!room:example.org"

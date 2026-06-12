@@ -8020,7 +8020,47 @@
     },
     "Wipe crypto store, keep keychain" : {},
     "Wipe everything" : {},
-    "Wipe keychain session, keep store" : {}
+    "Wipe keychain session, keep store" : {},
+    "Hand Raised" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Рука поднята"
+          }
+        }
+      }
+    },
+    "Lower Hand" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Опустить руку"
+          }
+        }
+      }
+    },
+    "Muted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Микрофон выключен"
+          }
+        }
+      }
+    },
+    "Raise Hand" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поднять руку"
+          }
+        }
+      }
+    }
   },
   "version" : "1.1"
 }

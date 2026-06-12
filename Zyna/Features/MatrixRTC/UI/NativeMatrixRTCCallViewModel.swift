@@ -33,6 +33,7 @@ final class NativeMatrixRTCCallViewModel {
     private var isEndingCall = false
     private var didRequestDismiss = false
     private var areMediaControlsBusy = false
+    private var isRaisedHandBusy = false
     private var terminalStatus: String?
 
     private var isMuted = false
@@ -55,6 +56,7 @@ final class NativeMatrixRTCCallViewModel {
             isSpeakerEnabled: isSpeakerEnabled,
             isCameraEnabled: isCameraEnabled,
             areMediaControlsBusy: areMediaControlsBusy,
+            isRaisedHandBusy: isRaisedHandBusy,
             isEndingCall: isEndingCall,
             terminalStatus: terminalStatus
         )
@@ -79,7 +81,8 @@ final class NativeMatrixRTCCallViewModel {
                 _ = try await callService.startAudioCall(
                     room: context.room,
                     waitForPickup: waitForPickup,
-                    autoLeaveWhenOthersLeft: context.kind.isDirect
+                    autoLeaveWhenOthersLeft: context.kind.isDirect,
+                    trackRaisedHands: !context.kind.isDirect
                 )
             } catch is CancellationError {
                 dismissOnce()
@@ -99,6 +102,8 @@ final class NativeMatrixRTCCallViewModel {
             toggleCamera()
         case .switchCamera:
             switchCamera()
+        case .raiseHand:
+            toggleRaisedHand()
         case .end:
             endCall()
         }
@@ -268,6 +273,21 @@ private extension NativeMatrixRTCCallViewModel {
         }
     }
 
+    func toggleRaisedHand() {
+        guard !context.kind.isDirect, !isRaisedHandBusy else { return }
+        setRaisedHandBusy(true)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await callService.toggleRaisedHand()
+            } catch {
+                logNativeCallViewModel("Failed toggling native MatrixRTC raised hand: \(error)")
+            }
+            setRaisedHandBusy(false)
+        }
+    }
+
     func endCall() {
         guard !isEndingCall else { return }
         isEndingCall = true
@@ -287,6 +307,11 @@ private extension NativeMatrixRTCCallViewModel {
 
     func setMediaControlsBusy(_ isBusy: Bool) {
         areMediaControlsBusy = isBusy
+        publish()
+    }
+
+    func setRaisedHandBusy(_ isBusy: Bool) {
+        isRaisedHandBusy = isBusy
         publish()
     }
 
@@ -323,6 +348,7 @@ private extension NativeMatrixRTCCallViewModel {
             isSpeakerEnabled: isSpeakerEnabled,
             isCameraEnabled: isCameraEnabled,
             areMediaControlsBusy: areMediaControlsBusy,
+            isRaisedHandBusy: isRaisedHandBusy,
             isEndingCall: isEndingCall,
             terminalStatus: terminalStatus
         )
@@ -339,6 +365,7 @@ private extension NativeMatrixRTCCallViewModel {
         isSpeakerEnabled: Bool,
         isCameraEnabled: Bool,
         areMediaControlsBusy: Bool,
+        isRaisedHandBusy: Bool,
         isEndingCall: Bool,
         terminalStatus: String?
     ) -> NativeMatrixRTCCallViewState {
@@ -352,11 +379,14 @@ private extension NativeMatrixRTCCallViewModel {
             terminalStatus: terminalStatus
         )
         let controls = controls(
+            showsRaisedHand: !context.kind.isDirect,
             serviceState: serviceState,
             isMuted: isMuted,
             isSpeakerEnabled: isSpeakerEnabled,
             isCameraEnabled: isCameraEnabled,
             areMediaControlsBusy: areMediaControlsBusy,
+            isRaisedHandRaised: participantsSnapshot.localRaisedHand.isRaised,
+            isRaisedHandBusy: isRaisedHandBusy,
             isEndingCall: isEndingCall,
             terminalStatus: terminalStatus
         )
@@ -468,11 +498,14 @@ private extension NativeMatrixRTCCallViewModel {
     }
 
     static func controls(
+        showsRaisedHand: Bool,
         serviceState: NativeMatrixRTCCallServiceState,
         isMuted: Bool,
         isSpeakerEnabled: Bool,
         isCameraEnabled: Bool,
         areMediaControlsBusy: Bool,
+        isRaisedHandRaised: Bool,
+        isRaisedHandBusy: Bool,
         isEndingCall: Bool,
         terminalStatus: String?
     ) -> [NativeMatrixRTCCallControlState] {
@@ -485,15 +518,17 @@ private extension NativeMatrixRTCCallViewModel {
 
         let canToggleMedia = isConnected && !areMediaControlsBusy && !isEndingCall && terminalStatus == nil
         let canHangUp = !isEndingCall && terminalStatus == nil
+        let standardSize: CGFloat = showsRaisedHand ? 48 : 56
+        let endSize: CGFloat = showsRaisedHand ? 56 : 64
 
-        return [
+        var controls: [NativeMatrixRTCCallControlState] = [
             .init(
                 kind: .microphone,
                 symbolName: isMuted ? "mic.slash.fill" : "mic.fill",
                 accessibilityLabel: isMuted ? String(localized: "Unmute") : String(localized: "Mute"),
                 style: isMuted ? .warning : .neutral,
                 isEnabled: canToggleMedia,
-                size: 56
+                size: standardSize
             ),
             .init(
                 kind: .speaker,
@@ -501,7 +536,7 @@ private extension NativeMatrixRTCCallViewModel {
                 accessibilityLabel: isSpeakerEnabled ? String(localized: "Speaker Off") : String(localized: "Speaker On"),
                 style: isSpeakerEnabled ? .active : .neutral,
                 isEnabled: canToggleMedia,
-                size: 56
+                size: standardSize
             ),
             .init(
                 kind: .camera,
@@ -509,7 +544,7 @@ private extension NativeMatrixRTCCallViewModel {
                 accessibilityLabel: isCameraEnabled ? String(localized: "Turn Camera Off") : String(localized: "Turn Camera On"),
                 style: isCameraEnabled ? .active : .neutral,
                 isEnabled: canToggleMedia,
-                size: 56
+                size: standardSize
             ),
             .init(
                 kind: .switchCamera,
@@ -517,17 +552,35 @@ private extension NativeMatrixRTCCallViewModel {
                 accessibilityLabel: String(localized: "Switch Camera"),
                 style: .neutral,
                 isEnabled: canToggleMedia && isCameraEnabled,
-                size: 56
-            ),
+                size: standardSize
+            )
+        ]
+
+        if showsRaisedHand {
+            controls.append(.init(
+                kind: .raiseHand,
+                symbolName: isRaisedHandRaised ? "hand.raised.fill" : "hand.raised",
+                accessibilityLabel: isRaisedHandRaised
+                    ? String(localized: "Lower Hand")
+                    : String(localized: "Raise Hand"),
+                style: isRaisedHandRaised ? .active : .neutral,
+                isEnabled: canToggleMedia && !isRaisedHandBusy,
+                size: standardSize
+            ))
+        }
+
+        controls.append(
             .init(
                 kind: .end,
                 symbolName: "phone.down.fill",
                 accessibilityLabel: String(localized: "End Call"),
                 style: .destructive,
                 isEnabled: canHangUp,
-                size: 64
+                size: endSize
             )
-        ]
+        )
+
+        return controls
     }
 
     static func groupTiles(
@@ -554,10 +607,12 @@ private extension NativeMatrixRTCCallViewModel {
                     avatar: avatar,
                     videoTrack: videoTrack,
                     isAudioMuted: !participant.hasSubscribedAudio,
+                    isHandRaised: participant.raisedHand.isRaised,
                     isLocal: false,
                     statusText: participantStatusText(participant)
                 ),
                 speaking: participant.speaking,
+                raisedHand: participant.raisedHand,
                 stableName: participantDisplayName
             ))
         }
@@ -578,10 +633,12 @@ private extension NativeMatrixRTCCallViewModel {
                 ),
                 videoTrack: localVideoTrack,
                 isAudioMuted: isMuted,
+                isHandRaised: snapshot.localRaisedHand.isRaised,
                 isLocal: true,
                 statusText: nil
             ),
             speaking: snapshot.localSpeaking,
+            raisedHand: snapshot.localRaisedHand,
             stableName: localDisplayName
         ))
 
@@ -594,6 +651,21 @@ private extension NativeMatrixRTCCallViewModel {
     ) -> Bool {
         if lhs.speaking.isSpeaking != rhs.speaking.isSpeaking {
             return lhs.speaking.isSpeaking
+        }
+
+        if lhs.raisedHand.isRaised != rhs.raisedHand.isRaised {
+            return lhs.raisedHand.isRaised
+        }
+
+        switch (lhs.raisedHand.raisedAt, rhs.raisedHand.raisedAt) {
+        case (.some(let lhsDate), .some(let rhsDate)) where lhsDate != rhsDate:
+            return lhsDate < rhsDate
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        default:
+            break
         }
 
         switch (lhs.speaking.lastSpokeAt, rhs.speaking.lastSpokeAt) {
@@ -643,6 +715,7 @@ private extension NativeMatrixRTCCallViewModel {
 private struct NativeMatrixRTCParticipantTileCandidate {
     let tile: NativeMatrixRTCParticipantTileState
     let speaking: NativeMatrixRTCCallSpeakingState
+    let raisedHand: NativeMatrixRTCCallRaisedHandState
     let stableName: String
 }
 

@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
-import CoreGraphics
 import Foundation
 import MatrixRTCLiveKit
 import MatrixRustSDK
@@ -85,6 +84,7 @@ struct NativeMatrixRTCParticipantTileState {
     let avatar: AvatarViewModel
     let videoTrack: NativeMatrixRTCVideoTrackHandle?
     let isAudioMuted: Bool
+    let isHandRaised: Bool
     let isLocal: Bool
     let statusText: String?
 }
@@ -121,6 +121,7 @@ enum NativeMatrixRTCCallControlKind: CaseIterable {
     case speaker
     case camera
     case switchCamera
+    case raiseHand
     case end
 }
 
