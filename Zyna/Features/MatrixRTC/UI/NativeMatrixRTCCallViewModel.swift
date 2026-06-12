@@ -39,6 +39,7 @@ final class NativeMatrixRTCCallViewModel {
     private var isMuted = false
     private var isSpeakerEnabled = false
     private var isCameraEnabled = false
+    private var directPrimaryParticipant = NativeMatrixRTCDirectPrimaryParticipant.remote
 
     init(
         context: NativeMatrixRTCCallLaunchContext,
@@ -55,6 +56,7 @@ final class NativeMatrixRTCCallViewModel {
             isMuted: isMuted,
             isSpeakerEnabled: isSpeakerEnabled,
             isCameraEnabled: isCameraEnabled,
+            directPrimaryParticipant: directPrimaryParticipant,
             areMediaControlsBusy: areMediaControlsBusy,
             isRaisedHandBusy: isRaisedHandBusy,
             isEndingCall: isEndingCall,
@@ -107,6 +109,17 @@ final class NativeMatrixRTCCallViewModel {
         case .end:
             endCall()
         }
+    }
+
+    func handleDirectPreviewTap() {
+        guard context.kind.isDirect,
+              case .direct(let stage) = viewState.stage,
+              stage.previewTile != nil else {
+            return
+        }
+
+        directPrimaryParticipant.toggle()
+        publish()
     }
 }
 
@@ -347,6 +360,7 @@ private extension NativeMatrixRTCCallViewModel {
             isMuted: isMuted,
             isSpeakerEnabled: isSpeakerEnabled,
             isCameraEnabled: isCameraEnabled,
+            directPrimaryParticipant: directPrimaryParticipant,
             areMediaControlsBusy: areMediaControlsBusy,
             isRaisedHandBusy: isRaisedHandBusy,
             isEndingCall: isEndingCall,
@@ -364,6 +378,7 @@ private extension NativeMatrixRTCCallViewModel {
         isMuted: Bool,
         isSpeakerEnabled: Bool,
         isCameraEnabled: Bool,
+        directPrimaryParticipant: NativeMatrixRTCDirectPrimaryParticipant,
         areMediaControlsBusy: Bool,
         isRaisedHandBusy: Bool,
         isEndingCall: Bool,
@@ -393,22 +408,20 @@ private extension NativeMatrixRTCCallViewModel {
 
         switch context.kind {
         case .direct(let peer):
-            let stage = NativeMatrixRTCDirectCallStageState(
+            let stage = directStage(
                 peer: peer,
-                title: peer.displayName,
-                status: status.text,
-                isStatusBusy: status.isBusy,
-                remoteVideoTrack: participantsSnapshot.primaryRemoteVideoTrack,
-                localVideoTrack: participantsSnapshot.localVideoTrack
+                participantsSnapshot: participantsSnapshot,
+                isMuted: isMuted,
+                status: status,
+                directPrimaryParticipant: directPrimaryParticipant
             )
-            let hasRemoteVideo = participantsSnapshot.primaryRemoteVideoTrack != nil
             return NativeMatrixRTCCallViewState(
                 kind: context.kind,
                 stage: .direct(stage),
-                topBar: hasRemoteVideo ? .init(
-                    title: peer.displayName,
-                    status: status.text,
-                    isStatusBusy: status.isBusy
+                topBar: stage.primaryTile.videoTrack != nil ? .init(
+                    title: stage.title,
+                    status: stage.status,
+                    isStatusBusy: stage.isStatusBusy
                 ) : nil,
                 controls: controls
             )
@@ -431,6 +444,68 @@ private extension NativeMatrixRTCCallViewModel {
                 controls: controls
             )
         }
+    }
+
+    static func directStage(
+        peer: NativeMatrixRTCCallPeer,
+        participantsSnapshot: NativeMatrixRTCCallParticipantsSnapshot,
+        isMuted: Bool,
+        status: (text: String, isBusy: Bool),
+        directPrimaryParticipant: NativeMatrixRTCDirectPrimaryParticipant
+    ) -> NativeMatrixRTCDirectCallStageState {
+        let localDisplayName = String(localized: "You")
+        let localIdentity = participantsSnapshot.localIdentity ?? "local"
+        let localVideoTrack = participantsSnapshot.localVideoTrack
+        let localTile = NativeMatrixRTCParticipantTileState(
+            id: "local",
+            displayName: localDisplayName,
+            avatar: AvatarViewModel(
+                userId: localIdentity,
+                displayName: localDisplayName,
+                mxcAvatarURL: nil
+            ),
+            videoTrack: localVideoTrack.map(NativeMatrixRTCVideoTrackHandle.local),
+            isAudioMuted: isMuted,
+            isHandRaised: false,
+            isLocal: true,
+            statusText: nil
+        )
+        let remoteTile = NativeMatrixRTCParticipantTileState(
+            id: "remote",
+            displayName: peer.displayName,
+            avatar: peer.avatar,
+            videoTrack: participantsSnapshot.primaryRemoteVideoTrack.map(NativeMatrixRTCVideoTrackHandle.remote),
+            isAudioMuted: false,
+            isHandRaised: false,
+            isLocal: false,
+            statusText: nil
+        )
+
+        let effectivePrimaryParticipant: NativeMatrixRTCDirectPrimaryParticipant = switch directPrimaryParticipant {
+        case .local where localVideoTrack != nil:
+            .local
+        case .local, .remote:
+            .remote
+        }
+        let primaryTile: NativeMatrixRTCParticipantTileState
+        let previewTile: NativeMatrixRTCParticipantTileState?
+
+        switch effectivePrimaryParticipant {
+        case .remote:
+            primaryTile = remoteTile
+            previewTile = localVideoTrack == nil ? nil : localTile
+        case .local:
+            primaryTile = localTile
+            previewTile = remoteTile
+        }
+
+        return NativeMatrixRTCDirectCallStageState(
+            title: peer.displayName,
+            status: status.text,
+            isStatusBusy: status.isBusy,
+            primaryTile: primaryTile,
+            previewTile: previewTile
+        )
     }
 
     static func statusText(
@@ -717,6 +792,15 @@ private struct NativeMatrixRTCParticipantTileCandidate {
     let speaking: NativeMatrixRTCCallSpeakingState
     let raisedHand: NativeMatrixRTCCallRaisedHandState
     let stableName: String
+}
+
+private enum NativeMatrixRTCDirectPrimaryParticipant {
+    case remote
+    case local
+
+    mutating func toggle() {
+        self = self == .remote ? .local : .remote
+    }
 }
 
 private extension NativeMatrixRTCCallPickupState {

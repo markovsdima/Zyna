@@ -8061,6 +8061,16 @@
         }
       }
     },
+    "Swap Video" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поменять видео местами"
+          }
+        }
+      }
+    },
     "Last message failed" : {
       "localizations" : {
         "ru" : {

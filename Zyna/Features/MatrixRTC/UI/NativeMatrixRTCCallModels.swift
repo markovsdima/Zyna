@@ -90,12 +90,11 @@ struct NativeMatrixRTCParticipantTileState {
 }
 
 struct NativeMatrixRTCDirectCallStageState {
-    let peer: NativeMatrixRTCCallPeer
     let title: String
     let status: String
     let isStatusBusy: Bool
-    let remoteVideoTrack: MatrixRTCLiveKitRemoteVideoTrack?
-    let localVideoTrack: MatrixRTCLiveKitLocalVideoTrack?
+    let primaryTile: NativeMatrixRTCParticipantTileState
+    let previewTile: NativeMatrixRTCParticipantTileState?
 }
 
 struct NativeMatrixRTCGroupCallStageState {

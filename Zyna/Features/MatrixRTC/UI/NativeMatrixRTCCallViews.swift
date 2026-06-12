@@ -12,6 +12,11 @@ final class NativeMatrixRTCCallRootView: UIView {
             controlsBar.onControlTapped = onControlTapped
         }
     }
+    var onDirectPreviewTapped: (() -> Void)? {
+        didSet {
+            directStageView.onPreviewTapped = onDirectPreviewTapped
+        }
+    }
 
     private let backgroundView = UIView()
     private let directStageView = NativeMatrixRTCDirectCallStageView()
@@ -96,6 +101,7 @@ final class NativeMatrixRTCCallRootView: UIView {
         addSubview(topBar)
         addSubview(controlsBar)
         controlsBar.onControlTapped = onControlTapped
+        directStageView.onPreviewTapped = onDirectPreviewTapped
     }
 }
 
@@ -190,16 +196,18 @@ private final class NativeMatrixRTCCallTopBar: UIView {
 }
 
 private final class NativeMatrixRTCDirectCallStageView: UIView {
-    private let remoteVideoView = MatrixRTCLiveKitVideoView()
+    var onPreviewTapped: (() -> Void)?
+
+    private let primaryVideoView = MatrixRTCLiveKitVideoView()
     private let audioContainerView = UIView()
     private let avatarView = NativeMatrixRTCAvatarView()
     private let titleLabel = UILabel()
     private let statusStack = UIStackView()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
     private let statusLabel = UILabel()
-    private let localPreviewView = NativeMatrixRTCParticipantTileView()
-
-    private var state: NativeMatrixRTCDirectCallStageState?
+    private let previewTileView = NativeMatrixRTCParticipantTileView()
+    private var renderedPrimaryVideoID: String?
+    private var renderedPreviewVideoID: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -211,15 +219,21 @@ private final class NativeMatrixRTCDirectCallStageView: UIView {
     }
 
     func render(_ state: NativeMatrixRTCDirectCallStageState) {
-        self.state = state
+        let hasPrimaryVideo = state.primaryTile.videoTrack != nil
+        let nextPrimaryVideoID = state.primaryTile.videoTrack?.id
+        let nextPreviewVideoID = state.previewTile?.videoTrack?.id
+        let primaryVideoMovedFromPreview = nextPrimaryVideoID != nil && nextPrimaryVideoID == renderedPreviewVideoID
+        let previewVideoMovedFromPrimary = nextPreviewVideoID != nil && nextPreviewVideoID == renderedPrimaryVideoID
+        if primaryVideoMovedFromPreview || previewVideoMovedFromPrimary {
+            clearRenderedVideo()
+        }
 
-        let hasRemoteVideo = state.remoteVideoTrack != nil
-        remoteVideoView.isHidden = !hasRemoteVideo
-        remoteVideoView.setRemoteVideoTrack(state.remoteVideoTrack)
+        primaryVideoView.isHidden = !hasPrimaryVideo
+        renderPrimaryVideo(state.primaryTile.videoTrack)
 
-        audioContainerView.isHidden = hasRemoteVideo
-        avatarView.render(state.peer.avatar, diameter: 124)
-        titleLabel.text = state.title
+        audioContainerView.isHidden = hasPrimaryVideo
+        avatarView.render(state.primaryTile.avatar, diameter: 124)
+        titleLabel.text = state.primaryTile.displayName
         statusLabel.text = state.status
         if state.isStatusBusy {
             activityIndicator.startAnimating()
@@ -227,25 +241,14 @@ private final class NativeMatrixRTCDirectCallStageView: UIView {
             activityIndicator.stopAnimating()
         }
 
-        if let localVideoTrack = state.localVideoTrack {
-            localPreviewView.isHidden = false
-            localPreviewView.render(NativeMatrixRTCParticipantTileState(
-                id: "local-preview",
-                displayName: String(localized: "You"),
-                avatar: AvatarViewModel(
-                    userId: "local",
-                    displayName: String(localized: "You"),
-                    mxcAvatarURL: nil
-                ),
-                videoTrack: .local(localVideoTrack),
-                isAudioMuted: false,
-                isHandRaised: false,
-                isLocal: true,
-                statusText: nil
-            ))
+        if let previewTile = state.previewTile {
+            previewTileView.isHidden = false
+            previewTileView.render(previewTile)
+            renderedPreviewVideoID = nextPreviewVideoID
         } else {
-            localPreviewView.isHidden = true
-            localPreviewView.prepareForNoTrack()
+            previewTileView.isHidden = true
+            previewTileView.prepareForNoTrack()
+            renderedPreviewVideoID = nil
         }
 
         setNeedsLayout()
@@ -253,7 +256,7 @@ private final class NativeMatrixRTCDirectCallStageView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        remoteVideoView.frame = bounds
+        primaryVideoView.frame = bounds
 
         let centerY = bounds.midY - max(28, bounds.height * 0.08)
         let avatarSide: CGFloat = min(132, max(108, bounds.width * 0.32))
@@ -279,7 +282,7 @@ private final class NativeMatrixRTCDirectCallStageView: UIView {
 
         let previewWidth = min(128, max(108, bounds.width * 0.3))
         let previewHeight = previewWidth * 4.0 / 3.0
-        localPreviewView.frame = CGRect(
+        previewTileView.frame = CGRect(
             x: bounds.width - previewWidth - 18,
             y: bounds.height - safeAreaInsets.bottom - previewHeight - 124,
             width: previewWidth,
@@ -289,9 +292,9 @@ private final class NativeMatrixRTCDirectCallStageView: UIView {
 
     private func setup() {
         backgroundColor = .black
-        remoteVideoView.backgroundColor = .black
-        remoteVideoView.layoutMode = .fill
-        addSubview(remoteVideoView)
+        primaryVideoView.backgroundColor = .black
+        primaryVideoView.layoutMode = .fill
+        addSubview(primaryVideoView)
 
         audioContainerView.backgroundColor = .clear
         addSubview(audioContainerView)
@@ -328,13 +331,55 @@ private final class NativeMatrixRTCDirectCallStageView: UIView {
         leadingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         trailingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        localPreviewView.layer.cornerRadius = 18
-        localPreviewView.layer.cornerCurve = .continuous
-        localPreviewView.layer.borderColor = UIColor.white.withAlphaComponent(0.28).cgColor
-        localPreviewView.layer.borderWidth = 0.75
-        localPreviewView.clipsToBounds = true
-        localPreviewView.isHidden = true
-        addSubview(localPreviewView)
+        previewTileView.layer.cornerRadius = 18
+        previewTileView.layer.cornerCurve = .continuous
+        previewTileView.layer.borderColor = UIColor.white.withAlphaComponent(0.28).cgColor
+        previewTileView.layer.borderWidth = 0.75
+        previewTileView.clipsToBounds = true
+        previewTileView.isHidden = true
+        previewTileView.accessibilityHint = String(localized: "Swap Video")
+        previewTileView.accessibilityTraits.insert(.button)
+        previewTileView.addGestureRecognizer(UITapGestureRecognizer(
+            target: self,
+            action: #selector(previewTapped)
+        ))
+        addSubview(previewTileView)
+    }
+
+    private func renderPrimaryVideo(_ videoTrack: NativeMatrixRTCVideoTrackHandle?) {
+        let nextVideoID = videoTrack?.id
+        guard nextVideoID != renderedPrimaryVideoID else { return }
+
+        guard let videoTrack else {
+            primaryVideoView.setLocalVideoTrack(nil)
+            primaryVideoView.setRemoteVideoTrack(nil)
+            renderedPrimaryVideoID = nil
+            return
+        }
+
+        switch videoTrack {
+        case .local(let track):
+            primaryVideoView.setRemoteVideoTrack(nil)
+            primaryVideoView.mirrorMode = .auto
+            primaryVideoView.setLocalVideoTrack(track)
+        case .remote(let track):
+            primaryVideoView.setLocalVideoTrack(nil)
+            primaryVideoView.mirrorMode = .off
+            primaryVideoView.setRemoteVideoTrack(track)
+        }
+        renderedPrimaryVideoID = nextVideoID
+    }
+
+    private func clearRenderedVideo() {
+        primaryVideoView.setLocalVideoTrack(nil)
+        primaryVideoView.setRemoteVideoTrack(nil)
+        previewTileView.prepareForNoTrack()
+        renderedPrimaryVideoID = nil
+        renderedPreviewVideoID = nil
+    }
+
+    @objc private func previewTapped() {
+        onPreviewTapped?()
     }
 }
 
@@ -526,6 +571,7 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
     private let statusLabel = UILabel()
     private let handBadgeView = UIImageView()
     private let micBadgeView = UIImageView()
+    private var renderedVideoID: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -549,14 +595,7 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
         if let videoTrack = state.videoTrack {
             videoView.isHidden = false
             avatarView.isHidden = true
-            switch videoTrack {
-            case .local(let track):
-                videoView.mirrorMode = .auto
-                videoView.setLocalVideoTrack(track)
-            case .remote(let track):
-                videoView.mirrorMode = .off
-                videoView.setRemoteVideoTrack(track)
-            }
+            renderVideo(videoTrack)
         } else {
             prepareForNoTrack()
             avatarView.isHidden = false
@@ -566,9 +605,15 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
     }
 
     func prepareForNoTrack() {
+        guard renderedVideoID != nil else {
+            videoView.isHidden = true
+            return
+        }
+
         videoView.setLocalVideoTrack(nil)
         videoView.setRemoteVideoTrack(nil)
         videoView.isHidden = true
+        renderedVideoID = nil
     }
 
     override func layoutSubviews() {
@@ -620,6 +665,7 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
 
     private func setup() {
         backgroundColor = UIColor.white.withAlphaComponent(0.08)
+        isAccessibilityElement = true
 
         videoView.layoutMode = .fill
         videoView.backgroundColor = .black
@@ -667,10 +713,27 @@ private final class NativeMatrixRTCParticipantTileView: UIView {
         addSubview(micBadgeView)
     }
 
+    private func renderVideo(_ videoTrack: NativeMatrixRTCVideoTrackHandle) {
+        guard videoTrack.id != renderedVideoID else { return }
+
+        switch videoTrack {
+        case .local(let track):
+            videoView.setRemoteVideoTrack(nil)
+            videoView.mirrorMode = .auto
+            videoView.setLocalVideoTrack(track)
+        case .remote(let track):
+            videoView.setLocalVideoTrack(nil)
+            videoView.mirrorMode = .off
+            videoView.setRemoteVideoTrack(track)
+        }
+        renderedVideoID = videoTrack.id
+    }
+
     private func accessibilityLabel(for state: NativeMatrixRTCParticipantTileState) -> String {
         var parts = [state.displayName]
-        if state.isLocal {
-            parts.append(String(localized: "You"))
+        let localLabel = String(localized: "You")
+        if state.isLocal, state.displayName != localLabel {
+            parts.append(localLabel)
         }
         if state.isHandRaised {
             parts.append(String(localized: "Hand Raised"))

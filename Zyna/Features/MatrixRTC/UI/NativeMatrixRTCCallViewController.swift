@@ -60,6 +60,10 @@ private extension NativeMatrixRTCCallViewController {
         callView.onControlTapped = { [weak self] kind in
             self?.viewModel.handleControl(kind)
         }
+
+        callView.onDirectPreviewTapped = { [weak self] in
+            self?.viewModel.handleDirectPreviewTap()
+        }
     }
 
     func dismissOnce() {
