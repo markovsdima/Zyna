@@ -806,6 +806,22 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v24_roomLastOwnMessageStatus") { db in
+            let storedRoomColumns = try db.columns(in: "storedRoom").map(\.name)
+            if !storedRoomColumns.contains("lastOwnMessageStatus") {
+                try db.alter(table: "storedRoom") { t in
+                    t.add(column: "lastOwnMessageStatus", .text)
+                }
+            }
+
+            let storedSpaceChildColumns = try db.columns(in: "storedSpaceChild").map(\.name)
+            if !storedSpaceChildColumns.contains("lastOwnMessageStatus") {
+                try db.alter(table: "storedSpaceChild") { t in
+                    t.add(column: "lastOwnMessageStatus", .text)
+                }
+            }
+        }
+
         return migrator
     }
 

@@ -8060,6 +8060,46 @@
           }
         }
       }
+    },
+    "Last message failed" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Последнее сообщение не отправлено"
+          }
+        }
+      }
+    },
+    "Last message read" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Последнее сообщение прочитано"
+          }
+        }
+      }
+    },
+    "Last message sending" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Последнее сообщение отправляется"
+          }
+        }
+      }
+    },
+    "Last message sent" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Последнее сообщение отправлено"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

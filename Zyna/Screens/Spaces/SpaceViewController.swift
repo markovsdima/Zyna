@@ -196,6 +196,7 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
             name: space.name,
             lastMessage: space.lastMessage,
             lastMessageSenderName: space.lastMessageSenderName,
+            lastOwnMessageStatus: space.lastOwnMessageStatus,
             timestamp: space.timestamp,
             avatar: space.avatar,
             isOnline: space.isOnline,

@@ -207,6 +207,7 @@ final class SpaceCreationViewModel {
             name: displayName,
             lastMessage: "",
             lastMessageSenderName: nil,
+            lastOwnMessageStatus: nil,
             timestamp: "",
             avatar: AvatarViewModel(
                 userId: roomId,

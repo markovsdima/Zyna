@@ -19,6 +19,7 @@ class RoomsCellNode: ZynaCellNode {
     private let avatarBackgroundNode = ASImageNode()
     private let nameNode = ASTextNode()
     private let messageNode = ASTextNode()
+    private let lastOwnStatusIconNode: MessageStatusIconNode?
     private let timestampNode = ASTextNode()
     private let onlineIndicatorNode = ASImageNode()
     private static let onlineIndicatorDiameter: CGFloat = 12
@@ -31,6 +32,15 @@ class RoomsCellNode: ZynaCellNode {
 
     init(chat: RoomModel) {
         self.chat = chat
+        if let icon = Self.messageStatusIcon(from: chat.lastOwnMessageStatus) {
+            let node = MessageStatusIconNode(size: 10)
+            node.icon = icon
+            node.tintColour = icon == .read ? UIColor.systemBlue : UIColor.secondaryLabel
+            node.style.flexShrink = 0
+            self.lastOwnStatusIconNode = node
+        } else {
+            self.lastOwnStatusIconNode = nil
+        }
         super.init()
 
         automaticallyManagesSubnodes = true
@@ -94,6 +104,8 @@ class RoomsCellNode: ZynaCellNode {
         )
         messageNode.maximumNumberOfLines = 2
         messageNode.truncationMode = .byTruncatingTail
+        messageNode.style.flexShrink = 1
+        messageNode.style.flexGrow = 1
 
         // Timestamp
         timestampNode.attributedText = NSAttributedString(
@@ -167,6 +179,10 @@ class RoomsCellNode: ZynaCellNode {
 
         // Right side: timestamp + optional unread badge
         var rightElements: [ASLayoutElement] = [timestampNode]
+
+        if let lastOwnStatusIconNode {
+            rightElements.append(lastOwnStatusIconNode)
+        }
 
         if chat.showsUnreadBadge {
             if let badgeText = chat.unreadBadgeText {
@@ -252,6 +268,9 @@ class RoomsCellNode: ZynaCellNode {
         if !chat.lastMessage.isEmpty {
             label += ", \(chat.lastMessage)"
         }
+        if let statusText = Self.messageStatusAccessibilityText(from: chat.lastOwnMessageStatus) {
+            label += ", \(statusText)"
+        }
         if chat.unreadCount > 0 {
             label += ", \(chat.unreadCount) unread"
         } else if chat.isMarkedUnread {
@@ -287,6 +306,36 @@ class RoomsCellNode: ZynaCellNode {
                     self?.updateOnlineIndicatorImage()
                 }
             }
+        }
+    }
+
+    private static func messageStatusIcon(from status: LastOwnMessageStatus?) -> MessageStatusIcon? {
+        switch status {
+        case .pending:
+            return .pending
+        case .sent:
+            return .sent
+        case .read:
+            return .read
+        case .failed:
+            return .failed
+        case .none:
+            return nil
+        }
+    }
+
+    private static func messageStatusAccessibilityText(from status: LastOwnMessageStatus?) -> String? {
+        switch status {
+        case .pending:
+            return String(localized: "Last message sending")
+        case .sent:
+            return String(localized: "Last message sent")
+        case .read:
+            return String(localized: "Last message read")
+        case .failed:
+            return String(localized: "Last message failed")
+        case .none:
+            return nil
         }
     }
 }
