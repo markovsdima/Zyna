@@ -73,7 +73,7 @@ surfaces:
 | --- | --- | --- | --- |
 | `Packages/MatrixRTC` | local package in Zyna | local source | Swift MatrixRTC policy, membership parsing, media key manager, LiveKit bridge |
 | `markovsdima/client-sdk-swift` | `Packages/MatrixRTC/Package.swift` | `2.15.0-zyna.1` | LiveKit Swift fork with raw E2EE key setter |
-| `markovsdima/matrix-rust-components-swift` | `Zyna.xcodeproj` | `26.5.13-zyna.5-beta.8` | generated Swift bindings for the Matrix Rust SDK fork |
+| `markovsdima/matrix-rust-components-swift` | `Zyna.xcodeproj` | `26.5.13-zyna.5-beta.10` | generated Swift bindings for the Matrix Rust SDK fork |
 | `element-hq/element-call-swift` | existing Element Call Web path | `0.20.0` | separate WebView call path, not the native media implementation |
 | `stasel/WebRTC` | existing app target | `138.0.0` range | existing direct call stack, not MatrixRTC LiveKit |
 
@@ -112,7 +112,9 @@ Required FFI surface:
 - encrypted custom to-device send to exact user/device targets;
 - decrypted custom to-device listener with encryption info;
 - device lookup helpers for MatrixRTC diagnostics and target resolution;
-- delayed state event schedule/restart/send/cancel for MSC4140 delayed leave.
+- delayed state event schedule/restart/send/cancel for MSC4140 delayed leave;
+- raw room event subscription and relations backfill for Element Call-compatible
+  raised-hand reactions.
 
 The important MatrixRTC media key API is:
 
@@ -220,6 +222,8 @@ Element Call.
 | key bytes | 16 random bytes, base64 in Matrix event content, raw bytes in LiveKit |
 | key index | one-byte MatrixRTC index, ring size 256 |
 | LiveKit participant id | MatrixRTC RTC backend identity from membership/SFU behavior |
+| raised hand | `m.reaction` with `m.annotation` relation to the MatrixRTC membership event and key `🖐️` |
+| lowered hand | `m.room.redaction` of the raised-hand reaction event |
 
 The current native path uses the legacy MatrixRTC membership event for
 compatibility. Parsing also understands the newer `org.matrix.msc4143.rtc.member`
@@ -411,6 +415,8 @@ Useful console filters:
 
 - `matrixrtc-native`: native call service, LiveKit events, membership and key
   state;
+- `matrixrtc-native-reactions`: native raised-hand send/receive, raw timeline
+  events, and relations backfill;
 - `matrixrtc-sync`: sync-side MatrixRTC notifications;
 - `matrixrtc-chat`: chat banner handling.
 
@@ -437,6 +443,9 @@ Minimum useful manual checks:
 - mic mute affects remote audio;
 - speaker toggle changes the audio route;
 - third participant joins and receives keys;
+- raised hand works between native clients and between Element Call and native
+  clients in group calls;
+- direct calls do not show or track raised-hand UI;
 - participant leaves and remaining participants continue after key rotation;
 - caller cancels before answer and the receiver banner disappears;
 - start a call, wait longer than delayed leave delay, then leave cleanly;
@@ -449,7 +458,8 @@ audio/video, group participants, membership lifecycle, and cleanup.
 
 Current MVP boundaries:
 
-- no hand raise;
+- raised hand is supported for group calls through Element Call-compatible
+  Matrix reactions; emoji reactions are not part of the native UI yet;
 - no screen sharing;
 - no final call UI design;
 - no full Element Call feature surface;
