@@ -60,7 +60,9 @@ struct AuthView: View {
                     oauthSignInButton()
                 }
 
-                createAccountButton()
+                if viewModel.allowsAccountCreation {
+                    createAccountButton()
+                }
             }
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)

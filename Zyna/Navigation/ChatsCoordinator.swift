@@ -509,7 +509,7 @@ final class ChatsCoordinator {
         vc.onCallTapped = { [weak self] in
             guard let room = viewModel.liveRoom,
                   let timelineService = viewModel.liveTimelineService else { return }
-            self?.startCall(in: room, timelineService: timelineService)
+            self?.startCall(in: room, timelineService: timelineService, voiceOnly: true)
         }
         vc.onTitleTapped = { [weak self] userId in
             self?.showProfile(userId: userId)
@@ -775,19 +775,26 @@ final class ChatsCoordinator {
         let (vc, viewModel) = makeChatScreen(target: .live(room))
         navigationController.push(vc, animated: false)
         if let timelineService = viewModel.liveTimelineService {
-            startCall(in: room, timelineService: timelineService)
+            startCall(in: room, timelineService: timelineService, voiceOnly: true)
         }
     }
 
     // MARK: - Calls
 
-    private func startCall(in room: Room, timelineService: TimelineService) {
+    private func startCall(in room: Room, timelineService: TimelineService, voiceOnly: Bool) {
         guard canSendEncryptedEvents(in: room) else {
             presentVerificationRequiredForCall()
             return
         }
-        CallService.shared.startCall(room: room, timelineService: timelineService)
-        presentCallScreen(roomName: room.displayName() ?? "Call")
+        switch CallBackendPreferenceStore.shared.selectedBackend {
+        case .zynaDirect:
+            CallService.shared.startCall(room: room, timelineService: timelineService)
+            presentCallScreen(roomName: room.displayName() ?? "Call")
+        case .elementCallWeb:
+            presentElementCallScreen(room: room, voiceOnly: voiceOnly)
+        case .nativeMatrixRTC:
+            startNativeMatrixRTCAudioCall(room: room)
+        }
     }
 
     private func canSendEncryptedEvents(in room: Room) -> Bool {
@@ -834,5 +841,24 @@ final class ChatsCoordinator {
             self?.navigationController.dismiss(animated: true)
         }
         navigationController.present(callVC, animated: true)
+    }
+
+    func presentElementCallScreen(room: Room, voiceOnly: Bool) {
+        let credentials = MatrixClientService.shared.sessionRecoveryCredentials
+        ElementCallPresentationManager.shared.present(
+            room: room,
+            roomDisplayName: room.displayName() ?? "Call",
+            deviceID: credentials?.deviceId,
+            voiceOnly: voiceOnly,
+            from: navigationController
+        )
+    }
+
+    private func startNativeMatrixRTCAudioCall(room: Room) {
+        NativeMatrixRTCCallPresentationManager.shared.present(
+            room: room,
+            roomDisplayName: room.displayName() ?? "Call",
+            from: navigationController
+        )
     }
 }

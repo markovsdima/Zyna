@@ -6,7 +6,6 @@
 import Foundation
 import Combine
 import MatrixRustSDK
-import KeychainAccess
 
 // MARK: - Client State
 
@@ -114,48 +113,139 @@ final class MatrixClientService {
     private let invalidatingSession = Atomic(false)
     private let sessionRecoveryActive = Atomic(false)
 
-    private let userIdKey = "com.zyna.matrix.lastUserId"
+    private let userIdKey = ZynaSecurityConfig.matrixLastUserIdKey
     private let localSessionIdKey = "com.zyna.matrix.localSessionId"
     private static let passphraseKeychainKey = "com.zyna.matrix.storePassphrase"
+    private static let passphraseKeychainService = "com.zyna.matrix.crypto"
+    private static let cryptoIdentityFingerprintKey = "com.zyna.matrix.cryptoIdentityFingerprint"
+    private static let matrixCryptoStoreDatabaseName = "matrix-sdk-crypto.sqlite3"
     // MSC4268 encrypted history sharing is experimental and affects privacy expectations:
     // invited users may receive keys for earlier room history. Keep disabled until the app has explicit UX for that behavior.
     private static let enableEncryptedHistorySharingOnInvite = false
     private static let roomKeyRecipientStrategy: CollectStrategy = .identityBasedStrategy
     private static let decryptionSettings = DecryptionSettings(senderDeviceTrustRequirement: .crossSignedOrLegacy)
+    private static let crossProcessLockHolderName = Bundle.main.bundleIdentifier ?? "Zyna"
+
+    private struct MatrixStorePaths {
+        let dataPath: String
+        let cachePath: String
+    }
+
+    private struct LocalCryptoIdentityFingerprint: Codable, Equatable {
+        let userId: String
+        let deviceId: String
+        let curve25519Key: String
+        let ed25519Key: String
+
+        var logDescription: String {
+            "userId=\(userId) deviceId=\(deviceId) curve25519=\(curve25519Key) ed25519=\(ed25519Key)"
+        }
+    }
 
     private init() {
-        let keychain = Keychain(service: "com.zyna.matrix.crypto")
-            .accessibility(.afterFirstUnlockThisDeviceOnly)
+        passphrase = Self.loadMatrixStorePassphrase()
+    }
 
-        if let stored = try? keychain.get(Self.passphraseKeychainKey) {
-            passphrase = stored
-        } else {
-            let generated = EncryptionKeyProvider().generateKey().base64EncodedString()
-            try? keychain.set(generated, key: Self.passphraseKeychainKey)
-            passphrase = generated
+    static func resetPersistedSessionStateAfterFreshInstall() {
+        DefaultSessionDelegate().clearAllSessions()
+        clearPersistedMatrixStorePassphrase()
+        UserDefaults.standard.removeObject(forKey: cryptoIdentityFingerprintKey)
+        ZynaSecurityConfig.clearSharedLastMatrixUserId()
+        DatabasePassphraseStore.removeAllPassphrases()
+        removeSharedMatrixStoreDirectories()
+        LocalDataProtection.removeMatrixNoSessionStore()
+        LocalDataProtection.removeAllUserLocalData()
+        LocalDataProtection.removeLegacyGlobalLocalData()
+        LocalDataProtection.removeTemporaryLocalData()
+    }
+
+    private static func clearPersistedMatrixStorePassphrase() {
+        let sharedKeychain = ZynaSecurityConfig.sharedKeychain(service: passphraseKeychainService)
+        let legacyKeychain = ZynaSecurityConfig.legacyKeychain(service: passphraseKeychainService)
+        try? sharedKeychain.removeAll()
+        try? legacyKeychain.removeAll()
+    }
+
+    private static func removeSharedMatrixStoreDirectories() {
+        let fm = FileManager.default
+        if let sharedDataDirectory = LocalDataProtection.sharedMatrixDataDirectory() {
+            try? fm.removeItem(at: sharedDataDirectory)
         }
+        if let sharedCacheDirectory = LocalDataProtection.sharedMatrixCacheDirectory() {
+            try? fm.removeItem(at: sharedCacheDirectory)
+        }
+    }
+
+    private static func loadMatrixStorePassphrase() -> String {
+        let sharedKeychain = ZynaSecurityConfig.sharedKeychain(service: passphraseKeychainService)
+        let legacyKeychain = ZynaSecurityConfig.legacyKeychain(service: passphraseKeychainService)
+
+        do {
+            if let stored = try sharedKeychain.get(passphraseKeychainKey) {
+                return stored
+            }
+        } catch {
+            logAuth("Failed to read shared Matrix store passphrase: \(error)")
+        }
+
+        do {
+            if let legacy = try legacyKeychain.get(passphraseKeychainKey) {
+                do {
+                    try sharedKeychain.set(legacy, key: passphraseKeychainKey)
+                    logAuth("Migrated Matrix store passphrase to shared keychain")
+                } catch {
+                    logAuth("Failed to migrate Matrix store passphrase to shared keychain: \(error)")
+                }
+                return legacy
+            }
+        } catch {
+            logAuth("Failed to read legacy Matrix store passphrase: \(error)")
+        }
+
+        let generated = EncryptionKeyProvider().generateKey().base64EncodedString()
+        do {
+            try sharedKeychain.set(generated, key: passphraseKeychainKey)
+        } catch {
+            logAuth("Failed to save Matrix store passphrase in shared keychain: \(error)")
+            do {
+                try legacyKeychain.set(generated, key: passphraseKeychainKey)
+            } catch {
+                logAuth("Failed to save Matrix store passphrase in legacy keychain: \(error)")
+            }
+        }
+        return generated
     }
 
     // MARK: - Session Paths
 
-    private func sessionDataPath(for userId: String? = nil) -> String {
-        let dir = legacyMatrixDataDirectory()
-        _ = try? LocalDataProtection.createProtectedDirectory(
-            at: dir,
-            protection: .backgroundReadable,
-            excludeFromBackup: true
+    private func matrixStorePaths(for userId: String? = nil) -> MatrixStorePaths {
+        guard let sharedDataDirectory = LocalDataProtection.sharedMatrixDataDirectory(),
+              let sharedCacheDirectory = LocalDataProtection.sharedMatrixCacheDirectory() else {
+            logAuth("App Group container unavailable; using legacy Matrix store directories")
+            let dataDirectory = legacyMatrixDataDirectory()
+            let cacheDirectory = legacyMatrixCacheDirectory()
+            createMatrixStoreDirectory(dataDirectory)
+            createMatrixStoreDirectory(cacheDirectory)
+            return MatrixStorePaths(dataPath: dataDirectory.path, cachePath: cacheDirectory.path)
+        }
+
+        migrateMatrixStoreToAppGroupIfNeeded(
+            userId: userId,
+            sharedDataDirectory: sharedDataDirectory,
+            sharedCacheDirectory: sharedCacheDirectory
         )
-        return dir.path
+        createMatrixStoreDirectory(sharedDataDirectory)
+        createMatrixStoreDirectory(sharedCacheDirectory)
+
+        return MatrixStorePaths(dataPath: sharedDataDirectory.path, cachePath: sharedCacheDirectory.path)
     }
 
-    private func sessionCachePath(for userId: String? = nil) -> String {
-        let dir = legacyMatrixCacheDirectory()
+    private func createMatrixStoreDirectory(_ directory: URL) {
         _ = try? LocalDataProtection.createProtectedDirectory(
-            at: dir,
+            at: directory,
             protection: .backgroundReadable,
             excludeFromBackup: true
         )
-        return dir.path
     }
 
     private func legacyMatrixDataDirectory() -> URL {
@@ -174,6 +264,213 @@ final class MatrixClientService {
             .appendingPathComponent("default", isDirectory: true)
     }
 
+    private func appSandboxMatrixDataDirectories(for userId: String?) -> [URL] {
+        var directories = [
+            legacyMatrixDataDirectory(),
+            LocalDataProtection.matrixDataDirectory(for: nil)
+        ]
+
+        if let userId, !userId.isEmpty {
+            directories.append(LocalDataProtection.matrixDataDirectory(for: userId))
+        }
+
+        return uniqueURLs(directories)
+    }
+
+    private func appSandboxMatrixCacheDirectories(for userId: String?) -> [URL] {
+        var directories = [
+            legacyMatrixCacheDirectory(),
+            LocalDataProtection.matrixCacheDirectory(for: nil)
+        ]
+
+        if let userId, !userId.isEmpty {
+            directories.append(LocalDataProtection.matrixCacheDirectory(for: userId))
+        }
+
+        return uniqueURLs(directories)
+    }
+
+    private func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        var result: [URL] = []
+
+        for url in urls {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { continue }
+            result.append(url)
+        }
+
+        return result
+    }
+
+    private func migrateMatrixStoreToAppGroupIfNeeded(
+        userId: String?,
+        sharedDataDirectory: URL,
+        sharedCacheDirectory: URL
+    ) {
+        migrateMatrixDirectoryToAppGroupIfNeeded(
+            sources: appSandboxMatrixDataDirectories(for: userId),
+            destination: sharedDataDirectory,
+            label: "data"
+        )
+        migrateMatrixDirectoryToAppGroupIfNeeded(
+            sources: appSandboxMatrixCacheDirectories(for: userId),
+            destination: sharedCacheDirectory,
+            label: "cache"
+        )
+    }
+
+    private func migrateMatrixDirectoryToAppGroupIfNeeded(
+        sources: [URL],
+        destination: URL,
+        label: String
+    ) {
+        let fm = FileManager.default
+
+        guard !directoryHasContents(destination) else {
+            return
+        }
+
+        guard let source = sources.first(where: { directoryHasContents($0) }) else {
+            return
+        }
+
+        let parent = destination.deletingLastPathComponent()
+        let temporaryDestination = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent)-migration-\(UUID().uuidString)",
+            isDirectory: true
+        )
+
+        do {
+            try LocalDataProtection.createProtectedDirectory(
+                at: parent,
+                protection: .backgroundReadable,
+                excludeFromBackup: true
+            )
+
+            if fm.fileExists(atPath: destination.path), !directoryHasContents(destination) {
+                try fm.removeItem(at: destination)
+            }
+
+            try fm.copyItem(at: source, to: temporaryDestination)
+            try? LocalDataProtection.applyProtectionRecursively(
+                to: temporaryDestination,
+                protection: .backgroundReadable
+            )
+            try fm.moveItem(at: temporaryDestination, to: destination)
+            logAuth("Migrated Matrix \(label) store to App Group container")
+        } catch {
+            try? fm.removeItem(at: temporaryDestination)
+            logAuth("Failed to migrate Matrix \(label) store to App Group container: \(error)")
+        }
+    }
+
+    private func directoryHasContents(_ url: URL) -> Bool {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              let contents = try? fm.contentsOfDirectory(atPath: url.path) else {
+            return false
+        }
+
+        return !contents.isEmpty
+    }
+
+    private func matrixCryptoStoreExists(in directory: URL) -> Bool {
+        let databaseURL = directory.appendingPathComponent(Self.matrixCryptoStoreDatabaseName, isDirectory: false)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: databaseURL.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let resourceValues = try? databaseURL.resourceValues(forKeys: [.fileSizeKey]),
+              let fileSize = resourceValues.fileSize else {
+            return false
+        }
+
+        return fileSize > 0
+    }
+
+    private func hasRecoverableMatrixCryptoStore(for userId: String?) -> Bool {
+        var candidates = appSandboxMatrixDataDirectories(for: userId)
+        if let sharedDataDirectory = LocalDataProtection.sharedMatrixDataDirectory() {
+            candidates.insert(sharedDataDirectory, at: 0)
+        }
+        return uniqueURLs(candidates).contains(where: matrixCryptoStoreExists)
+    }
+
+    private func ensureRecoverableMatrixCryptoStoreExists(for userId: String, context: String) throws {
+        guard hasRecoverableMatrixCryptoStore(for: userId) else {
+            logAuth(
+                "\(context): stored Matrix session exists for \(userId), but the local Matrix crypto store is missing; clearing the saved session to avoid resurrecting the deviceId on a new crypto identity"
+            )
+            clearLocalSession(userId: userId)
+            stateSubject.send(.loggedOut)
+            throw AuthenticationError.localCryptoStoreMissing
+        }
+    }
+
+    private func currentCryptoIdentityFingerprint(
+        client: Client,
+        session: MatrixRustSDK.Session
+    ) async -> LocalCryptoIdentityFingerprint? {
+        let encryption = client.encryption()
+        guard let curve25519Key = await encryption.curve25519Key(),
+              let ed25519Key = await encryption.ed25519Key(),
+              !curve25519Key.isEmpty,
+              !ed25519Key.isEmpty else {
+            return nil
+        }
+
+        return LocalCryptoIdentityFingerprint(
+            userId: session.userId,
+            deviceId: session.deviceId,
+            curve25519Key: curve25519Key,
+            ed25519Key: ed25519Key
+        )
+    }
+
+    private func storedCryptoIdentityFingerprint() -> LocalCryptoIdentityFingerprint? {
+        guard let data = UserDefaults.standard.data(forKey: Self.cryptoIdentityFingerprintKey) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(LocalCryptoIdentityFingerprint.self, from: data)
+    }
+
+    private func persistCryptoIdentityFingerprint(_ fingerprint: LocalCryptoIdentityFingerprint) {
+        guard let data = try? JSONEncoder().encode(fingerprint) else { return }
+        UserDefaults.standard.set(data, forKey: Self.cryptoIdentityFingerprintKey)
+        UserDefaults.standard.synchronize()
+    }
+
+    private func clearCryptoIdentityFingerprint() {
+        UserDefaults.standard.removeObject(forKey: Self.cryptoIdentityFingerprintKey)
+        UserDefaults.standard.synchronize()
+    }
+
+    private func validateOrPersistCryptoIdentityFingerprint(
+        client: Client,
+        session: MatrixRustSDK.Session,
+        context: String
+    ) async throws {
+        guard let current = await currentCryptoIdentityFingerprint(client: client, session: session) else {
+            logAuth("\(context): local crypto identity keys unavailable; skipping fingerprint guard")
+            return
+        }
+
+        if let stored = storedCryptoIdentityFingerprint(),
+           stored.userId == current.userId,
+           stored.deviceId == current.deviceId,
+           stored != current {
+            logAuth(
+                "\(context): local crypto identity changed for saved device. stored=[\(stored.logDescription)] current=[\(current.logDescription)]"
+            )
+            throw AuthenticationError.localCryptoIdentityMismatch
+        }
+
+        persistCryptoIdentityFingerprint(current)
+        logAuth("\(context): local crypto identity fingerprint stored \(current.logDescription)")
+    }
+
     private func removeEmptyDirectory(_ url: URL) {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(atPath: url.path),
@@ -187,6 +484,16 @@ final class MatrixClientService {
     /// with a previous device's crypto store.
     private func clearSessionDirectories(userId: String? = nil) {
         let fm = FileManager.default
+        if let sharedDataDirectory = LocalDataProtection.sharedMatrixDataDirectory() {
+            try? fm.removeItem(at: sharedDataDirectory)
+            removeEmptyDirectory(sharedDataDirectory.deletingLastPathComponent())
+            removeEmptyDirectory(sharedDataDirectory.deletingLastPathComponent().deletingLastPathComponent())
+        }
+        if let sharedCacheDirectory = LocalDataProtection.sharedMatrixCacheDirectory() {
+            try? fm.removeItem(at: sharedCacheDirectory)
+            removeEmptyDirectory(sharedCacheDirectory.deletingLastPathComponent())
+            removeEmptyDirectory(sharedCacheDirectory.deletingLastPathComponent().deletingLastPathComponent())
+        }
         try? fm.removeItem(at: LocalDataProtection.matrixDataDirectory(for: nil))
         try? fm.removeItem(at: LocalDataProtection.matrixCacheDirectory(for: nil))
         if let userId, !userId.isEmpty {
@@ -210,17 +517,20 @@ final class MatrixClientService {
 
         // Clear stale local state so a fresh login cannot reuse another user's
         // decrypted app cache or Matrix crypto store.
-        if let existingUserId = UserDefaults.standard.string(forKey: userIdKey) {
+        if let existingUserId = persistedUserId() {
             clearLocalSession(userId: existingUserId)
         } else {
             clearSessionDirectories()
+            clearCryptoIdentityFingerprint()
         }
 
         do {
-            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+            let storePaths = matrixStorePaths()
+            let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
                 .passphrase(passphrase: passphrase)
 
             let client = try await ClientBuilder()
+                .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
                 .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
                 .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
@@ -243,13 +553,17 @@ final class MatrixClientService {
             )
 
             let userId = try client.userId()
-            UserDefaults.standard.set(userId, forKey: userIdKey)
+            let session = try client.session()
+            try await validateOrPersistCryptoIdentityFingerprint(
+                client: client,
+                session: session,
+                context: "Login"
+            )
+            try sessionDelegate.persistSessionInKeychain(session: session)
+
+            persistStoredSessionMarker(userId: userId)
             let localSessionId = startNewLocalSessionId()
             activateLocalData(userId: userId)
-
-            // Manually save session — SDK only auto-calls delegate on token refresh
-            let session = try client.session()
-            sessionDelegate.saveSessionInKeychain(session: session)
 
             logAuth("Logged in as \(userId) localSession=\(localSessionId)")
 
@@ -286,7 +600,7 @@ final class MatrixClientService {
             return
         }
 
-        guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
+        guard let userId = persistedUserId() else {
             logAuth("No stored userId found")
             throw AuthenticationError.sessionNotFound
         }
@@ -296,15 +610,24 @@ final class MatrixClientService {
             session = try sessionDelegate.retrieveSessionFromKeychain(userId: userId)
         } catch {
             logAuth("Stored session unavailable for \(userId): \(error)")
+            if case AuthenticationError.sessionNotFound = error {
+                clearStoredSessionMarker(userId: userId)
+                stateSubject.send(.loggedOut)
+                throw error
+            }
             await enterSessionRecovery(source: .restoreFailure, session: nil, reason: String(describing: error))
             throw error
         }
 
         do {
-            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+            try ensureRecoverableMatrixCryptoStoreExists(for: userId, context: "Session restore")
+
+            let storePaths = matrixStorePaths(for: userId)
+            let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
                 .passphrase(passphrase: passphrase)
 
             let client = try await ClientBuilder()
+                .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
                 .homeserverUrl(url: session.homeserverUrl)
                 .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
@@ -320,7 +643,13 @@ final class MatrixClientService {
                 .build()
 
             try await client.restoreSession(session: session)
+            try await validateOrPersistCryptoIdentityFingerprint(
+                client: client,
+                session: session,
+                context: "Session restore"
+            )
             logAuth("Session restored for \(userId)")
+            ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
             ensureLocalSessionId()
             activateLocalData(userId: userId)
             sessionRecoverySession = nil
@@ -330,6 +659,14 @@ final class MatrixClientService {
             stateSubject.send(.loggedIn)
         } catch {
             logAuth("Session restore failed: \(error)")
+            if case AuthenticationError.localCryptoStoreMissing = error {
+                throw error
+            }
+            if case AuthenticationError.localCryptoIdentityMismatch = error {
+                clearLocalSession(userId: session.userId)
+                stateSubject.send(.loggedOut)
+                throw error
+            }
             if Self.isSoftLogoutError(error) {
                 await enterSoftLogout(session: session, reason: String(describing: error))
                 throw error
@@ -417,6 +754,27 @@ final class MatrixClientService {
         syncServiceStateSubject.send(.running)
         stateSubject.send(.syncing)
         logSync("Sync started")
+    }
+
+    func ensureSyncRunningForIncomingCall() async {
+        do {
+            if client == nil {
+                try await restoreSession()
+                return
+            }
+
+            guard syncService == nil else {
+                stateSubject.send(.syncing)
+                return
+            }
+
+            try await startSyncForAuthenticatedSession(
+                session: currentOrStoredSession(),
+                context: "Incoming call"
+            )
+        } catch {
+            logSync("Incoming call sync start failed: \(error)")
+        }
     }
 
     func stopSync() async {
@@ -680,10 +1038,14 @@ final class MatrixClientService {
         stateSubject.send(.loggingIn)
 
         do {
-            let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+            try ensureRecoverableMatrixCryptoStoreExists(for: session.userId, context: "Session recovery sign-in")
+
+            let storePaths = matrixStorePaths(for: session.userId)
+            let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
                 .passphrase(passphrase: passphrase)
 
             let client = try await ClientBuilder()
+                .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
                 .homeserverUrl(url: session.homeserverUrl)
                 .sqliteStore(config: storeConfig)
                 .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
@@ -706,10 +1068,16 @@ final class MatrixClientService {
             )
 
             let refreshedSession = try client.session()
-            UserDefaults.standard.set(refreshedSession.userId, forKey: userIdKey)
+            try await validateOrPersistCryptoIdentityFingerprint(
+                client: client,
+                session: refreshedSession,
+                context: "Session recovery sign-in"
+            )
+            try sessionDelegate.persistSessionInKeychain(session: refreshedSession)
+
+            persistStoredSessionMarker(userId: refreshedSession.userId)
             ensureLocalSessionId()
             activateLocalData(userId: refreshedSession.userId)
-            sessionDelegate.saveSessionInKeychain(session: refreshedSession)
 
             sessionRecoverySession = refreshedSession
             sessionRecoveryActive.tryToClearFlag()
@@ -723,6 +1091,16 @@ final class MatrixClientService {
             logAuth("Session recovery sign-in succeeded for \(refreshedSession.userId) device=\(refreshedSession.deviceId)")
         } catch {
             logAuth("Session recovery sign-in failed: \(error)")
+            if case AuthenticationError.localCryptoStoreMissing = error {
+                clearLocalSession(userId: session.userId)
+                stateSubject.send(.loggedOut)
+                throw error
+            }
+            if case AuthenticationError.localCryptoIdentityMismatch = error {
+                clearLocalSession(userId: session.userId)
+                stateSubject.send(.loggedOut)
+                throw error
+            }
             stateSubject.send(recoveryStateOnFailure)
             throw error
         }
@@ -752,16 +1130,19 @@ final class MatrixClientService {
 
     /// Build a client for a given homeserver (without logging in).
     func buildUnauthenticatedClient(homeserver: String) async throws -> Client {
-        if let existingUserId = UserDefaults.standard.string(forKey: userIdKey) {
+        if let existingUserId = persistedUserId() {
             clearLocalSession(userId: existingUserId)
         } else {
             clearSessionDirectories()
+            clearCryptoIdentityFingerprint()
         }
 
-        let storeConfig = SqliteStoreBuilder(dataPath: sessionDataPath(), cachePath: sessionCachePath())
+        let storePaths = matrixStorePaths()
+        let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
             .passphrase(passphrase: passphrase)
 
         return try await ClientBuilder()
+            .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
             .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
             .sqliteStore(config: storeConfig)
             .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
@@ -775,6 +1156,24 @@ final class MatrixClientService {
             .decryptionSettings(decryptionSettings: Self.decryptionSettings)
             .enableShareHistoryOnInvite(enableShareHistoryOnInvite: Self.enableEncryptedHistorySharingOnInvite)
             .build()
+    }
+
+    func homeserverCapabilities(homeserver: String) async throws -> (supportsPassword: Bool, supportsOAuth: Bool) {
+        let client = try await ClientBuilder()
+            .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: Self.crossProcessLockHolderName))
+            .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
+            .inMemoryStore()
+            .slidingSyncVersionBuilder(versionBuilder: .discoverNative)
+            .setSessionDelegate(sessionDelegate: sessionDelegate)
+            .userAgent(userAgent: UserAgentBuilder.makeASCIIUserAgent())
+            .requestConfig(config: RequestConfig(retryLimit: 3, timeout: 30000, maxConcurrentRequests: nil, maxRetryTime: nil))
+            .build()
+
+        let details = await client.homeserverLoginDetails()
+        return (
+            supportsPassword: details.supportsPasswordLogin(),
+            supportsOAuth: details.supportsOauthLogin()
+        )
     }
 
     /// Start an OAuth authentication flow. Returns the login URL and authorization data.
@@ -797,12 +1196,17 @@ final class MatrixClientService {
         try await client.loginWithOauthCallback(callbackUrl: callbackURL)
 
         let userId = try client.userId()
-        UserDefaults.standard.set(userId, forKey: userIdKey)
+        let session = try client.session()
+        try await validateOrPersistCryptoIdentityFingerprint(
+            client: client,
+            session: session,
+            context: "OAuth login"
+        )
+        try sessionDelegate.persistSessionInKeychain(session: session)
+
+        persistStoredSessionMarker(userId: userId)
         let localSessionId = startNewLocalSessionId()
         activateLocalData(userId: userId)
-
-        let session = try client.session()
-        sessionDelegate.saveSessionInKeychain(session: session)
 
         logAuth("OAuth login successful as \(userId) localSession=\(localSessionId)")
 
@@ -816,7 +1220,7 @@ final class MatrixClientService {
     }
 
     var hasStoredSession: Bool {
-        UserDefaults.standard.string(forKey: userIdKey) != nil
+        persistedUserId() != nil
     }
 
     var currentLocalSessionId: String? {
@@ -832,7 +1236,7 @@ final class MatrixClientService {
                 canSignIn: true
             )
         }
-        guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
+        guard let userId = persistedUserId() else {
             return nil
         }
         return SessionRecoveryCredentials(
@@ -854,7 +1258,7 @@ final class MatrixClientService {
         if let client, let session = try? client.session() {
             return session
         }
-        guard let userId = UserDefaults.standard.string(forKey: userIdKey) else {
+        guard let userId = persistedUserId() else {
             return nil
         }
         return try? sessionDelegate.retrieveSessionFromKeychain(userId: userId)
@@ -864,7 +1268,33 @@ final class MatrixClientService {
         if let client, let userId = try? client.userId(), !userId.isEmpty {
             return userId
         }
-        return UserDefaults.standard.string(forKey: userIdKey)
+        return persistedUserId()
+    }
+
+    private func persistedUserId() -> String? {
+        if let userId = UserDefaults.standard.string(forKey: userIdKey), !userId.isEmpty {
+            return userId
+        }
+
+        if let userId = ZynaSecurityConfig.sharedUserDefaults()?.string(forKey: userIdKey), !userId.isEmpty {
+            persistStoredSessionMarker(userId: userId)
+            logAuth("Restored stored session marker from shared defaults for \(userId)")
+            return userId
+        }
+
+        guard let userId = sessionDelegate.storedSessionUserIds().first, !userId.isEmpty else {
+            return nil
+        }
+
+        persistStoredSessionMarker(userId: userId)
+        logAuth("Restored stored session marker from keychain for \(userId)")
+        return userId
+    }
+
+    private func persistStoredSessionMarker(userId: String) {
+        UserDefaults.standard.set(userId, forKey: userIdKey)
+        UserDefaults.standard.synchronize()
+        ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
     }
 
     private func activateLocalData(userId: String) {
@@ -902,15 +1332,30 @@ final class MatrixClientService {
             sessionDelegate.clearAllSessions()
         }
         UserDefaults.standard.removeObject(forKey: userIdKey)
+        UserDefaults.standard.synchronize()
+        ZynaSecurityConfig.clearSharedLastMatrixUserId()
         UserDefaults.standard.removeObject(forKey: localSessionIdKey)
+        UserDefaults.standard.synchronize()
+        clearCryptoIdentityFingerprint()
         clearSessionDirectories(userId: userId)
         clearAppLocalData(userId: userId)
+    }
+
+    private func clearStoredSessionMarker(userId: String) {
+        UserDefaults.standard.removeObject(forKey: userIdKey)
+        UserDefaults.standard.removeObject(forKey: localSessionIdKey)
+        UserDefaults.standard.synchronize()
+        ZynaSecurityConfig.clearSharedLastMatrixUserId()
+        sessionRecoverySession = nil
+        sessionRecoveryActive.tryToClearFlag()
+        logAuth("Cleared stale stored session marker for \(userId)")
     }
 
     @discardableResult
     private func startNewLocalSessionId() -> String {
         let id = UUID().uuidString
         UserDefaults.standard.set(id, forKey: localSessionIdKey)
+        UserDefaults.standard.synchronize()
         return id
     }
 

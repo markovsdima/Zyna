@@ -19,6 +19,7 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
         case roles
         case roomDetails
         case messagesAndContent
+        case calls
         case memberModeration
         case reset
 
@@ -30,6 +31,8 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
                 return String(localized: "Room Details")
             case .messagesAndContent:
                 return String(localized: "Messages and Content")
+            case .calls:
+                return String(localized: "Calls")
             case .memberModeration:
                 return String(localized: "Member Moderation")
             case .reset:
@@ -97,6 +100,7 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
         case roomTopic
         case sendMessages
         case deleteMessages
+        case startAndJoinCalls
         case invitePeople
         case removePeople
         case banPeople
@@ -113,6 +117,8 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
                 return String(localized: "Send Messages")
             case .deleteMessages:
                 return String(localized: "Delete Messages")
+            case .startAndJoinCalls:
+                return String(localized: "Start and Join Calls")
             case .invitePeople:
                 return String(localized: "Invite People")
             case .removePeople:
@@ -134,6 +140,8 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
                 return values.eventsDefault
             case .deleteMessages:
                 return values.redact
+            case .startAndJoinCalls:
+                return 0
             case .invitePeople:
                 return values.invite
             case .removePeople:
@@ -155,6 +163,8 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
                 changes.eventsDefault = powerLevel
             case .deleteMessages:
                 changes.redact = powerLevel
+            case .startAndJoinCalls:
+                break
             case .invitePeople:
                 changes.invite = powerLevel
             case .removePeople:
@@ -174,6 +184,9 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
         .sendMessages,
         .deleteMessages
     ]
+    private static let callsRows: [PermissionKey] = [
+        .startAndJoinCalls
+    ]
     private static let memberModerationRows: [PermissionKey] = [
         .invitePeople,
         .removePeople,
@@ -187,9 +200,11 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
 
     private var powerLevels: RoomPowerLevels?
     private var powerLevelValues: RoomPowerLevelsValues?
+    private var callPowerLevel: Int64?
     private var roleCounts: RoleCounts?
     private var stateTask: Task<Void, Never>?
     private var roleCountsTask: Task<Void, Never>?
+    private var callPowerLevelTask: Task<Void, Never>?
     private var operationTask: Task<Void, Never>?
     private var roomInfoSubscription: TaskHandle?
     private var progressAlert: UIAlertController?
@@ -212,6 +227,7 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
     deinit {
         stateTask?.cancel()
         roleCountsTask?.cancel()
+        callPowerLevelTask?.cancel()
         operationTask?.cancel()
         roomInfoSubscription?.cancel()
     }
@@ -302,11 +318,13 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
             } else {
                 loadedPowerLevels = try? await room.getPowerLevels()
             }
+            let loadedCallPowerLevel = await Self.loadMatrixRTCCallPowerLevel(room: room)
             let cachedCounts = await Self.loadRoleCounts(room: room, noSync: true)
 
             await MainActor.run { [weak self] in
                 guard let self, !Task.isCancelled else { return }
                 self.apply(powerLevels: loadedPowerLevels)
+                self.callPowerLevel = loadedCallPowerLevel
                 self.roleCounts = cachedCounts ?? self.roleCounts
                 self.isLoadingPermissions = false
                 self.tableView.reloadData()
@@ -335,6 +353,7 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
         apply(powerLevels: infoPowerLevels)
         tableView.reloadData()
         refreshRoleCountsFromCache()
+        refreshMatrixRTCCallPowerLevel()
     }
 
     private func apply(powerLevels: RoomPowerLevels?) {
@@ -386,6 +405,24 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
         }
     }
 
+    private static func loadMatrixRTCCallPowerLevel(room: Room) async -> Int64? {
+        guard let client = MatrixClientService.shared.client else { return nil }
+        return try? await MatrixRTCRoomPowerLevelPermissions.callPowerLevel(room: room, client: client)
+    }
+
+    private func refreshMatrixRTCCallPowerLevel() {
+        callPowerLevelTask?.cancel()
+        let room = room
+        callPowerLevelTask = Task { [weak self, room] in
+            guard let powerLevel = await Self.loadMatrixRTCCallPowerLevel(room: room) else { return }
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                self.callPowerLevel = powerLevel
+                self.reloadSection(.calls)
+            }
+        }
+    }
+
     private var canEditPermissions: Bool {
         guard let powerLevels else { return false }
         return powerLevels.canOwnUserSendState(stateEvent: .roomPowerLevels)
@@ -407,6 +444,8 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
             return Self.roomDetailsRows
         case .messagesAndContent:
             return Self.messagesAndContentRows
+        case .calls:
+            return Self.callsRows
         case .memberModeration:
             return Self.memberModerationRows
         case .roles, .reset:
@@ -423,6 +462,10 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
 
     private func currentRole(for key: PermissionKey) -> PermissionRole? {
         guard let powerLevelValues else { return nil }
+        if key == .startAndJoinCalls {
+            guard let callPowerLevel else { return nil }
+            return PermissionRole(powerLevel: callPowerLevel)
+        }
         return PermissionRole(powerLevel: key.powerLevel(from: powerLevelValues))
     }
 
@@ -455,9 +498,20 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
         guard currentRole(for: key) != role else { return }
 
         performSavingOperation { [room] in
-            var changes = RoomPowerLevelChanges()
-            key.apply(powerLevel: role.powerLevel, to: &changes)
-            try await room.applyPowerLevelChanges(changes: changes)
+            if key == .startAndJoinCalls {
+                guard let client = MatrixClientService.shared.client else {
+                    throw RoomRolesPermissionsError.matrixClientUnavailable
+                }
+                try await MatrixRTCRoomPowerLevelPermissions.setCallPowerLevel(
+                    role.powerLevel,
+                    room: room,
+                    client: client
+                )
+            } else {
+                var changes = RoomPowerLevelChanges()
+                key.apply(powerLevel: role.powerLevel, to: &changes)
+                try await room.applyPowerLevelChanges(changes: changes)
+            }
         }
     }
 
@@ -501,9 +555,11 @@ final class RoomRolesPermissionsViewController: ASDKViewController<SettingsScree
                 } else {
                     loadedPowerLevels = try? await room.getPowerLevels()
                 }
+                let loadedCallPowerLevel = await Self.loadMatrixRTCCallPowerLevel(room: room)
                 await MainActor.run { [weak self] in
                     guard let self, !Task.isCancelled else { return }
                     self.apply(powerLevels: loadedPowerLevels ?? self.powerLevels)
+                    self.callPowerLevel = loadedCallPowerLevel ?? self.callPowerLevel
                     self.finishSaving()
                 }
             } catch {
@@ -574,6 +630,8 @@ extension RoomRolesPermissionsViewController: UITableViewDataSource, UITableView
             return Self.roomDetailsRows.count
         case .messagesAndContent:
             return Self.messagesAndContentRows.count
+        case .calls:
+            return Self.callsRows.count
         case .memberModeration:
             return Self.memberModerationRows.count
         case .reset:
@@ -589,7 +647,7 @@ extension RoomRolesPermissionsViewController: UITableViewDataSource, UITableView
         switch Section(rawValue: section) ?? .roles {
         case .roles:
             return String(localized: "Member roles are changed from each member profile.")
-        case .roomDetails, .messagesAndContent, .memberModeration:
+        case .roomDetails, .messagesAndContent, .calls, .memberModeration:
             if disabledDetail != nil {
                 return String(localized: "Only users who can edit room power levels can change these settings.")
             }
@@ -604,7 +662,7 @@ extension RoomRolesPermissionsViewController: UITableViewDataSource, UITableView
         case .roles:
             let row = RoleSummaryRow(rawValue: indexPath.row) ?? .administrators
             return roleSummaryCell(tableView: tableView, row: row)
-        case .roomDetails, .messagesAndContent, .memberModeration:
+        case .roomDetails, .messagesAndContent, .calls, .memberModeration:
             guard let key = permissionKey(at: indexPath) else {
                 return UITableViewCell(style: .default, reuseIdentifier: nil)
             }
@@ -691,7 +749,7 @@ extension RoomRolesPermissionsViewController: UITableViewDataSource, UITableView
         switch Section(rawValue: indexPath.section) ?? .roles {
         case .roles:
             return
-        case .roomDetails, .messagesAndContent, .memberModeration:
+        case .roomDetails, .messagesAndContent, .calls, .memberModeration:
             guard let key = permissionKey(at: indexPath) else { return }
             presentRolePicker(for: key, from: indexPath)
         case .reset:
@@ -713,5 +771,16 @@ private final class RoomRolesPermissionsInfoListener: RoomInfoListener {
 
     func call(roomInfo: RoomInfo) {
         callback(roomInfo)
+    }
+}
+
+private enum RoomRolesPermissionsError: LocalizedError {
+    case matrixClientUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .matrixClientUnavailable:
+            return String(localized: "Matrix client is not available.")
+        }
     }
 }

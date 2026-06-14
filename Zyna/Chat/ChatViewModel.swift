@@ -13,6 +13,7 @@ private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
 private let timelineHealthLog = ScopedLog(.database, prefix: "[TimelineHealth]")
+private let logMatrixRTCChat = ScopedLog(.call, prefix: "[matrixrtc-chat]")
 
 private protocol OutgoingOutboxFailureEvent {
     var roomId: String { get }
@@ -78,6 +79,18 @@ final class ChatViewModel {
 
         var count: Int { eventIds.count }
         var hasPinnedMessages: Bool { !eventIds.isEmpty }
+    }
+
+    struct ActiveRoomCallState: Equatable {
+        var isActive = false
+        var participantCount = 0
+    }
+
+    private struct MatrixRTCRingOverride {
+        let eventId: String
+        let senderId: String
+        let expiresAt: Date
+        var hasObservedActiveCall: Bool
     }
 
     private struct RedactionTransitionCandidate {
@@ -169,6 +182,8 @@ final class ChatViewModel {
     @Published private(set) var composerSendRestrictionReason: OutgoingSendFailureReason?
     @Published private(set) var isRoomEncrypted: Bool = true
     @Published private(set) var pinnedMessagesState = PinnedMessagesState()
+    @Published private(set) var activeRoomCallState = ActiveRoomCallState()
+    private var observedRoomCallState = ActiveRoomCallState()
 
     // MARK: - Coordinator callback
     var onBack: (() -> Void)?
@@ -202,6 +217,11 @@ final class ChatViewModel {
     private var roomResolutionTask: Task<Void, Never>?
     private var sendPermissionTask: Task<Void, Never>?
     private var pinnedMessagesTask: Task<Void, Never>?
+    private var roomInfoSubscription: TaskHandle?
+    private var matrixRTCRingOverride: MatrixRTCRingOverride?
+    private var matrixRTCRingExpiryWorkItem: DispatchWorkItem?
+    private var matrixRTCRingValidationWorkItem: DispatchWorkItem?
+    private var matrixRTCRingMembershipValidationTask: Task<Void, Never>?
     private var currentMatrixClientState = MatrixClientService.shared.state
     private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
     private var canSendRoomMessages = true
@@ -216,6 +236,7 @@ final class ChatViewModel {
     var liveRoom: Room? { room }
     var liveTimelineService: TimelineService? { timelineService }
     private static let pendingRedactionPlaceholderDelay: TimeInterval = 1.7
+    private static let matrixRTCRingMembershipConfirmationDelay: TimeInterval = 2.5
     private var requiresVerifiedDeviceForSending: Bool {
         guard let room else { return false }
         return room.encryptionState() != .notEncrypted
@@ -273,6 +294,9 @@ final class ChatViewModel {
         roomResolutionTask?.cancel()
         sendPermissionTask?.cancel()
         pinnedMessagesTask?.cancel()
+        matrixRTCRingExpiryWorkItem?.cancel()
+        matrixRTCRingValidationWorkItem?.cancel()
+        matrixRTCRingMembershipValidationTask?.cancel()
     }
 
     private func bindCommonServices() {
@@ -306,7 +330,83 @@ final class ChatViewModel {
 
         bindOutgoingUpdates()
         bindWindow()
+        bindMatrixRTCCallNotifications()
         refreshComposerSendPermission()
+    }
+
+    private func bindMatrixRTCCallNotifications() {
+        CallNotificationListener.matrixRTCIncomingCallSubject
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                self?.handleIncomingMatrixRTCCallNotification(notification)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func handleIncomingMatrixRTCCallNotification(_ notification: IncomingMatrixRTCCallNotification) {
+        guard notification.roomId == roomId else { return }
+        guard notification.expiresAt > Date() else { return }
+
+        let observedState = currentObservedRoomCallState()
+        matrixRTCRingOverride = MatrixRTCRingOverride(
+            eventId: notification.eventId,
+            senderId: notification.senderId,
+            expiresAt: notification.expiresAt,
+            hasObservedActiveCall: observedState.isActive
+        )
+        logMatrixRTCChat("Received MatrixRTC \(notification.kind.logLabel) for open chat room=\(roomId) event=\(notification.eventId)")
+        applyActiveRoomCallState(mergedActiveRoomCallState(observedState))
+        scheduleMatrixRTCRingOverrideExpiry(notification)
+        scheduleMatrixRTCRingOverrideValidation(notification)
+    }
+
+    private func scheduleMatrixRTCRingOverrideExpiry(_ notification: IncomingMatrixRTCCallNotification) {
+        matrixRTCRingExpiryWorkItem?.cancel()
+
+        let eventId = notification.eventId
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.matrixRTCRingOverride?.eventId == eventId
+            else { return }
+
+            self.clearMatrixRTCRingOverride(reason: "expired", eventId: eventId)
+            if let room = self.room {
+                self.refreshActiveRoomCallState(room)
+            } else {
+                self.applyActiveRoomCallState(ActiveRoomCallState())
+            }
+        }
+        matrixRTCRingExpiryWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0, notification.expiresAt.timeIntervalSinceNow),
+            execute: workItem
+        )
+    }
+
+    private func scheduleMatrixRTCRingOverrideValidation(_ notification: IncomingMatrixRTCCallNotification) {
+        matrixRTCRingValidationWorkItem?.cancel()
+
+        let eventId = notification.eventId
+        let senderId = notification.senderId
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  let ringOverride = self.matrixRTCRingOverride,
+                  ringOverride.eventId == eventId,
+                  !ringOverride.hasObservedActiveCall
+            else { return }
+
+            self.scheduleMatrixRTCRingMembershipValidation(
+                eventId: eventId,
+                senderId: senderId,
+                reason: "membershipNotObserved",
+                delay: 0
+            )
+        }
+        matrixRTCRingValidationWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.matrixRTCRingMembershipConfirmationDelay,
+            execute: workItem
+        )
     }
 
     private func bindOutgoingUpdates() {
@@ -432,6 +532,8 @@ final class ChatViewModel {
         self.room = room
         isInvited = room.membership() == .invited
         refreshRoomEncryptionState(room)
+        refreshActiveRoomCallState(room)
+        subscribeToRoomInfoUpdates(room)
 
         let timelineService = TimelineService(room: room)
         self.timelineService = timelineService
@@ -448,18 +550,36 @@ final class ChatViewModel {
         }
     }
 
+    private func subscribeToRoomInfoUpdates(_ room: Room) {
+        roomInfoSubscription?.cancel()
+        let listener = ChatRoomInfoListener { [weak self] info in
+            DispatchQueue.main.async {
+                self?.applyRoomInfoUpdate(info)
+            }
+        }
+        roomInfoSubscription = room.subscribeToRoomInfoUpdates(listener: listener)
+    }
+
+    private func applyRoomInfoUpdate(_ info: RoomInfo) {
+        updateActiveRoomCallState(from: info)
+        updatePinnedMessages(from: info)
+    }
+
     private func resolveRoomInfo(_ room: Room) {
         Task { [weak self] in
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
+            let activeRoomCallState = Self.activeRoomCallState(from: info)
             if let powerLevels = info.powerLevels {
                 let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
                 await MainActor.run {
                     self.updateCanSendRoomMessages(canSendMessage)
+                    self.applyObservedRoomCallState(activeRoomCallState)
                     self.updatePinnedMessages(from: info)
                 }
             } else {
                 await MainActor.run {
+                    self.applyObservedRoomCallState(activeRoomCallState)
                     self.updatePinnedMessages(from: info)
                 }
             }
@@ -522,6 +642,167 @@ final class ChatViewModel {
                 guard let self, !Task.isCancelled else { return }
                 self.updatePinnedMessages(from: info, powerLevels: loadedPowerLevels)
             }
+        }
+    }
+
+    private func refreshActiveRoomCallState(_ room: Room) {
+        applyObservedRoomCallState(ActiveRoomCallState(
+            isActive: room.hasActiveRoomCall(),
+            participantCount: observedRoomCallState.participantCount
+        ))
+    }
+
+    private func updateActiveRoomCallState(from info: RoomInfo) {
+        applyObservedRoomCallState(Self.activeRoomCallState(from: info))
+    }
+
+    private static func activeRoomCallState(from info: RoomInfo) -> ActiveRoomCallState {
+        ActiveRoomCallState(
+            isActive: info.hasRoomCall,
+            participantCount: info.activeRoomCallParticipants.count
+        )
+    }
+
+    private func applyActiveRoomCallState(_ state: ActiveRoomCallState) {
+        guard activeRoomCallState != state else { return }
+        activeRoomCallState = state
+    }
+
+    private func applyObservedRoomCallState(_ state: ActiveRoomCallState) {
+        observedRoomCallState = state
+        applyActiveRoomCallState(mergedActiveRoomCallState(state))
+    }
+
+    private func currentObservedRoomCallState() -> ActiveRoomCallState {
+        guard let room, room.hasActiveRoomCall() else {
+            return observedRoomCallState
+        }
+
+        return ActiveRoomCallState(
+            isActive: true,
+            participantCount: max(1, observedRoomCallState.participantCount)
+        )
+    }
+
+    private func mergedActiveRoomCallState(_ state: ActiveRoomCallState) -> ActiveRoomCallState {
+        if state.isActive {
+            markMatrixRTCRingOverrideObservedActiveCall()
+            return state
+        }
+
+        guard let ringOverride = matrixRTCRingOverride else { return state }
+        guard ringOverride.expiresAt > Date() else {
+            clearMatrixRTCRingOverride(reason: "expired", eventId: ringOverride.eventId)
+            return state
+        }
+
+        guard !ringOverride.hasObservedActiveCall else {
+            scheduleMatrixRTCRingMembershipValidation(
+                eventId: ringOverride.eventId,
+                senderId: ringOverride.senderId,
+                reason: "roomCallEnded",
+                delay: 0.8
+            )
+            return ActiveRoomCallState(
+                isActive: true,
+                participantCount: max(1, state.participantCount)
+            )
+        }
+
+        return ActiveRoomCallState(
+            isActive: true,
+            participantCount: max(1, state.participantCount)
+        )
+    }
+
+    private func markMatrixRTCRingOverrideObservedActiveCall() {
+        guard let ringOverride = matrixRTCRingOverride,
+              !ringOverride.hasObservedActiveCall else {
+            return
+        }
+
+        matrixRTCRingOverride?.hasObservedActiveCall = true
+        matrixRTCRingValidationWorkItem?.cancel()
+        matrixRTCRingValidationWorkItem = nil
+        matrixRTCRingMembershipValidationTask?.cancel()
+        matrixRTCRingMembershipValidationTask = nil
+        logMatrixRTCChat("Observed active MatrixRTC membership for ring room=\(roomId) event=\(ringOverride.eventId)")
+    }
+
+    private func clearMatrixRTCRingOverride(reason: String, eventId: String) {
+        guard matrixRTCRingOverride?.eventId == eventId else { return }
+        matrixRTCRingExpiryWorkItem?.cancel()
+        matrixRTCRingExpiryWorkItem = nil
+        matrixRTCRingValidationWorkItem?.cancel()
+        matrixRTCRingValidationWorkItem = nil
+        matrixRTCRingMembershipValidationTask?.cancel()
+        matrixRTCRingMembershipValidationTask = nil
+        matrixRTCRingOverride = nil
+        logMatrixRTCChat("Cleared MatrixRTC ring override room=\(roomId) event=\(eventId) reason=\(reason)")
+    }
+
+    private func scheduleMatrixRTCRingMembershipValidation(
+        eventId: String,
+        senderId: String,
+        reason: String,
+        delay: TimeInterval
+    ) {
+        guard matrixRTCRingMembershipValidationTask == nil else { return }
+
+        matrixRTCRingMembershipValidationTask = Task { [weak self] in
+            if delay > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                } catch {
+                    return
+                }
+            }
+
+            guard let self, !Task.isCancelled else { return }
+            let hasActiveMembership = await self.hasActiveMatrixRTCMembership(senderId: senderId)
+
+            await MainActor.run { [weak self] in
+                guard let self,
+                      self.matrixRTCRingOverride?.eventId == eventId else {
+                    return
+                }
+
+                self.matrixRTCRingMembershipValidationTask = nil
+                switch hasActiveMembership {
+                case .some(true):
+                    self.markMatrixRTCRingOverrideObservedActiveCall()
+                    self.applyActiveRoomCallState(self.mergedActiveRoomCallState(ActiveRoomCallState(
+                        isActive: true,
+                        participantCount: max(1, self.observedRoomCallState.participantCount)
+                    )))
+                case .some(false):
+                    self.clearMatrixRTCRingOverride(reason: reason, eventId: eventId)
+                    if let room = self.room {
+                        self.refreshActiveRoomCallState(room)
+                    } else {
+                        self.applyActiveRoomCallState(ActiveRoomCallState())
+                    }
+                case .none:
+                    logMatrixRTCChat("Skipped MatrixRTC ring membership validation room=\(self.roomId) event=\(eventId) reason=\(reason)")
+                }
+            }
+        }
+    }
+
+    private func hasActiveMatrixRTCMembership(senderId: String) async -> Bool? {
+        guard let client = MatrixClientService.shared.client else {
+            return nil
+        }
+
+        do {
+            let memberships = try await MatrixRustSDKRTCMembershipClient(client: client).loadActiveMemberships(
+                roomId: roomId,
+                joinedUserIds: [senderId]
+            )
+            return memberships.contains { $0.userId == senderId }
+        } catch {
+            logMatrixRTCChat("Failed validating MatrixRTC ring membership room=\(roomId) sender=\(senderId): \(error)")
+            return nil
         }
     }
 
@@ -4110,6 +4391,8 @@ final class ChatViewModel {
         sendPermissionTask = nil
         pinnedMessagesTask?.cancel()
         pinnedMessagesTask = nil
+        roomInfoSubscription?.cancel()
+        roomInfoSubscription = nil
         timelineService?.onDiffs = nil
         timelineService?.onReadCursor = nil
         timelineService?.onOwnFullyReadMarker = nil
@@ -5061,5 +5344,17 @@ final class ChatViewModel {
                 )
             }
         }
+    }
+}
+
+private final class ChatRoomInfoListener: @unchecked Sendable, RoomInfoListener {
+    private let callback: (RoomInfo) -> Void
+
+    init(callback: @escaping (RoomInfo) -> Void) {
+        self.callback = callback
+    }
+
+    func call(roomInfo: RoomInfo) {
+        callback(roomInfo)
     }
 }

@@ -17,6 +17,19 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let window = self.window else { return }
 
         DeviceInsets.configure(from: window)
+
+        #if DEBUG
+        // Launch into the crypto diagnostics tool instead of the messenger
+        // when enabled (scheme arg `-zynaDiagnostics 1`). Must branch BEFORE
+        // `appCoordinator.start()` so no Matrix client opens the crypto store
+        // and destructive wipes run against files that are not held open.
+        if CryptoDiagnosticsGate.isEnabled {
+            window.rootViewController = CryptoDiagnosticsView().wrapped()
+            window.makeKeyAndVisible()
+            return
+        }
+        #endif
+
         appCoordinator.window = window
         appCoordinator.start()
         window.makeKeyAndVisible()

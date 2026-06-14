@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 
+import AVFoundation
 import UIKit
 
 // MARK: - CustomDocumentScannerService
@@ -17,7 +18,11 @@ final class CustomDocumentScannerService: DocumentScannerService {
 
     @MainActor
     func scan(from viewController: UIViewController, recovering: DraftRecoveryData? = nil) async throws -> ScanResult {
-        try await withCheckedThrowingContinuation { continuation in
+        guard try await ensureCameraAccess(from: viewController) else {
+            throw ScannerError.cancelled
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
             let coordinator = ScanFlowCoordinator(
                 draftStorage: draftStorage,
                 continuation: continuation,
@@ -41,6 +46,76 @@ final class CustomDocumentScannerService: DocumentScannerService {
             coordinator.navigationController = navController
             viewController.present(navController, animated: true)
         }
+    }
+
+    @MainActor
+    private func ensureCameraAccess(from viewController: UIViewController) async throws -> Bool {
+        guard AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) != nil else {
+            throw ScannerError.cameraUnavailable
+        }
+
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            let granted = await requestCameraAccess()
+            if granted { return true }
+            await presentCameraAccessAlert(from: viewController)
+            return false
+        case .denied, .restricted:
+            await presentCameraAccessAlert(from: viewController)
+            return false
+        @unknown default:
+            await presentCameraAccessAlert(from: viewController)
+            return false
+        }
+    }
+
+    private func requestCameraAccess() async -> Bool {
+        await withCheckedContinuation { continuation in
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+    }
+
+    @MainActor
+    private func presentCameraAccessAlert(from viewController: UIViewController) async {
+        await withCheckedContinuation { continuation in
+            let alert = UIAlertController(
+                title: String(localized: "Camera Access Needed"),
+                message: String(localized: "Allow camera access in Settings to scan documents."),
+                preferredStyle: .alert
+            )
+
+            var didResume = false
+            let finish = {
+                guard !didResume else { return }
+                didResume = true
+                continuation.resume()
+            }
+
+            alert.addAction(UIAlertAction(title: String(localized: "Open Settings"), style: .default) { _ in
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+                finish()
+            })
+            alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel) { _ in
+                finish()
+            })
+
+            topPresenter(from: viewController).present(alert, animated: true)
+        }
+    }
+
+    @MainActor
+    private func topPresenter(from viewController: UIViewController) -> UIViewController {
+        var presenter = viewController
+        while let presented = presenter.presentedViewController {
+            presenter = presented
+        }
+        return presenter
     }
 }
 

@@ -15,6 +15,7 @@ struct StoredRoom: Codable, FetchableRecord, PersistableRecord {
     var lastMessage: String?
     var lastMessageSenderName: String?
     var lastMessageTimestamp: TimeInterval?
+    var lastOwnMessageStatus: String?
     var unreadCount: Int
     var unreadMentionCount: Int
     var isMarkedUnread: Bool
@@ -39,6 +40,7 @@ extension StoredRoom {
         self.lastMessage = summary.lastMessage
         self.lastMessageSenderName = summary.lastMessageSenderName
         self.lastMessageTimestamp = summary.lastMessageTimestamp?.timeIntervalSince1970
+        self.lastOwnMessageStatus = summary.lastOwnMessageStatus?.rawValue
         self.unreadCount = Int(summary.unreadCount)
         self.unreadMentionCount = Int(summary.unreadMentionCount)
         self.isMarkedUnread = summary.isMarkedUnread
@@ -65,6 +67,7 @@ extension StoredRoom {
             lastMessage: lastMessage,
             lastMessageSenderName: lastMessageSenderName,
             lastMessageTimestamp: lastMessageTimestamp.map { Date(timeIntervalSince1970: $0) },
+            lastOwnMessageStatus: lastOwnMessageStatus.flatMap(LastOwnMessageStatus.init(rawValue:)),
             unreadCount: UInt64(unreadCount),
             unreadMentionCount: UInt64(unreadMentionCount),
             isMarkedUnread: isMarkedUnread,
