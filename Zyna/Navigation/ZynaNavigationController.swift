@@ -39,6 +39,8 @@ public class ZynaNavigationController: UIViewController {
     /// Top of stack (visible controller), or nil when stack is empty.
     public var topViewController: UIViewController? { stack.last }
 
+    public var onStackChanged: (() -> Void)?
+
     // MARK: - Init
 
     public init(rootViewController: UIViewController? = nil) {
@@ -247,6 +249,7 @@ public class ZynaNavigationController: UIViewController {
             self.fpsBoostToken?.invalidate()
             self.fpsBoostToken = nil
             self.setNeedsStatusBarAppearanceUpdate()
+            self.onStackChanged?()
             self.flushDeferredStackMutationsIfPossible()
             UIAccessibility.post(
                 notification: .screenChanged,
@@ -302,6 +305,7 @@ public class ZynaNavigationController: UIViewController {
                 }
             }
             viewController.didMove(toParent: self)
+            onStackChanged?()
             flushDeferredStackMutationsIfPossible()
         }
     }
@@ -332,6 +336,7 @@ public class ZynaNavigationController: UIViewController {
                 detachView(of: popped)
             }
             popped.removeFromParent()
+            onStackChanged?()
             flushDeferredStackMutationsIfPossible()
         }
 
@@ -378,6 +383,7 @@ public class ZynaNavigationController: UIViewController {
                 }
             }
             finalize()
+            onStackChanged?()
             flushDeferredStackMutationsIfPossible()
         }
 
@@ -453,6 +459,7 @@ public class ZynaNavigationController: UIViewController {
             self.view.isUserInteractionEnabled = true
             self.isAnimatingTransition = false
             completion()
+            self.onStackChanged?()
             self.flushDeferredStackMutationsIfPossible()
             UIAccessibility.post(
                 notification: .screenChanged,
@@ -545,6 +552,7 @@ public class ZynaNavigationController: UIViewController {
             self.view.isUserInteractionEnabled = true
             self.isAnimatingTransition = false
             completion()
+            self.onStackChanged?()
             self.flushDeferredStackMutationsIfPossible()
             UIAccessibility.post(
                 notification: .screenChanged,
@@ -624,6 +632,7 @@ public class ZynaNavigationController: UIViewController {
         for vc in leaving {
             vc.removeFromParent()
         }
+        onStackChanged?()
     }
 
     // MARK: - View hierarchy management

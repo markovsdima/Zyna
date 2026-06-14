@@ -143,17 +143,8 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
         ]
     }
 
-    private func startChildrenObservation(applyCache: Bool = true) {
+    private func startChildrenObservation() {
         guard spaceChildrenObservation == nil else { return }
-
-        let cachedSummaries = roomListService.cachedSpaceChildRooms(for: space.id)
-        let cachedSpaceSummaries = roomListService.cachedSpaceChildSpaces(for: space.id)
-        if applyCache, !cachedSummaries.isEmpty || !cachedSpaceSummaries.isEmpty {
-            applyChildSummaries(
-                rooms: cachedSummaries,
-                spaces: cachedSpaceSummaries
-            )
-        }
 
         spaceChildrenObservation = roomListService.observeSpaceChildren(for: space.id) { [weak self] summaries in
             guard let self else { return }
@@ -164,10 +155,10 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
         }
     }
 
-    private func restartChildrenObservation(applyCache: Bool = true) {
+    private func restartChildrenObservation() {
         spaceChildrenObservation?.cancel()
         spaceChildrenObservation = nil
-        startChildrenObservation(applyCache: applyCache)
+        startChildrenObservation()
     }
 
     private func applyChildSummaries(rooms: [RoomSummary], spaces: [RoomSummary]) {
@@ -205,6 +196,7 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
             name: space.name,
             lastMessage: space.lastMessage,
             lastMessageSenderName: space.lastMessageSenderName,
+            lastOwnMessageStatus: space.lastOwnMessageStatus,
             timestamp: space.timestamp,
             avatar: space.avatar,
             isOnline: space.isOnline,
@@ -258,7 +250,7 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
                         rooms: summaries.rooms,
                         spaces: summaries.spaces
                     )
-                    self.restartChildrenObservation(applyCache: false)
+                    self.restartChildrenObservation()
                 }
             } catch {
                 await MainActor.run { [weak self] in

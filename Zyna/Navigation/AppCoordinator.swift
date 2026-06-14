@@ -9,8 +9,18 @@ import Combine
 
 final class AppCoordinator {
 
+    private enum RootScreen {
+        case auth
+        case main
+        case verification
+        case sessionRecovery
+    }
+
+    private static let installationSentinelKey = "com.zyna.installation.initialized"
+
     weak var window: UIWindow?
     private var mainCoordinator: MainCoordinator?
+    private var rootScreen: RootScreen?
     private var cancellables = Set<AnyCancellable>()
     private var isPerformingLogout = false
     private var serverLogoutTask: Task<Void, Error>?
@@ -23,8 +33,14 @@ final class AppCoordinator {
     private var sessionRestoreTask: Task<Void, Never>?
     private var sessionRestoreRetryTask: Task<Void, Never>?
     private var sessionRestoreRetryDelaySeconds: UInt64 = 5
+    private var pendingNotificationPrePrompt = false
+    private weak var notificationPrePromptAlert: UIAlertController?
 
     func start() {
+        if let window {
+            AppBannerCenter.shared.attach(to: window)
+        }
+        prepareLocalStateForLaunch()
         OutgoingTextOutboxService.shared.start()
         OutgoingImageOutboxService.shared.start()
         OutgoingVideoOutboxService.shared.start()
@@ -43,6 +59,20 @@ final class AppCoordinator {
         } else {
             showAuth()
         }
+    }
+
+    private func prepareLocalStateForLaunch() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: Self.installationSentinelKey) == nil else {
+            return
+        }
+
+        if defaults.string(forKey: ZynaSecurityConfig.matrixLastUserIdKey) == nil {
+            MatrixClientService.resetPersistedSessionStateAfterFreshInstall()
+        }
+
+        defaults.set(true, forKey: Self.installationSentinelKey)
+        defaults.synchronize()
     }
 
     private func observeClientState() {
@@ -93,17 +123,22 @@ final class AppCoordinator {
     // MARK: - Navigation
 
     private func showAuth() {
+        guard rootScreen != .auth else { return }
+
+        AppBannerCenter.shared.dismissAll()
         isShowingSessionRecovery = false
         let viewModel = AuthViewModel()
         viewModel.onAuthenticated = { [weak self] in
-            PushService.shared.registerIfNeeded()
+            PushService.shared.registerIfAuthorized()
             Task {
                 await self?.showVerificationIfNeeded()
                 await self?.setupVerificationRequestListener()
+                await self?.scheduleNotificationPrePromptIfNeeded()
             }
         }
         let authView = AuthView(viewModel: viewModel)
         let vc = authView.wrapped()
+        rootScreen = .auth
         window?.rootViewController = vc
     }
 
@@ -127,12 +162,13 @@ final class AppCoordinator {
                     return
                 }
 
-                PushService.shared.registerIfNeeded()
+                PushService.shared.registerIfAuthorized()
                 await MainActor.run { [weak self] in
                     self?.resumeHeartbeatIfNeeded()
                 }
                 await self.showVerificationIfNeeded(modal: true)
                 await self.setupVerificationRequestListener()
+                await self.scheduleNotificationPrePromptIfNeeded()
             } catch {
                 await MainActor.run { [weak self] in
                     self?.sessionRestoreTask = nil
@@ -233,10 +269,10 @@ final class AppCoordinator {
         if modal {
             // Present over existing main screen
             viewModel.onVerified = { [weak self] in
-                self?.window?.rootViewController?.dismiss(animated: true)
+                self?.dismissVerificationAndContinue()
             }
             viewModel.onSkipped = { [weak self] in
-                self?.window?.rootViewController?.dismiss(animated: true)
+                self?.dismissVerificationAndContinue()
             }
             let vc = SessionVerificationView(viewModel: viewModel).wrapped()
             vc.modalPresentationStyle = .fullScreen
@@ -245,7 +281,61 @@ final class AppCoordinator {
             viewModel.onVerified = { [weak self] in self?.showMain() }
             viewModel.onSkipped = { [weak self] in self?.showMain() }
             let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+            rootScreen = .verification
             window?.rootViewController = vc
+        }
+    }
+
+    private func scheduleNotificationPrePromptIfNeeded() async {
+        guard await PushService.shared.shouldShowNotificationPrePrompt() else { return }
+        await MainActor.run { [weak self] in
+            self?.presentNotificationPrePromptOrDefer()
+        }
+    }
+
+    @MainActor
+    private func presentNotificationPrePromptOrDefer() {
+        guard notificationPrePromptAlert == nil else { return }
+        guard mainCoordinator != nil,
+              let rootViewController = window?.rootViewController,
+              rootViewController.presentedViewController == nil else {
+            pendingNotificationPrePrompt = true
+            return
+        }
+
+        pendingNotificationPrePrompt = false
+
+        let alert = UIAlertController(
+            title: String(localized: "Enable Notifications?"),
+            message: String(localized: "Zyna can notify you about new messages and calls even when the app is closed."),
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: String(localized: "Enable Notifications"), style: .default) { [weak self] _ in
+            PushService.shared.markNotificationPrePromptSeen()
+            self?.notificationPrePromptAlert = nil
+            PushService.shared.requestAuthorizationAndRegister()
+        })
+        alert.addAction(UIAlertAction(title: String(localized: "Later"), style: .cancel) { [weak self] _ in
+            PushService.shared.markNotificationPrePromptSeen()
+            self?.notificationPrePromptAlert = nil
+        })
+
+        notificationPrePromptAlert = alert
+        presentOnTop(alert)
+    }
+
+    @MainActor
+    private func presentPendingNotificationPrePromptIfNeeded() {
+        guard pendingNotificationPrePrompt else { return }
+        Task { [weak self] in
+            await self?.scheduleNotificationPrePromptIfNeeded()
+        }
+    }
+
+    @MainActor
+    private func dismissVerificationAndContinue() {
+        window?.rootViewController?.dismiss(animated: true) { [weak self] in
+            self?.presentPendingNotificationPrePromptIfNeeded()
         }
     }
 
@@ -303,7 +393,11 @@ final class AppCoordinator {
 
         PresenceTracker.shared.connect()
 
+        rootScreen = .main
         window?.rootViewController = coordinator.tabBarController
+        Task { @MainActor [weak self] in
+            self?.presentPendingNotificationPrePromptIfNeeded()
+        }
     }
 
     @MainActor
@@ -322,16 +416,18 @@ final class AppCoordinator {
         PresenceTracker.shared.disconnect()
         mainCoordinator?.stopVoicePlayback()
         mainCoordinator = nil
+        AppBannerCenter.shared.dismissAll()
 
         let viewModel = SessionRecoveryViewModel(
             credentials: MatrixClientService.shared.sessionRecoveryCredentials,
             mode: mode
         )
         viewModel.onAuthenticated = { [weak self] in
-            PushService.shared.registerIfNeeded()
+            PushService.shared.registerIfAuthorized()
             Task {
                 await self?.showVerificationIfNeeded()
                 await self?.setupVerificationRequestListener()
+                await self?.scheduleNotificationPrePromptIfNeeded()
             }
         }
         viewModel.onClearData = { [weak self] in
@@ -341,6 +437,7 @@ final class AppCoordinator {
             }
         }
 
+        rootScreen = .sessionRecovery
         window?.rootViewController = SessionRecoveryView(viewModel: viewModel).wrapped()
     }
 

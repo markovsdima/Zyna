@@ -44,6 +44,24 @@ enum LocalDataProtection {
             .appendingPathComponent(appDirectoryName, isDirectory: true)
     }
 
+    static func appGroupRoot() -> URL? {
+        ZynaSecurityConfig.appGroupContainerURL()
+    }
+
+    static func sharedMatrixDataDirectory() -> URL? {
+        appGroupRoot()?
+            .appendingPathComponent("matrix", isDirectory: true)
+            .appendingPathComponent("data", isDirectory: true)
+            .appendingPathComponent("default", isDirectory: true)
+    }
+
+    static func sharedMatrixCacheDirectory() -> URL? {
+        appGroupRoot()?
+            .appendingPathComponent("matrix", isDirectory: true)
+            .appendingPathComponent("cache", isDirectory: true)
+            .appendingPathComponent("default", isDirectory: true)
+    }
+
     static func userScope(for userId: String?) -> String {
         guard let userId, !userId.isEmpty else {
             return noSessionScope
@@ -146,6 +164,23 @@ enum LocalDataProtection {
             [.protectionKey: protection.fileProtection],
             ofItemAtPath: url.path
         )
+    }
+
+    static func applyProtectionRecursively(to url: URL, protection: ProtectionClass) throws {
+        let fm = FileManager.default
+        try applyProtection(to: url, protection: protection)
+
+        guard let enumerator = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        for case let child as URL in enumerator {
+            try? applyProtection(to: child, protection: protection)
+        }
     }
 
     static func writeProtectedData(

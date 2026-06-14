@@ -15,6 +15,9 @@ enum AuthenticationError: LocalizedError {
     case invalidCredentials
     case networkError
     case sessionNotFound
+    case localCryptoStoreMissing
+    case localCryptoIdentityMismatch
+    case sessionPersistenceFailed(String)
     case invalidOAuthURL
     case registrationNotSupported
 
@@ -30,6 +33,12 @@ enum AuthenticationError: LocalizedError {
             return "Network connection error"
         case .sessionNotFound:
             return "No saved session found"
+        case .localCryptoStoreMissing:
+            return "Local encryption store is missing"
+        case .localCryptoIdentityMismatch:
+            return "Local encryption identity changed for the saved device"
+        case .sessionPersistenceFailed(let message):
+            return "Failed to save session: \(message)"
         case .invalidOAuthURL:
             return "Server returned an invalid authentication URL"
         case .registrationNotSupported:
@@ -54,14 +63,16 @@ private let logKeychain = ScopedLog(.keychain)
 // MARK: - Session Delegate
 
 final class DefaultSessionDelegate: ClientSessionDelegate {
+    private static let sessionKeychainService = "com.zyna.matrix.session"
+
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    private let keychain = Keychain(service: "com.zyna.matrix.session")
-        .accessibility(.afterFirstUnlockThisDeviceOnly)
+    private let sharedKeychain = ZynaSecurityConfig.sharedKeychain(service: DefaultSessionDelegate.sessionKeychainService)
+    private let legacyKeychain = ZynaSecurityConfig.legacyKeychain(service: DefaultSessionDelegate.sessionKeychainService)
 
     func retrieveSessionFromKeychain(userId: String) throws -> MatrixRustSDK.Session {
-        guard let sessionDataString = try keychain.get(userId),
+        guard let sessionDataString = try sessionDataString(for: userId),
               let data = sessionDataString.data(using: .utf8) else {
             throw AuthenticationError.sessionNotFound
         }
@@ -80,6 +91,14 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
     }
 
     func saveSessionInKeychain(session: MatrixRustSDK.Session) {
+        do {
+            try persistSessionInKeychain(session: session)
+        } catch {
+            logKeychain("Failed to save session: \(error)")
+        }
+    }
+
+    func persistSessionInKeychain(session: MatrixRustSDK.Session) throws {
         let sessionData = SessionData(
             accessToken: session.accessToken,
             refreshToken: session.refreshToken,
@@ -89,31 +108,90 @@ final class DefaultSessionDelegate: ClientSessionDelegate {
             oauthData: session.oauthData
         )
 
-        do {
-            let data = try encoder.encode(sessionData)
-            let dataString = String(data: data, encoding: .utf8) ?? ""
-            try keychain.set(dataString, key: session.userId)
-            logKeychain("Session saved for user: \(session.userId)")
-        } catch {
-            logKeychain("Failed to save session: \(error)")
+        let data = try encoder.encode(sessionData)
+        guard let dataString = String(data: data, encoding: .utf8) else {
+            throw AuthenticationError.sessionPersistenceFailed("Session JSON was not UTF-8")
         }
+
+        var sharedSaveError: Error?
+        var legacySaveError: Error?
+
+        do {
+            try sharedKeychain.set(dataString, key: session.userId)
+        } catch {
+            sharedSaveError = error
+            logKeychain("Failed to save session in shared keychain, falling back to legacy for user \(session.userId): \(error)")
+        }
+
+        do {
+            try legacyKeychain.set(dataString, key: session.userId)
+        } catch {
+            legacySaveError = error
+            logKeychain("Failed to save session in legacy keychain for user \(session.userId): \(error)")
+        }
+
+        if let sharedSaveError, let legacySaveError {
+            throw AuthenticationError.sessionPersistenceFailed("shared=\(sharedSaveError) legacy=\(legacySaveError)")
+        }
+
+        logKeychain("Session saved for user: \(session.userId)")
     }
 
     func clearSession(userId: String) {
-        do {
-            try keychain.remove(userId)
+        let sharedResult = Result { try sharedKeychain.remove(userId) }
+        let legacyResult = Result { try legacyKeychain.remove(userId) }
+
+        switch (sharedResult, legacyResult) {
+        case (.success, .success), (.success, .failure), (.failure, .success):
             logKeychain("Session cleared for user: \(userId)")
-        } catch {
-            logKeychain("Failed to clear session: \(error)")
+        case (.failure(let sharedError), .failure(let legacyError)):
+            logKeychain("Failed to clear session: shared=\(sharedError) legacy=\(legacyError)")
         }
     }
 
     func clearAllSessions() {
-        do {
-            try keychain.removeAll()
+        let sharedResult = Result { try sharedKeychain.removeAll() }
+        let legacyResult = Result { try legacyKeychain.removeAll() }
+
+        switch (sharedResult, legacyResult) {
+        case (.success, .success), (.success, .failure), (.failure, .success):
             logKeychain("All sessions cleared")
+        case (.failure(let sharedError), .failure(let legacyError)):
+            logKeychain("Failed to clear all sessions: shared=\(sharedError) legacy=\(legacyError)")
+        }
+    }
+
+    func storedSessionUserIds() -> [String] {
+        var result: [String] = []
+        result.append(contentsOf: sharedKeychain.allKeys())
+        result.append(contentsOf: legacyKeychain.allKeys())
+
+        return Array(Set(result)).sorted()
+    }
+
+    private func sessionDataString(for userId: String) throws -> String? {
+        do {
+            if let shared = try sharedKeychain.get(userId) {
+                return shared
+            }
         } catch {
-            logKeychain("Failed to clear all sessions: \(error)")
+            logKeychain("Failed to read shared session for user \(userId): \(error)")
+        }
+
+        do {
+            guard let legacy = try legacyKeychain.get(userId) else {
+                return nil
+            }
+            do {
+                try sharedKeychain.set(legacy, key: userId)
+                logKeychain("Migrated session to shared keychain for user: \(userId)")
+            } catch {
+                logKeychain("Failed to migrate session to shared keychain for user \(userId): \(error)")
+            }
+            return legacy
+        } catch {
+            logKeychain("Failed to read legacy session for user \(userId): \(error)")
+            throw error
         }
     }
 }

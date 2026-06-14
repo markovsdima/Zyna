@@ -148,7 +148,9 @@ final class CreateGroupViewModel {
                     preset: preset,
                     invite: members.map(\.userId),
                     avatar: nil,
-                    powerLevelContentOverride: postingPermission.restrictsRegularMembers ? Self.restrictedPostingPowerLevels : nil,
+                    powerLevelContentOverride: Self.powerLevelContentOverride(
+                        postingPermission: postingPermission
+                    ),
                     joinRuleOverride: joinRuleOverride,
                     historyVisibilityOverride: historyVisibilityOverride,
                     canonicalAlias: aliasLocalPart
@@ -229,18 +231,22 @@ final class CreateGroupViewModel {
         return roomListService.room(for: roomId)
     }
 
-    private static let restrictedPostingPowerLevels = PowerLevels(
-        usersDefault: 0,
-        eventsDefault: 50,
-        stateDefault: nil,
-        ban: nil,
-        kick: nil,
-        redact: nil,
-        invite: nil,
-        notifications: nil,
-        users: [:],
-        events: [:]
-    )
+    private static func powerLevelContentOverride(
+        postingPermission: CreateGroupPostingPermission
+    ) -> PowerLevels {
+        PowerLevels(
+            usersDefault: postingPermission.restrictsRegularMembers ? 0 : nil,
+            eventsDefault: postingPermission.restrictsRegularMembers ? 50 : nil,
+            stateDefault: nil,
+            ban: nil,
+            kick: nil,
+            redact: nil,
+            invite: nil,
+            notifications: nil,
+            users: [:],
+            events: MatrixRTCRoomPowerLevelPermissions.participantCallEventOverrides
+        )
+    }
 
     private static func defaultAliasLocalPart(for roomName: String) -> String {
         MatrixAliasLocalPart.generated(from: roomName)

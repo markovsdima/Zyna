@@ -18,6 +18,7 @@ final class ChatNode: ASDisplayNode {
     weak var glassInputBar: GlassInputBar?
     weak var readOnlyComposerView: UIView?
     weak var unencryptedNoticeView: UIView?
+    weak var activeCallBannerView: UIView?
     weak var pinnedMessagesBannerView: UIView?
 
     /// Set by ChatViewController. The scroll-to-live floating button lives
@@ -100,6 +101,12 @@ final class ChatNode: ASDisplayNode {
                unencryptedNoticeView.superview === view,
                !unencryptedNoticeView.isHidden {
                 elements.append(unencryptedNoticeView)
+            }
+            if let activeCallBannerView,
+               activeCallBannerView.superview === view,
+               !activeCallBannerView.isHidden,
+               activeCallBannerView.alpha > 0.01 {
+                elements.append(activeCallBannerView)
             }
             if let pinnedMessagesBannerView,
                pinnedMessagesBannerView.superview === view,

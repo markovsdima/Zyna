@@ -18,6 +18,7 @@ struct RoomModel: Equatable {
     let name: String
     let lastMessage: String
     let lastMessageSenderName: String?
+    let lastOwnMessageStatus: LastOwnMessageStatus?
     let timestamp: String
     let avatar: AvatarViewModel
     var isOnline: Bool
@@ -75,6 +76,7 @@ extension RoomModel {
             name: room.displayName,
             lastMessage: room.lastMessage ?? "",
             lastMessageSenderName: room.lastMessageSenderName,
+            lastOwnMessageStatus: room.lastOwnMessageStatus,
             timestamp: room.lastMessageTimestamp.map { Self.formatTimestamp($0) } ?? "",
             avatar: avatar,
             isOnline: false,
@@ -118,6 +120,7 @@ extension RoomModel {
             name: name,
             lastMessage: lastMessage,
             lastMessageSenderName: lastMessageSenderName,
+            lastOwnMessageStatus: lastOwnMessageStatus,
             timestamp: timestamp,
             avatar: updatedAvatar,
             isOnline: isOnline,
@@ -141,6 +144,7 @@ extension RoomModel {
             name: name,
             lastMessage: lastMessage,
             lastMessageSenderName: lastMessageSenderName,
+            lastOwnMessageStatus: lastOwnMessageStatus,
             timestamp: timestamp,
             avatar: AvatarViewModel(
                 userId: id,
@@ -168,6 +172,7 @@ extension RoomModel {
             name: name,
             lastMessage: lastMessage,
             lastMessageSenderName: lastMessageSenderName,
+            lastOwnMessageStatus: lastOwnMessageStatus,
             timestamp: timestamp,
             avatar: avatar,
             isOnline: isOnline,

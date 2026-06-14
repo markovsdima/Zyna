@@ -66,7 +66,7 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
             case .security:
                 return [.devices]
             case .diagnostics:
-                return [.repairLocalMessageCache, .simulateSoftLogout]
+                return [.callBackend, .repairLocalMessageCache, .simulateSoftLogout]
             }
         }
     }
@@ -75,11 +75,14 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
         case chatTheme
         case nameColor
         case devices
+        case callBackend
         case repairLocalMessageCache
         case simulateSoftLogout
 
         var usesSubtitleCell: Bool {
             switch self {
+            case .callBackend:
+                return true
             case .repairLocalMessageCache:
                 return true
             case .simulateSoftLogout:
@@ -227,6 +230,7 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
                 style: row.usesSubtitleCell ? .subtitle : .value1,
                 reuseIdentifier: identifier
             )
+        cell.accessoryView = nil
         switch row {
         case .chatTheme:
             cell.textLabel?.text = String(localized: "Chat Theme")
@@ -239,6 +243,11 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case .devices:
             cell.textLabel?.text = String(localized: "Devices")
             cell.detailTextLabel?.text = String(localized: "Manage sessions")
+            cell.accessoryType = .disclosureIndicator
+        case .callBackend:
+            let backend = CallBackendPreferenceStore.shared.selectedBackend
+            cell.textLabel?.text = String(localized: "Call Backend")
+            cell.detailTextLabel?.text = backend.title
             cell.accessoryType = .disclosureIndicator
         case .repairLocalMessageCache:
             cell.textLabel?.text = String(localized: "Repair Local Message Cache")
@@ -265,6 +274,9 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             onNameColorTapped?()
         case .devices:
             onDevicesTapped?()
+        case .callBackend:
+            let cell = tableView.cellForRow(at: indexPath)
+            presentCallBackendPicker(sourceView: cell ?? tableView)
         case .repairLocalMessageCache:
             confirmRepairLocalMessageCache()
         case .simulateSoftLogout:
@@ -280,6 +292,33 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
 // MARK: - Local Timeline Repair
 
 private extension SettingsViewController {
+
+    func presentCallBackendPicker(sourceView: UIView) {
+        let selectedBackend = CallBackendPreferenceStore.shared.selectedBackend
+        let alert = UIAlertController(
+            title: String(localized: "Call Backend"),
+            message: nil,
+            preferredStyle: .actionSheet
+        )
+
+        for backend in CallBackend.allCases {
+            let title = backend == selectedBackend
+                ? "\(backend.title) (\(String(localized: "Selected")))"
+                : backend.title
+            alert.addAction(UIAlertAction(title: title, style: .default) { [weak self] _ in
+                CallBackendPreferenceStore.shared.selectedBackend = backend
+                self?.tableView.reloadRows(
+                    at: [IndexPath(row: 0, section: Section.diagnostics.rawValue)],
+                    with: .none
+                )
+            })
+        }
+
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        alert.popoverPresentationController?.sourceView = sourceView
+        alert.popoverPresentationController?.sourceRect = sourceView.bounds
+        present(alert, animated: true)
+    }
 
     func confirmRepairLocalMessageCache() {
         let alert = UIAlertController(

@@ -28,12 +28,15 @@ protocol DocumentScannerService {
 
 enum ScannerError: LocalizedError {
     case cancelled
+    case cameraUnavailable
     case failed(Error)
 
     var errorDescription: String? {
         switch self {
         case .cancelled:
             return "Scanning was cancelled"
+        case .cameraUnavailable:
+            return String(localized: "Camera is not available on this device.")
         case .failed(let error):
             return error.localizedDescription
         }

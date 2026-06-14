@@ -27,6 +27,13 @@ enum Brand {
         }
     }
 
+    var allowsAccountCreation: Bool {
+        switch self {
+        case .zyna, .sds:
+            return false
+        }
+    }
+
     var theme: AppTheme {
         switch self {
         case .zyna: return ZynaTheme()

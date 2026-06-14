@@ -12,7 +12,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        #if DEBUG
+        // Initialize matrix-rust-sdk file tracing once, before any Matrix
+        // client is built, so crypto breakages are captured for diagnostics.
+        MatrixRustSDKTracing.setupOnce()
+        #endif
         _ = DatabaseService.shared
+        ElementCallKitService.shared.start()
         return true
     }
 
