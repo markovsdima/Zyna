@@ -1,8 +1,8 @@
 # Zyna
 
-**Zyna is an open-source native iOS client for Matrix, focused on encrypted communication, durable messaging, rich media, voice calls, and a custom native UI.**
+**Zyna is an open-source native iOS client for Matrix, focused on encrypted communication, durable messaging, native MatrixRTC calls, rich media, and a custom native UI.**
 
-It is built with Matrix Rust SDK, GRDB, SQLCipher, Texture, Metal, WebRTC, and lightweight companion services for realtime presence and push.
+It is built with Matrix Rust SDK, MatrixRTC, LiveKit, GRDB, SQLCipher, Texture, Metal, WebRTC, and lightweight companion services for realtime presence and push.
 
 Demo: [YouTube quick tour](https://youtube.com/shorts/Tv3BSCmnINg?feature=share)
 
@@ -22,7 +22,10 @@ Demo: [YouTube quick tour](https://youtube.com/shorts/Tv3BSCmnINg?feature=share)
 - Room management: invites, member lists, leave flow, security and privacy settings, roles, permissions, access rules, and directory visibility
 - Security and recovery flows for verified devices, encrypted key backup, soft logout, device sessions, and trust-aware send failures
 - Encrypted local app database and protected per-user local storage for cached messages, media, and outgoing state
-- Voice calls using Matrix call events and WebRTC audio
+- Native MatrixRTC calling: encrypted voice, video, and group calls through LiveKit, compatible with Element Call
+- Alternative call modes: Zyna Direct and Element Call Web remain available during the transition
+- Local push notification decryption, so encrypted message notifications can show sender and message text
+- Latest outgoing message status in the room list: sending, sent, read, or failed
 - Custom native UI with responsive Texture-based chat timelines, glass navigation/input bars, Metal-powered effects, chat bubble themes, custom transitions, swipe-to-reply, and persistent voice playback
 - VoiceOver support across the main chat, rooms, glass controls, and detail flows
 
@@ -36,8 +39,11 @@ Zyna separates protocol handling, encrypted local storage, outgoing delivery, se
 - **App-owned outgoing outboxes** persist user intent before transport, retry safely after restarts, and bind sent items by Matrix event ID once the server accepts them.
 - **Texture (AsyncDisplayKit)** keeps room lists, space lists, and chat timelines responsive through asynchronous layout, display, and preloading.
 - **Metal** powers the custom glass UI, glyph rendering, voice playback chrome, storyline link hero, and message deletion effect.
-- **WebRTC** handles voice call media.
-- **KeychainAccess** stores Matrix sessions, crypto store passphrases, database keys, and sensitive local credentials.
+- **Native MatrixRTC + LiveKit** provide the default Matrix calling stack: encrypted voice, video, group calls, membership lifecycle, media keys, and Element Call compatibility.
+- **Element Call Web** remains available as a WebView-based MatrixRTC backend.
+- **WebRTC** remains available for the older Zyna Direct calling stack.
+- **Notification Service Extension** restores Matrix state from shared App Group/keychain storage and decrypts push notifications locally.
+- **KeychainAccess** stores Matrix sessions, crypto store passphrases, database keys, shared extension credentials, and sensitive local secrets.
 - **[Zyna Presence Server](https://github.com/markovsdima/zyna-presence)** provides realtime online status and last seen updates through a lightweight WebSocket service.
 
 This structure lets Zyna render cached timelines, keep pending sends stable, recover after network loss or app termination, protect local data, and keep the UI responsive while sync, media upload, encryption, and retry work continue in the background.
@@ -58,11 +64,13 @@ Detailed notes for specific subsystems live in the repo:
 - [Message deletion flow](Zyna/Chat/REDACTION_FLOW.md)
 - [Scroll and pagination](Zyna/Chat/SCROLL_AND_PAGINATION.md)
 - [Accessibility](Zyna/Accessibility/ACCESSIBILITY.md)
+- [Native MatrixRTC calls](Zyna/Features/MatrixRTC/NATIVE_MATRIXRTC_CALLS.md)
+- [Room list read receipts](Zyna/Screens/Rooms/ROOM_LIST_READ_RECEIPTS.md)
 
 ## Requirements
 
 - Xcode 26.3+
-- iOS 16.0+
+- iOS 17.0+ temporarily; iOS 16.0 support is planned to return in a later build
 - Carthage 0.39+
 - A Matrix account on a compatible homeserver
 
@@ -79,6 +87,10 @@ open Zyna.xcodeproj
 Xcode resolves the SPM dependencies on first build.
 
 Build and run the `Zyna` scheme on a simulator or device. On the login screen, enter a Matrix homeserver and sign in with an existing account.
+
+### Current Limitations
+
+Incoming call handoff to CallKit from decrypted push notifications is implemented, but is waiting on Apple entitlement approval.
 
 ## Collaboration
 
