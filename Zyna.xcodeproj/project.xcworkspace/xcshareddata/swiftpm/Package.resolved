@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/markovsdima/client-sdk-swift.git",
       "state" : {
-        "revision" : "3a905c5c1573aa2f0a81c73fa4124aabd333468b",
-        "version" : "2.15.0-zyna.1"
+        "revision" : "c88273ab3aa7fd8e551eb16f75de66eb8ba553f5",
+        "version" : "2.15.0-zyna.2"
       }
     },
     {
