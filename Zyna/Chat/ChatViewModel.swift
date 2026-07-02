@@ -222,6 +222,11 @@ final class ChatViewModel {
     private var matrixRTCRingExpiryWorkItem: DispatchWorkItem?
     private var matrixRTCRingValidationWorkItem: DispatchWorkItem?
     private var matrixRTCRingMembershipValidationTask: Task<Void, Never>?
+    private var matrixRTCCallProjectionRefreshWorkItem: DispatchWorkItem?
+    private let matrixRTCCallProjectionQueue = DispatchQueue(
+        label: "com.zyna.matrixrtc.callProjection",
+        qos: .userInitiated
+    )
     private var currentMatrixClientState = MatrixClientService.shared.state
     private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
     private var canSendRoomMessages = true
@@ -297,6 +302,7 @@ final class ChatViewModel {
         matrixRTCRingExpiryWorkItem?.cancel()
         matrixRTCRingValidationWorkItem?.cancel()
         matrixRTCRingMembershipValidationTask?.cancel()
+        matrixRTCCallProjectionRefreshWorkItem?.cancel()
     }
 
     private func bindCommonServices() {
@@ -980,7 +986,80 @@ final class ChatViewModel {
     private func loadInitialWindowIfNeeded() {
         guard !didLoadInitialWindow else { return }
         didLoadInitialWindow = true
-        window.loadInitial()
+        enqueueMatrixRTCCallProjectionRefresh(recomputeAll: true) { [weak self] in
+            self?.window.loadInitial()
+        }
+    }
+
+    private func enqueueMatrixRTCCallProjectionRefresh(
+        recomputeAll: Bool,
+        completion: (() -> Void)? = nil
+    ) {
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        guard !currentUserId.isEmpty else {
+            completion?()
+            return
+        }
+
+        let roomId = self.roomId
+        let dbQueue = DatabaseService.shared.dbQueue
+        matrixRTCCallProjectionQueue.async {
+            do {
+                try dbQueue.write { db in
+                    if recomputeAll {
+                        try StoredMatrixRTCCall.refreshRoomCallProjections(
+                            roomId: roomId,
+                            currentUserId: currentUserId,
+                            in: db
+                        )
+                    } else {
+                        try StoredMatrixRTCCall.refreshExpiredPendingCallProjections(
+                            roomId: roomId,
+                            currentUserId: currentUserId,
+                            in: db
+                        )
+                    }
+                }
+            } catch {
+                logMatrixRTCChat("Failed refreshing MatrixRTC call projections room=\(roomId): \(error)")
+            }
+
+            if let completion {
+                DispatchQueue.main.async(execute: completion)
+            }
+        }
+    }
+
+    private func scheduleMatrixRTCCallProjectionRefresh(
+        for messages: [ChatMessage],
+        now: TimeInterval
+    ) {
+        matrixRTCCallProjectionRefreshWorkItem?.cancel()
+        guard !isGroupChat else { return }
+
+        let nextExpiry = messages.compactMap { message -> TimeInterval? in
+            guard case .matrixRTCCall(let details) = message.content,
+                  details.historyOutcome == nil || details.historyOutcome == .started,
+                  let expiresAt = details.expiresAt,
+                  expiresAt > now else {
+                return nil
+            }
+            return expiresAt
+        }.min()
+
+        guard let nextExpiry else { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.enqueueMatrixRTCCallProjectionRefresh(recomputeAll: false) { [weak self] in
+                self?.window.refresh(origin: .localMutation)
+            }
+        }
+        matrixRTCCallProjectionRefreshWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0.1, nextExpiry - now + 0.2),
+            execute: work
+        )
     }
 
     // MARK: - Timeline Bootstrap
@@ -1167,6 +1246,7 @@ final class ChatViewModel {
         // 4. Compute table update
         let oldRows = self.rows
         setMessages(newMessages, olderBoundary: olderBoundary)
+        scheduleMatrixRTCCallProjectionRefresh(for: newMessages, now: now)
 
         let tableUpdate: TableUpdate
         var inPlaceUpdates: [(IndexPath, ChatMessage)] = []
@@ -2450,6 +2530,9 @@ final class ChatViewModel {
             case .callEvent(let callType, let callId, let reason):
                 type = "call"
                 detail = "\(callType.rawValue):\(callId):\(reason ?? "-")"
+            case .matrixRTCCall(let details):
+                type = "matrixRTCCall"
+                detail = "\(details.notificationType.rawValue):\(details.callIntent ?? "-"):\(details.parentEventId ?? "-"):\(details.declinedBy.joined(separator: ","))"
             case .systemEvent(let text, _):
                 type = "system"
                 detail = text

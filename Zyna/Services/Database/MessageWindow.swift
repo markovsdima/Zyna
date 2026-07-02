@@ -348,7 +348,7 @@ final class MessageWindow {
         return ClusterNeighbor(
             senderId: msg.senderId,
             timestamp: Date(timeIntervalSince1970: msg.timestamp),
-            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system",
+            isStandaloneEvent: Self.isStandaloneEventContentType(msg.contentType),
             mediaGroupId: msg.toChatMessage()?.zynaAttributes.mediaGroup?.id
         )
     }
@@ -361,7 +361,7 @@ final class MessageWindow {
         return ClusterNeighbor(
             senderId: msg.senderId,
             timestamp: Date(timeIntervalSince1970: msg.timestamp),
-            isStandaloneEvent: msg.contentType == "call" || msg.contentType == "system",
+            isStandaloneEvent: Self.isStandaloneEventContentType(msg.contentType),
             mediaGroupId: msg.toChatMessage()?.zynaAttributes.mediaGroup?.id
         )
     }
@@ -376,6 +376,7 @@ final class MessageWindow {
         (try? dbQueue.read { db in
             try StoredMessage
                 .filter(Column("roomId") == self.roomId)
+                .filter(Column("contentType") != "call")
                 .order(Column("timestamp").desc)
                 .limit(limit)
                 .fetchAll(db)
@@ -386,6 +387,7 @@ final class MessageWindow {
         let asc = (try? dbQueue.read { db in
             try StoredMessage
                 .filter(Column("roomId") == self.roomId)
+                .filter(Column("contentType") != "call")
                 .order(Column("timestamp").asc)
                 .limit(limit)
                 .fetchAll(db)
@@ -397,6 +399,7 @@ final class MessageWindow {
         (try? dbQueue.read { db in
             try StoredMessage
                 .filter(Column("roomId") == self.roomId && Column("timestamp") < timestamp)
+                .filter(Column("contentType") != "call")
                 .order(Column("timestamp").desc)
                 .limit(limit)
                 .fetchAll(db)
@@ -407,6 +410,7 @@ final class MessageWindow {
         let asc = (try? dbQueue.read { db in
             try StoredMessage
                 .filter(Column("roomId") == self.roomId && Column("timestamp") > timestamp)
+                .filter(Column("contentType") != "call")
                 .order(Column("timestamp").asc)
                 .limit(limit)
                 .fetchAll(db)
@@ -418,6 +422,7 @@ final class MessageWindow {
         (try? dbQueue.read { db in
             try StoredMessage
                 .filter(Column("roomId") == self.roomId && Column("timestamp") >= timestamp)
+                .filter(Column("contentType") != "call")
                 .order(Column("timestamp").desc)
                 .fetchAll(db)
         }) ?? []
@@ -429,6 +434,7 @@ final class MessageWindow {
                 .filter(Column("roomId") == self.roomId
                     && Column("timestamp") >= oldest
                     && Column("timestamp") <= newest)
+                .filter(Column("contentType") != "call")
                 .order(Column("timestamp").desc)
                 .fetchAll(db)
         }) ?? []
@@ -438,6 +444,7 @@ final class MessageWindow {
         try? dbQueue.read { db in
             try StoredMessage
                 .filter(Column("eventId") == eventId && Column("roomId") == self.roomId)
+                .filter(Column("contentType") != "call")
                 .fetchOne(db)
         }
     }
@@ -447,6 +454,7 @@ final class MessageWindow {
         return ((try? dbQueue.read { db in
             try StoredMessage
                 .filter(Column("roomId") == self.roomId && Column("timestamp") < oldestTs)
+                .filter(Column("contentType") != "call")
                 .limit(1)
                 .fetchCount(db)
         }) ?? 0) > 0
@@ -457,12 +465,17 @@ final class MessageWindow {
         return ((try? dbQueue.read { db in
             try StoredMessage
                 .filter(Column("roomId") == self.roomId && Column("timestamp") > newestTs)
+                .filter(Column("contentType") != "call")
                 .limit(1)
                 .fetchCount(db)
         }) ?? 0) > 0
     }
 
     // MARK: - Helpers
+
+    private static func isStandaloneEventContentType(_ contentType: String) -> Bool {
+        contentType == "system" || contentType == "matrix_rtc_call"
+    }
 
     private func updateCursors(from stored: [StoredMessage]) {
         let normalized = normalizedStored(stored)

@@ -34,14 +34,20 @@ final class CallsViewModel {
     }
 
     private func loadCalls() {
-        let results: [CallHistoryModel] = (try? dbQueue.read { db in
-            let rows = try StoredMessage
-                .filter(Column("contentType") == "call")
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        let results: [CallHistoryModel] = (try? dbQueue.write { db in
+            try StoredMatrixRTCCall.refreshRecentCallProjections(
+                limit: 200,
+                currentUserId: currentUserId,
+                in: db
+            )
+
+            let rows = try StoredMatrixRTCCall
                 .order(Column("timestamp").desc)
                 .limit(200)
                 .fetchAll(db)
 
-            logCalls("Call history query: \(rows.count) rows found")
+            logCalls("MatrixRTC call history query: \(rows.count) rows found")
 
             let roomIds = Set(rows.map(\.roomId))
             var roomMap: [String: StoredRoom] = [:]
@@ -52,9 +58,6 @@ final class CallsViewModel {
             }
 
             return rows.compactMap { msg -> CallHistoryModel? in
-                guard let typeRaw = msg.contentCaption,
-                      let type = CallEventType(rawValue: typeRaw) else { return nil }
-
                 let room = roomMap[msg.roomId]
                 let roomName = room?.displayName ?? "Unknown"
                 let avatarId = room?.directUserId ?? msg.roomId
@@ -65,21 +68,21 @@ final class CallsViewModel {
                 )
 
                 return CallHistoryModel(
-                    callId: msg.contentBody ?? msg.id,
+                    callId: msg.notificationEventId,
                     roomId: msg.roomId,
                     roomName: roomName,
                     avatar: avatar,
                     isOutgoing: msg.isOutgoing,
-                    type: type,
-                    reason: msg.contentMimetype,
+                    isVoiceCall: msg.isVoiceCall,
+                    outcome: msg.historyOutcome,
                     timestamp: Date(timeIntervalSince1970: msg.timestamp)
                 )
             }
         }) ?? []
 
-        guard results != calls else { return }
         DispatchQueue.main.async { [weak self] in
-            self?.calls = results
+            guard let self, self.calls != results else { return }
+            self.calls = results
         }
     }
 }

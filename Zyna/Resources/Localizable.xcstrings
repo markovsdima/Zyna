@@ -1316,6 +1316,26 @@
         }
       }
     },
+    "Call connected" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Звонок состоялся"
+          }
+        }
+      }
+    },
+    "Call declined" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Звонок отклонён"
+          }
+        }
+      }
+    },
     "Call in progress" : {
       "localizations" : {
         "ru" : {
@@ -2392,6 +2412,16 @@
         }
       }
     },
+    "Incoming" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Входящий"
+          }
+        }
+      }
+    },
     "Invited" : {
       "localizations" : {
         "ru" : {
@@ -3252,6 +3282,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Свои сообщения"
+          }
+        }
+      }
+    },
+    "Outgoing" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Исходящий"
           }
         }
       }
@@ -5646,6 +5686,26 @@
         }
       }
     },
+    "You cancelled a call" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы отменили звонок"
+          }
+        }
+      }
+    },
+    "You declined a call" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Вы отклонили звонок"
+          }
+        }
+      }
+    },
     "You declined the invitation" : {
       "localizations" : {
         "ru" : {
@@ -6502,6 +6562,16 @@
         }
       }
     },
+    "No answer" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет ответа"
+          }
+        }
+      }
+    },
     "No chats found" : {
       "localizations" : {
         "ru" : {
@@ -6758,6 +6828,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Сейчас ни одна сторона не указывает эту связь."
+          }
+        }
+      }
+    },
+    "Missed call" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пропущенный звонок"
           }
         }
       }
@@ -7818,6 +7898,16 @@
       }
     },
     "Advanced destructive" : {},
+    "Call started" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Звонок начался"
+          }
+        }
+      }
+    },
     "Calling..." : {
       "localizations" : {
         "ru" : {

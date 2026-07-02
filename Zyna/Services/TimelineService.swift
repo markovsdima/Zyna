@@ -819,6 +819,16 @@ final class TimelineService {
         case .callInvite:
             return nil
 
+        case .rtcNotification(let callIntent, let declinedBy):
+            guard let details = matrixRTCCallDetails(
+                from: event,
+                sdkCallIntent: callIntent,
+                declinedBy: declinedBy
+            ) else {
+                return nil
+            }
+            return .matrixRTCCall(details: details)
+
         case .roomMembership(userId: let userId, userDisplayName: let userDisplayName, change: let change, reason: let reason):
             guard let text = membershipEventText(
                 userId: userId,
@@ -877,6 +887,68 @@ final class TimelineService {
         default:
             return nil
         }
+    }
+
+    private static func matrixRTCCallDetails(
+        from event: EventTimelineItem,
+        sdkCallIntent: String?,
+        declinedBy: [String]
+    ) -> MatrixRTCCallEventDetails? {
+        guard let rawJSON = event.lazyProvider.debugInfo().originalJson,
+              let data = rawJSON.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = root["content"] as? [String: Any]
+        else {
+            return MatrixRTCCallEventDetails(
+                parentEventId: nil,
+                callIntent: sdkCallIntent,
+                notificationType: .unknown,
+                expiresAt: nil,
+                declinedBy: declinedBy,
+                historyOutcome: nil
+            )
+        }
+
+        let parentEventId = (content["m.relates_to"] as? [String: Any])?["event_id"] as? String
+        let rawNotificationType = content["notification_type"] as? String
+        let notificationType = rawNotificationType
+            .flatMap(MatrixRTCCallNotificationKind.init(rawValue:))
+            ?? .unknown
+        let callIntent = sdkCallIntent ?? content["m.call.intent"] as? String
+
+        let senderTimestamp = int64Value(content["sender_ts"])
+        let lifetime = int64Value(content["lifetime"])
+        let expiresAt: TimeInterval?
+        if let senderTimestamp, let lifetime {
+            expiresAt = TimeInterval(senderTimestamp + lifetime) / 1000
+        } else {
+            expiresAt = nil
+        }
+
+        return MatrixRTCCallEventDetails(
+            parentEventId: parentEventId,
+            callIntent: callIntent,
+            notificationType: notificationType,
+            expiresAt: expiresAt,
+            declinedBy: declinedBy.sorted(),
+            historyOutcome: nil
+        )
+    }
+
+    private static func int64Value(_ value: Any?) -> Int64? {
+        if let value = value as? Int64 {
+            return value
+        }
+        if let value = value as? Int {
+            return Int64(value)
+        }
+        if let value = value as? NSNumber {
+            return value.int64Value
+        }
+        if let value = value as? String {
+            return Int64(value)
+        }
+        return nil
     }
 
     private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent? {

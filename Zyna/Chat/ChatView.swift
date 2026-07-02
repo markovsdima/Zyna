@@ -1693,6 +1693,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let gradientSource = self.node.bubbleGradientSource(for: renderedMessage)
         let roomId = viewModel.roomIdentifier
         let roomName = viewModel.roomName
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         let configureMessageInteractions = makeMessageInteractionConfigurator(for: message)
         let openGroupedPhoto: (PhotoGroupMessageCellNode, Int) -> Void = { [weak self] groupCell, index in
             self?.presentImageViewer(for: groupCell, itemIndex: index)
@@ -1725,6 +1726,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             // Call events use a standalone centered cell, not a MessageCellNode
             if case .callEvent = renderedMessage.content {
                 return CallEventCellNode(message: renderedMessage)
+            }
+            if case .matrixRTCCall = renderedMessage.content {
+                return MatrixRTCCallEventCellNode(
+                    message: renderedMessage,
+                    isDirect: !isGroup,
+                    currentUserId: currentUserId
+                )
             }
             if case .systemEvent = renderedMessage.content {
                 return StateEventCellNode(message: renderedMessage)
