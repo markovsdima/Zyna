@@ -840,7 +840,7 @@ final class ChatsCoordinator {
             self?.navigationController.dismiss(animated: true)
         }
 
-        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
         vc.modalPresentationStyle = .fullScreen
         navigationController.present(vc, animated: true)
     }

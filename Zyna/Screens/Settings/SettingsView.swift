@@ -42,10 +42,12 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
     var onThemeTapped: (() -> Void)?
     var onNameColorTapped: (() -> Void)?
     var onDevicesTapped: (() -> Void)?
+    var onBlockedUsersTapped: (() -> Void)?
 
     private enum Section: Int, CaseIterable {
         case appearance
         case security
+        case privacy
         case diagnostics
 
         var title: String {
@@ -54,6 +56,8 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
                 return String(localized: "Appearance")
             case .security:
                 return String(localized: "Security")
+            case .privacy:
+                return String(localized: "Privacy")
             case .diagnostics:
                 return String(localized: "Diagnostics")
             }
@@ -65,6 +69,8 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
                 return [.chatTheme, .nameColor]
             case .security:
                 return [.devices]
+            case .privacy:
+                return [.blockedUsers]
             case .diagnostics:
                 return [.callBackend, .repairLocalMessageCache, .simulateSoftLogout]
             }
@@ -75,6 +81,7 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
         case chatTheme
         case nameColor
         case devices
+        case blockedUsers
         case callBackend
         case repairLocalMessageCache
         case simulateSoftLogout
@@ -244,6 +251,10 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             cell.textLabel?.text = String(localized: "Devices")
             cell.detailTextLabel?.text = String(localized: "Manage sessions")
             cell.accessoryType = .disclosureIndicator
+        case .blockedUsers:
+            cell.textLabel?.text = String(localized: "Blocked Users")
+            cell.detailTextLabel?.text = nil
+            cell.accessoryType = .disclosureIndicator
         case .callBackend:
             let backend = CallBackendPreferenceStore.shared.selectedBackend
             cell.textLabel?.text = String(localized: "Call Backend")
@@ -274,6 +285,8 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             onNameColorTapped?()
         case .devices:
             onDevicesTapped?()
+        case .blockedUsers:
+            onBlockedUsersTapped?()
         case .callBackend:
             let cell = tableView.cellForRow(at: indexPath)
             presentCallBackendPicker(sourceView: cell ?? tableView)

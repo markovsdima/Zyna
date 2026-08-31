@@ -3744,7 +3744,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
         }
 
-        let vc = RoomSendSecurityView(viewModel: securityViewModel).wrapped()
+        let vc = RoomSendSecurityView(viewModel: securityViewModel).wrapped(forcedStyle: .light)
         vc.modalPresentationStyle = .pageSheet
         present(vc, animated: true)
     }
@@ -3760,7 +3760,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.dismiss(animated: true)
         }
 
-        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
         vc.modalPresentationStyle = .fullScreen
         present(vc, animated: true)
     }
