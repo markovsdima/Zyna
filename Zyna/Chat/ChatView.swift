@@ -273,15 +273,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             glassNavBar.name = viewModel.roomName
             glassNavBar.onBack = { [weak self] in self?.onBack?() }
             glassNavBar.onCall = { [weak self] in self?.onCallTapped?() }
+            // Always room details, for DMs too — the DM details screen
+            // carries the partner's profile row. Branching on `liveRoom`
+            // here used to race with async room resolution: a chat opened
+            // from cache sent the first tap to the profile and later taps
+            // to room details.
             glassNavBar.onTitleTapped = { [weak self] in
-                guard let self else { return }
-                if self.viewModel.liveRoom != nil {
-                    self.onRoomDetailsTapped?()
-                } else if let userId = self.viewModel.partnerUserId {
-                    self.onTitleTapped?(userId)
-                } else {
-                    self.onRoomDetailsTapped?()
-                }
+                self?.onRoomDetailsTapped?()
             }
             glassNavBar.onVoicePlayPause = { [weak self] in
                 guard let self else { return }

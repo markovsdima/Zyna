@@ -519,7 +519,17 @@ final class ChatsCoordinator {
             self?.showMemberDetail(room: room, userId: userId)
         }
         vc.onRoomDetailsTapped = { [weak self] in
-            guard let room = viewModel.liveRoom else { return }
+            // The view model resolves its live room on a 1s poll, so a chat
+            // opened from cache can still have none while the client already
+            // knows the room. Resolve on demand rather than drop the tap.
+            var liveRoom = viewModel.liveRoom
+            if liveRoom == nil,
+               let resolved = try? MatrixClientService.shared.client?.getRoom(
+                   roomId: viewModel.roomIdentifier
+               ) {
+                liveRoom = resolved
+            }
+            guard let room = liveRoom else { return }
             self?.showRoomDetails(
                 room: room,
                 memberCount: viewModel.memberCount,
