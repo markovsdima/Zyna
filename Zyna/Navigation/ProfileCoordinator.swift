@@ -41,15 +41,16 @@ final class ProfileCoordinator {
             self?.showDeviceSessions()
         }
         vc.onBlockedUsersTapped = { [weak self] in
-            self?.showBlockedUsers()
+            Task { @MainActor in self?.showBlockedUsers() }
         }
         navigationController.push(vc)
     }
 
+    @MainActor
     private func showBlockedUsers() {
         let vc = GlassHostingController(
             title: String(localized: "Blocked Users"),
-            rootView: BlockedUsersView(),
+            rootView: BlockedUsersView(viewModel: BlockedUsersViewModel()),
             audioPlayer: audioPlayer,
             onBack: { [weak self] in
                 _ = self?.navigationController.pop()
