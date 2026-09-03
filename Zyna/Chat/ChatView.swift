@@ -273,15 +273,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             glassNavBar.name = viewModel.roomName
             glassNavBar.onBack = { [weak self] in self?.onBack?() }
             glassNavBar.onCall = { [weak self] in self?.onCallTapped?() }
+            // Always room details, for DMs too — the DM details screen
+            // carries the partner's profile row. Branching on `liveRoom`
+            // here used to race with async room resolution: a chat opened
+            // from cache sent the first tap to the profile and later taps
+            // to room details.
             glassNavBar.onTitleTapped = { [weak self] in
-                guard let self else { return }
-                if self.viewModel.liveRoom != nil {
-                    self.onRoomDetailsTapped?()
-                } else if let userId = self.viewModel.partnerUserId {
-                    self.onTitleTapped?(userId)
-                } else {
-                    self.onRoomDetailsTapped?()
-                }
+                self?.onRoomDetailsTapped?()
             }
             glassNavBar.onVoicePlayPause = { [weak self] in
                 guard let self else { return }
@@ -1693,6 +1691,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let gradientSource = self.node.bubbleGradientSource(for: renderedMessage)
         let roomId = viewModel.roomIdentifier
         let roomName = viewModel.roomName
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         let configureMessageInteractions = makeMessageInteractionConfigurator(for: message)
         let openGroupedPhoto: (PhotoGroupMessageCellNode, Int) -> Void = { [weak self] groupCell, index in
             self?.presentImageViewer(for: groupCell, itemIndex: index)
@@ -1725,6 +1724,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             // Call events use a standalone centered cell, not a MessageCellNode
             if case .callEvent = renderedMessage.content {
                 return CallEventCellNode(message: renderedMessage)
+            }
+            if case .matrixRTCCall = renderedMessage.content {
+                return MatrixRTCCallEventCellNode(
+                    message: renderedMessage,
+                    isDirect: !isGroup,
+                    currentUserId: currentUserId
+                )
             }
             if case .systemEvent = renderedMessage.content {
                 return StateEventCellNode(message: renderedMessage)
@@ -3738,7 +3744,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
         }
 
-        let vc = RoomSendSecurityView(viewModel: securityViewModel).wrapped()
+        let vc = RoomSendSecurityView(viewModel: securityViewModel).wrapped(forcedStyle: .light)
         vc.modalPresentationStyle = .pageSheet
         present(vc, animated: true)
     }
@@ -3754,7 +3760,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.dismiss(animated: true)
         }
 
-        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
         vc.modalPresentationStyle = .fullScreen
         present(vc, animated: true)
     }

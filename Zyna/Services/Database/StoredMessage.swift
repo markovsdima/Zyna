@@ -277,6 +277,12 @@ extension StoredMessage {
             contentBody = callId
             contentCaption = type.rawValue
             contentMimetype = reason
+        case .matrixRTCCall(let details):
+            contentType = "matrix_rtc_call"
+            contentBody = details.parentEventId
+            contentCaption = details.callIntent
+            contentMimetype = details.notificationType.rawValue
+            contentMediaJSON = Self.encodeMatrixRTCCallDetails(details)
         case .systemEvent(let text, let kind):
             contentType = "system"
             contentBody = text
@@ -489,6 +495,14 @@ extension StoredMessage {
                   let typeRaw = contentCaption,
                   let type = CallEventType(rawValue: typeRaw) else { return nil }
             return .callEvent(type: type, callId: callId, reason: contentMimetype)
+        case "matrix_rtc_call":
+            guard let details = Self.decodeMatrixRTCCallDetails(
+                contentMediaJSON,
+                parentEventId: contentBody,
+                callIntent: contentCaption,
+                notificationType: contentMimetype
+            ) else { return nil }
+            return .matrixRTCCall(details: details)
         case "system":
             guard let text = contentBody,
                   let kindRaw = contentCaption,
@@ -505,6 +519,42 @@ extension StoredMessage {
 }
 
 // MARK: - Reactions JSON
+
+extension StoredMessage {
+
+    static func encodeMatrixRTCCallDetails(_ details: MatrixRTCCallEventDetails) -> String? {
+        guard let data = try? JSONEncoder().encode(details),
+              let json = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return json
+    }
+
+    static func decodeMatrixRTCCallDetails(
+        _ json: String?,
+        parentEventId: String?,
+        callIntent: String?,
+        notificationType: String?
+    ) -> MatrixRTCCallEventDetails? {
+        if let json,
+           let data = json.data(using: .utf8),
+           let details = try? JSONDecoder().decode(MatrixRTCCallEventDetails.self, from: data) {
+            return details
+        }
+
+        let kind = notificationType
+            .flatMap(MatrixRTCCallNotificationKind.init(rawValue:))
+            ?? .unknown
+        return MatrixRTCCallEventDetails(
+            parentEventId: parentEventId,
+            callIntent: callIntent,
+            notificationType: kind,
+            expiresAt: nil,
+            declinedBy: [],
+            historyOutcome: nil
+        )
+    }
+}
 
 extension StoredMessage {
 

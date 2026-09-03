@@ -6,12 +6,17 @@
 import SwiftUI
 
 final class SwiftUIWrapper<Content: View>: UIViewController {
-    
+
     private let rootView: Content
+    private let forcedStyle: UIUserInterfaceStyle
     private var hostingController: UIHostingController<Content>?
-    
-    init(rootView: Content) {
+
+    /// - Parameter forcedStyle: `.unspecified` inherits the surrounding
+    ///   interface style. Screens built on hardcoded light artwork pass
+    ///   `.light`; new screens should stay themed and leave this alone.
+    init(rootView: Content, forcedStyle: UIUserInterfaceStyle = .unspecified) {
         self.rootView = rootView
+        self.forcedStyle = forcedStyle
         super.init(nibName: nil, bundle: nil)
     }
     
@@ -27,7 +32,7 @@ final class SwiftUIWrapper<Content: View>: UIViewController {
     private func setupHostingController() {
         let hosting = UIHostingController(rootView: rootView)
         hostingController = hosting
-        hostingController?.overrideUserInterfaceStyle = .light
+        hostingController?.overrideUserInterfaceStyle = forcedStyle
         
         addChild(hosting)
         view.addSubview(hosting.view)
@@ -57,7 +62,7 @@ final class SwiftUIWrapper<Content: View>: UIViewController {
 }
 
 extension View {
-    func wrapped() -> SwiftUIWrapper<Self> {
-        SwiftUIWrapper(rootView: self)
+    func wrapped(forcedStyle: UIUserInterfaceStyle = .unspecified) -> SwiftUIWrapper<Self> {
+        SwiftUIWrapper(rootView: self, forcedStyle: forcedStyle)
     }
 }

@@ -47,6 +47,8 @@ final class TextMessageCellNode: MessageCellNode {
             bodyText = "📎 \(filename)"
         case .callEvent(let type, _, let reason):
             bodyText = "📞 \(type.displayText(reason: reason))"
+        case .matrixRTCCall(let details):
+            bodyText = "📞 \(details.timelineText(isDirect: !isGroupChat, currentUserId: nil))"
         case .systemEvent(let text, _):
             bodyText = text
         case .unsupported(let typeName):

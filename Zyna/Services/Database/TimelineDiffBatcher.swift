@@ -36,7 +36,9 @@ final class TimelineDiffBatcher {
 
     private enum DiffOp {
         case upsert(StoredMessage)
-        case delete(String)
+        case upsertMatrixRTCCall(StoredMatrixRTCCall)
+        case upsertMatrixRTCMembership(StoredMatrixRTCCallMembership)
+        case delete(id: String, eventId: String?)
     }
 
     private var pendingOps: [DiffOp] = []
@@ -122,8 +124,9 @@ final class TimelineDiffBatcher {
 
         let roomId = self.roomId
         let dbQueue = self.dbQueue
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         summary.upsertCount = ops.filter { if case .upsert = $0 { return true }; return false }.count
-        summary.deleteCount = ops.count - summary.upsertCount
+        summary.deleteCount = ops.filter { if case .delete = $0 { return true }; return false }.count
         summary.redactedUpsertCount = ops.reduce(into: 0) { count, op in
             if case .upsert(let record) = op, record.contentType == "redacted" {
                 count += 1
@@ -217,7 +220,35 @@ final class TimelineDiffBatcher {
                                 previousGroupDescription: previousGroupDescription
                             )
                             try record.save(db)
-                        case .delete(let id):
+                            if record.contentType == "redacted",
+                               let eventId = record.eventId {
+                                try Self.deleteMatrixRTCSidecars(
+                                    eventId: eventId,
+                                    currentUserId: currentUserId,
+                                    in: db
+                                )
+                            }
+                        case .upsertMatrixRTCCall(let record):
+                            try StoredMatrixRTCCall.upsertAndRefreshProjection(
+                                record,
+                                currentUserId: currentUserId,
+                                in: db
+                            )
+                        case .upsertMatrixRTCMembership(let record):
+                            try StoredMatrixRTCCall.upsertMembershipAndRefreshCallProjections(
+                                record,
+                                currentUserId: currentUserId,
+                                in: db
+                            )
+                        case .delete(let id, let eventId):
+                            if let eventId,
+                               !eventId.isEmpty {
+                                try Self.deleteMatrixRTCSidecars(
+                                    eventId: eventId,
+                                    currentUserId: currentUserId,
+                                    in: db
+                                )
+                            }
                             _ = try StoredMessage.deleteOne(db, key: id)
                         }
                     }
@@ -301,29 +332,21 @@ final class TimelineDiffBatcher {
         case .pushFront(let item):
             let msg = TimelineService.mapTimelineItem(item)
             shadowPositions.insert(shadowPosition(for: msg), at: 0)
-            if let msg {
-                pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
-            }
+            enqueueSidecarEvents(for: item, message: msg)
 
         case .insert(let index, let item):
             let idx = Int(index)
             guard idx <= shadowPositions.count else { return }
             let msg = TimelineService.mapTimelineItem(item)
             shadowPositions.insert(shadowPosition(for: msg), at: idx)
-            if let msg {
-                pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
-            }
+            enqueueSidecarEvents(for: item, message: msg)
 
         case .set(let index, let item):
             let idx = Int(index)
             guard idx < shadowPositions.count else { return }
             let msg = TimelineService.mapTimelineItem(item)
             shadowPositions[idx] = shadowPosition(for: msg)
-
-            if let msg {
-                let record = StoredMessage(from: msg, roomId: roomId)
-                pendingOps.append(.upsert(record))
-            }
+            enqueueSidecarEvents(for: item, message: msg)
 
         case .remove(let index):
             let idx = Int(index)
@@ -360,13 +383,44 @@ final class TimelineDiffBatcher {
     private func appendItem(_ item: TimelineItem) {
         let msg = TimelineService.mapTimelineItem(item)
         shadowPositions.append(shadowPosition(for: msg))
-        if let msg {
-            pendingOps.append(.upsert(StoredMessage(from: msg, roomId: roomId)))
+        enqueueSidecarEvents(for: item, message: msg)
+    }
+
+    private func enqueueSidecarEvents(for item: TimelineItem, message: ChatMessage?) {
+        if let message {
+            let record = StoredMessage(from: message, roomId: roomId)
+            pendingOps.append(.upsert(record))
+
+            if let call = StoredMatrixRTCCall(from: message, roomId: roomId) {
+                pendingOps.append(.upsertMatrixRTCCall(call))
+            }
         }
+
+        guard let event = item.asEvent(),
+              let membership = StoredMatrixRTCCallMembership.parse(
+                from: event,
+                roomId: roomId
+              ) else {
+            return
+        }
+        pendingOps.append(.upsertMatrixRTCMembership(membership))
     }
 
     private func shadowPosition(for _: ChatMessage?) -> ShadowPosition {
         ShadowPosition()
+    }
+
+    private static func deleteMatrixRTCSidecars(
+        eventId: String,
+        currentUserId: String,
+        in db: Database
+    ) throws {
+        _ = try StoredMatrixRTCCall.deleteOne(db, key: eventId)
+        try StoredMatrixRTCCall.deleteMembershipAndRefreshCallProjections(
+            eventId: eventId,
+            currentUserId: currentUserId,
+            in: db
+        )
     }
 
     private static func inheritExistingZynaAttributesIfNeeded(

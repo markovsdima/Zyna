@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/markovsdima/client-sdk-swift.git",
       "state" : {
-        "revision" : "3a905c5c1573aa2f0a81c73fa4124aabd333468b",
-        "version" : "2.15.0-zyna.1"
+        "revision" : "c88273ab3aa7fd8e551eb16f75de66eb8ba553f5",
+        "version" : "2.15.0-zyna.2"
       }
     },
     {
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/markovsdima/matrix-rust-components-swift",
       "state" : {
-        "revision" : "8ac988d830d34d3fb98c11ca171511eb11a91090",
-        "version" : "26.5.13-zyna.5-beta.11"
+        "revision" : "f06517754197c93bf2974de72391581b6d288aab",
+        "version" : "26.5.13-zyna.5-beta.12"
       }
     },
     {

@@ -26,6 +26,7 @@ final class RoomDetailsNode: ScreenNode {
     var onMembersTapped: (() -> Void)?
     var onProfileTapped: (() -> Void)?
     var onPinnedMessagesTapped: (() -> Void)?
+    var onAttachmentsTapped: (() -> Void)?
     var onStorylinesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
@@ -63,6 +64,7 @@ final class RoomDetailsNode: ScreenNode {
 
     private let profileRow = ActionRowNode()
     private let pinnedMessagesRow = ActionRowNode()
+    private let attachmentsRow = ActionRowNode()
     private let searchRow = ActionRowNode()
     private let storylinesRow = ActionRowNode()
     private let securityRow = ActionRowNode()
@@ -190,6 +192,14 @@ final class RoomDetailsNode: ScreenNode {
             leadingIcon: AppIcon.pin.rendered(size: 17, weight: .medium, color: AppColor.accent),
             trailingText: "0",
             accessibilityHint: String(localized: "Opens pinned messages")
+        ))
+
+        attachmentsRow.onTap = { [weak self] in self?.onAttachmentsTapped?() }
+        attachmentsRow.style.alignSelf = .stretch
+        attachmentsRow.apply(ActionRowNode.Configuration(
+            title: String(localized: "Attachments"),
+            leadingIcon: AppIcon.photoOnRectangle.rendered(size: 16, weight: .medium, color: AppColor.accent),
+            accessibilityHint: String(localized: "Opens photos, videos and files shared in this chat")
         ))
 
         searchRow.onTap = { [weak self] in self?.onSearchTapped?() }
@@ -530,11 +540,13 @@ final class RoomDetailsNode: ScreenNode {
             buttonsChildren = [
                 profileRow,
                 pinnedMessagesRow,
+                attachmentsRow,
                 searchRow,
                 leaveRoomRow
             ]
         } else {
             buttonsChildren = [
+                attachmentsRow,
                 storylinesRow,
                 securityRow,
                 rolesPermissionsRow
@@ -662,6 +674,7 @@ final class RoomDetailsNode: ScreenNode {
         if isDirectRoom {
             appendActionRow(profileRow, to: &elements)
             appendActionRow(pinnedMessagesRow, to: &elements)
+            appendActionRow(attachmentsRow, to: &elements)
             appendActionRow(searchRow, to: &elements)
             appendActionRow(leaveRoomRow, to: &elements)
         } else {
@@ -669,6 +682,7 @@ final class RoomDetailsNode: ScreenNode {
             appendQuickAction(searchQuickAction, to: &elements)
             appendQuickAction(inviteQuickAction, to: &elements)
             appendQuickAction(pinnedQuickAction, to: &elements)
+            appendActionRow(attachmentsRow, to: &elements)
             appendActionRow(storylinesRow, to: &elements)
             appendActionRow(securityRow, to: &elements)
             appendActionRow(rolesPermissionsRow, to: &elements)

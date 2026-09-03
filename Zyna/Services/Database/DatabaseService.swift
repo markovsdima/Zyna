@@ -822,6 +822,85 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v25_matrixRTCCallLog") { db in
+            try db.create(table: "storedMatrixRTCCall", ifNotExists: true) { t in
+                t.primaryKey("notificationEventId", .text)
+                t.column("roomId", .text).notNull()
+                t.column("parentEventId", .text)
+                t.column("senderId", .text).notNull()
+                t.column("senderDisplayName", .text)
+                t.column("isOutgoing", .boolean).notNull()
+                t.column("timestamp", .double).notNull()
+                t.column("notificationType", .text).notNull()
+                t.column("callIntent", .text)
+                t.column("expiresAt", .double)
+                t.column("declinedByJSON", .text).notNull().defaults(to: "[]")
+                t.column("isDirect", .boolean).notNull().defaults(to: false)
+                t.column("hasOwnJoin", .boolean).notNull().defaults(to: false)
+                t.column("hasRemoteJoin", .boolean).notNull().defaults(to: false)
+                t.column("hasOwnLeave", .boolean).notNull().defaults(to: false)
+                t.column("hasRemoteLeave", .boolean).notNull().defaults(to: false)
+                t.column("lastMembershipEventTimestamp", .double)
+                t.column("lastOwnLeaveTimestamp", .double)
+                t.column("lastRemoteLeaveTimestamp", .double)
+                t.column("outcome", .text).notNull().defaults(to: "started")
+                t.column("updatedAt", .double).notNull()
+            }
+            try db.create(
+                index: "idx_storedMatrixRTCCall_timestamp",
+                on: "storedMatrixRTCCall",
+                columns: ["timestamp"]
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCall_room_timestamp",
+                on: "storedMatrixRTCCall",
+                columns: ["roomId", "timestamp"]
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCall_parent",
+                on: "storedMatrixRTCCall",
+                columns: ["parentEventId"],
+                condition: Column("parentEventId") != nil
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCall_outcome_expiry",
+                on: "storedMatrixRTCCall",
+                columns: ["outcome", "expiresAt"],
+                condition: Column("expiresAt") != nil
+            )
+
+            try db.create(table: "storedMatrixRTCCallMembership", ifNotExists: true) { t in
+                t.primaryKey("eventId", .text)
+                t.column("roomId", .text).notNull()
+                t.column("eventType", .text).notNull()
+                t.column("stateKey", .text)
+                t.column("senderId", .text).notNull()
+                t.column("timestamp", .double).notNull()
+                t.column("isLeave", .boolean).notNull()
+                t.column("userId", .text)
+                t.column("deviceId", .text)
+                t.column("memberId", .text)
+                t.column("callIntent", .text)
+                t.column("expiresAt", .double)
+            }
+            try db.create(
+                index: "idx_storedMatrixRTCCallMembership_room_timestamp",
+                on: "storedMatrixRTCCallMembership",
+                columns: ["roomId", "timestamp"]
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCallMembership_timestamp",
+                on: "storedMatrixRTCCallMembership",
+                columns: ["timestamp"]
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCallMembership_stateKey",
+                on: "storedMatrixRTCCallMembership",
+                columns: ["roomId", "stateKey", "timestamp"],
+                condition: Column("stateKey") != nil
+            )
+        }
+
         return migrator
     }
 

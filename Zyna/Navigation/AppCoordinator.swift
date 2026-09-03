@@ -137,7 +137,7 @@ final class AppCoordinator {
             }
         }
         let authView = AuthView(viewModel: viewModel)
-        let vc = authView.wrapped()
+        let vc = authView.wrapped(forcedStyle: .light)
         rootScreen = .auth
         window?.rootViewController = vc
     }
@@ -274,13 +274,13 @@ final class AppCoordinator {
             viewModel.onSkipped = { [weak self] in
                 self?.dismissVerificationAndContinue()
             }
-            let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+            let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
             vc.modalPresentationStyle = .fullScreen
             window?.rootViewController?.present(vc, animated: true)
         } else {
             viewModel.onVerified = { [weak self] in self?.showMain() }
             viewModel.onSkipped = { [weak self] in self?.showMain() }
-            let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+            let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
             rootScreen = .verification
             window?.rootViewController = vc
         }
@@ -375,7 +375,7 @@ final class AppCoordinator {
         viewModel.onSkipped = { [weak self] in
             self?.window?.rootViewController?.dismiss(animated: true)
         }
-        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
         vc.modalPresentationStyle = .fullScreen
         window?.rootViewController?.present(vc, animated: true)
     }
@@ -438,7 +438,7 @@ final class AppCoordinator {
         }
 
         rootScreen = .sessionRecovery
-        window?.rootViewController = SessionRecoveryView(viewModel: viewModel).wrapped()
+        window?.rootViewController = SessionRecoveryView(viewModel: viewModel).wrapped(forcedStyle: .light)
     }
 
     func resumeHeartbeatIfNeeded() {

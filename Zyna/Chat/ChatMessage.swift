@@ -18,6 +18,7 @@ enum ChatMessageContent: Equatable {
     case voice(source: MediaSource?, duration: TimeInterval, waveform: [UInt16])
     case file(source: MediaSource?, filename: String, mimetype: String?, size: UInt64?, caption: String?)
     case callEvent(type: CallEventType, callId: String, reason: String?)
+    case matrixRTCCall(details: MatrixRTCCallEventDetails)
     case systemEvent(text: String, kind: SystemEventKind)
     case unsupported(typeName: String)
     case redacted
@@ -34,6 +35,8 @@ enum ChatMessageContent: Equatable {
         case (.unsupported(let a), .unsupported(let b)): return a == b
         case (.callEvent(let t1, let c1, let r1), .callEvent(let t2, let c2, let r2)):
             return t1 == t2 && c1 == c2 && r1 == r2
+        case (.matrixRTCCall(let a), .matrixRTCCall(let b)):
+            return a == b
         case (.systemEvent(let t1, let k1), .systemEvent(let t2, let k2)):
             return t1 == t2 && k1 == k2
         case (.image(let s1, let ts1, let w1, let h1, let c1, let p1),
@@ -110,6 +113,7 @@ enum ChatMessageContent: Equatable {
         case .voice: return String(localized: "Voice message")
         case .file(_, let filename, _, _, _): return filename
         case .callEvent(let type, _, let reason): return type.displayText(reason: reason)
+        case .matrixRTCCall(let details): return details.timelineText(isDirect: false, currentUserId: nil)
         case .systemEvent(let text, _): return text
         case .notice(let body): return body
         case .emote(let body): return body
@@ -120,7 +124,7 @@ enum ChatMessageContent: Equatable {
 
     var isStandaloneEvent: Bool {
         switch self {
-        case .callEvent, .systemEvent:
+        case .callEvent, .matrixRTCCall, .systemEvent:
             return true
         default:
             return false
@@ -209,6 +213,64 @@ enum CallEventType: String, Codable, Equatable {
             default:          return "Call ended"
             }
         }
+    }
+}
+
+// MARK: - MatrixRTC Call Event
+
+enum MatrixRTCCallNotificationKind: String, Codable, Equatable {
+    case ring
+    case notification
+    case unknown
+}
+
+struct MatrixRTCCallEventDetails: Codable, Equatable {
+    let parentEventId: String?
+    let callIntent: String?
+    let notificationType: MatrixRTCCallNotificationKind
+    let expiresAt: TimeInterval?
+    let declinedBy: [String]
+    let historyOutcome: MatrixRTCCallHistoryOutcome?
+
+    var isVoiceCall: Bool {
+        switch normalizedCallIntent {
+        case "audio", "m.audio":
+            return true
+        default:
+            return false
+        }
+    }
+
+    var normalizedCallIntent: String? {
+        callIntent?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    func timelineText(isDirect: Bool, currentUserId: String?) -> String {
+        if let historyOutcome {
+            return historyOutcome.displayText
+        }
+        if isDirect {
+            if let currentUserId, declinedBy.contains(currentUserId) {
+                return String(localized: "You declined a call")
+            }
+            if !declinedBy.isEmpty {
+                return String(localized: "Call declined")
+            }
+        }
+        return String(localized: "Call started")
+    }
+
+    func withHistoryOutcome(_ historyOutcome: MatrixRTCCallHistoryOutcome?) -> MatrixRTCCallEventDetails {
+        MatrixRTCCallEventDetails(
+            parentEventId: parentEventId,
+            callIntent: callIntent,
+            notificationType: notificationType,
+            expiresAt: expiresAt,
+            declinedBy: declinedBy,
+            historyOutcome: historyOutcome
+        )
     }
 }
 

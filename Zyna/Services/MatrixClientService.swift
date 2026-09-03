@@ -510,7 +510,6 @@ final class MatrixClientService {
     }
 
     // MARK: - Login
-    // TODO: Remove NSAllowsArbitraryLoads from Info.plist once the server has HTTPS
 
     func login(username: String, password: String, homeserver: String = Brand.current.defaultHomeserver) async throws {
         stateSubject.send(.loggingIn)
