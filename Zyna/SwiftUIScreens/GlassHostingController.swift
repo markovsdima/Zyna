@@ -37,6 +37,10 @@ final class GlassHostingController<Content: View>: UIViewController {
     /// Replacing `items` drops the default back button — rebuild it.
     let glassTopBar: GlassTopBar
 
+    /// Fires when the navigation stack drops this screen (pop, pop-to-root,
+    /// stack replacement). Modal presentations on top do not trigger it.
+    var onRemovedFromParent: (@MainActor () -> Void)?
+
     private let hostingController: UIHostingController<GlassHostedContent<Content>>
     private let screenBackgroundColor: UIColor
     private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
@@ -113,6 +117,13 @@ final class GlassHostingController<Content: View>: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         unregisterCaptureSource()
+    }
+
+    override func didMove(toParent parent: UIViewController?) {
+        super.didMove(toParent: parent)
+        if parent == nil {
+            onRemovedFromParent?()
+        }
     }
 
     deinit {

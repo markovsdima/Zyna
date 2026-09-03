@@ -171,6 +171,12 @@ final class ChatsCoordinator {
     }
 
     private func showChatScreen(_ target: ChatScreenTarget, animated: Bool) {
+        #if DEBUG
+        if AttachmentsResearchSettings.isAutoDiagnosticsEnabled {
+            runAttachmentsAutoDiagnostics(for: target)
+            return
+        }
+        #endif
         let (vc, _) = makeChatScreen(target: target)
         navigationController.push(vc, animated: animated)
     }
@@ -605,6 +611,9 @@ final class ChatsCoordinator {
         vc.onPinnedMessagesTapped = { [weak self] in
             self?.showPinnedMessages(room: room)
         }
+        vc.onAttachmentsTapped = { [weak self] in
+            Task { @MainActor in self?.showRoomAttachments(room: room) }
+        }
         vc.onStorylinesTapped = { [weak self] in
             self?.showRoomSpaceMembership(room: room)
         }
@@ -646,6 +655,160 @@ final class ChatsCoordinator {
             self?.openPinnedEvent(eventId)
         }
         navigationController.push(vc)
+    }
+
+    // MARK: - Room attachments
+
+    #if DEBUG
+    /// Research mode: the tapped chat is not opened; its attachments
+    /// pipeline is exercised headlessly and reported to the console.
+    private func runAttachmentsAutoDiagnostics(for target: ChatScreenTarget) {
+        let room: Room?
+        switch target {
+        case .live(let liveRoom):
+            room = liveRoom
+        case .cached(let cached):
+            room = try? MatrixClientService.shared.client?.getRoom(roomId: cached.id)
+        }
+        guard let room else { return }
+        Task { @MainActor in
+            await AttachmentsAutoDiagnostics.run(room: room)
+        }
+    }
+    #endif
+
+    /// The screen that asked for a download must still be on top when it
+    /// finishes; otherwise a late viewer would appear over another screen.
+    private final class AttachmentPresenterBox {
+        weak var viewController: UIViewController?
+    }
+
+    @MainActor
+    private func showRoomAttachments(room: Room) {
+        let viewModel = RoomAttachmentsViewModel(
+            room: room,
+            filterMode: AttachmentsResearchSettings.filterMode,
+            tilePixelSize: RoomAttachmentsMetrics.tilePixelSize()
+        )
+        let presenter = AttachmentPresenterBox()
+        let actions = RoomAttachmentsActions(
+            openImages: { [weak self] items, initialIndex in
+                Task { @MainActor in
+                    self?.presentAttachmentImages(items, initialIndex: initialIndex, presenter: presenter)
+                }
+            },
+            openVideo: { [weak self] item, previewImage, sourceFrame, onEvent in
+                Task { @MainActor in
+                    self?.openAttachmentVideo(
+                        item,
+                        previewImage: previewImage,
+                        sourceFrame: sourceFrame,
+                        presenter: presenter,
+                        onEvent: onEvent
+                    )
+                }
+            },
+            openFile: { [weak self] item, onEvent in
+                Task { @MainActor in
+                    self?.openAttachmentFile(item, presenter: presenter, onEvent: onEvent)
+                }
+            }
+        )
+        let vc = GlassHostingController(
+            title: String(localized: "Attachments"),
+            rootView: RoomAttachmentsView(viewModel: viewModel, actions: actions),
+            audioPlayer: audioPlayer,
+            onBack: { [weak self] in
+                _ = self?.navigationController.pop()
+            }
+        )
+        presenter.viewController = vc
+        vc.onRemovedFromParent = { [weak viewModel] in
+            viewModel?.stop()
+        }
+        navigationController.push(vc)
+    }
+
+    @MainActor
+    private func activeAttachmentPresenter(_ box: AttachmentPresenterBox) -> UIViewController? {
+        guard let viewController = box.viewController,
+              navigationController.topViewController === viewController,
+              viewController.presentedViewController == nil else {
+            return nil
+        }
+        return viewController
+    }
+
+    @MainActor
+    private func presentAttachmentImages(
+        _ items: [ImageViewerController.Item],
+        initialIndex: Int,
+        presenter: AttachmentPresenterBox
+    ) {
+        guard !items.isEmpty, let host = activeAttachmentPresenter(presenter) else { return }
+        let index = max(0, min(initialIndex, items.count - 1))
+        let viewer = ImageViewerController(items: items, initialIndex: index)
+        host.present(viewer, animated: false) {
+            viewer.animateIn(from: items[index].sourceFrame)
+        }
+    }
+
+    @MainActor
+    private func openAttachmentVideo(
+        _ item: AttachmentItem,
+        previewImage: UIImage?,
+        sourceFrame: CGRect,
+        presenter: AttachmentPresenterBox,
+        onEvent: @escaping (AttachmentDownloadEvent) -> Void
+    ) {
+        Task { @MainActor [weak self] in
+            do {
+                let url = try await FileCacheService.shared.downloadFile(
+                    source: item.source,
+                    filename: item.filename,
+                    mimetype: item.mimetype
+                ) { progress in
+                    onEvent(.progress(progress))
+                }
+                onEvent(.finished)
+                guard let self, let host = self.activeAttachmentPresenter(presenter) else { return }
+                let controller = VideoViewerController(
+                    url: url,
+                    previewImage: previewImage,
+                    sourceFrame: sourceFrame,
+                    aspectRatio: item.aspectRatio
+                )
+                host.present(controller, animated: false) {
+                    controller.animateIn()
+                }
+            } catch {
+                onEvent(.failed(error.localizedDescription))
+            }
+        }
+    }
+
+    @MainActor
+    private func openAttachmentFile(
+        _ item: AttachmentItem,
+        presenter: AttachmentPresenterBox,
+        onEvent: @escaping (AttachmentDownloadEvent) -> Void
+    ) {
+        Task { @MainActor [weak self] in
+            do {
+                let url = try await FileCacheService.shared.downloadFile(
+                    source: item.source,
+                    filename: item.filename,
+                    mimetype: item.mimetype
+                ) { progress in
+                    onEvent(.progress(progress))
+                }
+                onEvent(.finished)
+                guard let self, let host = self.activeAttachmentPresenter(presenter) else { return }
+                QuickLookPresenter.present(url: url, from: host)
+            } catch {
+                onEvent(.failed(error.localizedDescription))
+            }
+        }
     }
 
     private func openPinnedEvent(_ eventId: String) {

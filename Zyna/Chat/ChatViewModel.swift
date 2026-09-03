@@ -1093,6 +1093,34 @@ final class ChatViewModel {
         }
 
         guard !mode.isPreview else { return }
+        // R&D switch: the attachments screen measures its own pagination
+        // without the chat's background history sync running underneath.
+        NotificationCenter.default.publisher(for: AttachmentsResearchSettings.didChange)
+            .sink { [weak self] _ in
+                self?.applyHistorySyncResearchSetting()
+            }
+            .store(in: &cancellables)
+        startHistorySyncIfAllowed()
+    }
+
+    /// Two-way: pausing cancels the running sync, unpausing restarts it, so a
+    /// paused → unpaused measurement reproduces the real UX without
+    /// reopening the chat. A sync that already finished is not repeated.
+    private func applyHistorySyncResearchSetting() {
+        if AttachmentsResearchSettings.isChatHistorySyncPaused {
+            historySyncTask?.cancel()
+            historySyncTask = nil
+        } else {
+            startHistorySyncIfAllowed()
+        }
+    }
+
+    private func startHistorySyncIfAllowed() {
+        guard !mode.isPreview,
+              !AttachmentsResearchSettings.isChatHistorySyncPaused,
+              historySyncTask == nil else {
+            return
+        }
         historySyncTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             await self?.syncFullHistory()

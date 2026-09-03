@@ -35,6 +35,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     var onMembersTapped: (() -> Void)?
     var onProfileTapped: ((String) -> Void)?
     var onPinnedMessagesTapped: (() -> Void)?
+    var onAttachmentsTapped: (() -> Void)?
     var onStorylinesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
@@ -115,6 +116,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
         node.onPinnedMessagesTapped = { [weak self] in
             self?.onPinnedMessagesTapped?()
+        }
+
+        node.onAttachmentsTapped = { [weak self] in
+            self?.onAttachmentsTapped?()
         }
 
         node.onStorylinesTapped = { [weak self] in

@@ -1059,7 +1059,7 @@ final class TimelineService {
         await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
     }
 
-    private static func isLikelyVideoFile(filename: String, mimetype: String?) -> Bool {
+    static func isLikelyVideoFile(filename: String, mimetype: String?) -> Bool {
         if mimetype?.lowercased().hasPrefix("video/") == true { return true }
         guard let type = UTType(filenameExtension: (filename as NSString).pathExtension) else {
             return false
