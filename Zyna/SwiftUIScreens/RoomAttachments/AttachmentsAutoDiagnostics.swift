@@ -13,8 +13,8 @@ private let log = ScopedLog(.attachments, prefix: "[Attachments][auto]")
 
 /// Headless run of the attachments pipeline against one room with a
 /// PASS/FAIL report in the console. Enabled by `ZYNA_ATTACHMENTS_AUTODIAG=1`
-/// in the scheme; while it is on, tapping a chat runs this instead of
-/// opening the chat. Temporary research tooling.
+/// in the scheme; while it is on, tapping a chat opens the real chat and runs
+/// this beside it. Temporary research tooling.
 ///
 /// What it exercises: the fill loop (with a tab switch mid-fill), GRDB
 /// coverage, the real tile loader on the first 12 visual items, the size
@@ -27,6 +27,13 @@ enum AttachmentsAutoDiagnostics {
         let name: String
         let passed: Bool?
         let detail: String
+    }
+
+    private struct TileProbe {
+        let sampleCount: Int
+        let tiers: [String: Int]
+        let deferred: [String: Int]
+        let failed: Int
     }
 
     private static var isRunning = false
@@ -43,13 +50,51 @@ enum AttachmentsAutoDiagnostics {
         let started = CACurrentMediaTime()
         let filterMode = AttachmentsResearchSettings.filterMode
         let tilePixelSize = RoomAttachmentsMetrics.tilePixelSize()
-        log("==== start room=\(room.id()) filter=\(filterMode.rawValue) tilePx=\(tilePixelSize) ====")
+        log(
+            "==== start room=\(room.id()) filter=\(filterMode.rawValue) "
+            + "tilePx=\(tilePixelSize) chat=OPEN "
+            + "chatFullSyncPaused=\(AttachmentsResearchSettings.isChatHistorySyncPaused) ===="
+        )
         AttachmentFetchMeter.shared.reset()
 
-        // 1. Fill, with a visible sentinel and a tab switch while it runs.
+        // 1. Reproduce the screen's cold-start ordering. The persisted index
+        // can make SwiftUI reveal its footer while `source.start()` is still
+        // suspended. Waiting for start here used to hide that race completely.
         let viewModel = RoomAttachmentsViewModel(room: room, filterMode: filterMode, tilePixelSize: tilePixelSize)
-        await viewModel.start()
-        viewModel.sentinelAppeared()
+        let startTask = Task { @MainActor in
+            log("trace source.start BEGIN ms=\(elapsedMs(since: started))")
+            await viewModel.start()
+            log(
+                "trace source.start END ms=\(elapsedMs(since: started)) "
+                + "initial=\(viewModel.isInitialLoading) fill=\(describe(viewModel.fillState))"
+            )
+        }
+        // Real grid cells begin asking for bytes as soon as the first indexed
+        // catalog snapshot is published; do the same instead of waiting for
+        // pagination to finish and accidentally measuring a warm cache.
+        let tileTask = Task { @MainActor in
+            await probeColdTiles(
+                viewModel: viewModel,
+                tilePixelSize: tilePixelSize,
+                started: started
+            )
+        }
+        let contentRevealed = await waitUntil(seconds: 15) {
+            !viewModel.isInitialLoading || viewModel.startError != nil
+        }
+        if contentRevealed, viewModel.startError == nil {
+            log(
+                "trace UI footer eligible ms=\(elapsedMs(since: started)) "
+                + "sourceRows=\(viewModel.diagnostics.rowCount) "
+                + "uiMedia=\(viewModel.media.flatMap(\.items).count) "
+                + "uiFiles=\(viewModel.files.flatMap(\.items).count)"
+            )
+            viewModel.sentinelAppeared()
+            log("trace UI sentinel APPEARED ms=\(elapsedMs(since: started))")
+        }
+        await startTask.value
+
+        // Exercise the queued-intent path after the realistic initial race.
         viewModel.tab = .files
 
         let fillsDone = await waitUntil(seconds: 90) {
@@ -70,6 +115,11 @@ enum AttachmentsAutoDiagnostics {
             detail: "replayed=\(d.pendingFillsReplayed)"
         ))
         checks.append(Check(name: "no diff index errors", passed: d.indexErrors == 0, detail: "indexErrors=\(d.indexErrors)"))
+        checks.append(Check(
+            name: "content became visible",
+            passed: contentRevealed,
+            detail: "initial=\(viewModel.isInitialLoading) startError=\(viewModel.startError ?? "-")"
+        ))
 
         // 2. GRDB coverage, meaningful only once the room start was reached.
         viewModel.refreshGRDBCrossCheck()
@@ -82,10 +132,9 @@ enum AttachmentsAutoDiagnostics {
         if !d.hitStart {
             checks.append(Check(name: "GRDB coverage (room start not reached)", passed: nil, detail: grdbDetail))
         } else if mirrorEmpty {
-            // The mirror is only built by the chat screen's live timeline;
-            // in this mode the chat is never opened, so after a relogin
-            // there is nothing to compare against yet.
-            checks.append(Check(name: "GRDB coverage (chat mirror empty, chat not opened since relogin)", passed: nil, detail: grdbDetail))
+            // The real chat is open, but after a relogin its asynchronous
+            // timeline/batcher may not have committed a comparison set yet.
+            checks.append(Check(name: "GRDB coverage (chat mirror still empty)", passed: nil, detail: grdbDetail))
         } else {
             checks.append(Check(
                 name: "GRDB coverage matches",
@@ -94,55 +143,21 @@ enum AttachmentsAutoDiagnostics {
             ))
         }
 
-        // 3. Tiles: first 12 visual items through the real plan + loader, 4 at a time.
+        // 3. Tiles: started when the first catalog snapshot became visible,
+        // concurrently with any remaining pagination and index writes.
         let visual = viewModel.media.flatMap(\.items)
-        let sample = Array(visual.prefix(12))
-        var tiers: [String: Int] = [:]
-        var deferred: [String: Int] = [:]
-        var failedTiles = 0
-        for chunk in stride(from: 0, to: sample.count, by: 4).map({ Array(sample[$0..<min($0 + 4, sample.count)]) }) {
-            let results = await withTaskGroup(
-                of: (AttachmentItem, AttachmentThumbnailPlan, AttachmentThumbnail?).self,
-                returning: [(AttachmentItem, AttachmentThumbnailPlan, AttachmentThumbnail?)].self
-            ) { group in
-                for item in chunk {
-                    let plan = viewModel.plan(for: item)
-                    group.addTask {
-                        guard let request = plan.request else { return (item, plan, nil) }
-                        let result = await MediaCache.shared.loadAttachmentThumbnail(request, tilePixelSize: tilePixelSize)
-                        return (item, plan, result)
-                    }
-                }
-                var collected: [(AttachmentItem, AttachmentThumbnailPlan, AttachmentThumbnail?)] = []
-                for await result in group {
-                    collected.append(result)
-                }
-                return collected
-            }
-            for (item, plan, result) in results {
-                switch plan {
-                case .deferred(let reason):
-                    deferred[reason.rawValue, default: 0] += 1
-                case .fetch(_, let reason):
-                    if let result {
-                        tiers[result.stats.tier.rawValue, default: 0] += 1
-                        log(
-                            "tile \(reason.rawValue) tier=\(result.stats.tier.rawValue) bytes=\(result.stats.bytes) "
-                            + "queue=\(ms(result.stats.queueMs)) fetch=\(ms(result.stats.fetchMs)) event=\(item.id)"
-                        )
-                    } else {
-                        failedTiles += 1
-                        log("tile \(reason.rawValue) FAILED event=\(item.id)")
-                    }
-                }
-            }
-        }
-        let tierText = tiers.keys.sorted().map { "\($0)=\(tiers[$0] ?? 0)" }.joined(separator: " ")
-        let deferredText = deferred.keys.sorted().map { "\($0)=\(deferred[$0] ?? 0)" }.joined(separator: " ")
+        let tileProbe = await tileTask.value
+        let tierText = tileProbe.tiers.keys.sorted()
+            .map { "\($0)=\(tileProbe.tiers[$0] ?? 0)" }
+            .joined(separator: " ")
+        let deferredText = tileProbe.deferred.keys.sorted()
+            .map { "\($0)=\(tileProbe.deferred[$0] ?? 0)" }
+            .joined(separator: " ")
         checks.append(Check(
-            name: "tiles load",
-            passed: sample.isEmpty ? nil : failedTiles == 0,
-            detail: "sample=\(sample.count) tiers[\(tierText)] deferred[\(deferredText)] failed=\(failedTiles)"
+            name: "cold tiles load",
+            passed: tileProbe.sampleCount == 0 ? nil : tileProbe.failed == 0,
+            detail: "sample=\(tileProbe.sampleCount) tiers[\(tierText)] "
+                + "deferred[\(deferredText)] failed=\(tileProbe.failed)"
         ))
 
         // 4. Threshold: deferred originals, and one forced load of the smallest.
@@ -241,9 +256,80 @@ enum AttachmentsAutoDiagnostics {
         for line in viewModel.diagnostics.lines {
             log("panel: \(line)")
         }
+        log("==== end room=\(room.id()) ====")
     }
 
     // MARK: - Helpers
+
+    private static func probeColdTiles(
+        viewModel: RoomAttachmentsViewModel,
+        tilePixelSize: Int,
+        started: CFTimeInterval
+    ) async -> TileProbe {
+        let catalogVisible = await waitUntil(seconds: 30) {
+            !viewModel.media.isEmpty || viewModel.startError != nil
+        }
+        guard catalogVisible, viewModel.startError == nil else {
+            log("trace catalog NOT_VISIBLE ms=\(elapsedMs(since: started))")
+            return TileProbe(sampleCount: 0, tiers: [:], deferred: [:], failed: 0)
+        }
+
+        let sample = Array(viewModel.media.flatMap(\.items).prefix(12))
+        log(
+            "trace catalog PUBLISHED ms=\(elapsedMs(since: started)) "
+            + "media=\(viewModel.media.flatMap(\.items).count) sample=\(sample.count)"
+        )
+        var tiers: [String: Int] = [:]
+        var deferred: [String: Int] = [:]
+        var failedTiles = 0
+        for chunk in stride(from: 0, to: sample.count, by: 4).map({ Array(sample[$0..<min($0 + 4, sample.count)]) }) {
+            let results = await withTaskGroup(
+                of: (AttachmentItem, AttachmentThumbnailPlan, AttachmentThumbnail?).self,
+                returning: [(AttachmentItem, AttachmentThumbnailPlan, AttachmentThumbnail?)].self
+            ) { group in
+                for item in chunk {
+                    let plan = viewModel.plan(for: item)
+                    group.addTask {
+                        guard let request = plan.request else { return (item, plan, nil) }
+                        let result = await MediaCache.shared.loadAttachmentThumbnail(request, tilePixelSize: tilePixelSize)
+                        return (item, plan, result)
+                    }
+                }
+                var collected: [(AttachmentItem, AttachmentThumbnailPlan, AttachmentThumbnail?)] = []
+                for await result in group {
+                    collected.append(result)
+                }
+                return collected
+            }
+            for (item, plan, result) in results {
+                switch plan {
+                case .deferred(let reason):
+                    deferred[reason.rawValue, default: 0] += 1
+                case .fetch(_, let reason):
+                    if let result {
+                        tiers[result.stats.tier.rawValue, default: 0] += 1
+                        log(
+                            "tile \(reason.rawValue) tier=\(result.stats.tier.rawValue) bytes=\(result.stats.bytes) "
+                            + "queue=\(ms(result.stats.queueMs)) fetch=\(ms(result.stats.fetchMs)) "
+                            + "sinceStart=\(elapsedMs(since: started)) event=\(item.id)"
+                        )
+                    } else {
+                        failedTiles += 1
+                        log(
+                            "tile \(reason.rawValue) FAILED "
+                            + "sinceStart=\(elapsedMs(since: started)) event=\(item.id)"
+                        )
+                    }
+                }
+            }
+        }
+        return TileProbe(
+            sampleCount: sample.count,
+            tiers: tiers,
+            deferred: deferred,
+            failed: failedTiles
+        )
+    }
 
     private static func waitUntil(seconds: Double, _ condition: @MainActor () -> Bool) async -> Bool {
         let deadline = CACurrentMediaTime() + seconds
@@ -260,6 +346,17 @@ enum AttachmentsAutoDiagnostics {
 
     private static func ms(_ value: Double) -> String {
         "\(String(format: "%.0f", value))ms"
+    }
+
+    private static func describe(_ state: RoomAttachmentsViewModel.FillState) -> String {
+        switch state {
+        case .idle: return "idle"
+        case .filling(let batch): return "filling(\(batch))"
+        case .settling: return "settling"
+        case .exhausted: return "exhausted"
+        case .capped: return "capped"
+        case .failed(let message): return "failed(\(message))"
+        }
     }
 }
 #endif

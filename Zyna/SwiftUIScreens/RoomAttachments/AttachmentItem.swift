@@ -11,16 +11,6 @@ import MatrixRustSDK
 /// is its mxc URL, which is the same for plain and encrypted sources.
 struct AttachmentItem: Identifiable, Equatable {
 
-    enum Kind: String, Equatable {
-        case image
-        case video
-        case file
-        case audio
-        case voice
-
-        var isVisual: Bool { self == .image || self == .video }
-    }
-
     struct ThumbnailRef: Equatable {
         let source: MediaSource
         let mxc: String
@@ -43,7 +33,7 @@ struct AttachmentItem: Identifiable, Equatable {
     /// Matrix event id. Local echoes are never mapped, so this is always remote.
     let id: String
     let uniqueId: String
-    let kind: Kind
+    let kind: RoomAttachmentKind
     let timestampMs: UInt64
     let sender: String
     let senderName: String?
@@ -171,13 +161,13 @@ extension AttachmentItem {
             )
 
         case .file(let content):
-            let isVideo = TimelineService.isLikelyVideoFile(
+            let kind = RoomAttachmentClassifier.kindForFile(
                 filename: content.filename,
                 mimetype: content.info?.mimetype
             )
             return build(
                 base: base,
-                kind: isVideo ? .video : .file,
+                kind: kind,
                 filename: content.filename,
                 caption: content.caption,
                 mimetype: content.info?.mimetype,
@@ -195,7 +185,7 @@ extension AttachmentItem {
         case .audio(let content):
             return build(
                 base: base,
-                kind: content.voice != nil ? .voice : .audio,
+                kind: RoomAttachmentClassifier.kindForAudio(isVoice: content.voice != nil),
                 filename: content.filename,
                 caption: content.caption,
                 mimetype: content.info?.mimetype,
@@ -217,7 +207,7 @@ extension AttachmentItem {
 
     private static func build(
         base: EventBase,
-        kind: Kind,
+        kind: RoomAttachmentKind,
         filename: String,
         caption: String?,
         mimetype: String?,

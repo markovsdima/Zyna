@@ -18,7 +18,7 @@ struct AttachmentTimelineStoreTests {
 
     private func attachment(
         _ id: String,
-        kind: AttachmentItem.Kind = .image,
+        kind: RoomAttachmentKind = .image,
         timestampMs: UInt64 = september2026Ms
     ) throws -> AttachmentRow {
         let source = try MediaSource.fromUrl(url: "mxc://example.org/\(id)")
@@ -94,9 +94,12 @@ struct AttachmentTimelineStoreTests {
     @Test("Decrypting into a non-attachment removes the tile")
     func mediaReplacedByOther() throws {
         let store = AttachmentTimelineStore(publishDelay: 0)
+        var invalidated: [String] = []
+        store.onAttachmentsInvalidated = { invalidated += $0 }
         store.apply([.reset([try attachment("a"), try attachment("b")])])
         let summary = store.apply([.set(0, .other(uniqueId: "u-a"))])
         #expect(summary.mediaRemoved == ["a"])
+        #expect(invalidated == ["a"])
         #expect(store.currentSnapshot().mediaCount == 1)
     }
 
@@ -137,6 +140,24 @@ struct AttachmentTimelineStoreTests {
         ])
         #expect(summary.indexErrors == 4)
         #expect(store.currentRows.count == 1)
+    }
+
+    @Test("Discovery reports values but window removal does not delete them")
+    func discoveryIsMonotonic() throws {
+        let store = AttachmentTimelineStore(publishDelay: 0)
+        var discovered: [String] = []
+        var invalidated: [String] = []
+        store.onAttachmentsDiscovered = { items in
+            discovered.append(contentsOf: items.map(\.id))
+        }
+        store.onAttachmentsInvalidated = { invalidated += $0 }
+
+        store.apply([.reset([try attachment("a"), .other(uniqueId: "text")])])
+        store.apply([.set(0, try attachment("a"))])
+        store.apply([.pushBack(try attachment("b")), .popFront, .clear])
+
+        #expect(discovered == ["a", "b"])
+        #expect(invalidated.isEmpty)
     }
 
     @Test("Month grouping labels the current month")

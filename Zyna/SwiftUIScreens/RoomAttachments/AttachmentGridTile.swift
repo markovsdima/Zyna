@@ -5,6 +5,13 @@
 
 import SwiftUI
 
+#if DEBUG
+private let logAttachmentTileTrace = ScopedLog(
+    .attachments,
+    prefix: "[Attachments][trace][tile-ui]"
+)
+#endif
+
 /// Square grid cell: blurhash first, then the tile derivative from
 /// `MediaCache`. All stored properties are `Equatable` so SwiftUI can skip
 /// unchanged cells; the memory hit happens in `init` so scroll-back never
@@ -155,12 +162,23 @@ struct AttachmentGridTile: View {
     // MARK: - Loading
 
     private func load() async {
+        #if DEBUG
+        logAttachmentTileTrace(
+            "START event=\(item.id) kind=\(item.kind.rawValue) "
+            + "cached=\(image != nil) blurhash=\(item.blurhash != nil) plan=\(planLabel)"
+        )
+        #endif
         if image == nil, placeholder == nil, let hash = item.blurhash {
             let aspectRatio = item.aspectRatio
             let decoded = await Task.detached(priority: .userInitiated) {
                 BlurhashDecoder.placeholder(for: hash, aspectRatio: aspectRatio)
             }.value
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                #if DEBUG
+                logAttachmentTileTrace("CANCELLED_AFTER_BLURHASH event=\(item.id)")
+                #endif
+                return
+            }
             placeholder = decoded
         }
 
@@ -174,7 +192,12 @@ struct AttachmentGridTile: View {
         let result = await MediaCache.shared.loadAttachmentThumbnail(
             request, tilePixelSize: tilePixelSize, lane: plan.lane
         )
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else {
+            #if DEBUG
+            logAttachmentTileTrace("CANCELLED_AFTER_FETCH event=\(item.id)")
+            #endif
+            return
+        }
         if let result {
             image = result.image
             failed = false
@@ -182,5 +205,14 @@ struct AttachmentGridTile: View {
             failed = true
         }
         onLoaded(result?.stats)
+    }
+
+    private var planLabel: String {
+        switch plan {
+        case .fetch(let request, let reason):
+            return "\(reason.rawValue)/\(request.label)"
+        case .deferred(let reason):
+            return "deferred/\(reason.rawValue)"
+        }
     }
 }

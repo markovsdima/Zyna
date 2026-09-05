@@ -102,7 +102,15 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var contentFilename: String?
     var contentMimetype: String?
     var contentFileSize: Int64?
+    var contentBlurhash: String?
+    var contentIsAnimated: Bool?
+    var contentMediaIsEncrypted: Bool?
     var contentThumbnailMediaJSON: String?
+    var contentThumbnailIsEncrypted: Bool?
+    var contentThumbnailWidth: Int64?
+    var contentThumbnailHeight: Int64?
+    var contentThumbnailSize: Int64?
+    var contentThumbnailMimetype: String?
     var contentVideoWidth: Int64?
     var contentVideoHeight: Int64?
     var contentVideoDuration: TimeInterval?
@@ -217,11 +225,23 @@ extension StoredMessage {
                 break
             }
             contentType = "image"
-            contentMediaJSON = source.toJson()
-            contentThumbnailMediaJSON = thumbnailSource?.toJson()
+            contentMediaJSON = msg.mediaMetadata?.sourceJSON ?? source.toJson()
+            contentMediaIsEncrypted = msg.mediaMetadata?.isSourceEncrypted
+            contentThumbnailMediaJSON = msg.mediaMetadata?.thumbnailSourceJSON
+                ?? thumbnailSource?.toJson()
+            contentThumbnailIsEncrypted = msg.mediaMetadata?.isThumbnailEncrypted
+            contentThumbnailWidth = msg.mediaMetadata?.thumbnailWidth.map(Int64.init)
+            contentThumbnailHeight = msg.mediaMetadata?.thumbnailHeight.map(Int64.init)
+            contentThumbnailSize = msg.mediaMetadata?.thumbnailSizeBytes.map(Int64.init)
+            contentThumbnailMimetype = msg.mediaMetadata?.thumbnailMimetype
             contentImageWidth = width.map(Int64.init)
             contentImageHeight = height.map(Int64.init)
             contentCaption = caption
+            contentFilename = msg.mediaMetadata?.filename
+            contentMimetype = msg.mediaMetadata?.mimetype
+            contentFileSize = msg.mediaMetadata?.sizeBytes.map(Int64.init)
+            contentBlurhash = msg.mediaMetadata?.blurhash
+            contentIsAnimated = msg.mediaMetadata?.isAnimated
         case .video(let source, let thumbnailSource, let width, let height, let duration, let filename, let mimetype, let size, let caption, _):
             guard let source else {
                 assertionFailure("StoredMessage cannot persist video content without a media source")
@@ -230,8 +250,15 @@ extension StoredMessage {
                 break
             }
             contentType = "video"
-            contentMediaJSON = source.toJson()
-            contentThumbnailMediaJSON = thumbnailSource?.toJson()
+            contentMediaJSON = msg.mediaMetadata?.sourceJSON ?? source.toJson()
+            contentMediaIsEncrypted = msg.mediaMetadata?.isSourceEncrypted
+            contentThumbnailMediaJSON = msg.mediaMetadata?.thumbnailSourceJSON
+                ?? thumbnailSource?.toJson()
+            contentThumbnailIsEncrypted = msg.mediaMetadata?.isThumbnailEncrypted
+            contentThumbnailWidth = msg.mediaMetadata?.thumbnailWidth.map(Int64.init)
+            contentThumbnailHeight = msg.mediaMetadata?.thumbnailHeight.map(Int64.init)
+            contentThumbnailSize = msg.mediaMetadata?.thumbnailSizeBytes.map(Int64.init)
+            contentThumbnailMimetype = msg.mediaMetadata?.thumbnailMimetype
             contentVideoWidth = width.map(Int64.init)
             contentVideoHeight = height.map(Int64.init)
             contentVideoDuration = duration
@@ -239,6 +266,8 @@ extension StoredMessage {
             contentMimetype = mimetype
             contentFileSize = size.map(Int64.init)
             contentCaption = caption
+            contentBlurhash = msg.mediaMetadata?.blurhash
+            contentIsAnimated = msg.mediaMetadata?.isAnimated
         case .voice(let source, let duration, let waveform):
             guard let source else {
                 assertionFailure("StoredMessage cannot persist voice content without a media source")
@@ -247,9 +276,13 @@ extension StoredMessage {
                 break
             }
             contentType = "voice"
-            contentMediaJSON = source.toJson()
+            contentMediaJSON = msg.mediaMetadata?.sourceJSON ?? source.toJson()
+            contentMediaIsEncrypted = msg.mediaMetadata?.isSourceEncrypted
             contentVoiceDuration = duration
             contentVoiceWaveform = waveform.withUnsafeBufferPointer { Data(buffer: $0) }
+            contentFilename = msg.mediaMetadata?.filename
+            contentMimetype = msg.mediaMetadata?.mimetype
+            contentFileSize = msg.mediaMetadata?.sizeBytes.map(Int64.init)
         case .notice(let body):
             contentType = "notice"
             contentBody = body
@@ -266,11 +299,21 @@ extension StoredMessage {
                 contentBody = "pendingOutgoingFile"
                 break
             }
-            contentType = "file"
-            contentMediaJSON = source.toJson()
+            let kind = msg.mediaMetadata?.attachmentKind
+                ?? RoomAttachmentClassifier.kindForFile(filename: filename, mimetype: mimetype)
+            contentType = kind == .audio ? "audio" : "file"
+            contentMediaJSON = msg.mediaMetadata?.sourceJSON ?? source.toJson()
+            contentMediaIsEncrypted = msg.mediaMetadata?.isSourceEncrypted
+            contentThumbnailMediaJSON = msg.mediaMetadata?.thumbnailSourceJSON
+            contentThumbnailIsEncrypted = msg.mediaMetadata?.isThumbnailEncrypted
+            contentThumbnailWidth = msg.mediaMetadata?.thumbnailWidth.map(Int64.init)
+            contentThumbnailHeight = msg.mediaMetadata?.thumbnailHeight.map(Int64.init)
+            contentThumbnailSize = msg.mediaMetadata?.thumbnailSizeBytes.map(Int64.init)
+            contentThumbnailMimetype = msg.mediaMetadata?.thumbnailMimetype
             contentFilename = filename
             contentMimetype = mimetype
             contentFileSize = size.map(Int64.init)
+            contentVoiceDuration = msg.mediaMetadata?.durationSeconds
             contentCaption = caption
         case .callEvent(let type, let callId, let reason):
             contentType = "call"
@@ -390,6 +433,7 @@ extension StoredMessage {
             isOutgoing: isOutgoing,
             timestamp: Date(timeIntervalSince1970: timestamp),
             content: content,
+            mediaMetadata: buildMediaMetadata(),
             reactions: Self.decodeReactions(reactionsJSON),
             replyInfo: replyInfo,
             isEditable: Self.isStoredMessageEditable(
@@ -460,7 +504,7 @@ extension StoredMessage {
                 width: contentVideoWidth.map(UInt64.init),
                 height: contentVideoHeight.map(UInt64.init),
                 duration: contentVideoDuration,
-                filename: contentFilename ?? "video.mp4",
+                filename: contentFilename ?? RoomAttachmentKind.video.defaultFilename,
                 mimetype: contentMimetype,
                 size: contentFileSize.map(UInt64.init),
                 caption: contentCaption,
@@ -480,12 +524,15 @@ extension StoredMessage {
             return .notice(body: contentBody ?? "")
         case "emote":
             return .emote(body: contentBody ?? "")
-        case "file":
+        case "audio", "file":
             guard let json = contentMediaJSON,
                   let source = try? MediaSource.fromJson(json: json) else { return nil }
             return .file(
                 source: source,
-                filename: contentFilename ?? "file",
+                filename: contentFilename
+                    ?? (contentType == "audio"
+                        ? RoomAttachmentKind.audio.defaultFilename
+                        : RoomAttachmentKind.file.defaultFilename),
                 mimetype: contentMimetype,
                 size: contentFileSize.map(UInt64.init),
                 caption: contentCaption
@@ -515,6 +562,47 @@ extension StoredMessage {
         default:
             return nil
         }
+    }
+
+    private func buildMediaMetadata() -> ChatMediaMetadata? {
+        guard let kind = RoomAttachmentClassifier.kindForStoredMessage(
+            contentType: contentType,
+            filename: contentFilename,
+            mimetype: contentMimetype
+        ), let sourceJSON = contentMediaJSON else {
+            return nil
+        }
+        let durationSeconds: TimeInterval?
+        switch kind {
+        case .video:
+            durationSeconds = contentVideoDuration
+        case .audio, .voice:
+            durationSeconds = contentVoiceDuration
+        case .image, .file:
+            durationSeconds = nil
+        }
+        let thumbnailIsEncrypted = contentThumbnailMediaJSON.map { json in
+            contentThumbnailIsEncrypted
+                ?? MediaSourceInspector.isEncrypted(json: json)
+        }
+        return ChatMediaMetadata(
+            attachmentKind: kind,
+            filename: contentFilename ?? kind.defaultFilename,
+            mimetype: contentMimetype,
+            sizeBytes: contentFileSize.flatMap(UInt64.init(exactly:)),
+            durationSeconds: durationSeconds,
+            blurhash: contentBlurhash.flatMap { $0.isEmpty ? nil : $0 },
+            isAnimated: contentIsAnimated ?? false,
+            sourceJSON: sourceJSON,
+            isSourceEncrypted: contentMediaIsEncrypted
+                ?? MediaSourceInspector.isEncrypted(json: sourceJSON),
+            thumbnailSourceJSON: contentThumbnailMediaJSON,
+            isThumbnailEncrypted: thumbnailIsEncrypted,
+            thumbnailWidth: contentThumbnailWidth.flatMap(UInt64.init(exactly:)),
+            thumbnailHeight: contentThumbnailHeight.flatMap(UInt64.init(exactly:)),
+            thumbnailSizeBytes: contentThumbnailSize.flatMap(UInt64.init(exactly:)),
+            thumbnailMimetype: contentThumbnailMimetype
+        )
     }
 }
 

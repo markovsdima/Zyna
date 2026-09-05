@@ -42,6 +42,8 @@ final class VideoMessageCellNode: MessageCellNode {
     private let previewThumbnailData: Data?
     private let hasSDKDimensions: Bool
     private let usesDirectVideoContent: Bool
+    private var placeholderTask: Task<Void, Never>?
+    private var thumbnailLoadTask: Task<Void, Never>?
 
     enum DownloadState {
         case idle
@@ -244,11 +246,17 @@ final class VideoMessageCellNode: MessageCellNode {
         if let previewData,
            let previewImage = UIImage(data: previewData) {
             thumbnailNode.image = previewImage
+        } else if let blurhash = message.mediaMetadata?.blurhash {
+            loadBlurhashAsync(blurhash)
         }
 
-        // TODO(video): Verify third-party m.video events that arrive without
-        // thumbnail/source sizing and tune the placeholder fallback if needed.
-        if let source = thumbSource ?? source {
+        // An encrypted source cannot be server-thumbnailed: asking the SDK
+        // for a thumbnail downloads the complete video and then attempts to
+        // decode it as an image. A sender-provided thumbnail is safe; for
+        // unencrypted video, keep allowing the homeserver thumbnail route.
+        let displaySource = thumbSource
+            ?? (message.mediaMetadata?.isSourceEncrypted == false ? source : nil)
+        if let source = displaySource {
             let recipe = bubbleCacheRecipe()
             if let cached = MediaCache.shared.bubbleImage(
                 for: source,
@@ -261,6 +269,11 @@ final class VideoMessageCellNode: MessageCellNode {
                 loadBubbleImageAsync(source: source)
             }
         }
+    }
+
+    deinit {
+        placeholderTask?.cancel()
+        thumbnailLoadTask?.cancel()
     }
 
     override func didLoad() {
@@ -429,18 +442,34 @@ final class VideoMessageCellNode: MessageCellNode {
     private func loadBubbleImageAsync(source: MediaSource) {
         let recipe = bubbleCacheRecipe()
         let knownAspectRatio = hasSDKDimensions ? aspectRatio : nil
-        Task { [weak self] in
-            guard let self,
-                  let bubbleImage = await MediaCache.shared.loadBubbleImage(
+        thumbnailLoadTask?.cancel()
+        thumbnailLoadTask = Task { [weak self] in
+            let bubbleImage = await MediaCache.shared.loadBubbleImage(
                     source: source,
                     maxPixelWidth: recipe.maxPixelWidth,
                     maxPixelHeight: recipe.maxPixelHeight,
                     knownAspectRatio: knownAspectRatio
-                  ) else { return }
+                  )
+            guard !Task.isCancelled, let bubbleImage else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.thumbnailNode.image = bubbleImage.image
                 self.applyLoadedThumbnailPixelSize(bubbleImage.sourcePixelSize, relayout: true)
+            }
+        }
+    }
+
+    private func loadBlurhashAsync(_ blurhash: String) {
+        let knownAspectRatio = hasSDKDimensions ? aspectRatio : nil
+        placeholderTask?.cancel()
+        placeholderTask = Task { [weak self] in
+            let placeholder = await Task.detached(priority: .utility) {
+                BlurhashDecoder.placeholder(for: blurhash, aspectRatio: knownAspectRatio)
+            }.value
+            guard !Task.isCancelled, let placeholder else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.thumbnailNode.image == nil else { return }
+                self.thumbnailNode.image = placeholder
             }
         }
     }

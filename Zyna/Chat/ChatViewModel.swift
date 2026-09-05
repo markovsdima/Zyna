@@ -14,6 +14,12 @@ private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
 private let timelineHealthLog = ScopedLog(.database, prefix: "[TimelineHealth]")
 private let logMatrixRTCChat = ScopedLog(.call, prefix: "[matrixrtc-chat]")
+#if DEBUG
+private let logAttachmentChatTrace = ScopedLog(
+    .attachments,
+    prefix: "[Attachments][trace][chat-all]"
+)
+#endif
 
 private protocol OutgoingOutboxFailureEvent {
     var roomId: String { get }
@@ -1952,6 +1958,8 @@ final class ChatViewModel {
                 ),
                 width: item.previewWidth ?? primaryImageContent?.width,
                 height: item.previewHeight ?? primaryImageContent?.height,
+                blurhash: primaryMessage?.mediaMetadata?.blurhash,
+                sizeBytes: primaryMessage?.mediaMetadata?.sizeBytes,
                 caption: group.caption ?? primaryImageContent?.caption,
                 sendStatus: isStaleSessionEnvelope ? "failed" : item.transportState.messageSendStatus
             )
@@ -3446,7 +3454,7 @@ final class ChatViewModel {
                 replyInfo: nil,
                 zynaAttributes: attrs
             )
-        case .file:
+        case .audio, .file:
             guard case .file(_, let filename, let mimetype, let size, _) = preview.content else {
                 return
             }
@@ -3491,13 +3499,14 @@ final class ChatViewModel {
     ) -> PendingForwardedMediaDraft? {
         switch message.content {
         case .image(let source?, let thumbnailSource, let width, let height, _, _):
+            let metadata = message.mediaMetadata
             return PendingForwardedMediaDraft(
                 kind: .image,
                 source: source,
                 thumbnailSource: thumbnailSource,
-                filename: "image.jpg",
-                mimetype: "image/jpeg",
-                size: nil,
+                filename: metadata?.filename ?? RoomAttachmentKind.image.defaultFilename,
+                mimetype: metadata?.mimetype ?? RoomAttachmentKind.image.defaultMimetype,
+                size: metadata?.sizeBytes,
                 width: width,
                 height: height,
                 duration: nil,
@@ -3517,29 +3526,36 @@ final class ChatViewModel {
                 waveform: []
             )
         case .voice(let source?, let duration, let waveform):
+            let metadata = message.mediaMetadata
             return PendingForwardedMediaDraft(
                 kind: .voice,
                 source: source,
                 thumbnailSource: nil,
-                filename: "voice.m4a",
-                mimetype: "audio/mp4",
-                size: nil,
+                filename: metadata?.filename ?? RoomAttachmentKind.voice.defaultFilename,
+                mimetype: metadata?.mimetype ?? RoomAttachmentKind.voice.defaultMimetype,
+                size: metadata?.sizeBytes,
                 width: nil,
                 height: nil,
                 duration: duration,
                 waveform: waveform
             )
         case .file(let source?, let filename, let mimetype, let size, _):
+            let metadata = message.mediaMetadata
+            let kind: PendingForwardedMediaKind = metadata?.attachmentKind == .audio
+                ? .audio
+                : .file
             return PendingForwardedMediaDraft(
-                kind: .file,
+                kind: kind,
                 source: source,
                 thumbnailSource: nil,
-                filename: filename,
-                mimetype: mimetype ?? "application/octet-stream",
+                filename: metadata?.filename ?? filename,
+                mimetype: mimetype ?? (kind == .audio
+                    ? RoomAttachmentKind.audio.defaultMimetype
+                    : RoomAttachmentKind.file.defaultMimetype),
                 size: size,
                 width: nil,
                 height: nil,
-                duration: nil,
+                duration: metadata?.durationSeconds,
                 waveform: []
             )
         default:
@@ -4519,12 +4535,28 @@ final class ChatViewModel {
     private func syncFullHistory() async {
         guard let timelineService else { return }
         var stagnantBatchCount = 0
+        var batch = 0
         while !Task.isCancelled {
+            batch += 1
             let countBefore = storedMessageCount()
+            #if DEBUG
+            let started = ProcessInfo.processInfo.systemUptime
+            logAttachmentChatTrace(
+                "paginate BEGIN room=\(roomId) batch=\(batch) messages=\(countBefore)"
+            )
+            #endif
             await timelineService.paginateBackwards(numEvents: 50)
             // Wait for batcher debounce (50ms) + margin
             try? await Task.sleep(for: .milliseconds(150))
             let countAfter = storedMessageCount()
+            #if DEBUG
+            let ms = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            logAttachmentChatTrace(
+                "paginate END room=\(roomId) batch=\(batch) "
+                + "messages=\(countBefore)->\(countAfter) delta=\(countAfter - countBefore) "
+                + "ms=\(String(format: "%.0f", ms))"
+            )
+            #endif
             if countAfter <= countBefore {
                 stagnantBatchCount += 1
                 if stagnantBatchCount >= 3 { break }
@@ -4911,6 +4943,8 @@ final class ChatViewModel {
                     previewIdentity: partialReflowPreviewsByMessageId[message.id]?.identity,
                     width: width,
                     height: height,
+                    blurhash: message.mediaMetadata?.blurhash,
+                    sizeBytes: message.mediaMetadata?.sizeBytes,
                     caption: caption,
                     sendStatus: message.sendStatus
                 )
@@ -5169,7 +5203,7 @@ final class ChatViewModel {
                 .replacingOccurrences(of: "\u{200B}", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return !body.isEmpty
-        case "image", "video", "voice", "file":
+        case "image", "video", "audio", "voice", "file":
             return true
         default:
             return false
@@ -5434,7 +5468,12 @@ final class ChatViewModel {
 
         for message in messages {
             guard case .image(let source?, let thumbnailSource, let width, let height, _, _) = message.content else { continue }
-            let displaySource = thumbnailSource ?? source
+            // Never speculate on an encrypted original. For those events a
+            // thumbnail request is a full-file download; let the rendered
+            // cell request it when it is actually needed.
+            guard let displaySource = thumbnailSource
+                ?? (message.mediaMetadata?.isSourceEncrypted == false ? source : nil)
+            else { continue }
             guard MediaCache.shared.bubbleImage(
                 for: displaySource,
                 maxPixelWidth: maxPixelWidth,

@@ -9,6 +9,12 @@ import MatrixRustSDK
 
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 private let logTimelineDB = ScopedLog(.database, prefix: "[TimelineDB]")
+#if DEBUG
+private let logAttachmentChatIndexTrace = ScopedLog(
+    .attachments,
+    prefix: "[Attachments][trace][chat-index]"
+)
+#endif
 
 /// Accumulates SDK timeline diffs and flushes them to GRDB in a single
 /// transaction after a 50 ms debounce window. Maintains a shadow
@@ -18,6 +24,12 @@ final class TimelineDiffBatcher {
     private let roomId: String
     private let dbQueue: DatabaseQueue
     private let log = ScopedLog(.database)
+    /// SDK mapping, JSON extraction and diff bookkeeping must never share
+    /// the main queue with Texture scrolling.
+    private let processingQueue = DispatchQueue(
+        label: "com.zyna.timeline-diff-processing",
+        qos: .userInitiated
+    )
     private let writeQueue = DispatchQueue(label: "com.zyna.db.write", qos: .userInitiated)
 
     // MARK: - Shadow positions
@@ -36,6 +48,7 @@ final class TimelineDiffBatcher {
 
     private enum DiffOp {
         case upsert(StoredMessage)
+        case deleteAttachment(eventId: String)
         case upsertMatrixRTCCall(StoredMatrixRTCCall)
         case upsertMatrixRTCMembership(StoredMatrixRTCCallMembership)
         case delete(id: String, eventId: String?)
@@ -60,12 +73,15 @@ final class TimelineDiffBatcher {
         self.dbQueue = dbQueue
     }
 
-    /// Update read cursor from SDK read receipts. Called from main queue.
+    /// Update read cursor from SDK read receipts.
     func updateReadCursor(timestamp: TimeInterval) {
-        if readCursorTimestamp == nil || timestamp > readCursorTimestamp! {
-            readCursorTimestamp = timestamp
-            pendingFlushSummary.readReceiptCount += 1
-            scheduleFlush()
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            if self.readCursorTimestamp == nil || timestamp > self.readCursorTimestamp! {
+                self.readCursorTimestamp = timestamp
+                self.pendingFlushSummary.readReceiptCount += 1
+                self.scheduleFlush()
+            }
         }
     }
 
@@ -73,7 +89,7 @@ final class TimelineDiffBatcher {
 
     /// Called from the SDK listener thread with raw timeline diffs.
     func receive(diffs: [TimelineDiff]) {
-        DispatchQueue.main.async { [weak self] in
+        processingQueue.async { [weak self] in
             guard let self else { return }
             let types = diffs.map { Self.diffName($0) }
             self.log("Received diffs: \(types.joined(separator: ", "))")
@@ -107,7 +123,7 @@ final class TimelineDiffBatcher {
         debounceWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.flush() }
         debounceWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.debounceInterval, execute: work)
+        processingQueue.asyncAfter(deadline: .now() + Self.debounceInterval, execute: work)
     }
 
     // MARK: - Flush
@@ -132,8 +148,18 @@ final class TimelineDiffBatcher {
                 count += 1
             }
         }
+        #if DEBUG
+        let attachmentDeletes = ops.reduce(into: 0) { count, op in
+            if case .deleteAttachment = op { count += 1 }
+        }
+        let writeEnqueuedAt = ProcessInfo.processInfo.systemUptime
+        #endif
 
         writeQueue.async { [weak self] in
+            #if DEBUG
+            let writeStarted = ProcessInfo.processInfo.systemUptime
+            var attachmentUpserts = 0
+            #endif
             var internalDeleteCount = 0
             var detachedIdentityCount = 0
             do {
@@ -220,6 +246,12 @@ final class TimelineDiffBatcher {
                                 previousGroupDescription: previousGroupDescription
                             )
                             try record.save(db)
+                            if let attachment = StoredRoomAttachment(storedMessage: record) {
+                                try attachment.saveIfChanged(in: db)
+                                #if DEBUG
+                                attachmentUpserts += 1
+                                #endif
+                            }
                             if record.contentType == "redacted",
                                let eventId = record.eventId {
                                 try Self.deleteMatrixRTCSidecars(
@@ -228,6 +260,11 @@ final class TimelineDiffBatcher {
                                     in: db
                                 )
                             }
+                        case .deleteAttachment(let eventId):
+                            _ = try StoredRoomAttachment.deleteOne(
+                                db,
+                                key: ["roomId": roomId, "eventId": eventId]
+                            )
                         case .upsertMatrixRTCCall(let record):
                             try StoredMatrixRTCCall.upsertAndRefreshProjection(
                                 record,
@@ -272,6 +309,18 @@ final class TimelineDiffBatcher {
                 let total = try dbQueue.read { db in
                     try StoredMessage.filter(Column("roomId") == roomId).fetchCount(db)
                 }
+
+                #if DEBUG
+                if attachmentUpserts > 0 || attachmentDeletes > 0 {
+                    let finished = ProcessInfo.processInfo.systemUptime
+                    logAttachmentChatIndexTrace(
+                        "commit room=\(roomId) upserts=\(attachmentUpserts) "
+                        + "deletes=\(attachmentDeletes) "
+                        + "queueMs=\(String(format: "%.0f", (writeStarted - writeEnqueuedAt) * 1000)) "
+                        + "writeMs=\(String(format: "%.0f", (finished - writeStarted) * 1000))"
+                    )
+                }
+                #endif
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
@@ -396,8 +445,18 @@ final class TimelineDiffBatcher {
             }
         }
 
-        guard let event = item.asEvent(),
-              let membership = StoredMatrixRTCCallMembership.parse(
+        guard let event = item.asEvent() else { return }
+
+        if case .eventId(let eventId) = event.eventOrTransactionId,
+           case .msgLike(let msgLike) = event.content,
+           case .redacted = msgLike.kind {
+            // Positional timeline removals only change the SDK window and
+            // must not shrink the durable catalog. A redaction is the one
+            // event-level removal that does invalidate the projection.
+            pendingOps.append(.deleteAttachment(eventId: eventId))
+        }
+
+        guard let membership = StoredMatrixRTCCallMembership.parse(
                 from: event,
                 roomId: roomId
               ) else {
@@ -749,10 +808,52 @@ final class TimelineDiffBatcher {
         }
 
         record.sendStatus = preferredSendStatus(existing.sendStatus, record.sendStatus)
+        record.senderDisplayName = record.senderDisplayName ?? existing.senderDisplayName
+        record.senderAvatarUrl = record.senderAvatarUrl ?? existing.senderAvatarUrl
         if (record.zynaAttributesJSON ?? "").isEmpty,
            let existingAttrs = existing.zynaAttributesJSON,
            !existingAttrs.isEmpty {
             record.zynaAttributesJSON = existingAttrs
+        }
+
+        if let sourceJSON = record.contentMediaJSON,
+           sourceJSON == existing.contentMediaJSON {
+            record.contentFilename = record.contentFilename ?? existing.contentFilename
+            record.contentMimetype = record.contentMimetype ?? existing.contentMimetype
+            record.contentFileSize = record.contentFileSize ?? existing.contentFileSize
+            record.contentImageWidth = record.contentImageWidth ?? existing.contentImageWidth
+            record.contentImageHeight = record.contentImageHeight ?? existing.contentImageHeight
+            record.contentVideoWidth = record.contentVideoWidth ?? existing.contentVideoWidth
+            record.contentVideoHeight = record.contentVideoHeight ?? existing.contentVideoHeight
+            record.contentVideoDuration = record.contentVideoDuration ?? existing.contentVideoDuration
+            record.contentVoiceDuration = record.contentVoiceDuration ?? existing.contentVoiceDuration
+            record.contentVoiceWaveform = record.contentVoiceWaveform ?? existing.contentVoiceWaveform
+            record.contentBlurhash = record.contentBlurhash ?? existing.contentBlurhash
+            if existing.contentIsAnimated == true {
+                record.contentIsAnimated = true
+            }
+            record.contentMediaIsEncrypted = record.contentMediaIsEncrypted
+                ?? existing.contentMediaIsEncrypted
+
+            if record.contentThumbnailMediaJSON == nil {
+                record.contentThumbnailMediaJSON = existing.contentThumbnailMediaJSON
+                record.contentThumbnailIsEncrypted = existing.contentThumbnailIsEncrypted
+                record.contentThumbnailWidth = existing.contentThumbnailWidth
+                record.contentThumbnailHeight = existing.contentThumbnailHeight
+                record.contentThumbnailSize = existing.contentThumbnailSize
+                record.contentThumbnailMimetype = existing.contentThumbnailMimetype
+            } else if record.contentThumbnailMediaJSON == existing.contentThumbnailMediaJSON {
+                record.contentThumbnailIsEncrypted = record.contentThumbnailIsEncrypted
+                    ?? existing.contentThumbnailIsEncrypted
+                record.contentThumbnailWidth = record.contentThumbnailWidth
+                    ?? existing.contentThumbnailWidth
+                record.contentThumbnailHeight = record.contentThumbnailHeight
+                    ?? existing.contentThumbnailHeight
+                record.contentThumbnailSize = record.contentThumbnailSize
+                    ?? existing.contentThumbnailSize
+                record.contentThumbnailMimetype = record.contentThumbnailMimetype
+                    ?? existing.contentThumbnailMimetype
+            }
         }
 
         guard existing.latestEditEventId?.isEmpty == false,
@@ -793,6 +894,7 @@ final class TimelineDiffBatcher {
     ) {
         record.contentBody = existing.contentBody
         record.contentMediaJSON = existing.contentMediaJSON
+        record.contentMediaIsEncrypted = existing.contentMediaIsEncrypted
         record.contentImageWidth = existing.contentImageWidth
         record.contentImageHeight = existing.contentImageHeight
         record.contentCaption = existing.contentCaption
@@ -801,7 +903,14 @@ final class TimelineDiffBatcher {
         record.contentFilename = existing.contentFilename
         record.contentMimetype = existing.contentMimetype
         record.contentFileSize = existing.contentFileSize
+        record.contentBlurhash = existing.contentBlurhash
+        record.contentIsAnimated = existing.contentIsAnimated
         record.contentThumbnailMediaJSON = existing.contentThumbnailMediaJSON
+        record.contentThumbnailIsEncrypted = existing.contentThumbnailIsEncrypted
+        record.contentThumbnailWidth = existing.contentThumbnailWidth
+        record.contentThumbnailHeight = existing.contentThumbnailHeight
+        record.contentThumbnailSize = existing.contentThumbnailSize
+        record.contentThumbnailMimetype = existing.contentThumbnailMimetype
         record.contentVideoWidth = existing.contentVideoWidth
         record.contentVideoHeight = existing.contentVideoHeight
         record.contentVideoDuration = existing.contentVideoDuration

@@ -13,8 +13,17 @@ extension MediaSource {
     /// the only way to tell them apart across the FFI. One FFI call plus a
     /// JSON parse: resolve it once when mapping an item, never in a view.
     var isEncryptedSource: Bool {
-        guard let data = toJson().data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        MediaSourceInspector.isEncrypted(json: toJson())
+    }
+}
+
+enum MediaSourceInspector {
+
+    static func isEncrypted(json: String?) -> Bool {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
             return false
         }
         return object["file"] != nil

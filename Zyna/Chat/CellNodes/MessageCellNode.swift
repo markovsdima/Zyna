@@ -671,6 +671,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         }
 
         return old.content == new.content
+            && old.mediaMetadata == new.mediaMetadata
             && old.zynaAttributes == new.zynaAttributes
     }
 
@@ -778,6 +779,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
                     && oldItem.previewIdentity == newItem.previewIdentity
                     && oldItem.width == newItem.width
                     && oldItem.height == newItem.height
+                    && oldItem.blurhash == newItem.blurhash
+                    && oldItem.sizeBytes == newItem.sizeBytes
                     && oldItem.caption == newItem.caption
             }
         default:

@@ -13,6 +13,8 @@ import MatrixRustSDK
 private final class FakeAttachmentSource: AttachmentSource, @unchecked Sendable {
     var onSnapshot: ((AttachmentTimelineStore.Snapshot, AttachmentTimelineStore.ApplySummary) -> Void)?
     var onPaginationStatus: ((PaginationStatus) -> Void)?
+    var onAttachmentsDiscovered: (([StoredRoomAttachment]) -> Void)?
+    var onAttachmentsInvalidated: (([String]) -> Void)?
 
     private(set) var loadMoreCalls = 0
     var batchDelayMs = 20

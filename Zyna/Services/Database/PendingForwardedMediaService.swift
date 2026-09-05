@@ -12,6 +12,7 @@ private let logPendingForwardedMedia = ScopedLog(.timeline, prefix: "[DirectForw
 enum PendingForwardedMediaKind: String, Codable, Equatable {
     case image
     case video
+    case audio
     case voice
     case file
 
@@ -19,6 +20,7 @@ enum PendingForwardedMediaKind: String, Codable, Equatable {
         switch self {
         case .image: return .image
         case .video: return .video
+        case .audio: return .file
         case .voice: return .voice
         case .file: return .file
         }
@@ -101,7 +103,7 @@ struct PendingForwardedMediaRecord: Codable, FetchableRecord, PersistableRecord 
             let info = ImageInfo(
                 height: Self.uint64(height),
                 width: Self.uint64(width),
-                mimetype: mimetype ?? "image/jpeg",
+                mimetype: mimetype ?? RoomAttachmentKind.image.defaultMimetype,
                 size: Self.uint64(size),
                 thumbnailInfo: nil,
                 thumbnailSource: thumbnailSource,
@@ -110,7 +112,7 @@ struct PendingForwardedMediaRecord: Codable, FetchableRecord, PersistableRecord 
             )
             return .image(
                 content: ImageMessageContent(
-                    filename: filename ?? "image.jpg",
+                    filename: filename ?? RoomAttachmentKind.image.defaultFilename,
                     caption: captionPayload.plain,
                     formattedCaption: formattedCaption,
                     source: source,
@@ -122,7 +124,7 @@ struct PendingForwardedMediaRecord: Codable, FetchableRecord, PersistableRecord 
                 duration: duration,
                 height: Self.uint64(height),
                 width: Self.uint64(width),
-                mimetype: mimetype ?? "video/mp4",
+                mimetype: mimetype ?? RoomAttachmentKind.video.defaultMimetype,
                 size: Self.uint64(size),
                 thumbnailInfo: nil,
                 thumbnailSource: thumbnailSource,
@@ -130,7 +132,7 @@ struct PendingForwardedMediaRecord: Codable, FetchableRecord, PersistableRecord 
             )
             return .video(
                 content: VideoMessageContent(
-                    filename: filename ?? "video.mp4",
+                    filename: filename ?? RoomAttachmentKind.video.defaultFilename,
                     caption: captionPayload.plain,
                     formattedCaption: formattedCaption,
                     source: source,
@@ -142,11 +144,11 @@ struct PendingForwardedMediaRecord: Codable, FetchableRecord, PersistableRecord 
             let info = AudioInfo(
                 duration: duration,
                 size: Self.uint64(size),
-                mimetype: mimetype ?? "audio/mp4"
+                mimetype: mimetype ?? RoomAttachmentKind.voice.defaultMimetype
             )
             return .audio(
                 content: AudioMessageContent(
-                    filename: filename ?? "voice.m4a",
+                    filename: filename ?? RoomAttachmentKind.voice.defaultFilename,
                     caption: captionPayload.plain,
                     formattedCaption: formattedCaption,
                     source: source,
@@ -158,16 +160,33 @@ struct PendingForwardedMediaRecord: Codable, FetchableRecord, PersistableRecord 
                     voice: UnstableVoiceContent()
                 )
             )
+        case .audio:
+            let info = AudioInfo(
+                duration: duration,
+                size: Self.uint64(size),
+                mimetype: mimetype ?? RoomAttachmentKind.audio.defaultMimetype
+            )
+            return .audio(
+                content: AudioMessageContent(
+                    filename: filename ?? RoomAttachmentKind.audio.defaultFilename,
+                    caption: captionPayload.plain,
+                    formattedCaption: formattedCaption,
+                    source: source,
+                    info: info,
+                    audio: nil,
+                    voice: nil
+                )
+            )
         case .file:
             let info = FileInfo(
-                mimetype: mimetype ?? "application/octet-stream",
+                mimetype: mimetype ?? RoomAttachmentKind.file.defaultMimetype,
                 size: Self.uint64(size),
                 thumbnailInfo: nil,
                 thumbnailSource: thumbnailSource
             )
             return .file(
                 content: FileMessageContent(
-                    filename: filename ?? "file",
+                    filename: filename ?? RoomAttachmentKind.file.defaultFilename,
                     caption: captionPayload.plain,
                     formattedCaption: formattedCaption,
                     source: source,

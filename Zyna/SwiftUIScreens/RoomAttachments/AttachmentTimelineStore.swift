@@ -112,6 +112,13 @@ final class AttachmentTimelineStore {
 
     /// Called on the main queue.
     var onSnapshot: ((Snapshot, ApplySummary) -> Void)?
+    /// Called on the store queue with newly observed attachment values.
+    /// Positional removals are deliberately not reported: they describe the
+    /// SDK window, not redactions of Matrix events.
+    var onAttachmentsDiscovered: (([AttachmentItem]) -> Void)?
+    /// Called only when an in-place update changes a known attachment into
+    /// a non-attachment (normally a redaction), never for window eviction.
+    var onAttachmentsInvalidated: (([String]) -> Void)?
 
     private let queue = DispatchQueue(label: "com.zyna.attachments.store", qos: .userInitiated)
     private let publishDelay: TimeInterval
@@ -195,14 +202,27 @@ final class AttachmentTimelineStore {
     // MARK: - Apply (queue only)
 
     private func applyOnQueue(_ diffs: [AttachmentRowDiff]) -> ApplySummary {
+        enum IndexMutation {
+            case upsert(AttachmentItem)
+            case invalidate
+        }
+
         let start = CACurrentMediaTime()
         var summary = ApplySummary()
+        var indexMutations: [String: IndexMutation] = [:]
         summary.diffs = diffs.count
+
+        func noteDiscoveries(in rows: [AttachmentRow]) {
+            for item in rows.compactMap(\.attachment) {
+                indexMutations[item.id] = .upsert(item)
+            }
+        }
 
         for diff in diffs {
             switch diff {
             case .append(let newRows):
                 rows.append(contentsOf: newRows)
+                noteDiscoveries(in: newRows)
                 summary.appended += newRows.count
 
             case .clear:
@@ -212,10 +232,12 @@ final class AttachmentTimelineStore {
 
             case .pushFront(let row):
                 rows.insert(row, at: 0)
+                noteDiscoveries(in: [row])
                 summary.inserted += 1
 
             case .pushBack(let row):
                 rows.append(row)
+                noteDiscoveries(in: [row])
                 summary.appended += 1
 
             case .popFront:
@@ -229,6 +251,7 @@ final class AttachmentTimelineStore {
             case .insert(let index, let row):
                 guard index >= 0, index <= rows.count else { summary.indexErrors += 1; continue }
                 rows.insert(row, at: index)
+                noteDiscoveries(in: [row])
                 summary.inserted += 1
 
             case .set(let index, let row):
@@ -243,6 +266,10 @@ final class AttachmentTimelineStore {
                 }
                 if let previousItem = previous.attachment, row.attachment == nil {
                     summary.mediaRemoved.append(previousItem.id)
+                    indexMutations[previousItem.id] = .invalidate
+                } else if let item = row.attachment,
+                          previous.attachment != item {
+                    indexMutations[item.id] = .upsert(item)
                 }
                 rows[index] = row
                 summary.set += 1
@@ -258,10 +285,25 @@ final class AttachmentTimelineStore {
 
             case .reset(let newRows):
                 rows = newRows
+                noteDiscoveries(in: newRows)
                 summary.resets += 1
             }
         }
 
+        var upserts: [AttachmentItem] = []
+        var invalidatedEventIds: [String] = []
+        for (eventId, mutation) in indexMutations {
+            switch mutation {
+            case .upsert(let item): upserts.append(item)
+            case .invalidate: invalidatedEventIds.append(eventId)
+            }
+        }
+        if !upserts.isEmpty {
+            onAttachmentsDiscovered?(upserts)
+        }
+        if !invalidatedEventIds.isEmpty {
+            onAttachmentsInvalidated?(invalidatedEventIds)
+        }
         generation += 1
         summary.applyMs = (CACurrentMediaTime() - start) * 1000
         return summary
@@ -279,12 +321,6 @@ final class AttachmentTimelineStore {
     }
 
     // MARK: - Snapshot
-
-    private static let titleFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate("LLLLyyyy")
-        return formatter
-    }()
 
     private func makeSnapshot() -> Snapshot {
         var mediaItems: [AttachmentItem] = []
@@ -329,6 +365,8 @@ final class AttachmentTimelineStore {
         var currentItems: [AttachmentItem] = []
         let calendar = Calendar.current
         let nowComponents = calendar.dateComponents([.year, .month], from: now)
+        let titleFormatter = DateFormatter()
+        titleFormatter.setLocalizedDateFormatFromTemplate("LLLLyyyy")
 
         func flush() {
             guard let key = currentKey, let first = currentItems.first else { return }

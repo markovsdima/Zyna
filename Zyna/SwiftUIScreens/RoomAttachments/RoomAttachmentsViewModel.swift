@@ -11,6 +11,200 @@ import UIKit
 
 private let log = ScopedLog(.attachments, prefix: "[Attachments]")
 
+/// Queue-confined merge state for the durable catalog plus records whose
+/// write is still waiting behind other GRDB work.
+struct RoomAttachmentCatalogState {
+    private var indexed: [String: StoredRoomAttachment] = [:]
+    private var optimistic: [String: StoredRoomAttachment] = [:]
+    private var tombstones: Set<String> = []
+    private(set) var hasIndexedSnapshot = false
+
+    mutating func replaceIndexed(with records: [StoredRoomAttachment]) {
+        var next: [String: StoredRoomAttachment] = [:]
+        next.reserveCapacity(records.count)
+        for record in records {
+            next[record.eventId] = record
+        }
+
+        // Presence in an observation acknowledges an optimistic upsert.
+        let acknowledged = optimistic.keys.filter { next[$0] != nil }
+        for eventId in acknowledged {
+            optimistic.removeValue(forKey: eventId)
+        }
+        // Absence acknowledges an explicit delete. Until then a concurrent
+        // unrelated observation must not resurrect the redacted item.
+        tombstones.formIntersection(next.keys)
+        indexed = next
+        hasIndexedSnapshot = true
+    }
+
+    @discardableResult
+    mutating func upsertOptimistically(_ records: [StoredRoomAttachment]) -> Bool {
+        var changed = false
+        for record in records {
+            if tombstones.remove(record.eventId) != nil {
+                changed = true
+            }
+            // Existing rows can keep their current metadata for the few
+            // milliseconds until GRDB confirms the merge. The latency-sensitive
+            // case is a newly decrypted event that has no visible tile yet.
+            if indexed[record.eventId] == nil {
+                let candidate = optimistic[record.eventId]
+                    .map { record.mergingMetadata(from: $0) }
+                    ?? record
+                if optimistic[record.eventId] != candidate {
+                    optimistic[record.eventId] = candidate
+                    changed = true
+                }
+            }
+        }
+        return changed
+    }
+
+    @discardableResult
+    mutating func invalidate(eventIds: [String]) -> Bool {
+        var changed = false
+        for eventId in eventIds {
+            if optimistic.removeValue(forKey: eventId) != nil {
+                changed = true
+            }
+            if indexed[eventId] != nil, tombstones.insert(eventId).inserted {
+                changed = true
+            }
+        }
+        return changed
+    }
+
+    var visibleRecords: [StoredRoomAttachment] {
+        var records = indexed.compactMap { eventId, record in
+            tombstones.contains(eventId) ? nil : record
+        }
+        records.append(contentsOf: optimistic.values)
+        records.sort {
+            if $0.timestampMs == $1.timestampMs {
+                return $0.eventId > $1.eventId
+            }
+            return $0.timestampMs > $1.timestampMs
+        }
+        return records
+    }
+}
+
+private struct RoomAttachmentCatalogSnapshot: Equatable {
+    let recordCount: Int
+    let media: [AttachmentMonthGroup]
+    let files: [AttachmentMonthGroup]
+    let mediaCount: Int
+    let fileCount: Int
+    let hasIndexedSnapshot: Bool
+    let mapMs: Double
+
+    static func == (
+        lhs: RoomAttachmentCatalogSnapshot,
+        rhs: RoomAttachmentCatalogSnapshot
+    ) -> Bool {
+        lhs.recordCount == rhs.recordCount
+            && lhs.media == rhs.media
+            && lhs.files == rhs.files
+            && lhs.mediaCount == rhs.mediaCount
+            && lhs.fileCount == rhs.fileCount
+            && lhs.hasIndexedSnapshot == rhs.hasIndexedSnapshot
+    }
+}
+
+/// Builds catalog sections away from the main actor. A one-frame coalescing
+/// window absorbs bursts of late decryptions without delaying a tile on GRDB.
+private final class RoomAttachmentCatalogProjection: @unchecked Sendable {
+    private static let publishDelay: TimeInterval = 0.016
+
+    private let queue = DispatchQueue(
+        label: "com.zyna.attachments.catalog-projection",
+        qos: .userInitiated
+    )
+    private var state = RoomAttachmentCatalogState()
+    private var onChange: ((RoomAttachmentCatalogSnapshot) -> Void)?
+    private var lastSnapshot: RoomAttachmentCatalogSnapshot?
+    private var publishScheduled = false
+    private var isStopped = false
+
+    func setOnChange(_ callback: @escaping (RoomAttachmentCatalogSnapshot) -> Void) {
+        queue.async { [self] in
+            guard !isStopped else { return }
+            onChange = callback
+        }
+    }
+
+    func replaceIndexed(with records: [StoredRoomAttachment]) {
+        queue.async { [self] in
+            guard !isStopped else { return }
+            state.replaceIndexed(with: records)
+            schedulePublish()
+        }
+    }
+
+    func upsertOptimistically(_ records: [StoredRoomAttachment]) {
+        guard !records.isEmpty else { return }
+        queue.async { [self] in
+            guard !isStopped else { return }
+            if state.upsertOptimistically(records) {
+                schedulePublish()
+            }
+        }
+    }
+
+    func invalidate(eventIds: [String]) {
+        guard !eventIds.isEmpty else { return }
+        queue.async { [self] in
+            guard !isStopped else { return }
+            if state.invalidate(eventIds: eventIds) {
+                schedulePublish()
+            }
+        }
+    }
+
+    func stop() {
+        queue.async { [self] in
+            isStopped = true
+            onChange = nil
+        }
+    }
+
+    private func schedulePublish() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !publishScheduled else { return }
+        publishScheduled = true
+        queue.asyncAfter(deadline: .now() + Self.publishDelay) { [self] in
+            publishScheduled = false
+            publishIfChanged()
+        }
+    }
+
+    private func publishIfChanged() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard !isStopped else { return }
+        let started = ProcessInfo.processInfo.systemUptime
+        let records = state.visibleRecords
+        let items = records.compactMap { $0.makeAttachmentItem() }
+        let mediaItems = items.filter { $0.kind.isVisual }
+        let fileItems = items.filter { !$0.kind.isVisual }
+        let snapshot = RoomAttachmentCatalogSnapshot(
+            recordCount: records.count,
+            media: AttachmentTimelineStore.groupByMonth(mediaItems),
+            files: AttachmentTimelineStore.groupByMonth(fileItems),
+            mediaCount: mediaItems.count,
+            fileCount: fileItems.count,
+            hasIndexedSnapshot: state.hasIndexedSnapshot,
+            mapMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
+        )
+        guard snapshot != lastSnapshot else { return }
+        lastSnapshot = snapshot
+        guard let onChange else { return }
+        DispatchQueue.main.async {
+            onChange(snapshot)
+        }
+    }
+}
+
 @MainActor
 final class RoomAttachmentsViewModel: ObservableObject {
 
@@ -36,7 +230,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         case settling
         /// Start of the room reached; nothing older exists.
         case exhausted
-        /// Batch cap hit without filling the page; user can ask for more.
+        /// The bounded fill ended before finding a full page.
         case capped
         case failed(String)
     }
@@ -44,12 +238,11 @@ final class RoomAttachmentsViewModel: ObservableObject {
     static let mediaPageSize = 45
     static let filesPageSize = 20
     static let batchEvents: UInt16 = 100
-    /// Uninterrupted work one fill may do before handing control back to
-    /// the user as "Load More". Disk reveals fit by the dozen, network
-    /// batches by a handful, so local history no longer trips the cap.
-    static let defaultFillTimeBudgetSeconds: CFTimeInterval = 2.5
-    /// Safety net only; the time budget is what normally ends a fill. Small
-    /// disk chunks go by at ~13 ms each, so 40 tripped before 2.5 s did.
+    /// Maximum uninterrupted search per fill. Sparse history then requires
+    /// an explicit "Load More" instead of being traversed without a bound.
+    nonisolated static let defaultFillTimeBudgetSeconds: CFTimeInterval = 2.5
+    /// Safety ceiling for unexpectedly fast cached pagination; the time
+    /// budget normally ends a fill first.
     static let maxBatchesPerFill = 200
     /// How long a batch waits for its diff. With `.all` every batch yields a
     /// diff and after a network page the SDK first builds ~100 items, so the
@@ -81,7 +274,9 @@ final class RoomAttachmentsViewModel: ObservableObject {
     @Published var tab: Tab = .media {
         didSet {
             guard tab != oldValue else { return }
-            fillIfNeeded(reason: "tab", force: true, intent: .tab)
+            if needsInitialPage(for: tab) {
+                fillIfNeeded(reason: "tab", force: true, intent: .tab)
+            }
         }
     }
     @Published private(set) var media: [AttachmentMonthGroup] = []
@@ -105,6 +300,8 @@ final class RoomAttachmentsViewModel: ObservableObject {
     let fillTimeBudgetSeconds: CFTimeInterval
 
     private let source: AttachmentSource
+    private let attachmentIndex: RoomAttachmentIndex?
+    private let catalogProjection: RoomAttachmentCatalogProjection?
     private let room: Room?
     private let openedAt = Date()
     private var hasStarted = false
@@ -115,6 +312,10 @@ final class RoomAttachmentsViewModel: ObservableObject {
     private var lateRetryTask: Task<Void, Never>?
     private var foregroundObserver: NSObjectProtocol?
     private var researchObserver: NSObjectProtocol?
+    private var attachmentObservation: AnyDatabaseCancellable?
+    private var hasReceivedIndexSnapshot = false
+    private var indexedMediaCount = 0
+    private var indexedFileCount = 0
     private var lastSnapshotGeneration = 0
     private var rowCount = 0
     private var mediaCount = 0
@@ -129,11 +330,16 @@ final class RoomAttachmentsViewModel: ObservableObject {
         source: AttachmentSource,
         filterMode: AttachmentSourceFilterMode,
         tilePixelSize: Int,
+        attachmentIndex: RoomAttachmentIndex? = nil,
         room: Room? = nil,
         fillTimeBudgetSeconds: CFTimeInterval = RoomAttachmentsViewModel.defaultFillTimeBudgetSeconds
     ) {
         self.roomId = roomId
         self.source = source
+        self.attachmentIndex = attachmentIndex
+        catalogProjection = attachmentIndex == nil
+            ? nil
+            : RoomAttachmentCatalogProjection()
         self.filterMode = filterMode
         self.tilePixelSize = tilePixelSize
         self.room = room
@@ -141,11 +347,20 @@ final class RoomAttachmentsViewModel: ObservableObject {
     }
 
     convenience init(room: Room, filterMode: AttachmentSourceFilterMode, tilePixelSize: Int) {
+        let attachmentIndex = RoomAttachmentIndex(
+            roomId: room.id(),
+            dbQueue: DatabaseService.shared.dbQueue
+        )
         self.init(
             roomId: room.id(),
-            source: SDKTimelineAttachmentSource(room: room, filterMode: filterMode),
+            source: SDKTimelineAttachmentSource(
+                room: room,
+                filterMode: filterMode,
+                attachmentIndex: attachmentIndex
+            ),
             filterMode: filterMode,
             tilePixelSize: tilePixelSize,
+            attachmentIndex: attachmentIndex,
             room: room
         )
     }
@@ -159,6 +374,8 @@ final class RoomAttachmentsViewModel: ObservableObject {
         if let researchObserver {
             NotificationCenter.default.removeObserver(researchObserver)
         }
+        attachmentObservation?.cancel()
+        catalogProjection?.stop()
         source.stop()
         log("deinit room=\(roomId)")
     }
@@ -174,6 +391,30 @@ final class RoomAttachmentsViewModel: ObservableObject {
         }
         source.onPaginationStatus = { [weak self] status in
             self?.handlePaginationStatus(status)
+        }
+        if let attachmentIndex, let catalogProjection {
+            catalogProjection.setOnChange { [weak self] snapshot in
+                self?.handleCatalogSnapshot(snapshot)
+            }
+            source.onAttachmentsDiscovered = { [weak catalogProjection] records in
+                catalogProjection?.upsertOptimistically(records)
+            }
+            source.onAttachmentsInvalidated = { [weak catalogProjection] eventIds in
+                catalogProjection?.invalidate(eventIds: eventIds)
+            }
+            attachmentObservation = attachmentIndex.observe(
+                onError: { [weak self] error in
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, !self.isStopped else { return }
+                        self.startError = error.localizedDescription
+                        self.isInitialLoading = false
+                        log("index observation failed room=\(self.roomId) error=\(error)")
+                    }
+                },
+                onChange: { [weak catalogProjection] records in
+                    catalogProjection?.replaceIndexed(with: records)
+                }
+            )
         }
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
@@ -225,7 +466,9 @@ final class RoomAttachmentsViewModel: ObservableObject {
         guard !isStopped else { return }
 
         log("started room=\(roomId) filter=\(filterMode.rawValue) tilePx=\(tilePixelSize)")
-        fillIfNeeded(reason: "start")
+        if needsInitialPage(for: tab) {
+            fillIfNeeded(reason: "start", force: true)
+        }
     }
 
     /// Idempotent teardown. Called when the screen leaves the navigation
@@ -247,8 +490,13 @@ final class RoomAttachmentsViewModel: ObservableObject {
             self.researchObserver = nil
         }
         pendingFill = nil
+        attachmentObservation?.cancel()
+        attachmentObservation = nil
         source.onSnapshot = nil
         source.onPaginationStatus = nil
+        source.onAttachmentsDiscovered = nil
+        source.onAttachmentsInvalidated = nil
+        catalogProjection?.stop()
         source.stop()
         log("stopped room=\(roomId)")
     }
@@ -259,11 +507,13 @@ final class RoomAttachmentsViewModel: ObservableObject {
         rowCount = snapshot.rowCount
         mediaCount = snapshot.mediaCount
         fileCount = snapshot.fileCount
-        media = snapshot.media
-        files = snapshot.files
+        if attachmentIndex == nil {
+            media = snapshot.media
+            files = snapshot.files
+        }
         pendingDecryptionCount = snapshot.pendingCount
         pendingSessionIds = snapshot.pendingSessionIds
-        if isInitialLoading {
+        if attachmentIndex == nil, isInitialLoading {
             isInitialLoading = false
         }
 
@@ -312,6 +562,33 @@ final class RoomAttachmentsViewModel: ObservableObject {
         }
     }
 
+    private func handleCatalogSnapshot(_ snapshot: RoomAttachmentCatalogSnapshot) {
+        guard !isStopped else { return }
+        if media != snapshot.media {
+            media = snapshot.media
+        }
+        if files != snapshot.files {
+            files = snapshot.files
+        }
+        indexedMediaCount = snapshot.mediaCount
+        indexedFileCount = snapshot.fileCount
+        hasReceivedIndexSnapshot = snapshot.hasIndexedSnapshot
+        if isInitialLoading, snapshot.hasIndexedSnapshot || snapshot.recordCount > 0 {
+            isInitialLoading = false
+        }
+        #if DEBUG
+        log(
+            "trace index mapped room=\(roomId) records=\(snapshot.recordCount) "
+            + "media=\(snapshot.mediaCount) files=\(snapshot.fileCount) "
+            + "ms=\(String(format: "%.0f", snapshot.mapMs))"
+        )
+        #endif
+        log(
+            "index snapshot room=\(roomId) records=\(snapshot.recordCount) "
+            + "media=\(indexedMediaCount) files=\(indexedFileCount)"
+        )
+    }
+
     /// Spinner and diagnostics only. The status is shared per room and, for
     /// this timeline, mapped through the SDK's skip count; the fill loop
     /// establishes `hitStart` itself with a confirming call.
@@ -344,7 +621,19 @@ final class RoomAttachmentsViewModel: ObservableObject {
     }
 
     private func currentCount(for tab: Tab) -> Int {
-        tab == .media ? mediaCount : fileCount
+        if attachmentIndex != nil, hasReceivedIndexSnapshot {
+            return indexedCount(for: tab)
+        }
+        return tab == .media ? mediaCount : fileCount
+    }
+
+    private func indexedCount(for tab: Tab) -> Int {
+        tab == .media ? indexedMediaCount : indexedFileCount
+    }
+
+    private func needsInitialPage(for tab: Tab) -> Bool {
+        guard attachmentIndex != nil, hasReceivedIndexSnapshot else { return true }
+        return indexedCount(for: tab) < pageSize(for: tab)
     }
 
     private func pageSize(for tab: Tab) -> Int {
@@ -729,10 +1018,11 @@ final class RoomAttachmentsViewModel: ObservableObject {
         }
         diagnostics.fetchMeter = AttachmentFetchMeter.shared.current()
         #endif
-        if let stats, stats.tier == .sdk {
+        if let stats {
             log(
                 "tile event=\(item.id) kind=\(item.kind.rawValue) encrypted=\(item.isSourceEncrypted) "
-                + "thumb=\(item.thumbnail != nil) request=\(stats.request) bytes=\(stats.bytes) "
+                + "thumb=\(item.thumbnail != nil) tier=\(stats.tier.rawValue) "
+                + "request=\(stats.request) bytes=\(stats.bytes) "
                 + "date=\(item.date.formatted(date: .abbreviated, time: .shortened)) sender=\(item.senderName ?? item.sender) "
                 + "queue=\(String(format: "%.0f", stats.queueMs))ms fetch=\(String(format: "%.0f", stats.fetchMs))ms "
                 + "prep=\(String(format: "%.0f", stats.prepareMs))ms"
@@ -945,7 +1235,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
                 db,
                 sql: """
                     SELECT eventId FROM storedMessage
-                    WHERE roomId = ? AND contentType IN ('image', 'video', 'file', 'voice')
+                    WHERE roomId = ? AND contentType IN ('image', 'video', 'file', 'audio', 'voice')
                       AND eventId IS NOT NULL AND eventId != ''
                     """,
                 arguments: [roomId]

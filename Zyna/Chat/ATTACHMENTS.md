@@ -23,10 +23,11 @@ MediaCache.loadAttachmentThumbnail  (memory → disk → SDK, de-dup by mxc, lan
 Files: `Zyna/SwiftUIScreens/RoomAttachments/*`, `Zyna/Services/Media/AttachmentThumbnailPlan.swift`,
 `Zyna/Services/Media/BlurhashDecoder.swift`, `Zyna/Services/Media/AttachmentFetchMeter.swift`,
 `Zyna/Services/MediaCache.swift` (Attachments section), `Zyna/UIComponents/QuickLookPresenter.swift`,
+`Zyna/Models/RoomAttachmentKind.swift`, `Zyna/Services/Database/StoredRoomAttachment.swift`, and
 `ChatsCoordinator.showRoomAttachments`.
 
-The data source sits behind `AttachmentSource`; `SDKTimelineAttachmentSource` is the only
-implementation today. A GRDB-backed one is the likely production replacement (see the end).
+The data source sits behind `AttachmentSource`; `SDKTimelineAttachmentSource` is the only screen
+implementation today. It now also feeds the persistent GRDB projection described at the end.
 
 ## SDK facts (verified in the fork checkout, which matches upstream unless noted)
 
@@ -148,17 +149,26 @@ implementation today. A GRDB-backed one is the likely production replacement (se
 | GRDB coverage | `sdkMedia` = GRDB count and `onlyGRDB=[] onlySDK=[]` on every completed run; 180 stale "Unable to decrypt message" rows in GRDB are a known relogin artefact around call events |
 | Lifecycle | `stopped` then `deinit` on every pop; auto-diagnostics 9/9 cold, 9/9 warm, 8/8 relogin |
 
-## Auto-diagnostics (headless, DEBUG)
+## Auto-diagnostics (DEBUG)
+
+For a passive trace of the real UI path, set `ZYNA_ATTACHMENTS_TRACE=1` and leave
+`ZYNA_ATTACHMENTS_AUTODIAG` unset. This only enables the `.attachments` log scope: it does not
+open a second timeline, paginate, switch tabs or download anything that the visible UI did not
+request. Tile logs include task start, cancellation and every cache tier.
 
 Set `ZYNA_ATTACHMENTS_AUTODIAG=1` in the scheme's environment variables. While it is on, tapping a
-chat in the list does **not** open it: `AttachmentsAutoDiagnostics` runs the pipeline on that room
-headlessly and prints `[Attachments][auto]` lines ending in a PASS/FAIL/SKIP report plus the panel
-dump. It covers: fill completion (with a tab switch mid-fill), GRDB coverage (skipped when the
-chat's mirror is empty, e.g. right after a relogin), the real tile loader on the first 12 visual
-items, one forced tap-to-load original (downloads it, up to 8 MiB), the viewer lane limit
-(≤ 2 in flight), the cache-generation guard and teardown. The chat is not opened, so there is no
-`syncFullHistory` underneath — the numbers are the screen's own cost. Remove the variable to get
-the app back.
+chat opens it normally and starts `AttachmentsAutoDiagnostics` beside it. This deliberately keeps
+the chat's `syncFullHistory` and GRDB writer in the experiment. The probe reproduces the screen's
+real cold-start ordering: it starts the source asynchronously and fires the sentinel as soon as
+the index makes the content eligible, even if the filtered timeline is still starting.
+
+Console tags attribute the work: `[trace][chat-all]` is the chat's background pagination,
+`[trace][filtered]` is the attachments timeline, `[trace][index] trace filtered` is its queued
+write/commit, and `trace index mapped` is observation materialisation. The real tile loader starts
+on the first 12 visual items as soon as the catalog is published, concurrently with remaining
+pagination just as visible grid cells do. The run then checks one forced original (up to 8 MiB),
+the viewer lane limit, cache-generation guard and teardown, and ends in the existing
+PASS/FAIL/SKIP report and panel dump. Remove the variable to disable the probe.
 
 Runs to collect: cold start → tap; tap again (warm); relogin → tap.
 
@@ -176,7 +186,8 @@ them in the Xcode console set the scheme environment variable `ZYNA_RUST_TRACING
 
 All research logs share one console tag: filter the Xcode console by `[Attachments]` (sub-tags
 `[Attachments][diag]` for panel dumps, `[Attachments][viewer]`, `[Attachments][auto]`). The
-`.attachments` scope is enabled by default in `LogConfig.enabled` (`Zyna/Utils/ScopedLog.swift`).
+`ZYNA_ATTACHMENTS_AUTODIAG=1` path enables the `.attachments` scope before constructing the chat;
+the normal `LogConfig.enabled` default does not enable it.
 In DEBUG the button next to the segmented control opens a diagnostics panel (counts, batch
 timings, per-reason fetch sizes, cache tiers, GRDB cross-check, probes, A/B and pause toggles).
 
@@ -235,29 +246,48 @@ stagnation, not on reconciling existing rows.
 - **Chat bubbles** — route `MediaCache.loadBubbleImage` through the attachment lanes and demand
   tickets so bubble loads obey the same concurrency and cancellation rules as the grid.
 
-## Production path (likely): a client-side index in GRDB, fed by the SDK
+## Production path: a client-side attachment index in GRDB
 
 E2EE Matrix offers neither server-side media search nor server thumbnails, and the SDK has no
 persistent index by msgtype (the event cache is a linked chunk without queries; Tantivy search
-indexes text only). A persistent local index is the only way to open "Attachments" instantly and
-offline for rooms the chat never opened. `storedMessage` already holds type, sources, dimensions,
-mime, filename, size, timestamp and an index on `(roomId, timestamp)`.
+indexes text only). `roomAttachment` is therefore a small derived projection keyed by
+`(roomId, eventId)`. It stores catalog metadata and Matrix media-source JSON, never media bytes and
+never a claim that room history is complete.
 
-Verified: late decryption already reaches GRDB — a `.set` for a known eventId rewrites the row,
-`contentType` included (`TimelineDiffBatcher.swift:722-769`, redacted excepted) — but only while
-the chat's live timeline runs. History backfill is `ChatViewModel.syncFullHistory` (`:4491`).
+Both current discovery paths feed it through the same typed mapper and classifier:
 
-Needed for that path:
-- `contentBlurhash` column and mapping in `TimelineService.contentFromMessageType` (also gives
-  chat bubbles a placeholder).
-- A distinct `contentType = "utd"` (+ session id, cause) instead of text "Unable to decrypt message";
-  otherwise pending counts and `retryDecryption(sessionIds:)` are impossible.
-- Thumbnail dimensions/size; the encrypted flag can be derived from the stored JSON.
-- `GRDBAttachmentSource`: `ValueObservation` on `(roomId, contentType, timestamp)`, paged like
-  `ChatViewModel.updateSearchQuery` (`:4424`).
-- Backfill for rooms never opened: the SDK timeline from this iteration as the engine.
-- Rows updated by late decryption while the chat is closed: keep a background timeline or
-  re-open the room — measure how often it matters.
+- the main chat writes attachments in `TimelineDiffBatcher`'s existing GRDB transaction, including
+  late-decryption `.set` updates;
+- the filtered attachments timeline writes every attachment it observes, in batches on a utility
+  queue;
+- migration `v26_roomAttachmentIndex` seeds rows from already-materialised `storedMessage` data.
 
-Current measurements say the `.onlyMessage` timeline alone is fast enough for rooms the chat has
-synced; the GRDB index matters for instant opening of rooms it has not.
+Upserts are idempotent and merge sparse observations, so a reaction/receipt update with missing
+media info cannot erase dimensions, blurhash, thumbnail data, or a resolved sender name. SDK
+`clear`, `pop`, `remove`, `truncate` and `reset` describe the in-memory
+timeline window, so they never delete catalog rows. An explicit redacted event does. Older
+`storedMessage` rows lack blurhash and thumbnail metadata; observing the raw SDK event later
+replaces that sparse seed with the full projection.
+
+The screen observes this projection once per room and builds media sources/month groups on a
+utility queue, publishing only the ready snapshot on main. Main-timeline SDK mapping and JSON
+extraction also run on their own serial queue, outside Texture scrolling. The filtered SDK
+timeline is now only a discovery/backfill engine: its pages upsert older
+events, while the fill target is measured as growth in unique projection rows, so replaying events
+already in GRDB does not count as a newly loaded page. Identical rediscoveries do not write or
+republish the room snapshot. Completeness/frontier state remains separate: "these are all
+attachments known locally" is useful and honest even when older history has not been requested.
+
+The main chat also persists the SDK's filename/MIME/size, blurhash and animated-image flag.
+Standalone and grouped photo/video bubbles decode blurhash off-main; image prefetch no longer
+speculates on encrypted originals without a sender thumbnail. Encrypted videos without a sender
+thumbnail never use the full video as an image source. Ordinary `m.audio` events render with the
+existing file row for now but are indexed as `audio`, distinct from events carrying the Matrix
+voice marker.
+
+Still open:
+
+- anchor live inserts when the grid moves to Texture;
+- represent UTD coverage/frontier separately from attachment rows;
+- catch redactions of old events while neither the chat nor attachments timeline contains them;
+- decide the user-triggered history budget independently of `ChatViewModel.syncFullHistory`.

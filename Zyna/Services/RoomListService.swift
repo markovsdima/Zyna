@@ -1381,6 +1381,9 @@ final class ZynaRoomListService: NSObject {
                         _ = try StoredMessage
                             .filter(Column("roomId") == roomId)
                             .deleteAll(db)
+                        _ = try StoredRoomAttachment
+                            .filter(Column("roomId") == roomId)
+                            .deleteAll(db)
                     }
                 }
                 logRooms("Removed room \(roomId) from local cache")

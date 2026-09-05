@@ -11,10 +11,21 @@ enum AttachmentsResearchSettings {
     static let didChange = Notification.Name("com.zyna.attachments.research.didChange")
 
     /// `ZYNA_ATTACHMENTS_AUTODIAG=1` in the scheme's environment: tapping a chat
-    /// runs `AttachmentsAutoDiagnostics` on that room instead of opening it.
+    /// opens it normally and runs `AttachmentsAutoDiagnostics` beside it.
     static var isAutoDiagnosticsEnabled: Bool {
         #if DEBUG
         return ProcessInfo.processInfo.environment["ZYNA_ATTACHMENTS_AUTODIAG"] == "1"
+        #else
+        return false
+        #endif
+    }
+
+    /// Passive production-path tracing. Unlike auto-diagnostics this never
+    /// creates a second timeline or starts media requests by itself.
+    static var isTraceEnabled: Bool {
+        #if DEBUG
+        return isAutoDiagnosticsEnabled
+            || ProcessInfo.processInfo.environment["ZYNA_ATTACHMENTS_TRACE"] == "1"
         #else
         return false
         #endif

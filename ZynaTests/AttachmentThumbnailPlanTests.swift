@@ -16,7 +16,7 @@ struct AttachmentThumbnailPlanTests {
     }
 
     private func item(
-        kind: AttachmentItem.Kind,
+        kind: RoomAttachmentKind,
         encrypted: Bool,
         sizeBytes: UInt64?,
         thumbnailEncrypted: Bool? = nil
@@ -148,7 +148,7 @@ struct AttachmentThumbnailPlanTests {
 
     @Test("Non-visual kinds are deferred")
     func nonVisual() throws {
-        for kind in [AttachmentItem.Kind.file, .audio, .voice] {
+        for kind in [RoomAttachmentKind.file, .audio, .voice] {
             #expect(AttachmentThumbnailPlan.make(for: try item(kind: kind, encrypted: true, sizeBytes: 10), tilePixelSize: 384) == .deferred(.nonVisual))
         }
     }

@@ -163,6 +163,27 @@ enum ChatMessageContent: Equatable {
 
 }
 
+/// SDK metadata that does not affect the shape of a chat bubble, but is
+/// needed by placeholders, forwarding and the durable attachments catalog.
+/// Keeping it next to the message avoids widening every media enum case.
+struct ChatMediaMetadata: Equatable {
+    let attachmentKind: RoomAttachmentKind
+    let filename: String
+    let mimetype: String?
+    let sizeBytes: UInt64?
+    let durationSeconds: TimeInterval?
+    let blurhash: String?
+    let isAnimated: Bool
+    let sourceJSON: String
+    let isSourceEncrypted: Bool
+    let thumbnailSourceJSON: String?
+    let isThumbnailEncrypted: Bool?
+    let thumbnailWidth: UInt64?
+    let thumbnailHeight: UInt64?
+    let thumbnailSizeBytes: UInt64?
+    let thumbnailMimetype: String?
+}
+
 extension ChatMessageContent {
     func applyingPreviewImageData(_ previewImageData: Data?) -> ChatMessageContent {
         guard let previewImageData else { return self }
@@ -439,6 +460,8 @@ struct MediaGroupItem: Equatable {
     let previewIdentity: String?
     let width: UInt64?
     let height: UInt64?
+    let blurhash: String?
+    let sizeBytes: UInt64?
     let caption: String?
     let sendStatus: String
 
@@ -481,6 +504,8 @@ struct MediaGroupItem: Equatable {
             && lhs.previewIdentity == rhs.previewIdentity
             && lhs.width == rhs.width
             && lhs.height == rhs.height
+            && lhs.blurhash == rhs.blurhash
+            && lhs.sizeBytes == rhs.sizeBytes
             && lhs.caption == rhs.caption
             && lhs.sendStatus == rhs.sendStatus
     }
@@ -513,6 +538,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     let isOutgoing: Bool
     let timestamp: Date
     let content: ChatMessageContent
+    private(set) var mediaMetadata: ChatMediaMetadata? = nil
     let reactions: [MessageReaction]
     let replyInfo: ReplyInfo?
     let isEditable: Bool
@@ -560,6 +586,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.isOutgoing == rhs.isOutgoing
             && lhs.timestamp == rhs.timestamp
             && lhs.content == rhs.content
+            && lhs.mediaMetadata == rhs.mediaMetadata
             && lhs.reactions == rhs.reactions
             && lhs.replyInfo == rhs.replyInfo
             && lhs.isEditable == rhs.isEditable
@@ -598,6 +625,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             isOutgoing: isOutgoing,
             timestamp: timestamp,
             content: updatedContent,
+            mediaMetadata: mediaMetadata,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: isEditable,
@@ -633,6 +661,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             isOutgoing: isOutgoing,
             timestamp: timestamp,
             content: content,
+            mediaMetadata: mediaMetadata,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: isEditable,

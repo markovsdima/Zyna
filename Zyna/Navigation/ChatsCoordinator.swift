@@ -172,13 +172,20 @@ final class ChatsCoordinator {
 
     private func showChatScreen(_ target: ChatScreenTarget, animated: Bool) {
         #if DEBUG
-        if AttachmentsResearchSettings.isAutoDiagnosticsEnabled {
-            runAttachmentsAutoDiagnostics(for: target)
-            return
+        if AttachmentsResearchSettings.isTraceEnabled {
+            LogConfig.enabled.insert(.attachments)
         }
         #endif
         let (vc, _) = makeChatScreen(target: target)
         navigationController.push(vc, animated: animated)
+        #if DEBUG
+        if AttachmentsResearchSettings.isAutoDiagnosticsEnabled {
+            // Keep the real chat alive underneath the probe. This reproduces
+            // its background `.all` pagination and DB writes instead of
+            // measuring an artificially isolated attachments timeline.
+            runAttachmentsAutoDiagnostics(for: target)
+        }
+        #endif
     }
 
     private func showSpace(
@@ -660,8 +667,8 @@ final class ChatsCoordinator {
     // MARK: - Room attachments
 
     #if DEBUG
-    /// Research mode: the tapped chat is not opened; its attachments
-    /// pipeline is exercised headlessly and reported to the console.
+    /// Research mode: the tapped chat is opened normally, then the attachments
+    /// pipeline is exercised headlessly beside it and reported to the console.
     private func runAttachmentsAutoDiagnostics(for target: ChatScreenTarget) {
         let room: Room?
         switch target {

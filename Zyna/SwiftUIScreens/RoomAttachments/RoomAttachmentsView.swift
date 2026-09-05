@@ -21,7 +21,7 @@ enum RoomAttachmentsMetrics {
     }
 }
 
-/// R&D screen: room attachments from a second SDK timeline.
+/// Room attachments backed by the local catalog and filtered SDK pagination.
 struct RoomAttachmentsView: View {
 
     @ObservedObject var viewModel: RoomAttachmentsViewModel

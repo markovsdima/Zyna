@@ -901,6 +901,159 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v26_roomAttachmentIndex") { db in
+            // Media metadata the chat persists next to each message and
+            // shares with the attachment catalog through ChatMediaMetadata.
+            try db.alter(table: StoredMessage.databaseTableName) { t in
+                t.add(column: "contentBlurhash", .text)
+                t.add(column: "contentIsAnimated", .boolean)
+                t.add(column: "contentMediaIsEncrypted", .boolean)
+                t.add(column: "contentThumbnailIsEncrypted", .boolean)
+                t.add(column: "contentThumbnailWidth", .integer)
+                t.add(column: "contentThumbnailHeight", .integer)
+                t.add(column: "contentThumbnailSize", .integer)
+                t.add(column: "contentThumbnailMimetype", .text)
+            }
+            // Ruma serializes an encrypted source as {"file":...} and a
+            // plain one as {"url":...}. The JSON is compact, so INSTR is an
+            // exact test here and in the seed below.
+            try db.execute(
+                sql: """
+                    UPDATE storedMessage
+                    SET contentMediaIsEncrypted = INSTR(contentMediaJSON, '"file":') > 0
+                    WHERE contentMediaJSON IS NOT NULL
+                    """
+            )
+            try db.execute(
+                sql: """
+                    UPDATE storedMessage
+                    SET contentThumbnailIsEncrypted = INSTR(contentThumbnailMediaJSON, '"file":') > 0
+                    WHERE contentThumbnailMediaJSON IS NOT NULL
+                    """
+            )
+
+            try db.create(table: StoredRoomAttachment.databaseTableName) { t in
+                t.column("roomId", .text).notNull()
+                t.column("eventId", .text).notNull()
+                t.column("kind", .text).notNull()
+                t.column("timestampMs", .integer).notNull()
+                t.column("senderId", .text).notNull()
+                t.column("senderDisplayName", .text)
+                t.column("isOutgoing", .boolean).notNull()
+                t.column("filename", .text).notNull()
+                t.column("caption", .text)
+                t.column("mimetype", .text)
+                t.column("sizeBytes", .integer)
+                t.column("pixelWidth", .integer)
+                t.column("pixelHeight", .integer)
+                t.column("durationSeconds", .double)
+                t.column("blurhash", .text)
+                t.column("isAnimated", .boolean).notNull().defaults(to: false)
+                t.column("sourceJSON", .text).notNull()
+                t.column("isSourceEncrypted", .boolean).notNull().defaults(to: false)
+                t.column("thumbnailSourceJSON", .text)
+                t.column("thumbnailIsEncrypted", .boolean)
+                t.column("thumbnailWidth", .integer)
+                t.column("thumbnailHeight", .integer)
+                t.column("thumbnailSizeBytes", .integer)
+                t.column("thumbnailMimetype", .text)
+                t.primaryKey(["roomId", "eventId"])
+            }
+            try db.create(
+                index: "idx_roomAttachment_room_timestamp",
+                on: StoredRoomAttachment.databaseTableName,
+                columns: ["roomId", "timestampMs", "eventId"]
+            )
+            try db.create(
+                index: "idx_roomAttachment_room_kind_timestamp",
+                on: StoredRoomAttachment.databaseTableName,
+                columns: ["roomId", "kind", "timestampMs", "eventId"]
+            )
+
+            // Preserve the useful work already done by the main chat. This
+            // does not claim history completeness; it only seeds attachments
+            // that are already present in the local message window.
+            // Use the schema that exists at this exact migration. Decoding
+            // the live StoredMessage type here would make an old migration
+            // depend on columns introduced by later app versions.
+            try db.execute(
+                sql: """
+                    WITH candidates AS (
+                        SELECT *,
+                            CASE
+                                WHEN contentType = 'image' THEN 'image'
+                                WHEN contentType = 'video' THEN 'video'
+                                WHEN contentType = 'audio' THEN 'audio'
+                                WHEN contentType = 'voice' THEN 'voice'
+                                WHEN contentType = 'file' AND (
+                                    LOWER(COALESCE(contentMimetype, '')) LIKE 'video/%'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.mp4'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.mov'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.m4v'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.webm'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.mkv'
+                                ) THEN 'video'
+                                WHEN contentType = 'file' AND (
+                                    LOWER(COALESCE(contentMimetype, '')) LIKE 'audio/%'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.m4a'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.mp3'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.ogg'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.wav'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.flac'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.aac'
+                                ) THEN 'audio'
+                                ELSE 'file'
+                            END AS attachmentKind
+                        FROM storedMessage
+                        WHERE eventId IS NOT NULL AND eventId != ''
+                          AND contentMediaJSON IS NOT NULL AND contentMediaJSON != ''
+                          AND contentType IN ('image', 'video', 'file', 'audio', 'voice')
+                    )
+                    INSERT OR IGNORE INTO roomAttachment (
+                        roomId, eventId, kind, timestampMs, senderId,
+                        senderDisplayName, isOutgoing, filename, caption,
+                        mimetype, sizeBytes, pixelWidth, pixelHeight,
+                        durationSeconds, blurhash, isAnimated, sourceJSON,
+                        isSourceEncrypted, thumbnailSourceJSON,
+                        thumbnailIsEncrypted, thumbnailWidth, thumbnailHeight,
+                        thumbnailSizeBytes, thumbnailMimetype
+                    )
+                    SELECT
+                        roomId, eventId, attachmentKind,
+                        CAST(ROUND(timestamp * 1000.0) AS INTEGER), senderId,
+                        senderDisplayName, isOutgoing,
+                        COALESCE(NULLIF(contentFilename, ''), CASE attachmentKind
+                            WHEN 'image' THEN 'image.jpg'
+                            WHEN 'video' THEN 'video.mp4'
+                            WHEN 'audio' THEN 'audio'
+                            WHEN 'voice' THEN 'voice.m4a'
+                            ELSE 'file'
+                        END),
+                        contentCaption, contentMimetype, contentFileSize,
+                        CASE attachmentKind
+                            WHEN 'image' THEN contentImageWidth
+                            WHEN 'video' THEN contentVideoWidth
+                        END,
+                        CASE attachmentKind
+                            WHEN 'image' THEN contentImageHeight
+                            WHEN 'video' THEN contentVideoHeight
+                        END,
+                        CASE attachmentKind
+                            WHEN 'video' THEN contentVideoDuration
+                            WHEN 'audio' THEN contentVoiceDuration
+                            WHEN 'voice' THEN contentVoiceDuration
+                        END,
+                        NULL, 0, contentMediaJSON,
+                        INSTR(contentMediaJSON, '"file":') > 0,
+                        contentThumbnailMediaJSON,
+                        CASE WHEN contentThumbnailMediaJSON IS NULL THEN NULL
+                             ELSE INSTR(contentThumbnailMediaJSON, '"file":') > 0 END,
+                        NULL, NULL, NULL, NULL
+                    FROM candidates
+                    """
+            )
+        }
+
         return migrator
     }
 

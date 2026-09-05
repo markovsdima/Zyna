@@ -6,6 +6,13 @@
 import Foundation
 import MatrixRustSDK
 
+#if DEBUG
+private let logAttachmentSourceTrace = ScopedLog(
+    .attachments,
+    prefix: "[Attachments][trace][filtered]"
+)
+#endif
+
 /// Which SDK filter feeds the attachments timeline.
 ///
 /// `.sdkOnlyMessage` is cheaper: text items never cross the FFI and the
@@ -19,11 +26,15 @@ enum AttachmentSourceFilterMode: String, CaseIterable {
     case sdkOnlyMessage
 }
 
-/// Feeds the attachments screen with month groups. The screen never knows
-/// whether rows come from an SDK timeline or a local index.
+/// Discovers attachment events independently of the durable local catalog.
 protocol AttachmentSource: AnyObject, Sendable {
     var onSnapshot: ((AttachmentTimelineStore.Snapshot, AttachmentTimelineStore.ApplySummary) -> Void)? { get set }
     var onPaginationStatus: ((PaginationStatus) -> Void)? { get set }
+    /// Durable-shaped values discovered by the live timeline. The catalog
+    /// may publish these optimistically while the same records wait for GRDB.
+    var onAttachmentsDiscovered: (([StoredRoomAttachment]) -> Void)? { get set }
+    /// Explicit invalidations (normally redactions), never SDK window trims.
+    var onAttachmentsInvalidated: (([String]) -> Void)? { get set }
 
     func start() async throws
     func stop()
@@ -37,9 +48,8 @@ protocol AttachmentSource: AnyObject, Sendable {
     func storeRowDescription(uniqueId: String) -> String?
 }
 
-/// A second live timeline of the room, built with `timelineWithConfiguration`.
-/// Main-confined by usage: `start/stop` run on the view model, listeners hop to
-/// main before touching state.
+/// A filtered room timeline used for live discovery and backward pagination.
+/// Diffs are processed in order off-main; UI snapshots are published on main.
 final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
 
     let room: Room
@@ -47,16 +57,40 @@ final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
 
     var onSnapshot: ((AttachmentTimelineStore.Snapshot, AttachmentTimelineStore.ApplySummary) -> Void)?
     var onPaginationStatus: ((PaginationStatus) -> Void)?
+    var onAttachmentsDiscovered: (([StoredRoomAttachment]) -> Void)?
+    var onAttachmentsInvalidated: (([String]) -> Void)?
 
     private let store: AttachmentTimelineStore
+    private let attachmentIndex: RoomAttachmentIndex?
+    private let roomId: String
     private var timeline: Timeline?
     private var listenerHandle: TaskHandle?
     private var paginationHandle: TaskHandle?
 
-    init(room: Room, filterMode: AttachmentSourceFilterMode, store: AttachmentTimelineStore = AttachmentTimelineStore()) {
+    init(
+        room: Room,
+        filterMode: AttachmentSourceFilterMode,
+        store: AttachmentTimelineStore = AttachmentTimelineStore(),
+        attachmentIndex: RoomAttachmentIndex? = nil
+    ) {
         self.room = room
         self.filterMode = filterMode
         self.store = store
+        self.attachmentIndex = attachmentIndex
+        roomId = room.id()
+        store.onAttachmentsDiscovered = { [weak self] items in
+            guard let self else { return }
+            let records = items.map {
+                StoredRoomAttachment(roomId: self.roomId, item: $0)
+            }
+            self.attachmentIndex?.upsert(records)
+            self.onAttachmentsDiscovered?(records)
+        }
+        store.onAttachmentsInvalidated = { [weak self] eventIds in
+            guard let self else { return }
+            self.attachmentIndex?.remove(eventIds: eventIds)
+            self.onAttachmentsInvalidated?(eventIds)
+        }
     }
 
     deinit {
@@ -64,6 +98,12 @@ final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
     }
 
     func start() async throws {
+        #if DEBUG
+        let started = ProcessInfo.processInfo.systemUptime
+        logAttachmentSourceTrace(
+            "source.start BEGIN room=\(room.id()) filter=\(filterMode.rawValue)"
+        )
+        #endif
         let filter: TimelineFilter
         switch filterMode {
         case .allWithSwiftFilter:
@@ -81,6 +121,11 @@ final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
         )
         let timeline = try await room.timelineWithConfiguration(configuration: configuration)
         self.timeline = timeline
+        #if DEBUG
+        logAttachmentSourceTrace(
+            "timeline BUILT room=\(room.id()) ms=\(Self.traceMs(since: started))"
+        )
+        #endif
 
         store.onSnapshot = { [weak self] snapshot, summary in
             self?.onSnapshot?(snapshot, summary)
@@ -93,6 +138,11 @@ final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
             store?.enqueue(diffs)
         }
         listenerHandle = await timeline.addListener(listener: listener)
+        #if DEBUG
+        logAttachmentSourceTrace(
+            "listener ATTACHED room=\(room.id()) ms=\(Self.traceMs(since: started))"
+        )
+        #endif
 
         let statusListener = AttachmentPaginationStatusListener { [weak self] status in
             DispatchQueue.main.async {
@@ -100,6 +150,11 @@ final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
             }
         }
         paginationHandle = try? await timeline.subscribeToBackPaginationStatus(listener: statusListener)
+        #if DEBUG
+        logAttachmentSourceTrace(
+            "source.start END room=\(room.id()) ms=\(Self.traceMs(since: started))"
+        )
+        #endif
     }
 
     func stop() {
@@ -111,8 +166,30 @@ final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
     }
 
     func loadMore(numEvents: UInt16) async throws -> Bool {
-        guard let timeline else { return true }
-        return try await timeline.paginateBackwards(numEvents: numEvents)
+        #if DEBUG
+        let started = ProcessInfo.processInfo.systemUptime
+        #endif
+        guard let timeline else {
+            #if DEBUG
+            logAttachmentSourceTrace(
+                "paginate NOT_READY room=\(room.id()) requested=\(numEvents) returningHitStart=true"
+            )
+            #endif
+            return true
+        }
+        #if DEBUG
+        logAttachmentSourceTrace(
+            "paginate BEGIN room=\(room.id()) requested=\(numEvents)"
+        )
+        #endif
+        let reachedStart = try await timeline.paginateBackwards(numEvents: numEvents)
+        #if DEBUG
+        logAttachmentSourceTrace(
+            "paginate END room=\(room.id()) requested=\(numEvents) "
+            + "reachedStart=\(reachedStart) ms=\(Self.traceMs(since: started))"
+        )
+        #endif
+        return reachedStart
     }
 
     func retryDecryption(sessionIds: [String]) {
@@ -173,6 +250,15 @@ final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
         }
         return "no row"
     }
+
+    #if DEBUG
+    private static func traceMs(since start: TimeInterval) -> String {
+        String(
+            format: "%.0f",
+            (ProcessInfo.processInfo.systemUptime - start) * 1000
+        )
+    }
+    #endif
 }
 
 private final class AttachmentTimelineListener: TimelineListener {

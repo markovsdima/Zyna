@@ -36,8 +36,11 @@ final class ImageMessageCellNode: MessageCellNode {
     private var aspectRatio: CGFloat
     private let displaySource: MediaSource?
     private let previewImageData: Data?
+    private let matrixEventId: String?
     private let hasSDKDimensions: Bool
     private let usesDirectImageContent: Bool
+    private var placeholderTask: Task<Void, Never>?
+    private var imageLoadTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -100,6 +103,7 @@ final class ImageMessageCellNode: MessageCellNode {
 
         self.displaySource = thumbnailSource ?? source
         self.previewImageData = previewImageData
+        self.matrixEventId = message.eventId
         if let width = imageWidth, let height = imageHeight, height > 0 {
             self.aspectRatio = CGFloat(width) / CGFloat(height)
             self.hasSDKDimensions = true
@@ -283,6 +287,8 @@ final class ImageMessageCellNode: MessageCellNode {
         if let previewImageData,
            let previewImage = UIImage(data: previewImageData) {
             imageNode.image = previewImage
+        } else if let blurhash = message.mediaMetadata?.blurhash {
+            loadBlurhashAsync(blurhash)
         }
 
         // Load image
@@ -299,6 +305,11 @@ final class ImageMessageCellNode: MessageCellNode {
                 loadBubbleImageAsync(source: source)
             }
         }
+    }
+
+    deinit {
+        placeholderTask?.cancel()
+        imageLoadTask?.cancel()
     }
 
     // MARK: - Async Loading
@@ -399,18 +410,34 @@ final class ImageMessageCellNode: MessageCellNode {
     private func loadBubbleImageAsync(source: MediaSource) {
         let recipe = bubbleCacheRecipe()
         let knownAspectRatio = hasSDKDimensions ? aspectRatio : nil
-        Task { [weak self] in
-            guard let self,
-                  let bubbleImage = await MediaCache.shared.loadBubbleImage(
+        imageLoadTask?.cancel()
+        imageLoadTask = Task { [weak self] in
+            let bubbleImage = await MediaCache.shared.loadBubbleImage(
                     source: source,
                     maxPixelWidth: recipe.maxPixelWidth,
                     maxPixelHeight: recipe.maxPixelHeight,
                     knownAspectRatio: knownAspectRatio
-                  ) else { return }
+                  )
+            guard !Task.isCancelled, let bubbleImage else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.imageNode.image = bubbleImage.image
                 self.applyLoadedSourcePixelSize(bubbleImage.sourcePixelSize, relayout: true)
+            }
+        }
+    }
+
+    private func loadBlurhashAsync(_ blurhash: String) {
+        let knownAspectRatio = hasSDKDimensions ? aspectRatio : nil
+        placeholderTask?.cancel()
+        placeholderTask = Task { [weak self] in
+            let placeholder = await Task.detached(priority: .utility) {
+                BlurhashDecoder.placeholder(for: blurhash, aspectRatio: knownAspectRatio)
+            }.value
+            guard !Task.isCancelled, let placeholder else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.imageNode.image == nil else { return }
+                self.imageNode.image = placeholder
             }
         }
     }
@@ -444,14 +471,32 @@ final class ImageMessageCellNode: MessageCellNode {
     /// without waiting for the image to load.
     private func persistDimensions(_ size: CGSize) {
         let id = messageId
+        let eventId = matrixEventId
         let w = Int64(size.width)
         let h = Int64(size.height)
         DispatchQueue.global(qos: .utility).async {
             try? DatabaseService.shared.dbQueue.write { db in
                 try db.execute(
-                    sql: "UPDATE storedMessage SET contentImageWidth = ?, contentImageHeight = ? WHERE id = ?",
+                    sql: """
+                        UPDATE storedMessage
+                        SET contentImageWidth = ?, contentImageHeight = ?
+                        WHERE id = ?
+                          AND (contentImageWidth IS NULL OR contentImageHeight IS NULL)
+                        """,
                     arguments: [w, h, id]
                 )
+                if let eventId {
+                    try db.execute(
+                        sql: """
+                            UPDATE roomAttachment
+                            SET pixelWidth = ?, pixelHeight = ?
+                            WHERE roomId = (SELECT roomId FROM storedMessage WHERE id = ?)
+                              AND eventId = ?
+                              AND (pixelWidth IS NULL OR pixelHeight IS NULL)
+                            """,
+                        arguments: [w, h, id, eventId]
+                    )
+                }
             }
         }
     }
