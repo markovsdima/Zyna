@@ -53,25 +53,29 @@ struct AttachmentTimelineStoreTests {
         ))
     }
 
-    @Test("Snapshot lists media newest first and splits files")
+    @Test("Snapshot lists media newest first and splits voice from files")
     func snapshotOrderAndSplit() throws {
         let store = AttachmentTimelineStore(publishDelay: 0)
         let summary = store.apply([.reset([
             try attachment("old", timestampMs: Self.may2026Ms),
             .other(uniqueId: "text"),
             try attachment("doc", kind: .file),
+            try attachment("voice", kind: .voice),
+            try attachment("audio", kind: .audio),
             try attachment("new")
         ])])
         #expect(summary.resets == 1)
 
         let snapshot = store.currentSnapshot()
-        #expect(snapshot.rowCount == 4)
+        #expect(snapshot.rowCount == 6)
         #expect(snapshot.mediaCount == 2)
-        #expect(snapshot.fileCount == 1)
+        #expect(snapshot.voiceCount == 1)
+        #expect(snapshot.fileCount == 2)
         #expect(snapshot.media.map(\.id) == ["2026-09", "2026-05"])
         #expect(snapshot.media.first?.items.map(\.id) == ["new"])
         #expect(snapshot.media.last?.items.map(\.id) == ["old"])
-        #expect(snapshot.files.first?.items.map(\.id) == ["doc"])
+        #expect(snapshot.voice.first?.items.map(\.id) == ["voice"])
+        #expect(snapshot.files.first?.items.map(\.id) == ["audio", "doc"])
     }
 
     @Test("Late decryption replaces a pending row in place")

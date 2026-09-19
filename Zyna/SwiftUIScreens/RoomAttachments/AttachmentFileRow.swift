@@ -53,7 +53,6 @@ struct AttachmentFileRow: View {
 
     private var iconName: String {
         switch item.kind {
-        case .voice: return "mic.fill"
         case .audio: return "waveform"
         case .video: return "film"
         case .image: return "photo"
@@ -69,6 +68,9 @@ struct AttachmentFileRow: View {
                 if type.conforms(to: .text) || type.conforms(to: .plainText) { return "doc.text" }
             }
             return "doc"
+        case .voice:
+            assertionFailure("Voice attachments use AttachmentVoiceRow")
+            return "mic.fill"
         }
     }
 

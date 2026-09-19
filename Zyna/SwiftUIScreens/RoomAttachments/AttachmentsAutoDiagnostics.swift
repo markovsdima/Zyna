@@ -87,6 +87,7 @@ enum AttachmentsAutoDiagnostics {
                 "trace UI footer eligible ms=\(elapsedMs(since: started)) "
                 + "sourceRows=\(viewModel.diagnostics.rowCount) "
                 + "uiMedia=\(viewModel.media.flatMap(\.items).count) "
+                + "uiVoice=\(viewModel.voice.flatMap(\.items).count) "
                 + "uiFiles=\(viewModel.files.flatMap(\.items).count)"
             )
             viewModel.sentinelAppeared()
@@ -104,7 +105,7 @@ enum AttachmentsAutoDiagnostics {
         checks.append(Check(
             name: "fill completes",
             passed: fillsDone,
-            detail: "fills=\(d.fills) batches=\(d.batches) rows=\(d.rowCount) media=\(d.mediaCount) files=\(d.fileCount) "
+            detail: "fills=\(d.fills) batches=\(d.batches) rows=\(d.rowCount) media=\(d.mediaCount) voice=\(d.voiceCount) files=\(d.fileCount) "
                 + "utd=\(d.pendingCount) hitStart=\(d.hitStart) byBudget=\(d.fillsEndedByTimeBudget) "
                 + "lateSnapshots=\(d.lateSnapshotsAfterFill) settleCap=\(d.settleCapHits) "
                 + "foreign≥\(d.foreignPaginations) ms=\(elapsedMs(since: started))"
@@ -125,7 +126,7 @@ enum AttachmentsAutoDiagnostics {
         viewModel.refreshGRDBCrossCheck()
         let grdbDone = await waitUntil(seconds: 5) { viewModel.diagnostics.grdbMediaCount != nil }
         d = viewModel.diagnostics
-        let sdkTotal = d.mediaCount + d.fileCount
+        let sdkTotal = d.mediaCount + d.voiceCount + d.fileCount
         let grdbDetail = "grdb=\(d.grdbMediaCount.map(String.init) ?? "-") sdk=\(sdkTotal) "
             + "onlyGRDB=\(d.onlyInGRDB.count) onlySDK=\(d.onlyInSDK.count) grdbUtd=\(d.grdbUtdCount.map(String.init) ?? "-")"
         let mirrorEmpty = (d.grdbMediaCount ?? 0) == 0 && (d.grdbUtdCount ?? 0) == 0

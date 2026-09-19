@@ -4,6 +4,96 @@
 //
 
 import AsyncDisplayKit
+import UIKit
+
+/// Layer-backed spinner for the voice button. The animation stays on the
+/// compositor and only the active voice cell owns one running animation.
+private final class VoiceLoadingIndicatorNode: ASDisplayNode {
+
+    private static let animationKey = "voiceLoadingRotation"
+
+    private let indicatorColor: UIColor
+    private var shapeLayer: CAShapeLayer?
+    private var shouldAnimate = false
+
+    init(color: UIColor) {
+        indicatorColor = color
+        super.init()
+        isLayerBacked = true
+        isHidden = true
+    }
+
+    override func didLoad() {
+        super.didLoad()
+        let shapeLayer = CAShapeLayer()
+        shapeLayer.fillColor = UIColor.clear.cgColor
+        shapeLayer.strokeColor = indicatorColor.cgColor
+        shapeLayer.lineWidth = 2
+        shapeLayer.lineCap = .round
+        shapeLayer.strokeStart = 0.08
+        shapeLayer.strokeEnd = 0.78
+        layer.addSublayer(shapeLayer)
+        self.shapeLayer = shapeLayer
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+        applyAnimation()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func layout() {
+        super.layout()
+        guard let shapeLayer else { return }
+        shapeLayer.frame = bounds
+        shapeLayer.path = UIBezierPath(
+            ovalIn: bounds.insetBy(dx: shapeLayer.lineWidth / 2, dy: shapeLayer.lineWidth / 2)
+        ).cgPath
+    }
+
+    override func didEnterVisibleState() {
+        super.didEnterVisibleState()
+        applyAnimation()
+    }
+
+    override func didExitVisibleState() {
+        super.didExitVisibleState()
+        layer.removeAnimation(forKey: Self.animationKey)
+    }
+
+    func setAnimating(_ animated: Bool) {
+        shouldAnimate = animated
+        isHidden = !animated
+        guard isNodeLoaded else { return }
+        applyAnimation()
+    }
+
+    @objc private func applicationWillEnterForeground() {
+        layer.removeAnimation(forKey: Self.animationKey)
+        applyAnimation()
+    }
+
+    private func applyAnimation() {
+        if shouldAnimate {
+            guard layer.animation(forKey: Self.animationKey) == nil else { return }
+            let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+            animation.fromValue = 0
+            animation.toValue = 2 * CGFloat.pi
+            animation.duration = 0.8
+            animation.repeatCount = .infinity
+            animation.isRemovedOnCompletion = false
+            animation.timingFunction = CAMediaTimingFunction(name: .linear)
+            layer.add(animation, forKey: Self.animationKey)
+        } else {
+            layer.removeAnimation(forKey: Self.animationKey)
+        }
+    }
+}
 
 final class VoiceBubbleContentNode: ASDisplayNode {
 
@@ -46,6 +136,8 @@ final class VoiceBubbleContentNode: ASDisplayNode {
         let waveformFilledColor: UIColor
         let waveformUnfilledColor: UIColor
         let playImage: UIImage
+        let isLoading: Bool
+        let hasPlaybackFailure: Bool
         let maxContentWidth: CGFloat
 
         init(
@@ -60,6 +152,8 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             waveformFilledColor: UIColor,
             waveformUnfilledColor: UIColor,
             playImage: UIImage,
+            isLoading: Bool,
+            hasPlaybackFailure: Bool,
             maxContentWidth: CGFloat
         ) {
             self.forwardedHeaderText = forwardedHeaderText
@@ -73,6 +167,8 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             self.waveformFilledColor = waveformFilledColor
             self.waveformUnfilledColor = waveformUnfilledColor
             self.playImage = playImage
+            self.isLoading = isLoading
+            self.hasPlaybackFailure = hasPlaybackFailure
             self.maxContentWidth = maxContentWidth
         }
     }
@@ -102,6 +198,7 @@ final class VoiceBubbleContentNode: ASDisplayNode {
     private let playImageWhenPaused: UIImage
     private let playImageWhenPlaying: UIImage
     private let maxContentWidth: CGFloat
+    private let loadingIndicatorNode: VoiceLoadingIndicatorNode
 
     private(set) var replyHeaderFrame: CGRect?
     private(set) var playButtonFrame: CGRect = .zero
@@ -120,6 +217,21 @@ final class VoiceBubbleContentNode: ASDisplayNode {
     var isPlaying: Bool = false {
         didSet {
             guard isPlaying != oldValue else { return }
+            setNeedsDisplay()
+        }
+    }
+
+    var isLoading: Bool = false {
+        didSet {
+            guard isLoading != oldValue else { return }
+            loadingIndicatorNode.setAnimating(isLoading)
+            setNeedsDisplay()
+        }
+    }
+
+    var hasPlaybackFailure: Bool = false {
+        didSet {
+            guard hasPlaybackFailure != oldValue else { return }
             setNeedsDisplay()
         }
     }
@@ -158,9 +270,13 @@ final class VoiceBubbleContentNode: ASDisplayNode {
         self.playImageWhenPaused = playImageWhenPaused
         self.playImageWhenPlaying = playImageWhenPlaying
         self.maxContentWidth = maxContentWidth
+        self.loadingIndicatorNode = VoiceLoadingIndicatorNode(
+            color: waveformFilledColor
+        )
         super.init()
         isOpaque = false
         style.flexShrink = 1
+        addSubnode(loadingIndicatorNode)
     }
 
     override func calculateSizeThatFits(_ constrainedSize: CGSize) -> CGSize {
@@ -193,6 +309,7 @@ final class VoiceBubbleContentNode: ASDisplayNode {
         )
         replyHeaderFrame = layout.replyRect
         playButtonFrame = layout.playButtonRect
+        loadingIndicatorNode.frame = layout.playImageRect.insetBy(dx: -1, dy: -1)
     }
 
     override func drawParameters(forAsyncLayer layer: _ASDisplayLayer) -> NSObjectProtocol? {
@@ -208,6 +325,8 @@ final class VoiceBubbleContentNode: ASDisplayNode {
             waveformFilledColor: waveformFilledColor,
             waveformUnfilledColor: waveformUnfilledColor,
             playImage: isPlaying ? playImageWhenPlaying : playImageWhenPaused,
+            isLoading: isLoading,
+            hasPlaybackFailure: hasPlaybackFailure,
             maxContentWidth: maxContentWidth
         )
     }
@@ -258,7 +377,11 @@ final class VoiceBubbleContentNode: ASDisplayNode {
 
         if isCancelledBlock() { return }
 
-        params.playImage.draw(in: layout.playImageRect)
+        if params.hasPlaybackFailure {
+            MessageStatusIconImages.failedBadge.draw(in: layout.playImageRect)
+        } else if !params.isLoading {
+            params.playImage.draw(in: layout.playImageRect)
+        }
         drawWaveform(
             samples: fittedWaveformSamples(
                 from: params.waveformSamples,

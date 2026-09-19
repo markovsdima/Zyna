@@ -34,6 +34,12 @@ private struct GlassHostedContent<Content: View>: View {
 /// contribution, so inflating the safe area pushes the chrome down too.
 final class GlassHostingController<Content: View>: UIViewController {
 
+    private struct ScrollViewportAnchor {
+        let scrollView: UIScrollView
+        let contentPoint: CGPoint
+        let controllerY: CGFloat
+    }
+
     /// Replacing `items` drops the default back button — rebuild it.
     let glassTopBar: GlassTopBar
 
@@ -46,6 +52,7 @@ final class GlassHostingController<Content: View>: UIViewController {
     private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
     private weak var cachedScrollView: UIScrollView?
     private var lastScrollViewLookup: CFTimeInterval = 0
+    private var pendingVoiceViewportAnchor: ScrollViewportAnchor?
     private var isRegisteredAsCaptureSource = false
 
     /// - Parameter screenBackgroundColor: feeds both the root view and the
@@ -99,6 +106,10 @@ final class GlassHostingController<Content: View>: UIViewController {
         hostingController.view.frame = view.bounds
         voicePlayerHost?.layout()
         glassTopBar.updateLayout(in: view)
+        if pendingVoiceViewportAnchor != nil {
+            hostingController.view.layoutIfNeeded()
+            restorePendingVoiceViewportAnchor()
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -162,11 +173,53 @@ final class GlassHostingController<Content: View>: UIViewController {
     }
 
     private func setupVoicePlayerHost() {
+        voicePlayerHost?.onTopInsetWillChange = { [weak self] in
+            self?.captureVoiceViewportAnchor()
+        }
         voicePlayerHost?.onVisibilityChanged = { [weak self] in
-            self?.view.setNeedsLayout()
+            guard let self else { return }
+            self.view.setNeedsLayout()
             GlassService.shared.setNeedsCapture()
         }
         voicePlayerHost?.install()
+    }
+
+    private func captureVoiceViewportAnchor() {
+        let scrollView = cachedScrollView ?? Self.findScrollView(in: hostingController.view)
+        guard let scrollView else { return }
+        cachedScrollView = scrollView
+
+        let contentPoint = CGPoint(x: scrollView.bounds.midX, y: scrollView.bounds.midY)
+        pendingVoiceViewportAnchor = ScrollViewportAnchor(
+            scrollView: scrollView,
+            contentPoint: contentPoint,
+            controllerY: scrollView.convert(contentPoint, to: view).y
+        )
+    }
+
+    /// Safe-area propagation differs between SwiftUI releases. Preserve an
+    /// actual visible content point instead of assuming how frame and inset
+    /// changes translate into a scroll offset.
+    private func restorePendingVoiceViewportAnchor() {
+        guard let anchor = pendingVoiceViewportAnchor else { return }
+        pendingVoiceViewportAnchor = nil
+        let scrollView = anchor.scrollView
+        guard scrollView.window === view.window else { return }
+
+        let currentY = scrollView.convert(anchor.contentPoint, to: view).y
+        let correction = currentY - anchor.controllerY
+        guard abs(correction) > 0.5 else { return }
+
+        let minimumY = -scrollView.adjustedContentInset.top
+        let maximumY = max(
+            minimumY,
+            scrollView.contentSize.height
+                + scrollView.adjustedContentInset.bottom
+                - scrollView.bounds.height
+        )
+        var offset = scrollView.contentOffset
+        offset.y = min(maximumY, max(minimumY, offset.y + correction))
+        scrollView.setContentOffset(offset, animated: false)
     }
 
     private func wireAccessibilityOrder() {

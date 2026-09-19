@@ -24,11 +24,14 @@ final class VoiceMessageCellNode: MessageCellNode {
 
     private let mediaSource: MediaSource?
     private let nowPlayingItem: AudioPlayerService.NowPlayingItem?
+    private let playbackEventId: String?
     private let totalDuration: TimeInterval
     private weak var audioPlayer: AudioPlayerService?
     private var cancellable: AnyCancellable?
     private var currentProgress: Float = 0
     private var isPlaying: Bool = false
+    private var isLoading: Bool = false
+    private var hasPlaybackFailure: Bool = false
     private let replyEventId: String?
 
     // MARK: - Constants
@@ -45,6 +48,7 @@ final class VoiceMessageCellNode: MessageCellNode {
     ) {
         self.audioPlayer = audioPlayer
         self.replyEventId = message.replyInfo?.eventId
+        self.playbackEventId = message.eventId
 
         let voiceMediaSource: MediaSource?
         let voiceDuration: TimeInterval
@@ -205,17 +209,33 @@ final class VoiceMessageCellNode: MessageCellNode {
     private func observePlayer() {
         guard let mediaSource else { return }
         let sourceKey = mediaSource.url()
-        cancellable = audioPlayer?.$state
+        guard let audioPlayer else { return }
+        cancellable = audioPlayer.$state
+            .combineLatest(audioPlayer.$nowPlaying, audioPlayer.$failure)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
+            .sink { [weak self] state, nowPlaying, failure in
                 guard let self else { return }
-                let isThisSource = state.sourceURL == sourceKey
-                let playing = isThisSource && state.isPlaying
-                let progress: Float = isThisSource ? state.progress : 0
+                let isThisItem = state.sourceURL == sourceKey
+                    && Self.matches(eventId: self.playbackEventId, nowPlaying: nowPlaying)
+                let failed = failure?.sourceURL == sourceKey
+                    && Self.matches(eventId: self.playbackEventId, failureEventId: failure?.eventId)
+                let playing = isThisItem && state.isPlaying
+                let loading = isThisItem && state.isLoading && !failed
+                let progress: Float = isThisItem ? state.progress : 0
 
                 if playing != self.isPlaying {
                     self.isPlaying = playing
                     self.flatContentNode.isPlaying = playing
+                }
+
+                if loading != self.isLoading {
+                    self.isLoading = loading
+                    self.flatContentNode.isLoading = loading
+                }
+
+                if failed != self.hasPlaybackFailure {
+                    self.hasPlaybackFailure = failed
+                    self.flatContentNode.hasPlaybackFailure = failed
                 }
 
                 if progress != self.currentProgress {
@@ -229,6 +249,18 @@ final class VoiceMessageCellNode: MessageCellNode {
                     )
                 }
             }
+    }
+
+    private static func matches(
+        eventId: String?,
+        nowPlaying: AudioPlayerService.NowPlayingItem?
+    ) -> Bool {
+        matches(eventId: eventId, failureEventId: nowPlaying?.eventId)
+    }
+
+    private static func matches(eventId: String?, failureEventId: String?) -> Bool {
+        guard let eventId, let failureEventId else { return true }
+        return eventId == failureEventId
     }
 
     @objc private func playTapped() {

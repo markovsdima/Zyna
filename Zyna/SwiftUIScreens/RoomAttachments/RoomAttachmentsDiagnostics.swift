@@ -26,6 +26,7 @@ struct RoomAttachmentsDiagnostics: Equatable {
     var chatHistorySyncPaused = false
     var rowCount = 0
     var mediaCount = 0
+    var voiceCount = 0
     var fileCount = 0
     var pendingCount = 0
     var snapshots = 0
@@ -96,7 +97,10 @@ struct RoomAttachmentsDiagnostics: Equatable {
             "filter=\(filterMode) encrypted=\(roomEncrypted.map(String.init) ?? "?") "
             + "chatSyncPaused=\(chatHistorySyncPaused)"
         )
-        lines.append("rows=\(rowCount) media=\(mediaCount) files=\(fileCount) utd=\(pendingCount)")
+        lines.append(
+            "rows=\(rowCount) media=\(mediaCount) voice=\(voiceCount) "
+            + "files=\(fileCount) utd=\(pendingCount)"
+        )
         lines.append(
             "snapshots=\(snapshots) firstMs=\(timeToFirstSnapshotMs.map { String(format: "%.0f", $0) } ?? "-") "
             + "map=\(String(format: "%.1f", lastMapMs))/max \(String(format: "%.1f", maxMapMs))ms "

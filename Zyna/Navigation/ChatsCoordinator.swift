@@ -723,7 +723,12 @@ final class ChatsCoordinator {
         )
         let vc = GlassHostingController(
             title: String(localized: "Attachments"),
-            rootView: RoomAttachmentsView(viewModel: viewModel, actions: actions),
+            rootView: RoomAttachmentsView(
+                viewModel: viewModel,
+                audioPlayer: audioPlayer,
+                roomName: room.displayName() ?? String(localized: "Chat"),
+                actions: actions
+            ),
             audioPlayer: audioPlayer,
             onBack: { [weak self] in
                 _ = self?.navigationController.pop()

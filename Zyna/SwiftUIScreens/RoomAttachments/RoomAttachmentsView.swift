@@ -25,6 +25,8 @@ enum RoomAttachmentsMetrics {
 struct RoomAttachmentsView: View {
 
     @ObservedObject var viewModel: RoomAttachmentsViewModel
+    let audioPlayer: AudioPlayerService
+    let roomName: String
     let actions: RoomAttachmentsActions
 
     #if DEBUG
@@ -125,6 +127,8 @@ struct RoomAttachmentsView: View {
             switch viewModel.tab {
             case .media:
                 mediaGrid
+            case .voice:
+                voiceList
             case .files:
                 filesList
             }
@@ -153,6 +157,36 @@ struct RoomAttachmentsView: View {
                         Section {
                             ForEach(group.items) { item in
                                 tile(for: item)
+                            }
+                        } header: {
+                            monthHeader(group.title)
+                        }
+                    }
+                }
+                footer
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var voiceList: some View {
+        if viewModel.voice.isEmpty, viewModel.fillState == .exhausted {
+            emptyState(icon: "mic", text: String(localized: "No voice messages yet."))
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    ForEach(viewModel.voice) { group in
+                        Section {
+                            ForEach(group.items) { item in
+                                AttachmentVoiceRow(
+                                    item: item,
+                                    roomId: viewModel.roomId,
+                                    roomName: roomName,
+                                    audioPlayer: audioPlayer
+                                )
+                                .id("\(item.id)|\(item.sourceMxc)")
+                                Divider()
+                                    .padding(.leading, 72)
                             }
                         } header: {
                             monthHeader(group.title)

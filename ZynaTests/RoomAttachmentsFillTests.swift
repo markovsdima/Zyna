@@ -43,8 +43,9 @@ private final class FakeAttachmentSource: AttachmentSource, @unchecked Sendable 
     func emitSnapshot() {
         generation += 1
         let snapshot = AttachmentTimelineStore.Snapshot(
-            generation: generation, rowCount: rows, media: [], files: [],
-            mediaCount: 0, fileCount: 0, pendingCount: 0, pendingSessionIds: []
+            generation: generation, rowCount: rows, media: [], voice: [], files: [],
+            mediaCount: 0, voiceCount: 0, fileCount: 0,
+            pendingCount: 0, pendingSessionIds: []
         )
         let handler = onSnapshot
         Task { @MainActor in

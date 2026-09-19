@@ -21,6 +21,7 @@ final class EmbeddedVoiceTopPlayerHost {
     }
 
     var onVisibilityChanged: (() -> Void)?
+    var onTopInsetWillChange: (() -> Void)?
     var accessibilityView: UIView { playerView }
 
     private weak var viewController: UIViewController?
@@ -121,11 +122,16 @@ final class EmbeddedVoiceTopPlayerHost {
     private func setVisible(_ visible: Bool, animated: Bool) {
         guard isVisible != visible else { return }
 
+        let isOnScreen = viewController?.view.window != nil
+        let desiredTopInset = visible ? Metrics.reservedTopInset : 0
+        if isOnScreen, abs(desiredTopInset - appliedTopInset) > 0.5 {
+            onTopInsetWillChange?()
+        }
+
         isVisible = visible
         updateTopInset()
 
         guard let view = viewController?.view else { return }
-        let isOnScreen = view.window != nil
         if isOnScreen {
             onVisibilityChanged?()
         }
@@ -169,7 +175,8 @@ final class EmbeddedVoiceTopPlayerHost {
     private func updateTopInset() {
         guard let viewController else { return }
         let desiredInset = isVisible ? Metrics.reservedTopInset : 0
-        guard abs(desiredInset - appliedTopInset) > 0.5 else { return }
+        let delta = desiredInset - appliedTopInset
+        guard abs(delta) > 0.5 else { return }
         let externalTopInset = max(0, viewController.additionalSafeAreaInsets.top - appliedTopInset)
         viewController.additionalSafeAreaInsets.top = externalTopInset + desiredInset
         appliedTopInset = desiredInset

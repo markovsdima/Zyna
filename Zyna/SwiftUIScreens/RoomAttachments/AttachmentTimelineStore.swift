@@ -61,16 +61,19 @@ final class AttachmentTimelineStore {
         let generation: Int
         let rowCount: Int
         let media: [AttachmentMonthGroup]
+        let voice: [AttachmentMonthGroup]
         let files: [AttachmentMonthGroup]
         let mediaCount: Int
+        let voiceCount: Int
         let fileCount: Int
         let pendingCount: Int
         /// Sorted, unique Megolm session ids of undecrypted rows.
         let pendingSessionIds: [String]
 
         static let empty = Snapshot(
-            generation: 0, rowCount: 0, media: [], files: [],
-            mediaCount: 0, fileCount: 0, pendingCount: 0, pendingSessionIds: []
+            generation: 0, rowCount: 0, media: [], voice: [], files: [],
+            mediaCount: 0, voiceCount: 0, fileCount: 0,
+            pendingCount: 0, pendingSessionIds: []
         )
     }
 
@@ -324,6 +327,7 @@ final class AttachmentTimelineStore {
 
     private func makeSnapshot() -> Snapshot {
         var mediaItems: [AttachmentItem] = []
+        var voiceItems: [AttachmentItem] = []
         var fileItems: [AttachmentItem] = []
         var pendingCount = 0
         var sessionIds = Set<String>()
@@ -333,6 +337,8 @@ final class AttachmentTimelineStore {
             case .attachment(let item):
                 if item.kind.isVisual {
                     mediaItems.append(item)
+                } else if item.kind == .voice {
+                    voiceItems.append(item)
                 } else {
                     fileItems.append(item)
                 }
@@ -350,8 +356,10 @@ final class AttachmentTimelineStore {
             generation: generation,
             rowCount: rows.count,
             media: Self.groupByMonth(mediaItems),
+            voice: Self.groupByMonth(voiceItems),
             files: Self.groupByMonth(fileItems),
             mediaCount: mediaItems.count,
+            voiceCount: voiceItems.count,
             fileCount: fileItems.count,
             pendingCount: pendingCount,
             pendingSessionIds: sessionIds.sorted()

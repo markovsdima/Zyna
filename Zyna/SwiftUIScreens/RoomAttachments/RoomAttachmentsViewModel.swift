@@ -93,8 +93,10 @@ struct RoomAttachmentCatalogState {
 private struct RoomAttachmentCatalogSnapshot: Equatable {
     let recordCount: Int
     let media: [AttachmentMonthGroup]
+    let voice: [AttachmentMonthGroup]
     let files: [AttachmentMonthGroup]
     let mediaCount: Int
+    let voiceCount: Int
     let fileCount: Int
     let hasIndexedSnapshot: Bool
     let mapMs: Double
@@ -105,8 +107,10 @@ private struct RoomAttachmentCatalogSnapshot: Equatable {
     ) -> Bool {
         lhs.recordCount == rhs.recordCount
             && lhs.media == rhs.media
+            && lhs.voice == rhs.voice
             && lhs.files == rhs.files
             && lhs.mediaCount == rhs.mediaCount
+            && lhs.voiceCount == rhs.voiceCount
             && lhs.fileCount == rhs.fileCount
             && lhs.hasIndexedSnapshot == rhs.hasIndexedSnapshot
     }
@@ -186,12 +190,15 @@ private final class RoomAttachmentCatalogProjection: @unchecked Sendable {
         let records = state.visibleRecords
         let items = records.compactMap { $0.makeAttachmentItem() }
         let mediaItems = items.filter { $0.kind.isVisual }
-        let fileItems = items.filter { !$0.kind.isVisual }
+        let voiceItems = items.filter { $0.kind == .voice }
+        let fileItems = items.filter { !$0.kind.isVisual && $0.kind != .voice }
         let snapshot = RoomAttachmentCatalogSnapshot(
             recordCount: records.count,
             media: AttachmentTimelineStore.groupByMonth(mediaItems),
+            voice: AttachmentTimelineStore.groupByMonth(voiceItems),
             files: AttachmentTimelineStore.groupByMonth(fileItems),
             mediaCount: mediaItems.count,
+            voiceCount: voiceItems.count,
             fileCount: fileItems.count,
             hasIndexedSnapshot: state.hasIndexedSnapshot,
             mapMs: (ProcessInfo.processInfo.systemUptime - started) * 1000
@@ -210,6 +217,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
 
     enum Tab: String, CaseIterable, Identifiable {
         case media
+        case voice
         case files
 
         var id: String { rawValue }
@@ -217,6 +225,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         var title: String {
             switch self {
             case .media: return String(localized: "Media")
+            case .voice: return String(localized: "Voice")
             case .files: return String(localized: "Files")
             }
         }
@@ -236,6 +245,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
     }
 
     static let mediaPageSize = 45
+    static let voicePageSize = 20
     static let filesPageSize = 20
     static let batchEvents: UInt16 = 100
     /// Maximum uninterrupted search per fill. Sparse history then requires
@@ -280,6 +290,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         }
     }
     @Published private(set) var media: [AttachmentMonthGroup] = []
+    @Published private(set) var voice: [AttachmentMonthGroup] = []
     @Published private(set) var files: [AttachmentMonthGroup] = []
     @Published private(set) var isInitialLoading = true
     @Published private(set) var fillState: FillState = .idle
@@ -315,10 +326,12 @@ final class RoomAttachmentsViewModel: ObservableObject {
     private var attachmentObservation: AnyDatabaseCancellable?
     private var hasReceivedIndexSnapshot = false
     private var indexedMediaCount = 0
+    private var indexedVoiceCount = 0
     private var indexedFileCount = 0
     private var lastSnapshotGeneration = 0
     private var rowCount = 0
     private var mediaCount = 0
+    private var voiceCount = 0
     private var fileCount = 0
     private var pendingSessionIds: [String] = []
     /// Decryptions seen so far; the stall detector watches this, not the
@@ -506,9 +519,11 @@ final class RoomAttachmentsViewModel: ObservableObject {
         lastSnapshotGeneration = snapshot.generation
         rowCount = snapshot.rowCount
         mediaCount = snapshot.mediaCount
+        voiceCount = snapshot.voiceCount
         fileCount = snapshot.fileCount
         if attachmentIndex == nil {
             media = snapshot.media
+            voice = snapshot.voice
             files = snapshot.files
         }
         pendingDecryptionCount = snapshot.pendingCount
@@ -546,6 +561,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         }
         diagnostics.rowCount = snapshot.rowCount
         diagnostics.mediaCount = snapshot.mediaCount
+        diagnostics.voiceCount = snapshot.voiceCount
         diagnostics.fileCount = snapshot.fileCount
         diagnostics.pendingCount = snapshot.pendingCount
         diagnostics.lastMapMs = summary.mapMs
@@ -567,10 +583,14 @@ final class RoomAttachmentsViewModel: ObservableObject {
         if media != snapshot.media {
             media = snapshot.media
         }
+        if voice != snapshot.voice {
+            voice = snapshot.voice
+        }
         if files != snapshot.files {
             files = snapshot.files
         }
         indexedMediaCount = snapshot.mediaCount
+        indexedVoiceCount = snapshot.voiceCount
         indexedFileCount = snapshot.fileCount
         hasReceivedIndexSnapshot = snapshot.hasIndexedSnapshot
         if isInitialLoading, snapshot.hasIndexedSnapshot || snapshot.recordCount > 0 {
@@ -579,13 +599,15 @@ final class RoomAttachmentsViewModel: ObservableObject {
         #if DEBUG
         log(
             "trace index mapped room=\(roomId) records=\(snapshot.recordCount) "
-            + "media=\(snapshot.mediaCount) files=\(snapshot.fileCount) "
+            + "media=\(snapshot.mediaCount) voice=\(snapshot.voiceCount) "
+            + "files=\(snapshot.fileCount) "
             + "ms=\(String(format: "%.0f", snapshot.mapMs))"
         )
         #endif
         log(
             "index snapshot room=\(roomId) records=\(snapshot.recordCount) "
-            + "media=\(indexedMediaCount) files=\(indexedFileCount)"
+            + "media=\(indexedMediaCount) voice=\(indexedVoiceCount) "
+            + "files=\(indexedFileCount)"
         )
     }
 
@@ -624,11 +646,19 @@ final class RoomAttachmentsViewModel: ObservableObject {
         if attachmentIndex != nil, hasReceivedIndexSnapshot {
             return indexedCount(for: tab)
         }
-        return tab == .media ? mediaCount : fileCount
+        switch tab {
+        case .media: return mediaCount
+        case .voice: return voiceCount
+        case .files: return fileCount
+        }
     }
 
     private func indexedCount(for tab: Tab) -> Int {
-        tab == .media ? indexedMediaCount : indexedFileCount
+        switch tab {
+        case .media: return indexedMediaCount
+        case .voice: return indexedVoiceCount
+        case .files: return indexedFileCount
+        }
     }
 
     private func needsInitialPage(for tab: Tab) -> Bool {
@@ -637,7 +667,11 @@ final class RoomAttachmentsViewModel: ObservableObject {
     }
 
     private func pageSize(for tab: Tab) -> Int {
-        tab == .media ? Self.mediaPageSize : Self.filesPageSize
+        switch tab {
+        case .media: return Self.mediaPageSize
+        case .voice: return Self.voicePageSize
+        case .files: return Self.filesPageSize
+        }
     }
 
     private struct BatchContext {
