@@ -456,8 +456,8 @@ final class GlassService {
     private func startRenderLoop() {
         guard displayLinkToken == nil else { return }
         idleTicks = 0
-        displayLinkToken = DisplayLinkDriver.shared.subscribe(rate: .fps(120)) { [weak self] _ in
-            self?.tick()
+        displayLinkToken = DisplayLinkDriver.shared.subscribe(rate: .fps(120)) { [weak self] frame in
+            self?.tick(displayFrame: frame)
         }
     }
 
@@ -563,8 +563,9 @@ final class GlassService {
         }
     }
 
-    private func tick() {
+    private func tick(displayFrame: DisplayLinkDriver.Frame) {
         guard let sourceWindow else { return }
+        var scalePredictions: [GlassCaptureScaleAnimation.Prediction]?
         let hadPendingCaptureRequest = needsCapture
         let hadPendingRenderRequest = needsRender
         var renderItemsByContainer: [ObjectIdentifier: (container: UIView, renderer: GlassRenderer, items: [GlassRenderer.RenderItem])] = [:]
@@ -772,10 +773,17 @@ final class GlassService {
                     shapes = s
                 }
 
+                // Resolve once for the bars that actually capture this frame.
+                // Render-only and GPU-busy ticks need no presentation-tree walk.
+                if scalePredictions == nil {
+                    let targetTime = displayFrame.estimatedPresentationTimestamp(at: CACurrentMediaTime())
+                    scalePredictions = GlassCaptureScaleAnimation.predictions(at: targetTime)
+                }
                 guard let capture = captureRegion(captureFrame, from: sourceWindow, scale: scale,
                                                   sourceView: anchor.sourceView,
                                                   clearPattern: anchor.clearPatternBGRA,
-                                                  shapes: shapes) else { continue }
+                                                  shapes: shapes,
+                                                  scalePredictions: scalePredictions ?? []) else { continue }
                 let texture = capture.texture
                 let adaptiveMaterial = updateAdaptiveMaterial(
                     for: id,
@@ -1152,7 +1160,8 @@ final class GlassService {
     private func captureRegion(_ frame: CGRect, from window: UIWindow, scale: CGFloat,
                                 sourceView: UIView? = nil,
                                 clearPattern: UInt32,
-                                shapes: GlassRenderer.ShapeParams) -> CaptureResult? {
+                                shapes: GlassRenderer.ShapeParams,
+                                scalePredictions: [GlassCaptureScaleAnimation.Prediction]) -> CaptureResult? {
         let renderScale = captureScale
         let w = Int((frame.width * renderScale).rounded(.toNearestOrAwayFromZero))
         let h = Int((frame.height * renderScale).rounded(.toNearestOrAwayFromZero))
@@ -1305,16 +1314,14 @@ final class GlassService {
 
                 // Clip each top-level render to the actual visible band inside the
                 // capture strip so tall cells do not redraw their full height.
-                let localClipRect = intersection.offsetBy(
-                    dx: -sublayerFrame.minX,
-                    dy: -sublayerFrame.minY
-                )
+                let localClipRect = sublayer.convert(intersection, from: targetLayer)
 
-                withLayerGeometry(sublayer, in: ctx) {
+                BubblePortalCaptureRenderer.withLayerGeometry(sublayer, in: ctx) {
                     renderLayerForCapture(
                         sublayer,
                         in: ctx,
-                        clipRectInLayer: localClipRect
+                        clipRectInLayer: localClipRect,
+                        prediction: scalePredictions.first { $0.contains(sublayer) }
                     )
                 }
             }
@@ -1497,34 +1504,15 @@ final class GlassService {
     private func renderLayerForCapture(
         _ layer: CALayer,
         in ctx: CGContext,
-        clipRectInLayer: CGRect
+        clipRectInLayer: CGRect,
+        prediction: GlassCaptureScaleAnimation.Prediction?
     ) {
         BubblePortalCaptureRenderer.renderLayerForCapture(
             layer,
             in: ctx,
-            clipRectInLayer: clipRectInLayer
+            clipRectInLayer: clipRectInLayer,
+            prediction: prediction
         )
-    }
-
-    private func withLayerGeometry(
-        _ layer: CALayer,
-        in ctx: CGContext,
-        body: () -> Void
-    ) {
-        ctx.saveGState()
-        ctx.translateBy(x: layer.position.x, y: layer.position.y)
-
-        let transform = layer.transform
-        if CATransform3DIsAffine(transform) {
-            ctx.concatenate(CATransform3DGetAffineTransform(transform))
-        }
-
-        ctx.translateBy(
-            x: -layer.bounds.width * layer.anchorPoint.x,
-            y: -layer.bounds.height * layer.anchorPoint.y
-        )
-        body()
-        ctx.restoreGState()
     }
 
 }

@@ -21,6 +21,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         static let triggerVelocity: CGFloat = 650
         static let horizontalBias: CGFloat = 1.2
         static let hitVerticalPadding: CGFloat = 6
+        static let returnDuration: TimeInterval = 0.28
+        static let captureTail: TimeInterval = 0.05
     }
 
     // MARK: - Context Menu
@@ -436,6 +438,9 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             let translationX = gesture.translation(in: view).x
             let offsetX = max(-ReplySwipe.maxTranslation, min(0, translationX))
             bubbleWrapperNode.view.transform = CGAffineTransform(translationX: offsetX, y: 0)
+            // Keep capturing briefly after the last gesture update so its
+            // committed presentation state reaches glass even during a pause.
+            GlassService.shared.captureFor(duration: ReplySwipe.captureTail)
             emitReplySwipeProgress(abs(offsetX) / ReplySwipe.triggerTranslation)
 
             let isPrimed = abs(offsetX) >= ReplySwipe.triggerTranslation
@@ -477,9 +482,18 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     private func resetReplySwipe(animated: Bool, initialVelocity: CGFloat = 0) {
         isReplySwipePrimed = false
         guard isNodeLoaded else { return }
+        let wrapperView = bubbleWrapperNode.view
+        let needsCapture = !wrapperView.transform.isIdentity
+            || wrapperView.layer.animation(forKey: "transform") != nil
+
+        if needsCapture {
+            GlassService.shared.captureFor(
+                duration: (animated ? ReplySwipe.returnDuration : 0) + ReplySwipe.captureTail
+            )
+        }
 
         let reset = {
-            self.bubbleWrapperNode.view.transform = .identity
+            wrapperView.transform = .identity
         }
         guard animated else {
             reset()
@@ -487,12 +501,17 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         }
 
         UIView.animate(
-            withDuration: 0.28,
+            withDuration: ReplySwipe.returnDuration,
             delay: 0,
             usingSpringWithDamping: 0.82,
             initialSpringVelocity: abs(initialVelocity) / 1000,
             options: [.allowUserInteraction, .beginFromCurrentState],
-            animations: reset
+            animations: reset,
+            completion: { _ in
+                if needsCapture {
+                    GlassService.shared.captureFor(duration: ReplySwipe.captureTail)
+                }
+            }
         )
     }
 
@@ -918,7 +937,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         assignProbeName("message.contextSource", to: contextSourceNode)
         assignProbeName("message.bubbleWrapper", to: bubbleWrapperNode)
         assignProbeName("message.bubbleFallbackBackground", to: bubbleBackgroundNode)
-        assignProbeName("message.bubblePortalBackground", to: bubblePortalBackgroundNode)
+        assignProbeName(BubblePortalBackgroundNode.captureLayerName, to: bubblePortalBackgroundNode)
         assignProbeName("message.bubbleNode", to: bubbleNode)
         assignProbeName("message.directBubbleContent", to: directBubbleContentNode)
         assignProbeName("message.timeNode", to: timeNode)

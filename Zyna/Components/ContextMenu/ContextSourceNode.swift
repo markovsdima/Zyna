@@ -20,7 +20,8 @@ final class ContextSourceNode: ASDisplayNode {
     /// Called when interaction should be locked (true) or unlocked (false).
     var onInteractionLockChanged: ((Bool) -> Void)?
 
-    private var shrinkAnimator: UIViewPropertyAnimator?
+    private var shrinkAnimation: GlassCaptureScaleAnimation?
+    private var returnAnimation: GlassCaptureScaleAnimation?
     private var activationTimer: Timer?
     let contentNode: ASDisplayNode
     private var didActivate = false
@@ -77,6 +78,10 @@ final class ContextSourceNode: ASDisplayNode {
     }
 
     func restoreContentFromMenu() {
+        shrinkAnimation?.cancel()
+        shrinkAnimation = nil
+        returnAnimation?.cancel()
+        returnAnimation = nil
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         addSubnode(contentNode)
@@ -109,7 +114,7 @@ final class ContextSourceNode: ASDisplayNode {
                 // recognize simultaneously by design — see the
                 // delegate below). Skipped after shrink begins,
                 // because then the touch is ours.
-                if shrinkAnimator == nil {
+                if shrinkAnimation == nil {
                     let dx = location.x - touchStartLocation.x
                     let dy = location.y - touchStartLocation.y
                     if abs(dx) > Self.horizontalSwipeCancelThreshold,
@@ -134,7 +139,7 @@ final class ContextSourceNode: ASDisplayNode {
                 let screenPoint = gesture.location(in: nil)
                 onDragEnded?(screenPoint)
             } else {
-                let wasQuickTap = shrinkAnimator == nil && activationTimer != nil
+                let wasQuickTap = shrinkAnimation == nil && activationTimer != nil
                 let moved = hypot(
                     location.x - touchStartLocation.x,
                     location.y - touchStartLocation.y
@@ -154,7 +159,8 @@ final class ContextSourceNode: ASDisplayNode {
     // MARK: - Animation
 
     private func startShrink() {
-        shrinkAnimator?.stopAnimation(true)
+        shrinkAnimation?.cancel()
+        shrinkAnimation = nil
 
         activationTimer = Timer.scheduledTimer(
             withTimeInterval: 0.12, repeats: false
@@ -164,33 +170,29 @@ final class ContextSourceNode: ASDisplayNode {
     }
 
     private func beginShrinkAnimation() {
+        // Save visible geometry before the interaction lock resets reply-swipe
+        // or cancellation changes the current animation state.
+        let contentView = contentNode.view
+        let fromTransform = returnAnimation?.cancel()
+            ?? (contentView.layer.presentation() ?? contentView.layer).transform
+        returnAnimation = nil
         onInteractionLockChanged?(true)
         GlassService.shared.captureFor(duration: 0.3)
         // The user held past the shrink threshold; the touch is
         // ours, kill any in-flight back-swipe pan.
         cancelEnclosingNavigationPopGesture()
-        let targetScale: CGFloat = 0.92
-
-        shrinkAnimator = UIViewPropertyAnimator(
-            duration: 0.25,
-            curve: .easeOut
-        ) {
-            self.contentNode.view.transform = CGAffineTransform(
-                scaleX: targetScale, y: targetScale
-            )
-        }
-
-        shrinkAnimator?.addCompletion { [weak self] position in
-            guard position == .end else { return }
+        shrinkAnimation = GlassCaptureScaleAnimation(
+            view: contentView, toScale: 0.92, duration: 0.25, curve: .easeOut,
+            fromTransform: fromTransform
+        ) { [weak self] finished in
+            guard finished else { return }
             self?.triggerActivation()
         }
-
-        shrinkAnimator?.startAnimation()
     }
 
     private func triggerActivation() {
         didActivate = true
-        shrinkAnimator = nil
+        shrinkAnimation = nil
 
         let generator = UIImpactFeedbackGenerator(style: .medium)
         generator.impactOccurred()
@@ -219,14 +221,17 @@ final class ContextSourceNode: ASDisplayNode {
         activationTimer?.invalidate()
         activationTimer = nil
 
-        guard let animator = shrinkAnimator else { return }
-        animator.stopAnimation(true)
-        shrinkAnimator = nil
+        guard let animation = shrinkAnimation else { return }
+        shrinkAnimation = nil
+        let fromTransform = animation.cancel()
         onInteractionLockChanged?(false)
 
         GlassService.shared.captureFor(duration: 0.25)
-        UIView.animate(withDuration: 0.2) {
-            self.contentNode.view.transform = .identity
+        returnAnimation = GlassCaptureScaleAnimation(
+            view: contentNode.view, toScale: 1, duration: 0.2, curve: .easeInOut,
+            fromTransform: fromTransform
+        ) { [weak self] _ in
+            self?.returnAnimation = nil
         }
     }
 }
@@ -247,7 +252,7 @@ extension ContextSourceNode: UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool {
-        if shrinkAnimator != nil || didActivate { return false }
+        if shrinkAnimation != nil || didActivate { return false }
         return other is UIPanGestureRecognizer
     }
 }
