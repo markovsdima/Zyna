@@ -93,6 +93,8 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord {
     var timestamp: TimeInterval
     var contentType: String
     var contentBody: String?
+    var contentFormat: String?
+    var contentFormattedBody: String?
     var contentMediaJSON: String?
     var contentImageWidth: Int64?
     var contentImageHeight: Int64?
@@ -217,6 +219,8 @@ extension StoredMessage {
         case .text(let body):
             contentType = "text"
             contentBody = body
+            contentFormat = msg.textMetadata?.format
+            contentFormattedBody = msg.textMetadata?.formattedBody
         case .image(let source, let thumbnailSource, let width, let height, let caption, _):
             guard let source else {
                 assertionFailure("StoredMessage cannot persist image content without a media source")
@@ -286,9 +290,13 @@ extension StoredMessage {
         case .notice(let body):
             contentType = "notice"
             contentBody = body
+            contentFormat = msg.textMetadata?.format
+            contentFormattedBody = msg.textMetadata?.formattedBody
         case .emote(let body):
             contentType = "emote"
             contentBody = body
+            contentFormat = msg.textMetadata?.format
+            contentFormattedBody = msg.textMetadata?.formattedBody
         case .pendingOutgoingMediaBatch:
             contentType = "unsupported"
             contentBody = "pendingOutgoingMediaBatch"
@@ -434,6 +442,7 @@ extension StoredMessage {
             timestamp: Date(timeIntervalSince1970: timestamp),
             content: content,
             mediaMetadata: buildMediaMetadata(),
+            textMetadata: buildTextMetadata(),
             reactions: Self.decodeReactions(reactionsJSON),
             replyInfo: replyInfo,
             isEditable: Self.isStoredMessageEditable(
@@ -603,6 +612,21 @@ extension StoredMessage {
             thumbnailSizeBytes: contentThumbnailSize.flatMap(UInt64.init(exactly:)),
             thumbnailMimetype: contentThumbnailMimetype
         )
+    }
+
+    private func buildTextMetadata() -> ChatTextMetadata? {
+        switch contentType {
+        case "text", "notice", "emote":
+            guard contentFormat != nil || contentFormattedBody != nil else {
+                return nil
+            }
+            return ChatTextMetadata(
+                format: contentFormat,
+                formattedBody: contentFormattedBody
+            )
+        default:
+            return nil
+        }
     }
 }
 

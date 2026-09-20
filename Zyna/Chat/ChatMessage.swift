@@ -539,6 +539,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     let timestamp: Date
     let content: ChatMessageContent
     private(set) var mediaMetadata: ChatMediaMetadata? = nil
+    private(set) var textMetadata: ChatTextMetadata? = nil
     let reactions: [MessageReaction]
     let replyInfo: ReplyInfo?
     let isEditable: Bool
@@ -587,6 +588,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.timestamp == rhs.timestamp
             && lhs.content == rhs.content
             && lhs.mediaMetadata == rhs.mediaMetadata
+            && lhs.textMetadata == rhs.textMetadata
             && lhs.reactions == rhs.reactions
             && lhs.replyInfo == rhs.replyInfo
             && lhs.isEditable == rhs.isEditable
@@ -626,6 +628,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             timestamp: timestamp,
             content: updatedContent,
             mediaMetadata: mediaMetadata,
+            textMetadata: textMetadata,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: isEditable,
@@ -662,6 +665,7 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             timestamp: timestamp,
             content: content,
             mediaMetadata: mediaMetadata,
+            textMetadata: textMetadata,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: isEditable,

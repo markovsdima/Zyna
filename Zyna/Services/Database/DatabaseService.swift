@@ -1054,6 +1054,13 @@ final class DatabaseService {
             )
         }
 
+        migrator.registerMigration("v27_formattedText") { db in
+            try db.alter(table: StoredMessage.databaseTableName) { t in
+                t.add(column: "contentFormat", .text)
+                t.add(column: "contentFormattedBody", .text)
+            }
+        }
+
         return migrator
     }
 

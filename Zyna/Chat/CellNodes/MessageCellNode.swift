@@ -672,6 +672,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         return old.content == new.content
             && old.mediaMetadata == new.mediaMetadata
+            && old.textMetadata == new.textMetadata
             && old.zynaAttributes == new.zynaAttributes
     }
 

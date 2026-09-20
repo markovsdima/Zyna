@@ -8,6 +8,7 @@ import Combine
 import PhotosUI
 import UniformTypeIdentifiers
 import QuickLook
+import SafariServices
 import MatrixRustSDK
 
 private let logVideoUI = ScopedLog(.video, prefix: "[VideoUI]")
@@ -1718,6 +1719,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let openReplyHeader: (String) -> Void = { [weak self] eventId in
             self?.navigateToMessage(eventId: eventId)
         }
+        let openLink: (URL) -> Void = { [weak self] url in
+            self?.presentMessageLink(url)
+        }
 
         return {
 
@@ -1814,6 +1818,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
             if !isPreview {
                 cellNode.onReplyHeaderTapped = openReplyHeader
+                (cellNode as? TextMessageCellNode)?.onLinkTapped = openLink
             }
 
             return cellNode
@@ -1875,7 +1880,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     guard let cellNode else { return }
                     presentContextMenu(cellNode, point)
                 }
-                cellNode.accessibilityActionsProvider = buildActions
+                cellNode.accessibilityActionsProvider = { [weak cellNode] in
+                    let linkActions = (cellNode as? TextMessageCellNode)?
+                        .linkAccessibilityActions() ?? []
+                    return linkActions + buildActions()
+                }
             }
             cellNode.onReactionTapped = toggleReaction
         }
@@ -1926,6 +1935,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         (cellNode as? ImageMessageCellNode)?.onImageTapped = nil
         (cellNode as? VideoMessageCellNode)?.onVideoTapped = nil
         (cellNode as? FileCellNode)?.onFileTapped = nil
+        (cellNode as? TextMessageCellNode)?.onLinkTapped = nil
 
         if Thread.isMainThread {
             cellNode.refreshAccessibilityForwarding()
@@ -3998,6 +4008,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         ql.dataSource = self
         ql.delegate = self
         present(ql, animated: true)
+    }
+
+    private func presentMessageLink(_ url: URL) {
+        guard RichTextURLPolicy.destination(from: url.absoluteString) != nil else {
+            return
+        }
+        present(SFSafariViewController(url: url), animated: true)
     }
 }
 

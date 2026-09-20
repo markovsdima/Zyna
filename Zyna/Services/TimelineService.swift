@@ -357,6 +357,7 @@ final class TimelineService {
 
         guard let content = contentFromEvent(event) else { return nil }
         let mediaMetadata = mediaMetadata(from: event)
+        let textMetadata = textMetadata(from: event)
 
         let eventId: String? = {
             if case .eventId(let id) = event.eventOrTransactionId {
@@ -397,6 +398,7 @@ final class TimelineService {
             timestamp: timestamp,
             content: content,
             mediaMetadata: mediaMetadata,
+            textMetadata: textMetadata,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: event.isEditable,
@@ -416,6 +418,35 @@ final class TimelineService {
             return false
         }
         return message.isEdited
+    }
+
+    private static func textMetadata(from event: EventTimelineItem) -> ChatTextMetadata? {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let messageContent) = msgContent.kind else {
+            return nil
+        }
+
+        let formatted: FormattedBody?
+        switch messageContent.msgType {
+        case .text(let content):
+            formatted = content.formatted
+        case .notice(let content):
+            formatted = content.formatted
+        case .emote(let content):
+            formatted = content.formatted
+        default:
+            return nil
+        }
+
+        guard let formatted else { return nil }
+        let format: String
+        switch formatted.format {
+        case .html:
+            format = ChatTextMetadata.matrixHTMLFormat
+        case .unknown(let rawFormat):
+            format = rawFormat
+        }
+        return ChatTextMetadata(format: format, formattedBody: formatted.body)
     }
 
     private struct MessageEditState {

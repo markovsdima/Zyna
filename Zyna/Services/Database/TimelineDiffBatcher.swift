@@ -893,6 +893,8 @@ final class TimelineDiffBatcher {
         into record: inout StoredMessage
     ) {
         record.contentBody = existing.contentBody
+        record.contentFormat = existing.contentFormat
+        record.contentFormattedBody = existing.contentFormattedBody
         record.contentMediaJSON = existing.contentMediaJSON
         record.contentMediaIsEncrypted = existing.contentMediaIsEncrypted
         record.contentImageWidth = existing.contentImageWidth
