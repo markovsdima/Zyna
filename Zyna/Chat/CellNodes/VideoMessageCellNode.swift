@@ -276,6 +276,12 @@ final class VideoMessageCellNode: MessageCellNode {
         thumbnailLoadTask?.cancel()
     }
 
+    override func contextMenuContentPath() -> CGPath {
+        guard usesDirectVideoContent else { return super.contextMenuContentPath() }
+        return contextMenuContentPath(for: thumbnailNode, radius: thumbnailNode.radius,
+                                      roundedCorners: thumbnailNode.roundedCorners)
+    }
+
     override func didLoad() {
         super.didLoad()
         assignProbeName("videoMessage.thumbnail", to: thumbnailNode)

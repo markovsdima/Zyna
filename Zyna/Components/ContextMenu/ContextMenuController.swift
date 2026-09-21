@@ -16,7 +16,14 @@ final class ContextMenuController: NSObject {
 
     private let contentNode: ASDisplayNode
     private let sourceFrame: CGRect
+    /// Sample the extracted content when return begins: async media/layout
+    /// updates may have changed its outline while the menu was open.
+    private let contentPath: () -> CGPath
     private let actions: [ContextMenuAction]
+    private weak var captureView: UIView?
+    private weak var sourceNode: ASDisplayNode?
+    private var dismissalTransition: ContextMenuDismissalTransition?
+    private var isDismissing = false
 
     var onDismissComplete: (() -> Void)?
     var onReactionSelected: ((String) -> Void)?
@@ -24,6 +31,7 @@ final class ContextMenuController: NSObject {
     // MARK: - Views
 
     private var overlayWindow: OverlayWindow?
+    private weak var previousKeyWindow: UIWindow?
     private let hostNode = ASDisplayNode()
     private let contentScroll = UIScrollView()
     private let dimmingView = UIView()
@@ -69,9 +77,13 @@ final class ContextMenuController: NSObject {
 
     // MARK: - Init
 
-    init(contentNode: ASDisplayNode, sourceFrame: CGRect, actions: [ContextMenuAction]) {
+    init(contentNode: ASDisplayNode, sourceFrame: CGRect, contentPath: @escaping () -> CGPath, captureView: UIView,
+         actions: [ContextMenuAction]) {
         self.contentNode = contentNode
         self.sourceFrame = sourceFrame
+        self.contentPath = contentPath
+        self.captureView = captureView
+        self.sourceNode = contentNode.supernode
         self.actions = actions
     }
 
@@ -229,7 +241,7 @@ final class ContextMenuController: NSObject {
     // MARK: - Drag-to-Select
 
     func trackFinger(at screenPoint: CGPoint) {
-        guard !isEmojiGridVisible, actionsMode == .actions else { return }
+        guard !isDismissing, !isEmojiGridVisible, actionsMode == .actions else { return }
         let row = hitTestRow(at: screenPoint)
 
         guard row !== highlightedRow else { return }
@@ -245,7 +257,7 @@ final class ContextMenuController: NSObject {
     }
 
     func releaseFinger(at screenPoint: CGPoint) {
-        guard !isEmojiGridVisible, actionsMode == .actions else { return }
+        guard !isDismissing, !isEmojiGridVisible, actionsMode == .actions else { return }
         guard let row = highlightedRow else { return }
         row.backgroundColor = .clear
         highlightedRow = nil
@@ -344,7 +356,10 @@ final class ContextMenuController: NSObject {
         }
 
         emojiGridNode.onSearchActivated = { [weak self] in
-            guard let self, let window = self.overlayWindow else { return }
+            guard let self, !self.isDismissing, let window = self.overlayWindow else { return }
+            if !window.isKeyWindow {
+                self.previousKeyWindow = window.windowScene?.windows.first { $0.isKeyWindow }
+            }
             window.allowKeyStatus = true
             window.makeKey()
         }
@@ -437,9 +452,7 @@ final class ContextMenuController: NSObject {
             return
         }
 
-        // Dismiss keyboard and revoke key status
-        emojiGridContainer.endEditing(true)
-        overlayWindow?.allowKeyStatus = false
+        endEmojiSearch()
 
         UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseIn) {
             self.emojiGridContainer.alpha = 0
@@ -691,6 +704,7 @@ final class ContextMenuController: NSObject {
     }
 
     private func handleAction(_ action: ContextMenuAction) {
+        guard !isDismissing else { return }
         switch action.behavior {
         case .dismissBeforeHandling:
             dismissMenu { action.handler() }
@@ -701,28 +715,68 @@ final class ContextMenuController: NSObject {
 
     // MARK: - Dismiss
 
-    private func dismissMenu(completion: (() -> Void)? = nil) {
+    private func endEmojiSearch() {
+        emojiGridContainer.endEditing(true)
+        overlayWindow?.allowKeyStatus = false
+        if overlayWindow?.isKeyWindow == true {
+            let window = previousKeyWindow ?? captureView?.window
+            if let window, !window.isHidden { window.makeKey() }
+        }
+        previousKeyWindow = nil
+    }
+
+    func dismissMenu(completion: (() -> Void)? = nil) {
+        guard !isDismissing else { return }
+        isDismissing = true
+        endEmojiSearch()
         if isEmojiGridVisible {
             isEmojiGridVisible = false
         }
+        overlayWindow?.rootViewController?.view.isUserInteractionEnabled = false
 
-        GlassService.shared.captureFor(duration: 0.3)
-        UIView.animate(withDuration: 0.25, delay: 0, options: .curveEaseIn) {
+        var returnFrame = sourceFrame
+        if let captureView, captureView.window != nil,
+           let container = overlayWindow?.rootViewController?.view {
+            if let sourceNode, sourceNode.isNodeLoaded,
+               sourceNode.view.window === captureView.window {
+                returnFrame = sourceNode.view.convert(sourceNode.bounds, to: container)
+            }
+            dismissalTransition = ContextMenuDismissalTransition(
+                contentView: contentNode.view, contentPath: contentPath(), scrollView: contentScroll,
+                dimmingView: dimmingView, overlayContainer: container,
+                captureView: captureView
+            )
+            dismissalTransition?.animate(to: returnFrame)
+        }
+
+        GlassService.shared.captureFor(
+            duration: ContextMenuDismissalTiming.duration + ContextMenuDismissalTiming.captureTail
+        )
+        UIView.animate(
+            withDuration: ContextMenuDismissalTiming.duration, delay: 0,
+            options: ContextMenuDismissalTiming.curve.animationOptions.union(.beginFromCurrentState)
+        ) {
             self.dimmingView.alpha = 0
-            self.contentScroll.contentOffset = .zero
-            self.contentScroll.frame = self.sourceFrame
+            if self.dismissalTransition == nil {
+                self.contentScroll.contentOffset = .zero
+                self.contentScroll.frame = returnFrame
+            }
+            self.contentNode.view.transform = .identity
             self.actionsContainer.alpha = 0
-            self.actionsContainer.frame.origin.y = self.sourceFrame.maxY + Self.gap
+            self.actionsContainer.frame.origin.y = returnFrame.maxY + Self.gap
             self.reactionsBar.alpha = 0
             self.reactionsBar.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
             self.emojiGridContainer.alpha = 0
         } completion: { _ in
             self.onDismissComplete?()
+            self.dismissalTransition?.finish()
+            self.dismissalTransition = nil
+            // The live node is back in its Texture parent. Capture that tree
+            // too, even if the last animation tick preceded the reparent.
+            GlassService.shared.captureFor(duration: ContextMenuDismissalTiming.captureTail)
+            self.overlayWindow?.isHidden = true
+            self.overlayWindow = nil
             completion?()
-            DispatchQueue.main.async {
-                self.overlayWindow?.isHidden = true
-                self.overlayWindow = nil
-            }
         }
     }
 

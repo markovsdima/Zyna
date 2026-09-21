@@ -188,7 +188,7 @@ struct BubblePortalCaptureRendererTests {
 
         // Both shrinking and returning can cross the capture boundary.
         for (scale, offset): (CGFloat, CGFloat) in [(0.92, 0), (1, -20)] {
-            let prediction = GlassCaptureScaleAnimation.Prediction(
+            let prediction = GlassCapturePrediction(
                 layer: root, scale: scale, translation: CGPoint(x: offset, y: 0)
             )
             let captured = captureTable(fixture, clip: clip, layer: table, prediction: prediction)
@@ -206,6 +206,152 @@ struct BubblePortalCaptureRendererTests {
                 }
             }
             #expect(mismatches < 8, "Predicted geometry/gradient differs at \(mismatches) pixels")
+        }
+    }
+
+    @Test("Viewport and nested shrink advance clipping and the anchored gradient together", arguments: [false, true])
+    func predictedViewport(nestedShrink: Bool) async throws {
+        let fixture = Fixture()
+        defer { fixture.close() }
+        let viewport = UIScrollView(frame: CGRect(x: 0, y: 0, width: 318, height: 40))
+        viewport.contentInsetAdjustmentBehavior = .never
+        viewport.contentSize = fixture.wrapper.bounds.size
+        fixture.cell.addSubview(viewport)
+        viewport.addSubview(fixture.wrapper)
+        viewport.contentOffset.y = 80
+        let label = UILabel(frame: CGRect(x: 30, y: 40, width: 100, height: 30))
+        label.text = "Return"
+        label.textColor = .white
+        fixture.wrapper.addSubview(label)
+        try await fixture.show()
+        let root = try #require(viewport.layer.presentation())
+        let table = try #require(fixture.table.layer.presentation())
+        let frame = CGRect(x: 0, y: -25, width: 318, height: 147)
+        let prediction = GlassCapturePrediction(
+            layer: root, position: CGPoint(x: frame.midX, y: frame.midY),
+            bounds: CGRect(origin: .zero, size: frame.size)
+        )
+        var predictions = [prediction]
+        if nestedShrink {
+            predictions.insert(GlassCapturePrediction(
+                layer: try #require(fixture.wrapper.layer.presentation()), scale: 0.92,
+                translation: CGPoint(x: -15, y: 3)
+            ), at: 0)
+        }
+        let clip = CGRect(x: 110, y: 0, width: 325, height: 150)
+        let actual = captureTable(fixture, clip: clip, layer: table, predictions: predictions)
+        let stale = captureTable(fixture, clip: clip, layer: table)
+        viewport.frame = frame
+        viewport.contentOffset = .zero
+        if nestedShrink {
+            fixture.wrapper.transform = CGAffineTransform(a: 0.92, b: 0, c: 0, d: 0.92, tx: -15, ty: 3)
+        }
+        let expected = captureTable(fixture, clip: clip)
+        var mismatches = 0
+        var newlyVisible = 0
+        for y in stride(from: 1, to: 149, by: 3) {
+            for x in stride(from: 1, to: 324, by: 3) {
+                let point = CGPoint(x: x, y: y)
+                let lhs = try pixel(actual, at: point)
+                let rhs = try pixel(expected, at: point)
+                if zip(lhs, rhs).contains(where: { abs($0 - $1) > 4 }) { mismatches += 1 }
+                if rhs[3] > 250, try pixel(stale, at: point)[3] < 5 { newlyVisible += 1 }
+            }
+        }
+        #expect(mismatches < 8, "Predicted viewport differs at \(mismatches) pixels")
+        #expect(newlyVisible > 500, "The test must cover content outside the old presentation clip")
+    }
+
+    @Test("Two sibling bubbles are predicted independently and leave an idle sibling unchanged")
+    func siblingPredictions() async throws {
+        let fixture = Fixture()
+        defer { fixture.close() }
+        fixture.cell.bounds.size.height = 350
+        fixture.cell.center.y = 175
+        fixture.wrapper.frame = CGRect(x: 0, y: 0, width: 270, height: 100)
+        fixture.portal.frame = fixture.wrapper.bounds
+        fixture.wrapper.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
+        let shrinking = UIView(frame: CGRect(x: 0, y: 120, width: 270, height: 100))
+        let idle = UIView(frame: CGRect(x: 0, y: 240, width: 270, height: 100))
+        var portals = [fixture.portal]
+        for wrapper in [shrinking, idle] {
+            fixture.cell.addSubview(wrapper)
+            let portal = BubblePortalBackgroundNode()
+            portal.frame = wrapper.bounds
+            portal.sourceView = fixture.source
+            wrapper.addSubview(portal.view)
+            portal.view.layoutIfNeeded()
+            portals.append(portal)
+        }
+        // Include ordinary content as well as the shared portal gradient.
+        for wrapper in [fixture.wrapper, shrinking, idle] {
+            let marker = UIView(frame: CGRect(x: 20, y: 20, width: 40, height: 30))
+            marker.backgroundColor = .green
+            wrapper.addSubview(marker)
+        }
+        try await fixture.show()
+        let table = try #require(fixture.table.layer.presentation())
+        let predictions = [
+            GlassCapturePrediction(layer: try #require(shrinking.layer.presentation()),
+                                   scale: 0.85, translation: CGPoint(x: -25, y: 0)),
+            GlassCapturePrediction(layer: try #require(fixture.wrapper.layer.presentation()), scale: 1)
+        ]
+        let clip = CGRect(x: 75, y: 0, width: 360, height: 350)
+        let actual = captureTable(fixture, clip: clip, layer: table, predictions: predictions)
+        let stale = captureTable(fixture, clip: clip, layer: table)
+        fixture.wrapper.transform = .identity
+        shrinking.transform = CGAffineTransform(a: 0.85, b: 0, c: 0, d: 0.85, tx: -25, ty: 0)
+        let expected = captureTable(fixture, clip: clip)
+        var mismatches = 0
+        var correctedPixels = 0
+        for y in stride(from: 2, to: 348, by: 3) {
+            for x in stride(from: 2, to: 358, by: 3) {
+                let point = CGPoint(x: x, y: y)
+                let lhs = try pixel(actual, at: point)
+                let rhs = try pixel(expected, at: point)
+                if zip(lhs, rhs).contains(where: { abs($0 - $1) > 4 }) { mismatches += 1 }
+                let old = try pixel(stale, at: point)
+                if zip(old, rhs).contains(where: { abs($0 - $1) > 4 }) { correctedPixels += 1 }
+            }
+        }
+        #expect(mismatches < 8, "Sibling predictions differ at \(mismatches) pixels")
+        #expect(correctedPixels > 200)
+        withExtendedLifetime(portals) {}
+    }
+
+    @Test("A portal-free viewport uses its predicted clip instead of the old CA clip")
+    func predictedViewportWithoutPortal() throws {
+        let parent = CALayer()
+        parent.bounds = CGRect(x: 0, y: 0, width: 200, height: 200)
+        let viewport = CALayer()
+        viewport.frame = CGRect(x: 20, y: 0, width: 120, height: 30)
+        viewport.bounds.origin.y = 80
+        viewport.masksToBounds = true
+        parent.addSublayer(viewport)
+        let content = CALayer()
+        content.frame = CGRect(x: 0, y: 0, width: 120, height: 140)
+        content.backgroundColor = UIColor.green.cgColor
+        viewport.addSublayer(content)
+        let bounds = CGRect(x: 0, y: 10, width: 120, height: 120)
+        let position = CGPoint(x: 80, y: 110)
+        let prediction = GlassCapturePrediction(layer: viewport, position: position, bounds: bounds)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(bounds: parent.bounds, format: format)
+        let actual = renderer.image {
+            BubblePortalCaptureRenderer.renderLayerForCapture(
+                parent, in: $0.cgContext, clipRectInLayer: parent.bounds,
+                predictions: GlassCapturePredictions([prediction])
+            )
+        }
+        viewport.bounds = bounds
+        viewport.position = position
+        let expected = renderer.image { parent.render(in: $0.cgContext) }
+        for point in [CGPoint(x: 50, y: 51), CGPoint(x: 50, y: 169),
+                      CGPoint(x: 50, y: 49), CGPoint(x: 50, y: 171)] {
+            let lhs = try pixel(actual, at: point)
+            let rhs = try pixel(expected, at: point)
+            #expect(zip(lhs, rhs).allSatisfy { abs($0 - $1) <= 2 })
         }
     }
 
@@ -268,10 +414,11 @@ struct BubblePortalCaptureRendererTests {
         child.addSublayer(detail)
         parent.addSublayer(child)
         let renderer = UIGraphicsImageRenderer(bounds: parent.bounds, format: format)
-        let prediction = GlassCaptureScaleAnimation.Prediction(layer: child, scale: 0.92)
+        let prediction = GlassCapturePrediction(layer: child, scale: 0.92)
         let actual = renderer.image {
             BubblePortalCaptureRenderer.renderLayerForCapture(
-                parent, in: $0.cgContext, clipRectInLayer: parent.bounds, prediction: prediction
+                parent, in: $0.cgContext, clipRectInLayer: parent.bounds,
+                predictions: GlassCapturePredictions([prediction])
             )
         }
         child.transform = CATransform3DMakeScale(0.92, 0.92, 1)
@@ -286,7 +433,8 @@ struct BubblePortalCaptureRendererTests {
 
     private func captureTable(
         _ fixture: Fixture, clip: CGRect, layer: CALayer? = nil,
-        prediction: GlassCaptureScaleAnimation.Prediction? = nil
+        prediction: GlassCapturePrediction? = nil,
+        predictions: [GlassCapturePrediction] = []
     ) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
@@ -294,7 +442,7 @@ struct BubblePortalCaptureRendererTests {
         return UIGraphicsImageRenderer(bounds: clip, format: format).image {
             BubblePortalCaptureRenderer.renderLayerForCapture(
                 layer ?? fixture.table.layer, in: $0.cgContext, clipRectInLayer: clip,
-                prediction: prediction
+                predictions: GlassCapturePredictions(predictions + (prediction.map { [$0] } ?? []))
             )
         }
     }

@@ -565,7 +565,7 @@ final class GlassService {
 
     private func tick(displayFrame: DisplayLinkDriver.Frame) {
         guard let sourceWindow else { return }
-        var scalePredictions: [GlassCaptureScaleAnimation.Prediction]?
+        var capturePredictions: GlassCapturePredictions?
         let hadPendingCaptureRequest = needsCapture
         let hadPendingRenderRequest = needsRender
         var renderItemsByContainer: [ObjectIdentifier: (container: UIView, renderer: GlassRenderer, items: [GlassRenderer.RenderItem])] = [:]
@@ -775,15 +775,15 @@ final class GlassService {
 
                 // Resolve once for the bars that actually capture this frame.
                 // Render-only and GPU-busy ticks need no presentation-tree walk.
-                if scalePredictions == nil {
+                if capturePredictions == nil {
                     let targetTime = displayFrame.estimatedPresentationTimestamp(at: CACurrentMediaTime())
-                    scalePredictions = GlassCaptureScaleAnimation.predictions(at: targetTime)
+                    capturePredictions = GlassCapturePredictions(GlassCaptureAnimation.predictions(at: targetTime))
                 }
                 guard let capture = captureRegion(captureFrame, from: sourceWindow, scale: scale,
                                                   sourceView: anchor.sourceView,
                                                   clearPattern: anchor.clearPatternBGRA,
                                                   shapes: shapes,
-                                                  scalePredictions: scalePredictions ?? []) else { continue }
+                                                  capturePredictions: capturePredictions ?? .none) else { continue }
                 let texture = capture.texture
                 let adaptiveMaterial = updateAdaptiveMaterial(
                     for: id,
@@ -1161,7 +1161,7 @@ final class GlassService {
                                 sourceView: UIView? = nil,
                                 clearPattern: UInt32,
                                 shapes: GlassRenderer.ShapeParams,
-                                scalePredictions: [GlassCaptureScaleAnimation.Prediction]) -> CaptureResult? {
+                                capturePredictions: GlassCapturePredictions) -> CaptureResult? {
         let renderScale = captureScale
         let w = Int((frame.width * renderScale).rounded(.toNearestOrAwayFromZero))
         let h = Int((frame.height * renderScale).rounded(.toNearestOrAwayFromZero))
@@ -1307,7 +1307,12 @@ final class GlassService {
             let visibleRect = frameInTarget
             for sublayer in sublayers {
                 guard !sublayer.isHidden, sublayer.opacity > 0 else { continue }
-                let sublayerFrame = sublayer.frame
+                let sublayerFrame: CGRect
+                if let prediction = capturePredictions.prediction(for: sublayer) {
+                    sublayerFrame = sublayer.convert(prediction.bounds.applying(prediction.transform), to: targetLayer)
+                } else {
+                    sublayerFrame = sublayer.frame
+                }
                 guard sublayerFrame.intersects(visibleRect) else { continue }
                 let intersection = sublayerFrame.intersection(visibleRect)
                 guard !intersection.isEmpty else { continue }
@@ -1321,7 +1326,7 @@ final class GlassService {
                         sublayer,
                         in: ctx,
                         clipRectInLayer: localClipRect,
-                        prediction: scalePredictions.first { $0.contains(sublayer) }
+                        predictions: capturePredictions
                     )
                 }
             }
@@ -1505,13 +1510,13 @@ final class GlassService {
         _ layer: CALayer,
         in ctx: CGContext,
         clipRectInLayer: CGRect,
-        prediction: GlassCaptureScaleAnimation.Prediction?
+        predictions: GlassCapturePredictions
     ) {
         BubblePortalCaptureRenderer.renderLayerForCapture(
             layer,
             in: ctx,
             clipRectInLayer: clipRectInLayer,
-            prediction: prediction
+            predictions: predictions
         )
     }
 

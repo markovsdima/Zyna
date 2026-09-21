@@ -323,6 +323,12 @@ final class ImageMessageCellNode: MessageCellNode {
         }
     }
 
+    override func contextMenuContentPath() -> CGPath {
+        guard usesDirectImageContent else { return super.contextMenuContentPath() }
+        return contextMenuContentPath(for: imageNode, radius: imageNode.radius,
+                                      roundedCorners: imageNode.roundedCorners)
+    }
+
     override func highlightBubble() {
         guard usesDirectImageContent else {
             super.highlightBubble()

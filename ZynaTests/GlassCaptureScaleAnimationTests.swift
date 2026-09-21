@@ -64,7 +64,7 @@ struct GlassCaptureScaleAnimationTests {
         #expect(startTime >= commitTime)
         let prediction = try #require(shrinking.prediction(at: startTime + 0.5))
         let predictedScale = prediction.transform.a * CGFloat(prediction.layer.transform.m11)
-        let expected = 1 - 0.08 * GlassCaptureScaleAnimation.Curve.easeOut.value(at: 0.5)
+        let expected = 1 - 0.08 * GlassAnimationCurve.easeOut.value(at: 0.5)
         #expect(abs(predictedScale - expected) < 0.0002)
     }
 
@@ -130,7 +130,7 @@ struct GlassCaptureScaleAnimationTests {
         let fixture = try Fixture()
         defer { fixture.close() }
         try await fixture.show()
-        for curve in [GlassCaptureScaleAnimation.Curve.easeOut, .easeInOut] {
+        for curve in [GlassAnimationCurve.easeOut, .easeInOut] {
             for progress in [0.1, 0.5, 0.9] {
                 let animation = CABasicAnimation(keyPath: "transform")
                 animation.fromValue = CATransform3DIdentity

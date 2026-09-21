@@ -63,7 +63,11 @@ final class ContextSourceNode: ASDisplayNode {
 
     override func layout() {
         super.layout()
-        contentNode.frame = bounds
+        // The menu owns geometry while the node is extracted, including its
+        // return through the temporary container inside the capture source.
+        if contentNode.supernode === self {
+            contentNode.frame = bounds
+        }
     }
 
     // MARK: - Reparenting

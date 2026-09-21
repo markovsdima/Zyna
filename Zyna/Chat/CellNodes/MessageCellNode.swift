@@ -913,6 +913,22 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     // MARK: - Context Menu Reparenting
 
+    func contextMenuContentPath() -> CGPath {
+        contextMenuContentPath(for: bubbleNode, radius: bubbleNode.radius,
+                              roundedCorners: bubbleNode.roundedCorners)
+    }
+
+    /// Media without bubble chrome supplies its image node's actual corners.
+    /// Read geometry only for a menu transition, never during cell layout.
+    func contextMenuContentPath(for node: ASDisplayNode, radius: CGFloat,
+                               roundedCorners: UIRectCorner) -> CGPath {
+        let rect = node.view.convert(node.bounds, to: bubbleWrapperNode.view)
+        return UIBezierPath(
+            roundedRect: rect, byRoundingCorners: roundedCorners,
+            cornerRadii: CGSize(width: radius, height: radius)
+        ).cgPath
+    }
+
     func extractBubbleForMenu(in coordinateSpace: UICoordinateSpace) -> (node: ASDisplayNode, frame: CGRect)? {
         guard isNodeLoaded else { return nil }
         return contextSourceNode.extractContentForMenu(in: coordinateSpace)

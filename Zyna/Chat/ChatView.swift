@@ -2373,6 +2373,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let menuVC = ContextMenuController(
             contentNode: info.node,
             sourceFrame: info.frame,
+            // Keep the extracted cell alive until restoration, even if a
+            // timeline edit replaces its row while the menu is open.
+            contentPath: { cellNode.contextMenuContentPath() },
+            captureView: node.tableNode.view,
             actions: actions
         )
         menuVC.onDismissComplete = { [weak self, weak cellNode] in
