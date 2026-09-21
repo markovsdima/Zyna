@@ -143,6 +143,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let scrollButtonTap = UIButton(type: .custom)
     private let scrollButtonBadgeBackground = UIView()
     private let scrollButtonBadgeLabel = UILabel()
+    private var scrollButtonBadgeMeasurement: (text: String, font: UIFont, width: CGFloat)?
     private let replySwipeIndicatorView = UIImageView()
     private let dateHeaderOverlayManager = DateHeaderOverlayManager()
     private var showsReadOnlyComposerPlaceholder = false
@@ -1028,7 +1029,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             isScrolling: isScrolling,
             animated: animated || !isScrolling
         )
-        node.view.bringSubviewToFront(dateHeaderOverlayManager.containerView)
+        if node.view.subviews.last !== dateHeaderOverlayManager.containerView {
+            node.view.bringSubviewToFront(dateHeaderOverlayManager.containerView)
+        }
     }
 
     private func pinTableToLiveEdge() {
@@ -1068,13 +1071,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
 
-        let textSize = badgeText.size(withAttributes: [
-            .font: scrollButtonBadgeLabel.font as Any
-        ])
-        let badgeWidth = max(
-            ScrollToLiveBadge.minWidth,
-            ceil(textSize.width) + ScrollToLiveBadge.horizontalPadding * 2
-        )
+        let font = scrollButtonBadgeLabel.font!
+        let badgeWidth: CGFloat
+        if let measurement = scrollButtonBadgeMeasurement,
+           measurement.text == badgeText, measurement.font == font {
+            badgeWidth = measurement.width
+        } else {
+            let textSize = badgeText.size(withAttributes: [.font: font])
+            badgeWidth = max(
+                ScrollToLiveBadge.minWidth,
+                ceil(textSize.width) + ScrollToLiveBadge.horizontalPadding * 2
+            )
+            scrollButtonBadgeMeasurement = (badgeText, font, badgeWidth)
+        }
         let badgeFrame = CGRect(
             x: iconFrame.maxX - ScrollToLiveBadge.overlapX,
             y: iconFrame.minY - ScrollToLiveBadge.overlapY,
@@ -1082,7 +1091,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             height: ScrollToLiveBadge.height
         )
 
-        scrollButtonBadgeLabel.text = badgeText
+        if scrollButtonBadgeLabel.text != badgeText { scrollButtonBadgeLabel.text = badgeText }
         scrollButtonBadgeBackground.frame = badgeFrame
         scrollButtonBadgeBackground.layer.cornerRadius = ScrollToLiveBadge.height / 2
         scrollButtonBadgeLabel.frame = badgeFrame

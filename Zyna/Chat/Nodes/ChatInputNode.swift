@@ -73,7 +73,6 @@ final class ChatInputNode: ASDisplayNode {
     private var sendGlyphTint: UIColor = ChatInputNode.sendButtonDefaultTint
     private var glassMaterial = GlassAdaptiveMaterial.light
     private var lastAppliedGlassAppearance: CGFloat = -1
-    private var lastAppliedGlassContrast: CGFloat = -1
     private var lastEmittedRightGlyphState: RightGlyphState?
     private var metalActionGlyphsEnabled = false
     private var isComposerLocked = false
@@ -1134,14 +1133,12 @@ extension ChatInputNode {
 
 extension ChatInputNode {
     func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {
-        guard abs(material.appearance - lastAppliedGlassAppearance) > 0.012 ||
-              abs(material.contrast - lastAppliedGlassContrast) > 0.03 else {
+        guard abs(material.appearance - lastAppliedGlassAppearance) > 0.012 else {
             return
         }
 
         glassMaterial = material
         lastAppliedGlassAppearance = material.appearance
-        lastAppliedGlassContrast = material.contrast
 
         let primary = material.primaryForeground
         let glyph = material.glyphForeground

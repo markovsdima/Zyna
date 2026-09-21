@@ -512,12 +512,18 @@ final class GlassService {
     }
 
     private func ensureSharedRendererAttached(_ renderer: GlassRenderer, to container: UIView) {
-        let insertionView = registrations.values
-            .compactMap { $0.anchor?.superview }
-            .filter { $0.superview === container }
-            .min { lhs, rhs in
-                (container.subviews.firstIndex(of: lhs) ?? Int.max) < (container.subviews.firstIndex(of: rhs) ?? Int.max)
+        // Read the order once. Recheck each tick so new/reordered bars still
+        // place glass below controls, without mutating a stable hierarchy.
+        let subviews = container.subviews
+        var insertionIndex: Int?
+        for registration in registrations.values {
+            guard let bar = registration.anchor?.superview, bar.superview === container,
+                  let index = subviews.firstIndex(of: bar) else { continue }
+            if index < (insertionIndex ?? Int.max) {
+                insertionIndex = index
             }
+        }
+        let insertionView = insertionIndex.map { subviews[$0] }
 
         if renderer.superview !== container {
             renderer.removeFromSuperview()
@@ -528,13 +534,13 @@ final class GlassService {
             }
             renderer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             renderer.accessibilityElementsHidden = true
-        } else if let insertionView {
+        } else if let insertionView, let insertionIndex,
+                  subviews.firstIndex(of: renderer).map({ $0 + 1 }) != insertionIndex {
             container.insertSubview(renderer, belowSubview: insertionView)
         }
 
-        renderer.frame = container.bounds
-        renderer.contentScaleFactor = container.window?.screen.scale ?? UIScreen.main.scale
-        renderer.layoutIfNeeded()
+        if renderer.frame != container.bounds { renderer.frame = container.bounds }
+        renderer.updateDrawableSize(scale: container.window?.screen.scale ?? UIScreen.main.scale)
     }
 
     private func renderDestinationFrame(

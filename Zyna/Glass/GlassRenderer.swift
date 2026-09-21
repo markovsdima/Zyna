@@ -59,12 +59,18 @@ final class GlassRenderer: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let scale = window?.screen.scale ?? UIScreen.main.scale
-        metalLayer.contentsScale = scale
-        metalLayer.drawableSize = CGSize(
+        updateDrawableSize(scale: window?.screen.scale ?? UIScreen.main.scale)
+    }
+
+    /// Capture can resize the host before UIKit's next layout pass.
+    /// Update the drawable directly, without forcing layout on every tick.
+    func updateDrawableSize(scale: CGFloat) {
+        if contentScaleFactor != scale { contentScaleFactor = scale }
+        let size = CGSize(
             width: bounds.width * scale,
             height: bounds.height * scale
         )
+        if metalLayer.drawableSize != size { metalLayer.drawableSize = size }
     }
 
     // MARK: - Types
