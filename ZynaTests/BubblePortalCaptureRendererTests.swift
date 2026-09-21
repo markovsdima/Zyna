@@ -14,14 +14,40 @@ struct BubblePortalCaptureRendererTests {
     @MainActor
     private final class Fixture {
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 440, height: 956))
-        let source = PortalSourceView(frame: CGRect(x: 0, y: 0, width: 440, height: 956))
-        let canvas = UIView(frame: CGRect(x: 0, y: 0, width: 440, height: 956))
+        let source: PortalSourceView
+        let canvas: UIView
         let table = UIView(frame: CGRect(x: 0, y: 0, width: 440, height: 956))
         let cell = UIView(frame: CGRect(x: 114, y: -15, width: 318, height: 147))
         let wrapper = UIView(frame: CGRect(x: 0, y: 0, width: 318, height: 147))
         let portal = BubblePortalBackgroundNode()
 
-        init() {
+        init(
+            cachedGradient: Bool = false,
+            colorProvider: @escaping (UITraitCollection) -> [UIColor] = { _ in [.red, .blue] }
+        ) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            defer { CATransaction.commit() }
+            let sourceFrame = CGRect(x: 0, y: 0, width: 440, height: 956)
+            if cachedGradient {
+                let gradient = BubbleGradientSource(
+                    colorProvider: colorProvider,
+                    start: CGPoint(x: 0.5, y: 0), end: CGPoint(x: 0.5, y: 1)
+                )
+                gradient.frame = sourceFrame
+                source = gradient
+                canvas = gradient.subviews[0]
+            } else {
+                source = PortalSourceView(frame: sourceFrame)
+                canvas = UIView(frame: sourceFrame)
+                source.addSubview(canvas)
+                let gradient = CAGradientLayer()
+                gradient.frame = canvas.bounds
+                gradient.colors = [UIColor.red.cgColor, UIColor.blue.cgColor]
+                gradient.startPoint = CGPoint(x: 0.5, y: 0)
+                gradient.endPoint = CGPoint(x: 0.5, y: 1)
+                canvas.layer.addSublayer(gradient)
+            }
             window.windowScene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
             window.rootViewController = UIViewController()
             let root = window.rootViewController!.view!
@@ -30,13 +56,10 @@ struct BubblePortalCaptureRendererTests {
             root.addSubview(source)
             root.addSubview(table)
             source.alpha = 0
-            source.addSubview(canvas)
-            let gradient = CAGradientLayer()
-            gradient.frame = canvas.bounds
-            gradient.colors = [UIColor.red.cgColor, UIColor.blue.cgColor]
-            gradient.startPoint = CGPoint(x: 0.5, y: 0)
-            gradient.endPoint = CGPoint(x: 0.5, y: 1)
-            canvas.layer.addSublayer(gradient)
+            source.updateTraitsIfNeeded()
+            canvas.updateTraitsIfNeeded()
+            source.layoutIfNeeded()
+            canvas.layoutIfNeeded()
 
             // Match Texture's inverted table and counter-flipped cells.
             table.transform = CGAffineTransform(scaleX: 1, y: -1)
@@ -69,9 +92,9 @@ struct BubblePortalCaptureRendererTests {
         try checkCapture(fixture, layer: fixture.portal.layer)
     }
 
-    @Test("Scroll translations preserve source alignment at both screen edges")
-    func scroll() throws {
-        let fixture = Fixture()
+    @Test("Scroll translations preserve source alignment at both screen edges", arguments: [false, true])
+    func scroll(cachedGradient: Bool) throws {
+        let fixture = Fixture(cachedGradient: cachedGradient)
         defer { fixture.close() }
         for cellY: CGFloat in [-15, 650, 790] {
             fixture.cell.center.y = cellY + fixture.cell.bounds.height / 2
@@ -79,9 +102,9 @@ struct BubblePortalCaptureRendererTests {
         }
     }
 
-    @Test("Capture follows the presentation scale, not the final model scale")
-    func animatedShrink() async throws {
-        let fixture = Fixture()
+    @Test("Capture follows the presentation scale, not the final model scale", arguments: [false, true])
+    func animatedShrink(cachedGradient: Bool) async throws {
+        let fixture = Fixture(cachedGradient: cachedGradient)
         defer { fixture.close() }
         try await fixture.show()
         let animation = CABasicAnimation(keyPath: "transform")
@@ -100,9 +123,9 @@ struct BubblePortalCaptureRendererTests {
         try checkCapture(fixture, layer: host)
     }
 
-    @Test("Model and presentation captures work after reparenting to a menu window")
-    func reparenting() async throws {
-        let fixture = Fixture()
+    @Test("Model and presentation captures work after reparenting to a menu window", arguments: [false, true])
+    func reparenting(cachedGradient: Bool) async throws {
+        let fixture = Fixture(cachedGradient: cachedGradient)
         defer { fixture.close() }
         try await fixture.show()
         let menuWindow = UIWindow(frame: fixture.window.frame)
@@ -124,9 +147,9 @@ struct BubblePortalCaptureRendererTests {
         try checkCapture(fixture, layer: #require(fixture.portal.layer.presentation()))
     }
 
-    @Test("Source orientation survives affine remapping")
-    func rotatedSource() throws {
-        let fixture = Fixture()
+    @Test("Source orientation survives affine remapping", arguments: [false, true])
+    func rotatedSource(cachedGradient: Bool) throws {
+        let fixture = Fixture(cachedGradient: cachedGradient)
         defer { fixture.close() }
         fixture.canvas.transform = CGAffineTransform(rotationAngle: .pi)
         fixture.wrapper.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
@@ -164,9 +187,9 @@ struct BubblePortalCaptureRendererTests {
         #expect(try pixel(after, at: sample)[3] == 0)
     }
 
-    @Test("Predicted scale and swipe offset move content while the gradient stays anchored")
-    func predictedScale() async throws {
-        let fixture = Fixture()
+    @Test("Predicted scale and swipe offset move content while the gradient stays anchored", arguments: [false, true])
+    func predictedScale(cachedGradient: Bool) async throws {
+        let fixture = Fixture(cachedGradient: cachedGradient)
         defer { fixture.close() }
         let label = UILabel(frame: CGRect(x: 8, y: 20, width: 100, height: 30))
         label.text = "Scale"
@@ -209,9 +232,10 @@ struct BubblePortalCaptureRendererTests {
         }
     }
 
-    @Test("Viewport and nested shrink advance clipping and the anchored gradient together", arguments: [false, true])
-    func predictedViewport(nestedShrink: Bool) async throws {
-        let fixture = Fixture()
+    @Test("Viewport and nested shrink advance clipping and the anchored gradient together",
+          arguments: [false, true], [false, true])
+    func predictedViewport(nestedShrink: Bool, cachedGradient: Bool) async throws {
+        let fixture = Fixture(cachedGradient: cachedGradient)
         defer { fixture.close() }
         let viewport = UIScrollView(frame: CGRect(x: 0, y: 0, width: 318, height: 40))
         viewport.contentInsetAdjustmentBehavior = .never
@@ -431,6 +455,102 @@ struct BubblePortalCaptureRendererTests {
         }
     }
 
+    @Test("Gradient images survive scrolling and rebuild for color, size and scale changes")
+    func gradientImageInvalidation() async throws {
+        let fixture = Fixture(cachedGradient: true) { traits in
+            traits.userInterfaceStyle == .dark ? [.green, .black] : [.red, .blue]
+        }
+        defer { fixture.close() }
+        let canvas = try #require(fixture.canvas as? BubbleGradientCanvasView)
+        func applyStyle(_ style: UIUserInterfaceStyle) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            fixture.source.overrideUserInterfaceStyle = style
+            fixture.source.updateTraitsIfNeeded()
+            canvas.updateTraitsIfNeeded()
+            CATransaction.commit()
+        }
+        applyStyle(.light)
+        try await fixture.show()
+        let initial = try #require(canvas.imageForCapture(of: canvas.layer, scale: 2))
+        for y: CGFloat in [-15, 650, 790] {
+            fixture.cell.center.y = y + fixture.cell.bounds.height / 2
+            fixture.wrapper.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
+            // This helper captures the portal without its ancestor scale,
+            // so source projection magnifies by 1 / 0.92. A 2x cached image
+            // still covers this 1x capture without a resolution upgrade.
+            try checkCapture(fixture, layer: fixture.portal.layer)
+            #expect(canvas.imageForCapture(of: canvas.layer, scale: 2) === initial)
+        }
+
+        applyStyle(.dark)
+        try await fixture.show()
+        #expect(canvas.traitCollection.userInterfaceStyle == .dark)
+        let dark = try #require(canvas.imageForCapture(of: canvas.layer, scale: 2))
+        #expect(dark !== initial)
+        let point = CGPoint(x: 200, y: 100)
+        let before = try pixel(UIImage(cgImage: initial, scale: 2, orientation: .up), at: point)
+        let after = try pixel(UIImage(cgImage: dark, scale: 2, orientation: .up), at: point)
+        // Verify distinct palettes; checkCapture compares the exact colors
+        // with CA's rendering rather than assuming its interpolation math.
+        #expect(before[0] - before[1] > 100, "Light gradient: \(before)")
+        #expect(after[1] - after[0] > 100, "Dark gradient: \(after)")
+        try checkCapture(fixture, layer: fixture.portal.layer)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fixture.source.frame.size.height += 100
+        fixture.source.layoutIfNeeded()
+        canvas.layoutIfNeeded()
+        CATransaction.commit()
+        let resized = try #require(canvas.imageForCapture(of: canvas.layer, scale: 2))
+        #expect(resized.height == initial.height + 200)
+        try checkCapture(fixture, layer: fixture.portal.layer)
+        let sharper = try #require(canvas.imageForCapture(of: canvas.layer, scale: 3))
+        #expect(sharper.width == Int(canvas.bounds.width * 3))
+        #expect(canvas.imageForCapture(of: canvas.layer, scale: 2) === sharper)
+        try checkCapture(fixture, layer: fixture.portal.layer, scale: 2)
+
+        let p3 = try #require(CGColorSpace(name: CGColorSpace.displayP3))
+        let wide = try #require(canvas.imageForCapture(of: canvas.layer, scale: 2, colorSpace: p3))
+        #expect(wide !== sharper)
+        #expect(CFEqual(try #require(wide.colorSpace), p3))
+        NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        #expect(try #require(canvas.imageForCapture(of: canvas.layer, scale: 2, colorSpace: p3)) !== wide)
+    }
+
+    @Test("Cached gradients preserve nonzero source bounds origins")
+    func gradientImageBoundsOrigin() throws {
+        let fixture = Fixture(cachedGradient: true)
+        defer { fixture.close() }
+        fixture.canvas.bounds.origin = CGPoint(x: 13, y: 23)
+        fixture.canvas.layoutIfNeeded()
+        fixture.wrapper.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
+        try checkCapture(fixture, layer: fixture.portal.layer, scale: 2)
+    }
+
+    @Test("Animated gradient colors bypass the image cache and use presentation content")
+    func animatedGradientFallback() async throws {
+        let fixture = Fixture(cachedGradient: true)
+        defer { fixture.close() }
+        try await fixture.show()
+        let canvas = try #require(fixture.canvas as? BubbleGradientCanvasView)
+        let cached = try #require(canvas.imageForCapture(of: canvas.layer, scale: 2))
+        let gradient = try #require(canvas.layer.sublayers?.first as? CAGradientLayer)
+        let animation = CABasicAnimation(keyPath: "colors")
+        animation.fromValue = [UIColor.green.cgColor, UIColor.yellow.cgColor]
+        animation.toValue = gradient.colors
+        animation.duration = 1
+        animation.speed = 0
+        animation.timeOffset = 0.5
+        gradient.add(animation, forKey: "test-colors")
+        try await fixture.show()
+        #expect(canvas.imageForCapture(of: try #require(canvas.layer.presentation()), scale: 2) == nil)
+        try checkCapture(fixture, layer: #require(fixture.portal.layer.presentation()), scale: 2)
+        gradient.removeAnimation(forKey: "test-colors")
+        #expect(canvas.imageForCapture(of: canvas.layer, scale: 2) === cached)
+    }
+
     private func captureTable(
         _ fixture: Fixture, clip: CGRect, layer: CALayer? = nil,
         prediction: GlassCapturePrediction? = nil,
@@ -447,20 +567,19 @@ struct BubblePortalCaptureRendererTests {
         }
     }
 
-    private func checkCapture(_ fixture: Fixture, layer: CALayer) throws {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.preferredRange = .standard
-        let capture = UIGraphicsImageRenderer(bounds: layer.bounds, format: format).image {
+    private func checkCapture(_ fixture: Fixture, layer: CALayer, scale: CGFloat = 1) throws {
+        // Match GlassService's bitmap color space. UIKit's renderer uses P3
+        // on wide-color screens, which changes gradient stop interpolation.
+        let capture = try renderRGB(bounds: layer.bounds, scale: scale) {
             BubblePortalCaptureRenderer.renderLayerForCapture(
-                layer, in: $0.cgContext, clipRectInLayer: layer.bounds
+                layer, in: $0, clipRectInLayer: layer.bounds
             )
         }
         let sourceLayer = layer === fixture.portal.layer
             ? fixture.canvas.layer
             : try #require(fixture.canvas.layer.presentation())
-        let reference = UIGraphicsImageRenderer(bounds: sourceLayer.bounds, format: format).image {
-            sourceLayer.render(in: $0.cgContext)
+        let reference = try renderRGB(bounds: sourceLayer.bounds, scale: scale) {
+            sourceLayer.render(in: $0)
         }
         for point in [CGPoint(x: 30, y: 60), CGPoint(x: 160, y: 90), CGPoint(x: 300, y: 120)] {
             let sourcePoint: CGPoint
@@ -472,7 +591,10 @@ struct BubblePortalCaptureRendererTests {
                 sourcePoint = layer.convert(point, to: sourceLayer)
             }
             let actual = try pixel(capture, at: point)
-            let expected = try pixel(reference, at: sourcePoint)
+            let expected = try pixel(reference, at: CGPoint(
+                x: sourcePoint.x - sourceLayer.bounds.minX,
+                y: sourcePoint.y - sourceLayer.bounds.minY
+            ))
             #expect(actual[3] > 250, "Gradient missing at \(point)")
             for component in 0..<3 {
                 #expect(abs(actual[component] - expected[component]) <= 3,
@@ -481,9 +603,22 @@ struct BubblePortalCaptureRendererTests {
         }
     }
 
+    private func renderRGB(bounds: CGRect, scale: CGFloat, draw: (CGContext) -> Void) throws -> UIImage {
+        let context = try #require(CGContext(
+            data: nil, width: Int(ceil(bounds.width * scale)), height: Int(ceil(bounds.height * scale)),
+            bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ))
+        context.translateBy(x: 0, y: CGFloat(context.height))
+        context.scaleBy(x: scale, y: -scale)
+        context.translateBy(x: -bounds.minX, y: -bounds.minY)
+        draw(context)
+        return UIImage(cgImage: try #require(context.makeImage()), scale: scale, orientation: .up)
+    }
+
     private func pixel(_ image: UIImage, at point: CGPoint) throws -> [Int] {
         let image = try #require(image.cgImage?.cropping(to: CGRect(
-            x: floor(point.x), y: floor(point.y), width: 1, height: 1
+            x: floor(point.x * image.scale), y: floor(point.y * image.scale), width: 1, height: 1
         )))
         var bytes = [UInt8](repeating: 0, count: 4)
         try bytes.withUnsafeMutableBytes { buffer in

@@ -27,9 +27,31 @@ final class GlassRenderer: UIView {
     private var emptyGlyphTexture: MTLTexture?
     private lazy var glyphAtlas = GlassGlyphAtlasBuilder.makeAtlas(device: MetalContext.shared.device)
     private var textureCacheFrame = 0
-    private var frameInFlight = false
+    private var inFlightLease: GlassCaptureReadLease?
+    private var pendingFrame: PendingFrame?
 
-    var isFrameInFlight: Bool { frameInFlight }
+    var isFrameInFlight: Bool { inFlightLease != nil }
+    var hasPendingFrame: Bool { pendingFrame != nil }
+
+    // Temporary A/B switch; both paths use the same buffer ownership.
+    static let captureOverlapEnabled: Bool = {
+#if DEBUG
+        ProcessInfo.processInfo.environment["GLASS_CAPTURE_OVERLAP"] != "0"
+#else
+        true
+#endif
+    }()
+
+    private struct PendingFrame {
+        let items: [RenderItem]
+#if DEBUG && GLASS_PROFILING
+        let profile: GlassCaptureProfiler.Submission?
+#endif
+    }
+#if DEBUG && GLASS_PROFILING
+    // Retain the last token through completion to measure capture resumption.
+    private(set) var profileSubmission: GlassCaptureProfiler.Submission?
+#endif
 
     // MARK: - Init
 
@@ -62,15 +84,40 @@ final class GlassRenderer: UIView {
         updateDrawableSize(scale: window?.screen.scale ?? UIScreen.main.scale)
     }
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            discardPendingFrame()
+        }
+    }
+
+    /// Supersede the waiting frame before the CPU reuses its buffers.
+    /// GPU leases remain alive until their command's completion callback.
+    func discardPendingFrame() {
+#if DEBUG && GLASS_PROFILING
+        if let pendingFrame {
+            GlassCaptureProfiler.shared.discardSubmission(pendingFrame.profile)
+        }
+#endif
+        pendingFrame = nil
+    }
+
     /// Capture can resize the host before UIKit's next layout pass.
-    /// Update the drawable directly, without forcing layout on every tick.
+    /// Update the drawable without forcing layout on every tick.
     func updateDrawableSize(scale: CGFloat) {
         if contentScaleFactor != scale { contentScaleFactor = scale }
         let size = CGSize(
-            width: bounds.width * scale,
-            height: bounds.height * scale
+            width: (bounds.width * scale).rounded(),
+            height: (bounds.height * scale).rounded()
         )
-        if metalLayer.drawableSize != size { metalLayer.drawableSize = size }
+        guard metalLayer.drawableSize != size else { return }
+        metalLayer.drawableSize = size
+        if pendingFrame != nil {
+            // Pending item frames belong to the previous host geometry.
+            // Recapture instead of submitting them into the resized surface.
+            discardPendingFrame()
+            GlassService.shared.setNeedsCapture()
+        }
     }
 
     // MARK: - Types
@@ -218,7 +265,8 @@ final class GlassRenderer: UIView {
         let name: String
         let frame: CGRect
         let captureFrameInWindow: CGRect
-        let sourceTexture: MTLTexture
+        let source: GlassCaptureBuffer
+        var sourceTexture: MTLTexture { source.texture }
         let shapes: ShapeParams
         let isHDR: Bool
         let liquidZone: LiquidZone?
@@ -236,18 +284,13 @@ final class GlassRenderer: UIView {
         let adaptiveContrast: Float
     }
 
-    struct ItemBreakdown {
-        let name: String
-        let renderMs: Double
-        let blurMs: Double
-        let passMs: Double
-    }
-
     struct BatchBreakdown {
+#if DEBUG && GLASS_PROFILING
         var drawableMs: Double = 0
-        var commitMs: Double = 0
-        var items: [ItemBreakdown] = []
+#endif
+        var blurPassCount = 0
         var skippedReason: String?
+        var queued = false
     }
 
     private typealias GlyphVec4Slots = (
@@ -353,33 +396,80 @@ final class GlassRenderer: UIView {
         let estimatedBytes: Int
         var lastUsedFrame: Int
         var lastSourceTexture: ObjectIdentifier?
+        var lastSourceGeneration: UInt64?
     }
 
     // MARK: - Render
 
     @discardableResult
     func render(items: [RenderItem]) -> BatchBreakdown? {
+        discardPendingFrame()
         let validItems = items.filter { !$0.frame.isEmpty && $0.frame.width > 0 && $0.frame.height > 0 }
         guard !validItems.isEmpty else { return nil }
-        guard !frameInFlight else {
+        if isFrameInFlight, !Self.captureOverlapEnabled {
             var skipped = BatchBreakdown()
             skipped.skippedReason = "in_flight"
             return skipped
         }
-
-        let drawableSize = metalLayer.drawableSize
-        guard drawableSize.width > 0, drawableSize.height > 0,
-              let cmdBuf = MetalContext.shared.commandQueue.makeCommandBuffer() else { return nil }
-
-        frameInFlight = true
-        let nextDrawableStart = CACurrentMediaTime()
-        guard let drawable = metalLayer.nextDrawable() else {
-            frameInFlight = false
-            return nil
+#if DEBUG && GLASS_PROFILING
+        let frame = PendingFrame(
+            items: validItems,
+            profile: GlassCaptureProfiler.shared.prepareSubmission(renderer: self)
+        )
+#else
+        let frame = PendingFrame(items: validItems)
+#endif
+        if isFrameInFlight {
+            pendingFrame = frame
+#if DEBUG && GLASS_PROFILING
+            GlassCaptureProfiler.shared.queueSubmission(frame.profile)
+#endif
+            return BatchBreakdown(queued: true)
         }
+        return submit(frame)
+    }
+
+    private func submit(_ frame: PendingFrame) -> BatchBreakdown? {
+        // Release temporary drawable references after every submission,
+        // including work submitted from a GPU completion callback.
+        autoreleasepool { submitInPool(frame) }
+    }
+
+    private func renderPendingFrame() {
+        guard window != nil, !isFrameInFlight, let pending = pendingFrame else { return }
+        pendingFrame = nil
+#if DEBUG && GLASS_PROFILING
+        let start = GlassCaptureProfiler.shared.submissionTimer(pending.profile)
+#endif
+        let result = submit(pending)
+#if DEBUG && GLASS_PROFILING
+        GlassCaptureProfiler.shared.endQueuedRender(pending.profile, since: start, result: result)
+#endif
+        if result == nil { GlassService.shared.setNeedsRender() }
+    }
+
+    private func submitInPool(_ frame: PendingFrame) -> BatchBreakdown? {
+        precondition(!isFrameInFlight)
+        let validItems = frame.items
+#if DEBUG && GLASS_PROFILING
+        var didCommit = false
+        defer {
+            if !didCommit { GlassCaptureProfiler.shared.discardSubmission(frame.profile) }
+        }
+        let drawableStart = GlassCaptureProfiler.shared.submissionTimer(frame.profile)
+#endif
+        guard metalLayer.drawableSize.width > 0, metalLayer.drawableSize.height > 0,
+              let drawable = metalLayer.nextDrawable() else { return nil }
+#if DEBUG && GLASS_PROFILING
+        let drawableWait = drawableStart.map { (CACurrentMediaTime() - $0) * 1000 } ?? 0
+#endif
+
+        guard let cmdBuf = MetalContext.shared.commandQueue.makeCommandBuffer() else { return nil }
 
         var batch = BatchBreakdown()
-        batch.drawableMs = (CACurrentMediaTime() - nextDrawableStart) * 1000
+#if DEBUG && GLASS_PROFILING
+        batch.drawableMs = drawableWait
+#endif
 
         textureCacheFrame &+= 1
         cmdBuf.label = "GlassRenderer.render"
@@ -388,24 +478,21 @@ final class GlassRenderer: UIView {
         for item in validItems {
             let backdropTexture = makeBackdropTexture(for: item, commandBuffer: cmdBuf)
 
-            guard let blurSlot = ensureBlurTexture(matching: backdropTexture) else { continue }
+            guard let blurSlot = ensureBlurTexture(
+                matching: backdropTexture, generation: item.source.generation
+            ) else { continue }
             let blurTex = blurSlot.texture
 
             let shouldRefreshBlur = item.refreshBlur
                 || blurSlot.isNew
                 || !blurSlot.containsSource
                 || item.backdropOverlay != nil
-            let blurMs: Double
             if shouldRefreshBlur {
-                let blurStart = CACurrentMediaTime()
                 gaussianBlur.encode(commandBuffer: cmdBuf, sourceTexture: backdropTexture, destinationTexture: blurTex)
-                recordBlurTextureSource(backdropTexture)
-                blurMs = (CACurrentMediaTime() - blurStart) * 1000
-            } else {
-                blurMs = 0
+                recordBlurTextureSource(backdropTexture, generation: item.source.generation)
+                batch.blurPassCount += 1
             }
 
-            let passStart = CACurrentMediaTime()
             let rpd = MTLRenderPassDescriptor()
             rpd.colorAttachments[0].texture = drawable.texture
             rpd.colorAttachments[0].loadAction = isFirstPass ? .clear : .load
@@ -433,32 +520,49 @@ final class GlassRenderer: UIView {
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             encoder.endEncoding()
 
-            let passMs = (CACurrentMediaTime() - passStart) * 1000
-            batch.items.append(
-                ItemBreakdown(
-                    name: item.name,
-                    renderMs: blurMs + passMs,
-                    blurMs: blurMs,
-                    passMs: passMs
-                )
-            )
             isFirstPass = false
         }
 
-        guard !isFirstPass else {
-            frameInFlight = false
-            return nil
-        }
+        guard !isFirstPass else { return nil }
 
-        let commitStart = CACurrentMediaTime()
-        cmdBuf.addCompletedHandler { [weak self] _ in
+        let lease = GlassCaptureReadLease(validItems.map(\.source))
+        inFlightLease = lease
+#if DEBUG && GLASS_PROFILING
+        let submission = frame.profile
+        let measuresSubmission = drawableStart != nil
+        profileSubmission = submission
+        GlassCaptureProfiler.shared.setRefreshesBlur(submission, batch.blurPassCount > 0)
+#endif
+        cmdBuf.addCompletedHandler { [weak self] completedBuffer in
+#if DEBUG && GLASS_PROFILING
+            let callbackTime = measuresSubmission ? CACurrentMediaTime() : 0
+            let gpuStart = measuresSubmission ? completedBuffer.gpuStartTime : 0
+            let gpuEnd = measuresSubmission ? completedBuffer.gpuEndTime : 0
+#endif
             DispatchQueue.main.async {
-                self?.frameInFlight = false
+                // The completion owns the buffers even if its host was removed.
+                lease.release()
+#if DEBUG && GLASS_PROFILING
+                if measuresSubmission {
+                    GlassCaptureProfiler.shared.completeSubmission(
+                        submission, gpuStart: gpuStart, gpuEnd: gpuEnd,
+                        callback: callbackTime, released: CACurrentMediaTime()
+                    )
+                }
+#endif
+                guard let self, self.inFlightLease === lease else { return }
+                self.inFlightLease = nil
+                self.renderPendingFrame()
             }
         }
         cmdBuf.present(drawable)
+#if DEBUG && GLASS_PROFILING
+        GlassCaptureProfiler.shared.willCommit(submission)
+#endif
         cmdBuf.commit()
-        batch.commitMs = (CACurrentMediaTime() - commitStart) * 1000
+#if DEBUG && GLASS_PROFILING
+        didCommit = true
+#endif
         return batch
     }
 
@@ -574,7 +678,7 @@ final class GlassRenderer: UIView {
 
     // MARK: - Blur Texture
 
-    private func ensureBlurTexture(matching source: MTLTexture) -> (
+    private func ensureBlurTexture(matching source: MTLTexture, generation: UInt64) -> (
         texture: MTLTexture,
         isNew: Bool,
         containsSource: Bool
@@ -583,6 +687,7 @@ final class GlassRenderer: UIView {
         let sourceIdentity = ObjectIdentifier(source as AnyObject)
         if var cached = blurTextures[key] {
             let containsSource = cached.lastSourceTexture == sourceIdentity
+                && cached.lastSourceGeneration == generation
             cached.lastUsedFrame = textureCacheFrame
             blurTextures[key] = cached
             return (cached.texture, false, containsSource)
@@ -613,11 +718,12 @@ final class GlassRenderer: UIView {
         return (texture, true, false)
     }
 
-    private func recordBlurTextureSource(_ source: MTLTexture) {
+    private func recordBlurTextureSource(_ source: MTLTexture, generation: UInt64) {
         let key = ReusableTextureKey(source)
         guard var cached = blurTextures[key] else { return }
         cached.lastUsedFrame = textureCacheFrame
         cached.lastSourceTexture = ObjectIdentifier(source as AnyObject)
+        cached.lastSourceGeneration = generation
         blurTextures[key] = cached
     }
 

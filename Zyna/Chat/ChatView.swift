@@ -2575,6 +2575,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - Scroll
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+#if DEBUG && GLASS_PROFILING
+        if !isPreviewMode && !isTeleporting && (scrollView.isDragging || scrollView.isDecelerating) {
+            GlassCaptureProfiler.shared.noteScroll()
+        }
+#endif
         if !isPreviewMode {
             GlassService.shared.setNeedsCapture()
         }

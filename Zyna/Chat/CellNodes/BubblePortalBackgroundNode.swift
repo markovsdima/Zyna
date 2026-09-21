@@ -338,6 +338,10 @@ enum BubblePortalCaptureRenderer {
             return false
         }
 
+#if DEBUG && GLASS_PROFILING
+        let portalStart = GlassCaptureProfiler.shared.captureTimer()
+        defer { GlassCaptureProfiler.shared.endPortal(since: portalStart) }
+#endif
         ctx.saveGState()
         ctx.clip(to: clipRectInLayer)
 
@@ -439,7 +443,23 @@ enum BubblePortalCaptureRenderer {
 
         ctx.saveGState()
         ctx.concatenate(transform)
-        sourceLayer.render(in: ctx)
+#if DEBUG && GLASS_PROFILING
+        let sourceStart = GlassCaptureProfiler.shared.captureTimer()
+#endif
+        let drewCaptureImage = (sourceView as? BubbleGradientCanvasView)?
+            .drawCaptureImage(of: sourceLayer, in: ctx) ?? false
+        if !drewCaptureImage {
+            sourceLayer.render(in: ctx)
+        }
+#if DEBUG && GLASS_PROFILING
+        if let sourceStart {
+            GlassCaptureProfiler.shared.endSourceRender(
+                since: sourceStart,
+                isGradient: sourceView is BubbleGradientSource || sourceView.superview is BubbleGradientSource,
+                cachedImage: drewCaptureImage
+            )
+        }
+#endif
         ctx.restoreGState()
     }
 }
