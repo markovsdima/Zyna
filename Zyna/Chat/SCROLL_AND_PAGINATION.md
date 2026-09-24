@@ -16,10 +16,18 @@ For one open chat session:
 
 The UI datasource is:
 
-`Matrix -> TimelineService -> TimelineDiffBatcher -> GRDB -> MessageWindow -> ChatViewModel -> ASTableNode`
+`Matrix -> TimelineService -> TimelineDiffBatcher -> GRDB -> MessageWindow`
+
+`MessageWindow -> ChatViewModel -> ChatMessageList -> Texture`
 
 Matrix is not the direct UI datasource. `MessageWindow` owns the loaded
 GRDB-backed range that the UI reads from.
+
+`ChatMessageList` connects the full `ChatViewController` to an inverted
+`ASCollectionNode` with `ChatCollectionLayout` in every configuration.
+The existing cell factory, gestures, dates, glass, read receipts, and
+message actions remain in the full screen. Debug and Performance also
+provide a separate Custom playground; it is excluded from Release.
 
 ## MessageWindow
 
@@ -30,7 +38,8 @@ GRDB-backed range that the UI reads from.
 - `windowSize` also defines the target size for `jumpTo` and
   `jumpToOldest`
 - older pages remain retained as they are loaded
-- `jumpToLive()` expands the loaded lower bound back to the live edge
+- `jumpToLive()` from a history window loads the newest `200`; from a
+  window already at the live edge, it preserves the retained history
 
 This makes `MessageWindow` a growing session dataset, not a
 trim-on-scroll mechanism.
@@ -63,15 +72,22 @@ Backward pagination works like this:
 When the viewport is pinned to live:
 
 - incoming live messages behave like normal live inserts
-- after the batch finishes, the table is pinned back to the live edge
+- after the batch finishes, the list is pinned back to the live edge
 
 When the user is browsing history:
 
 - incoming live messages must not shift the viewport
-- `ASTableNode` preserves offset via
-  `automaticallyAdjustsContentOffset`
+- Collection samples the old geometry and current offset at Texture's
+  UIKit commit, then preserves a surviving row ID through
+  `targetContentOffset(forProposedContentOffset:)`
 - insert animations for those offscreen live arrivals are suppressed
 - the scroll-to-live affordance can show an unseen incoming count
+
+The layout reads measured heights and row IDs from Texture's committed
+element map, not from a newer pending datasource. Late height changes use
+an invalidation context's `contentOffsetAdjustment`. Ordinary scrolling
+queries a cached geometry range; it does not rebuild or measure the list
+on each tick.
 
 Navigation uses two modes:
 
@@ -107,6 +123,9 @@ Avoid these patterns:
 
 - `Zyna/Chat/ChatView.swift`
 - `Zyna/Chat/ChatViewModel.swift`
+- `Zyna/Chat/ChatMessageList.swift`
+- `Zyna/Chat/ChatCollectionLayout.swift`
+- `Zyna/Chat/ChatListGeometry.swift`
 - `Zyna/Services/Database/MessageWindow.swift`
 - `Zyna/Services/Database/TimelineDiffBatcher.swift`
 - `Zyna/Services/TimelineService.swift`
