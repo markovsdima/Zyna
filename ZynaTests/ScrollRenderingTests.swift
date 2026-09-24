@@ -117,7 +117,8 @@ struct ScrollRenderingTests {
             manager.update(
                 viewport: CGRect(x: 0, y: 0, width: width, height: 400),
                 rows: [.dateDivider(DateDividerModel(id: "day", date: Date(), title: text))],
-                visibleIndexPaths: [IndexPath(row: 0, section: 0)], tableView: table,
+                visibleIndexPaths: [IndexPath(row: 0, section: 0)],
+                rowRect: { table.rectForRow(at: $0) }, sourceView: table,
                 hostView: host, isScrolling: true, animated: false
             )
         }

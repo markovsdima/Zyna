@@ -210,7 +210,29 @@ final class GlassService {
 
     private var tickCount = 0
 
-    private init() {}
+#if DEBUG || CHAT_LIST_PLAYGROUND
+    private static let lowCaptureInterpolationKey =
+        "com.zyna.debug.glass.lowCaptureInterpolation"
+
+    /// Read preferences once; capture ticks only read this in-memory value.
+    var usesLowCaptureInterpolation: Bool {
+        didSet {
+            guard usesLowCaptureInterpolation != oldValue else { return }
+            UserDefaults.standard.set(
+                usesLowCaptureInterpolation, forKey: Self.lowCaptureInterpolationKey
+            )
+            setNeedsCapture()
+        }
+    }
+#endif
+
+    private init() {
+#if DEBUG || CHAT_LIST_PLAYGROUND
+        usesLowCaptureInterpolation = UserDefaults.standard.object(
+            forKey: Self.lowCaptureInterpolationKey
+        ) as? Bool ?? true
+#endif
+    }
 
     // MARK: - Public API
 
@@ -1198,6 +1220,17 @@ final class GlassService {
         // Reset transform (CGContext accumulates transforms)
         ctx.saveGState()
 
+#if DEBUG || CHAT_LIST_PLAYGROUND
+        // Keep the original interpolation available for device comparisons.
+        // Restoring graphics state also restores the pooled context's
+        // original quality when switching back to the Default baseline.
+        if usesLowCaptureInterpolation {
+            ctx.interpolationQuality = .low
+        }
+#else
+        ctx.interpolationQuality = .low
+#endif
+
         // Pre-fill backing memory with the anchor's backdrop color.
         // The sublayer-only render below skips sourceView.backgroundColor,
         // so without this fill, empty regions would read as opaque black.
@@ -1228,7 +1261,7 @@ final class GlassService {
             frameInTarget = frame
         }
 
-        // Inverted ASTableNode uses a flipped Y axis. Match the previous working
+        // Inverted Texture lists use a flipped Y axis. Match the previous working
         // table-capture behaviour at the root, then preserve nested layer
         // transforms explicitly while walking portal-backed subtrees below.
         let isFlipped = sourceView.map { $0.transform.d < 0 } ?? false

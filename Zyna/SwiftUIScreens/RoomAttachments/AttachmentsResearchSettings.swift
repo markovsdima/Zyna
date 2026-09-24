@@ -5,7 +5,8 @@
 
 import Foundation
 
-/// Debug switches for the attachments R&D screen. Always off in Release.
+/// Research switches. History-sync pausing is also available to the chat
+/// list playground in Performance builds. Ordinary Release ignores them.
 enum AttachmentsResearchSettings {
 
     static let didChange = Notification.Name("com.zyna.attachments.research.didChange")
@@ -54,19 +55,19 @@ enum AttachmentsResearchSettings {
         }
     }
 
-    /// When on, `ChatViewModel` skips its background full-history sync so the
-    /// attachments screen's own pagination can be measured in isolation.
-    /// Off reproduces the real UX: the chat keeps paginating underneath.
+    /// When on, `ChatViewModel` skips its background full-history sync for
+    /// isolated measurements of attachments or local chat scrolling.
+    /// Off includes normal history sync in the measured workload.
     static var isChatHistorySyncPaused: Bool {
         get {
-            #if DEBUG
+            #if DEBUG || CHAT_LIST_PLAYGROUND
             return UserDefaults.standard.bool(forKey: pauseChatHistorySyncKey)
             #else
             return false
             #endif
         }
         set {
-            #if DEBUG
+            #if DEBUG || CHAT_LIST_PLAYGROUND
             UserDefaults.standard.set(newValue, forKey: pauseChatHistorySyncKey)
             NotificationCenter.default.post(name: didChange, object: nil)
             #endif

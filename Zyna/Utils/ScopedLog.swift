@@ -42,6 +42,7 @@ struct LogScope: OptionSet {
     static let video            = LogScope(rawValue: bit(15))
     static let attachments      = LogScope(rawValue: bit(16))
     static let glassPerf        = LogScope(rawValue: bit(17))
+    static let historyScroll    = LogScope(rawValue: bit(18))
 
     // MARK: - Presets
 
@@ -63,7 +64,8 @@ struct LogScope: OptionSet {
         .push,
         .video,
         .attachments,
-        .glassPerf
+        .glassPerf,
+        .historyScroll
     ]
 
     static let none: LogScope = []
@@ -160,6 +162,7 @@ private extension LogScope {
         if contains(.video)         { names.append("video") }
         if contains(.attachments)   { names.append("attachments") }
         if contains(.glassPerf)     { names.append("glassPerf") }
+        if contains(.historyScroll) { names.append("historyScroll") }
         return names.isEmpty ? "NONE" : names.joined(separator: "|")
     }
 }

@@ -65,6 +65,7 @@ final class TimelineDiffBatcher {
 
     /// Called on main queue after each successful flush.
     var onFlush: ((TimelineFlushSummary) -> Void)?
+    let historyRevision = TimelineHistoryRevision()
 
     // MARK: - Init
 
@@ -140,6 +141,7 @@ final class TimelineDiffBatcher {
 
         let roomId = self.roomId
         let dbQueue = self.dbQueue
+        let historyRevision = self.historyRevision
         let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         summary.upsertCount = ops.filter { if case .upsert = $0 { return true }; return false }.count
         summary.deleteCount = ops.filter { if case .delete = $0 { return true }; return false }.count
@@ -164,6 +166,7 @@ final class TimelineDiffBatcher {
             var detachedIdentityCount = 0
             do {
                 try dbQueue.write { db in
+                    historyRevision.observeCommit(summary, in: db)
                     // Collect eventIds already marked as read so upserts don't downgrade them
                     let readEventIds = try Set(String.fetchAll(db,
                         sql: "SELECT eventId FROM storedMessage WHERE roomId = ? AND sendStatus = 'read' AND isOutgoing = 1 AND eventId IS NOT NULL AND eventId != ''",
@@ -306,6 +309,9 @@ final class TimelineDiffBatcher {
                     }
                 }
 
+                // This writer is serial; no subsequent flush from this
+                // batcher can advance the revision before we label this one.
+                summary.committedHistoryRevision = historyRevision.current
                 let total = try dbQueue.read { db in
                     try StoredMessage.filter(Column("roomId") == roomId).fetchCount(db)
                 }

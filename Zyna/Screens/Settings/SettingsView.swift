@@ -72,12 +72,23 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
             case .privacy:
                 return [.blockedUsers]
             case .diagnostics:
+                #if DEBUG || CHAT_LIST_PLAYGROUND
+                return [.chatListPlayground, .pauseChatHistorySync,
+                        .glassCaptureInterpolation, .callBackend,
+                        .repairLocalMessageCache, .simulateSoftLogout]
+                #else
                 return [.callBackend, .repairLocalMessageCache, .simulateSoftLogout]
+                #endif
             }
         }
     }
 
     private enum Row {
+        #if DEBUG || CHAT_LIST_PLAYGROUND
+        case chatListPlayground
+        case pauseChatHistorySync
+        case glassCaptureInterpolation
+        #endif
         case chatTheme
         case nameColor
         case devices
@@ -239,6 +250,20 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             )
         cell.accessoryView = nil
         switch row {
+        #if DEBUG || CHAT_LIST_PLAYGROUND
+        case .chatListPlayground:
+            cell.textLabel?.text = "Chat list playground"
+            cell.detailTextLabel?.text = ChatListPlaygroundSettings.isEnabled ? "On" : "Off"
+            cell.accessoryType = .none
+        case .pauseChatHistorySync:
+            cell.textLabel?.text = "Pause chat history sync"
+            cell.detailTextLabel?.text = AttachmentsResearchSettings.isChatHistorySyncPaused ? "On" : "Off"
+            cell.accessoryType = .none
+        case .glassCaptureInterpolation:
+            cell.textLabel?.text = "Glass capture interpolation"
+            cell.detailTextLabel?.text = GlassService.shared.usesLowCaptureInterpolation ? "Low" : "Default"
+            cell.accessoryType = .none
+        #endif
         case .chatTheme:
             cell.textLabel?.text = String(localized: "Chat Theme")
             cell.detailTextLabel?.text = ChatBubbleThemeStore.shared.selectedTheme.title
@@ -279,6 +304,17 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         let section = Section(rawValue: indexPath.section) ?? .appearance
         let row = section.rows[indexPath.row]
         switch row {
+        #if DEBUG || CHAT_LIST_PLAYGROUND
+        case .chatListPlayground:
+            ChatListPlaygroundSettings.isEnabled.toggle()
+            tableView.reloadRows(at: [indexPath], with: .none)
+        case .pauseChatHistorySync:
+            AttachmentsResearchSettings.isChatHistorySyncPaused.toggle()
+            tableView.reloadRows(at: [indexPath], with: .none)
+        case .glassCaptureInterpolation:
+            GlassService.shared.usesLowCaptureInterpolation.toggle()
+            tableView.reloadRows(at: [indexPath], with: .none)
+        #endif
         case .chatTheme:
             onThemeTapped?()
         case .nameColor:

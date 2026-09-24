@@ -171,6 +171,12 @@ final class ChatsCoordinator {
     }
 
     private func showChatScreen(_ target: ChatScreenTarget, animated: Bool) {
+        #if DEBUG || CHAT_LIST_PLAYGROUND
+        if ChatListPlaygroundSettings.isEnabled {
+            showChatListPlaygroundPicker(target, animated: animated)
+            return
+        }
+        #endif
         #if DEBUG
         if AttachmentsResearchSettings.isTraceEnabled {
             LogConfig.enabled.insert(.attachments)
@@ -187,6 +193,40 @@ final class ChatsCoordinator {
         }
         #endif
     }
+
+    #if DEBUG || CHAT_LIST_PLAYGROUND
+    private func showChatListPlaygroundPicker(_ target: ChatScreenTarget, animated: Bool) {
+        let picker = UIAlertController(
+            title: "Chat list playground", message: "Choose a container for this chat.",
+            preferredStyle: .actionSheet
+        )
+        picker.addAction(UIAlertAction(title: "Collection · Full chat", style: .default) { [weak self] _ in
+            guard let self else { return }
+            let (controller, _) = self.makeChatScreen(target: target)
+            self.navigationController.push(controller, animated: animated)
+        })
+        picker.addAction(UIAlertAction(title: "Custom · Playground", style: .default) { [weak self] _ in
+            guard let self else { return }
+            let model: ChatViewModel
+            switch target {
+            case .live(let room): model = ChatViewModel(room: room)
+            case .cached(let room): model = ChatViewModel(cachedRoom: room)
+            }
+            let controller = ChatListPlaygroundController(
+                viewModel: model, audioPlayer: self.audioPlayer
+            )
+            controller.onBack = { [weak self] in self?.navigationController.pop() }
+            self.navigationController.push(controller, animated: animated)
+        })
+        picker.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        picker.popoverPresentationController?.sourceView = navigationController.view
+        picker.popoverPresentationController?.sourceRect = CGRect(
+            x: navigationController.view.bounds.midX,
+            y: navigationController.view.bounds.midY, width: 1, height: 1
+        )
+        navigationController.present(picker, animated: true)
+    }
+    #endif
 
     private func showSpace(
         _ space: RoomModel,

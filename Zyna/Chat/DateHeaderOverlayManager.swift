@@ -253,7 +253,8 @@ final class DateHeaderOverlayManager {
         viewport: CGRect,
         rows: [ChatTimelineRow],
         visibleIndexPaths: [IndexPath],
-        tableView: UITableView,
+        rowRect: (IndexPath) -> CGRect,
+        sourceView: UIView,
         hostView: UIView,
         isScrolling: Bool,
         animated: Bool
@@ -265,7 +266,7 @@ final class DateHeaderOverlayManager {
         for indexPath in visibleIndexPaths {
             guard rows.indices.contains(indexPath.row) else { continue }
 
-            let rowRect = tableView.convert(tableView.rectForRow(at: indexPath), to: hostView)
+            let rowRect = sourceView.convert(rowRect(indexPath), to: hostView)
             switch rows[indexPath.row] {
             case .message(let message):
                 let visibleRect = rowRect.intersection(viewport)

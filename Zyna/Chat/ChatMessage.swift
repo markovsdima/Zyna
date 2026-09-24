@@ -380,7 +380,7 @@ enum ChatItemIdentifier: Equatable {
 /// Phantom neighbour just outside the visible window. Carries only
 /// what the cluster rule consults, so peek queries don't pay full
 /// ChatMessage construction.
-struct ClusterNeighbor {
+struct ClusterNeighbor: Equatable {
     let senderId: String
     let timestamp: Date
     let isStandaloneEvent: Bool

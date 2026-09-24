@@ -26,6 +26,37 @@ struct TimelineFlushSummary: Equatable {
     var upsertCount = 0
     var deleteCount = 0
     var redactedUpsertCount = 0
+    var committedHistoryRevision: UInt64 = 0
+    var includesUnreportedHistory = false
+
+    /// Preserve history/reset provenance when several flushes are prepared
+    /// together; combining them must not enable a remote deletion animation.
+    func merging(_ other: Self) -> Self {
+        var result = self
+        result.appendCount += other.appendCount
+        result.pushBackCount += other.pushBackCount
+        result.pushFrontCount += other.pushFrontCount
+        result.insertCount += other.insertCount
+        result.setCount += other.setCount
+        result.removeCount += other.removeCount
+        result.resetCount += other.resetCount
+        result.truncateCount += other.truncateCount
+        result.clearCount += other.clearCount
+        result.readReceiptCount += other.readReceiptCount
+        result.upsertCount += other.upsertCount
+        result.deleteCount += other.deleteCount
+        result.redactedUpsertCount += other.redactedUpsertCount
+        result.committedHistoryRevision = max(committedHistoryRevision, other.committedHistoryRevision)
+        result.includesUnreportedHistory = includesUnreportedHistory || other.includesUnreportedHistory
+        return result
+    }
+
+    func coveringSnapshot(historyRevision: UInt64) -> Self {
+        var result = self
+        result.includesUnreportedHistory = includesUnreportedHistory
+            || historyRevision > committedHistoryRevision
+        return result
+    }
 
     var hasHistoryOrResetShape: Bool {
         resetCount > 0
@@ -39,7 +70,7 @@ struct TimelineFlushSummary: Equatable {
     /// retained timeline can be live user-visible changes. Reset/pagination
     /// shapes are treated as history hydration and must not drive splash UI.
     var allowsRemoteRedactionAnimation: Bool {
-        setCount > 0 && !hasHistoryOrResetShape
+        setCount > 0 && !hasHistoryOrResetShape && !includesUnreportedHistory
     }
 
     var compactDescription: String {
@@ -56,7 +87,8 @@ struct TimelineFlushSummary: Equatable {
             readReceiptCount > 0 ? "read=\(readReceiptCount)" : nil,
             upsertCount > 0 ? "upsert=\(upsertCount)" : nil,
             deleteCount > 0 ? "delete=\(deleteCount)" : nil,
-            redactedUpsertCount > 0 ? "redacted=\(redactedUpsertCount)" : nil
+            redactedUpsertCount > 0 ? "redacted=\(redactedUpsertCount)" : nil,
+            includesUnreportedHistory ? "unreported" : nil
         ]
         .compactMap { $0 }
         .joined(separator: " ")
@@ -95,11 +127,6 @@ enum MessageWindowChangeOrigin: Equatable {
     }
 }
 
-/// Manages the session-retained set of messages that have been loaded
-/// for a single room. Queries GRDB on demand instead of observing all
-/// rows. Most methods mutate state and emit UI updates — call them on
-/// main. The `queryOlder()` read-only method is thread-safe and
-/// designed for use from Texture's background batch-fetch queue.
 enum MessageWindowPosition {
     case inCurrentWindow
     case olderThanCurrentWindow
@@ -107,6 +134,8 @@ enum MessageWindowPosition {
     case missing
 }
 
+/// Manages the session-retained messages for one room. Mutations and
+/// callbacks run on main; immutable requests can be fetched on a worker.
 final class MessageWindow {
 
     private struct PendingDuplicateFingerprint: Hashable {
@@ -130,8 +159,6 @@ final class MessageWindow {
 
     // MARK: - State
 
-    private(set) var oldestTimestamp: TimeInterval?
-    private(set) var newestTimestamp: TimeInterval?
     private(set) var hasOlderInDB = true
     private(set) var hasNewerInDB = false
 
@@ -147,8 +174,19 @@ final class MessageWindow {
 
     /// Fired after any window content change with (new, previous, origin).
     var onChange: ((_ new: [StoredMessage], _ previous: [StoredMessage]?, _ origin: MessageWindowChangeOrigin) -> Void)?
+    var onOlderHistoryAvailable: (() -> Void)?
 
     private var previousStored: [StoredMessage]?
+    private var revision: UInt64 = 0
+    private(set) var generation: UInt64 = 0
+    private var olderCursor: Cursor?
+    private var newerCursor: Cursor?
+    fileprivate struct Neighbors: Equatable {
+        let older: ClusterNeighbor?
+        let newer: ClusterNeighbor?
+    }
+
+    private var cachedNeighbors: Neighbors?
 
     // MARK: - Init
 
@@ -161,121 +199,296 @@ final class MessageWindow {
 
     func loadInitial() {
         let stored = queryNewest(limit: Self.windowSize)
-        updateCursors(from: stored)
-        hasNewerInDB = false
-        hasOlderInDB = stored.count >= Self.windowSize || checkHasOlderInDB()
-        emitChange(stored, origin: .initialLoad)
+        emitChange(stored, origin: .initialLoad, live: true)
         log("loadInitial: \(stored.count) messages")
     }
 
-    // MARK: - Load Older (scroll up)
+    // MARK: - Local Pagination
 
-    /// Result of an older-page GRDB query, ready to be applied on main.
-    struct OlderPage {
-        let merged: [StoredMessage]
-        let fetchedCount: Int
+    /// Stable order also paginates messages with identical timestamps.
+    struct Cursor: Equatable {
+        let timestamp: TimeInterval
+        let id: String
+
+        init(_ message: StoredMessage) {
+            timestamp = message.timestamp
+            id = message.id
+        }
+
+        func precedes(_ other: Cursor) -> Bool {
+            timestamp < other.timestamp || (timestamp == other.timestamp && id < other.id)
+        }
+
+        var olderPredicate: SQLExpression {
+            // The outer bound lets SQLite seek with the existing
+            // (roomId, timestamp) index instead of scanning the room.
+            Column("timestamp") <= timestamp
+                && (Column("timestamp") < timestamp || Column("id") < id)
+        }
+
+        var newerPredicate: SQLExpression {
+            Column("timestamp") >= timestamp
+                && (Column("timestamp") > timestamp || Column("id") > id)
+        }
+
+        var atOrNewerPredicate: SQLExpression {
+            Column("timestamp") >= timestamp
+                && (Column("timestamp") > timestamp || Column("id") >= id)
+        }
+
+        var atOrOlderPredicate: SQLExpression {
+            Column("timestamp") <= timestamp
+                && (Column("timestamp") < timestamp || Column("id") <= id)
+        }
+
+        static func oldest(_ lhs: Self?, _ rhs: Self?) -> Self? {
+            guard let lhs else { return rhs }
+            guard let rhs else { return lhs }
+            return lhs.precedes(rhs) ? lhs : rhs
+        }
+
+        static func newest(_ lhs: Self?, _ rhs: Self?) -> Self? {
+            guard let lhs else { return rhs }
+            guard let rhs else { return lhs }
+            return lhs.precedes(rhs) ? rhs : lhs
+        }
     }
 
-    /// Pure GRDB read + merge/sort. Safe to call from any queue.
-    /// Returns nil when there's nothing to load.
-    func queryOlder(count: Int = pageSize) -> OlderPage? {
-        guard let oldestTs = oldestTimestamp else { return nil }
+    enum PageDirection { case older, newer }
 
-        let older = queryOlderThan(timestamp: oldestTs, limit: count)
-        guard !older.isEmpty else { return nil }
+    /// Captured on main; the worker never reads mutable window state.
+    struct PageRequest {
+        fileprivate let revision: UInt64
+        fileprivate let direction: PageDirection
+        fileprivate let cursor: Cursor
+        fileprivate let stored: [StoredMessage]
+        fileprivate let roomId: String
+        fileprivate let database: DatabaseQueue
+        fileprivate let count: Int
+        fileprivate let oldest: Cursor?
+        fileprivate let newest: Cursor?
+        fileprivate let live: Bool
 
-        var all = (previousStored ?? []) + older
-        all.sort { $0.timestamp > $1.timestamp }
-        return OlderPage(
-            merged: all, fetchedCount: older.count
+        func fetch() throws -> Page {
+            let (records, olderNeighbor, newerNeighbor) = try database.read { db in
+                let query = StoredMessage
+                    .filter(Column("roomId") == roomId && Column("contentType") != "call")
+                let fetched: [StoredMessage]
+                let older: StoredMessage?
+                let newer: StoredMessage?
+                switch direction {
+                case .older:
+                    fetched = try query.filter(cursor.olderPredicate)
+                        .order(Column("timestamp").desc, Column("id").desc)
+                        .limit(count + 1).fetchAll(db)
+                    older = fetched.dropFirst(count).first
+                    newer = try MessageWindow.newerNeighbor(
+                        in: db, roomId: roomId, cursor: newest, live: live
+                    )
+                case .newer:
+                    fetched = try query.filter(cursor.newerPredicate)
+                        .order(Column("timestamp").asc, Column("id").asc)
+                        .limit(count + 1).fetchAll(db)
+                    older = try MessageWindow.olderNeighbor(in: db, roomId: roomId, cursor: oldest)
+                    newer = fetched.dropFirst(count).first
+                }
+                return (Array(fetched.prefix(count)), older, newer)
+            }
+            let merged = records.isEmpty ? stored : MessageWindow.normalizedStored(stored + records)
+            return Page(
+                revision: revision, direction: direction,
+                merged: merged, fetchedCount: records.count,
+                cursor: records.last.map(Cursor.init) ?? cursor,
+                neighbors: Neighbors(
+                    older: olderNeighbor.map(MessageWindow.clusterNeighbor),
+                    newer: newerNeighbor.map(MessageWindow.clusterNeighbor)
+                )
+            )
+        }
+    }
+
+    /// Normalization and both boundary reads are already complete.
+    struct Page {
+        fileprivate let revision: UInt64
+        fileprivate let direction: PageDirection
+        let merged: [StoredMessage]
+        let fetchedCount: Int
+        fileprivate let cursor: Cursor
+        fileprivate let neighbors: Neighbors
+    }
+
+    func pageRequest(_ direction: PageDirection, count: Int = pageSize) -> PageRequest? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let cursor = direction == .older ? olderCursor : newerCursor
+        guard count > 0, let cursor, let stored = previousStored else { return nil }
+        if direction == .newer && isAtLiveEdge { return nil }
+        return PageRequest(
+            revision: revision, direction: direction, cursor: cursor, stored: stored,
+            roomId: roomId, database: dbQueue, count: count,
+            oldest: olderCursor, newest: newerCursor, live: isAtLiveEdge
         )
     }
 
-    /// Apply a pre-computed older page on the main thread. Mutates
-    /// cursors, flags, and fires onChange.
-    func applyOlder(_ page: OlderPage) {
-        updateCursors(from: page.merged)
-        hasOlderInDB = checkHasOlderInDB()
-        hasNewerInDB = checkHasNewerInDB()
-        emitChange(page.merged, origin: .databasePagination)
-        log("loadOlder: +\(page.fetchedCount), window=\(page.merged.count)")
+    func canApply(_ page: Page) -> Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return page.revision == revision
     }
 
-    /// Legacy single-shot helper — performs both query and apply
-    /// synchronously on the caller's thread. Use for code paths
-    /// that are already on main. For bg-queue entry points, call
-    /// `queryOlder` then marshal `applyOlder` to main.
+    /// A refresh, opposite page, or jump invalidates a prepared page.
     @discardableResult
-    func loadOlder(count: Int = pageSize) -> Bool {
-        guard let page = queryOlder(count: count) else {
-            if oldestTimestamp != nil { hasOlderInDB = false }
-            return false
+    func applyPage(_ page: Page) -> Bool {
+        guard canApply(page) else { return false }
+        let wasAvailable = hasOlderInDB
+        defer { notifyOlderHistoryAvailable(wasAvailable: wasAvailable) }
+        let neighborsChanged = cachedNeighbors != page.neighbors
+        switch page.direction {
+        case .older: olderCursor = page.cursor
+        case .newer: newerCursor = page.cursor
         }
-        applyOlder(page)
-        return true
-    }
+        hasOlderInDB = page.neighbors.older != nil
+        hasNewerInDB = page.neighbors.newer != nil
+        cachedNeighbors = page.neighbors
+        // Even an empty read can reach live after the remaining rows were
+        // deleted. Retire requests that still carry the old window bounds.
+        if page.fetchedCount > 0 || neighborsChanged { revision &+= 1 }
+        guard page.fetchedCount > 0 || neighborsChanged else { return true }
 
-    // MARK: - Load Newer (scroll down)
-
-    /// Returns true if messages were loaded.
-    @discardableResult
-    func loadNewer(count: Int = pageSize) -> Bool {
-        guard let newestTs = newestTimestamp, hasNewerInDB else { return false }
-
-        let newer = queryNewerThan(timestamp: newestTs, limit: count)
-        guard !newer.isEmpty else {
-            hasNewerInDB = false
-            return false
-        }
-
-        // Build new window: newer + existing
-        var all = newer + (previousStored ?? [])
-        all.sort { $0.timestamp > $1.timestamp }
-
-        updateCursors(from: all)
-        hasOlderInDB = checkHasOlderInDB()
-        hasNewerInDB = checkHasNewerInDB()
-        emitChange(all, origin: .databasePagination)
-        log("loadNewer: +\(newer.count), window=\(all.count)")
+        let previous = previousStored
+        previousStored = page.merged
+        onChange?(page.merged, previous, .databasePagination)
+        log("load \(page.direction): +\(page.fetchedCount), window=\(page.merged.count)")
         return true
     }
 
     // MARK: - Refresh (batcher flush callback)
 
-    func refresh(origin: MessageWindowChangeOrigin = .localMutation) {
-        guard let oldestTs = oldestTimestamp else {
-            loadInitial()
-            return
+    /// SDK flushes use a value snapshot just like backward pagination.
+    /// Fetching, normalization and equality checks run on the page worker.
+    struct RefreshRequest {
+        fileprivate let revision: UInt64
+        fileprivate let previous: [StoredMessage]?
+        fileprivate let oldest: Cursor?
+        fileprivate let newest: Cursor?
+        fileprivate let live: Bool
+        fileprivate let neighbors: Neighbors?
+        fileprivate let roomId: String
+        fileprivate let database: DatabaseQueue
+
+        func fetch(historyRevision: TimelineHistoryRevision? = nil) throws -> RefreshPage {
+            let (records, nextOlder, nextNewer, older, newer, committedHistoryRevision) = try database.read { db in
+                let room = StoredMessage
+                    .filter(Column("roomId") == roomId && Column("contentType") != "call")
+                var query = room.order(Column("timestamp").desc, Column("id").desc)
+                if let oldest {
+                    query = query.filter(oldest.atOrNewerPredicate)
+                    if !live, let newest {
+                        query = query.filter(newest.atOrOlderPredicate)
+                    }
+                } else {
+                    query = query.limit(MessageWindow.windowSize)
+                }
+                let records = try query.fetchAll(db)
+                let nextOlder = Cursor.oldest(oldest, records.last.map(Cursor.init))
+                let nextNewer = Cursor.newest(newest, records.first.map(Cursor.init))
+                let older = try MessageWindow.olderNeighbor(in: db, roomId: roomId, cursor: nextOlder)
+                let newer = try MessageWindow.newerNeighbor(
+                    in: db, roomId: roomId, cursor: nextNewer, live: live
+                )
+                return (records, nextOlder, nextNewer, older, newer, historyRevision?.current ?? 0)
+            }
+            let normalized = previous == records ? records : MessageWindow.normalizedStored(records)
+            let nextNeighbors = Neighbors(
+                older: older.map(MessageWindow.clusterNeighbor),
+                newer: newer.map(MessageWindow.clusterNeighbor)
+            )
+            return RefreshPage(
+                revision: revision, stored: normalized,
+                cursor: nextOlder, newerCursor: nextNewer,
+                neighbors: nextNeighbors, initializesWindow: oldest == nil,
+                contentChanged: previous != normalized,
+                neighborsChanged: neighbors != nextNeighbors,
+                committedHistoryRevision: committedHistoryRevision
+            )
         }
 
-        if isAtLiveEdge {
-            // Keep the full session-retained range and append any new
-            // live-edge rows that arrived since the previous refresh.
-            let stored = queryAtOrNewerThan(timestamp: oldestTs)
-            updateCursors(from: stored)
-            hasNewerInDB = false
-            hasOlderInDB = checkHasOlderInDB()
-            emitChange(stored, origin: origin)
-        } else {
-            // Re-query existing bounds (picks up updates/redactions)
-            guard let newestTs = newestTimestamp else { return }
-            let stored = queryRange(from: oldestTs, to: newestTs)
-            updateCursors(from: stored)
-            hasOlderInDB = checkHasOlderInDB()
-            hasNewerInDB = checkHasNewerInDB()
-            emitChange(stored, origin: origin)
-        }
+    }
+
+    struct RefreshPage {
+        fileprivate let revision: UInt64
+        let stored: [StoredMessage]
+        fileprivate let cursor: Cursor?
+        fileprivate let newerCursor: Cursor?
+        fileprivate let neighbors: Neighbors
+        fileprivate let initializesWindow: Bool
+        let contentChanged: Bool
+        fileprivate let neighborsChanged: Bool
+        let committedHistoryRevision: UInt64
+    }
+
+    func refreshRequest() -> RefreshRequest {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return RefreshRequest(
+            revision: revision, previous: previousStored,
+            oldest: olderCursor, newest: newerCursor, live: isAtLiveEdge,
+            neighbors: cachedNeighbors, roomId: roomId, database: dbQueue
+        )
+    }
+
+    func canApply(_ page: RefreshPage) -> Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return revision == page.revision
+    }
+
+    @discardableResult
+    func applyRefresh(
+        _ page: RefreshPage,
+        summary: TimelineFlushSummary,
+        forceNotify: Bool = false
+    ) -> Bool {
+        applyRefresh(page, origin: .timelineFlush(summary), forceNotify: forceNotify)
+    }
+
+    @discardableResult
+    private func applyRefresh(
+        _ page: RefreshPage, origin: MessageWindowChangeOrigin, forceNotify: Bool
+    ) -> Bool {
+        guard canApply(page) else { return false }
+        let wasAvailable = hasOlderInDB
+        defer { notifyOlderHistoryAvailable(wasAvailable: wasAvailable) }
+        let cursorChanged = olderCursor != page.cursor || newerCursor != page.newerCursor
+        olderCursor = page.cursor
+        newerCursor = page.newerCursor
+        hasOlderInDB = page.neighbors.older != nil
+        hasNewerInDB = page.neighbors.newer != nil
+        cachedNeighbors = page.neighbors
+
+        // Even an unchanged window may have gained history beyond its edge.
+        // Update eligibility above without rebuilding the table. Don't retire
+        // an in-flight local page when the complete snapshot is unchanged.
+        if page.contentChanged || cursorChanged || page.neighborsChanged { revision &+= 1 }
+        guard page.contentChanged || page.neighborsChanged || forceNotify else { return true }
+
+        let previous = previousStored
+        previousStored = page.stored
+        if page.initializesWindow { generation &+= 1 }
+        onChange?(page.stored, previous, page.initializesWindow ? .initialLoad : origin)
+        return true
+    }
+
+    func refresh(origin: MessageWindowChangeOrigin = .localMutation) {
+        guard let page = try? refreshRequest().fetch() else { return }
+        applyRefresh(page, origin: origin, forceNotify: true)
     }
 
     // MARK: - Jump
 
     func jumpTo(eventId: String) {
         guard let target = queryByEventId(eventId) else { return }
-        let targetTs = target.timestamp
+        let cursor = Cursor(target)
         let half = Self.windowSize / 2
 
-        let olderHalf = queryOlderThan(timestamp: targetTs + 0.001, limit: half)
-        let newerHalf = queryNewerThan(timestamp: targetTs - 0.001, limit: half)
+        let olderHalf = queryOlderThan(cursor: cursor, limit: half - 1)
+        let newerHalf = queryNewerThan(cursor: cursor, limit: half)
 
         var combined = newerHalf + olderHalf
         if !combined.contains(where: { $0.id == target.id }) {
@@ -288,34 +501,27 @@ final class MessageWindow {
             guard let eid = msg.eventId, !eid.isEmpty else { return true }
             return seenEventIds.insert(eid).inserted
         }
-        combined.sort { $0.timestamp > $1.timestamp }
-
-        updateCursors(from: combined)
-        hasOlderInDB = checkHasOlderInDB()
-        hasNewerInDB = checkHasNewerInDB()
         emitChange(combined, origin: .jump)
         log("jumpTo \(eventId): window=\(combined.count)")
     }
 
     func jumpToLive() {
-        guard let oldestTs = oldestTimestamp else {
+        guard let cursor = olderCursor else {
             loadInitial()
             return
         }
 
-        let stored = queryAtOrNewerThan(timestamp: oldestTs)
-        updateCursors(from: stored)
-        hasNewerInDB = false
-        hasOlderInDB = checkHasOlderInDB()
-        emitChange(stored, origin: .jump)
+        // A jump from a detached history window must not materialize the
+        // entire gap to live. Keep retained history only when already live.
+        let stored = isAtLiveEdge
+            ? queryAtOrNewerThan(cursor: cursor)
+            : queryNewest(limit: Self.windowSize)
+        emitChange(stored, origin: .jump, live: true)
         log("jumpToLive: window=\(stored.count)")
     }
 
     func jumpToOldest() {
         let stored = queryOldest(limit: Self.windowSize)
-        updateCursors(from: stored)
-        hasOlderInDB = false
-        hasNewerInDB = checkHasNewerInDB()
         emitChange(stored, origin: .jump)
         log("jumpToOldest: window=\(stored.count)")
     }
@@ -324,14 +530,13 @@ final class MessageWindow {
         guard let target = queryByEventId(eventId) else {
             return .missing
         }
-        guard let oldestTimestamp,
-              let newestTimestamp else {
+        guard let olderCursor, let newerCursor else {
             return .inCurrentWindow
         }
-        if target.timestamp < oldestTimestamp {
+        if Cursor(target).precedes(olderCursor) {
             return .olderThanCurrentWindow
         }
-        if target.timestamp > newestTimestamp {
+        if newerCursor.precedes(Cursor(target)) {
             return .newerThanCurrentWindow
         }
         return .inCurrentWindow
@@ -343,22 +548,30 @@ final class MessageWindow {
     /// cluster decoration so the oldest visible message sees its
     /// real predecessor instead of nil.
     func peekOlderNeighbor() -> ClusterNeighbor? {
-        guard let oldestTs = oldestTimestamp else { return nil }
-        guard let msg = queryOlderThan(timestamp: oldestTs, limit: 1).first else { return nil }
-        return ClusterNeighbor(
-            senderId: msg.senderId,
-            timestamp: Date(timeIntervalSince1970: msg.timestamp),
-            isStandaloneEvent: Self.isStandaloneEventContentType(msg.contentType),
-            mediaGroupId: msg.toChatMessage()?.zynaAttributes.mediaGroup?.id
-        )
+        boundaryNeighbors(live: isAtLiveEdge).older
     }
 
     /// Bottom-edge mirror of peekOlderNeighbor. Non-nil when the
     /// session-retained set is not currently at the live edge.
     func peekNewerNeighbor() -> ClusterNeighbor? {
-        guard let newestTs = newestTimestamp else { return nil }
-        guard let msg = queryNewerThan(timestamp: newestTs, limit: 1).first else { return nil }
-        return ClusterNeighbor(
+        boundaryNeighbors(live: isAtLiveEdge).newer
+    }
+
+    private func boundaryNeighbors(live: Bool) -> Neighbors {
+        if let cachedNeighbors { return cachedNeighbors }
+        let records = try? dbQueue.read { db in
+            (try Self.olderNeighbor(in: db, roomId: roomId, cursor: olderCursor),
+             try Self.newerNeighbor(in: db, roomId: roomId, cursor: newerCursor, live: live))
+        }
+        let neighbors = Neighbors(
+            older: records?.0.map(Self.clusterNeighbor), newer: records?.1.map(Self.clusterNeighbor)
+        )
+        cachedNeighbors = neighbors
+        return neighbors
+    }
+
+    private static func clusterNeighbor(_ msg: StoredMessage) -> ClusterNeighbor {
+        ClusterNeighbor(
             senderId: msg.senderId,
             timestamp: Date(timeIntervalSince1970: msg.timestamp),
             isStandaloneEvent: Self.isStandaloneEventContentType(msg.contentType),
@@ -377,7 +590,7 @@ final class MessageWindow {
             try StoredMessage
                 .filter(Column("roomId") == self.roomId)
                 .filter(Column("contentType") != "call")
-                .order(Column("timestamp").desc)
+                .order(Column("timestamp").desc, Column("id").desc)
                 .limit(limit)
                 .fetchAll(db)
         }) ?? []
@@ -388,54 +601,45 @@ final class MessageWindow {
             try StoredMessage
                 .filter(Column("roomId") == self.roomId)
                 .filter(Column("contentType") != "call")
-                .order(Column("timestamp").asc)
+                .order(Column("timestamp").asc, Column("id").asc)
                 .limit(limit)
                 .fetchAll(db)
         }) ?? []
         return asc.reversed()
     }
 
-    private func queryOlderThan(timestamp: TimeInterval, limit: Int) -> [StoredMessage] {
+    private func queryOlderThan(cursor: Cursor, limit: Int) -> [StoredMessage] {
         (try? dbQueue.read { db in
             try StoredMessage
-                .filter(Column("roomId") == self.roomId && Column("timestamp") < timestamp)
+                .filter(Column("roomId") == self.roomId)
+                .filter(cursor.olderPredicate)
                 .filter(Column("contentType") != "call")
-                .order(Column("timestamp").desc)
+                .order(Column("timestamp").desc, Column("id").desc)
                 .limit(limit)
                 .fetchAll(db)
         }) ?? []
     }
 
-    private func queryNewerThan(timestamp: TimeInterval, limit: Int) -> [StoredMessage] {
+    private func queryNewerThan(cursor: Cursor, limit: Int) -> [StoredMessage] {
         let asc = (try? dbQueue.read { db in
             try StoredMessage
-                .filter(Column("roomId") == self.roomId && Column("timestamp") > timestamp)
+                .filter(Column("roomId") == self.roomId)
+                .filter(cursor.newerPredicate)
                 .filter(Column("contentType") != "call")
-                .order(Column("timestamp").asc)
+                .order(Column("timestamp").asc, Column("id").asc)
                 .limit(limit)
                 .fetchAll(db)
         }) ?? []
         return asc.reversed()
     }
 
-    private func queryAtOrNewerThan(timestamp: TimeInterval) -> [StoredMessage] {
+    private func queryAtOrNewerThan(cursor: Cursor) -> [StoredMessage] {
         (try? dbQueue.read { db in
             try StoredMessage
-                .filter(Column("roomId") == self.roomId && Column("timestamp") >= timestamp)
+                .filter(Column("roomId") == self.roomId)
+                .filter(cursor.atOrNewerPredicate)
                 .filter(Column("contentType") != "call")
-                .order(Column("timestamp").desc)
-                .fetchAll(db)
-        }) ?? []
-    }
-
-    private func queryRange(from oldest: TimeInterval, to newest: TimeInterval) -> [StoredMessage] {
-        (try? dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == self.roomId
-                    && Column("timestamp") >= oldest
-                    && Column("timestamp") <= newest)
-                .filter(Column("contentType") != "call")
-                .order(Column("timestamp").desc)
+                .order(Column("timestamp").desc, Column("id").desc)
                 .fetchAll(db)
         }) ?? []
     }
@@ -449,26 +653,24 @@ final class MessageWindow {
         }
     }
 
-    private func checkHasOlderInDB() -> Bool {
-        guard let oldestTs = oldestTimestamp else { return false }
-        return ((try? dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == self.roomId && Column("timestamp") < oldestTs)
-                .filter(Column("contentType") != "call")
-                .limit(1)
-                .fetchCount(db)
-        }) ?? 0) > 0
+    private static func olderNeighbor(in db: Database, roomId: String, cursor: Cursor?) throws -> StoredMessage? {
+        guard let cursor else { return nil }
+        return try StoredMessage
+            .filter(Column("roomId") == roomId && Column("contentType") != "call")
+            .filter(cursor.olderPredicate)
+            .order(Column("timestamp").desc, Column("id").desc)
+            .fetchOne(db)
     }
 
-    private func checkHasNewerInDB() -> Bool {
-        guard let newestTs = newestTimestamp else { return false }
-        return ((try? dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == self.roomId && Column("timestamp") > newestTs)
-                .filter(Column("contentType") != "call")
-                .limit(1)
-                .fetchCount(db)
-        }) ?? 0) > 0
+    private static func newerNeighbor(
+        in db: Database, roomId: String, cursor: Cursor?, live: Bool
+    ) throws -> StoredMessage? {
+        guard !live, let cursor else { return nil }
+        return try StoredMessage
+            .filter(Column("roomId") == roomId && Column("contentType") != "call")
+            .filter(cursor.newerPredicate)
+            .order(Column("timestamp").asc, Column("id").asc)
+            .fetchOne(db)
     }
 
     // MARK: - Helpers
@@ -477,23 +679,43 @@ final class MessageWindow {
         contentType == "system" || contentType == "matrix_rtc_call"
     }
 
-    private func updateCursors(from stored: [StoredMessage]) {
-        let normalized = normalizedStored(stored)
-        newestTimestamp = normalized.first?.timestamp
-        oldestTimestamp = normalized.last?.timestamp
+    private func notifyOlderHistoryAvailable(wasAvailable: Bool) {
+        if !wasAvailable && hasOlderInDB { onOlderHistoryAvailable?() }
     }
 
     private func emitChange(
         _ stored: [StoredMessage],
-        origin: MessageWindowChangeOrigin
+        origin: MessageWindowChangeOrigin,
+        live: Bool = false
     ) {
-        let normalized = normalizedStored(stored)
+        let wasAvailable = hasOlderInDB
+        defer { notifyOlderHistoryAvailable(wasAvailable: wasAvailable) }
+        let normalized = Self.normalizedStored(stored)
         let prev = previousStored
         previousStored = normalized
+        revision &+= 1
+        cachedNeighbors = nil
+        let oldest = stored.min {
+            Cursor($0).precedes(Cursor($1))
+        }.map(Cursor.init)
+        let newest = stored.max {
+            Cursor($0).precedes(Cursor($1))
+        }.map(Cursor.init)
+        if origin == .jump || origin == .initialLoad {
+            generation &+= 1
+            olderCursor = oldest
+            newerCursor = newest
+        } else {
+            olderCursor = Cursor.oldest(olderCursor, oldest)
+            newerCursor = Cursor.newest(newerCursor, newest)
+        }
+        let neighbors = boundaryNeighbors(live: live)
+        hasOlderInDB = neighbors.older != nil
+        hasNewerInDB = neighbors.newer != nil
         onChange?(normalized, prev, origin)
     }
 
-    private func normalizedStored(_ stored: [StoredMessage]) -> [StoredMessage] {
+    private static func normalizedStored(_ stored: [StoredMessage]) -> [StoredMessage] {
         guard stored.count > 1 else { return stored }
 
         let sorted = stored.sorted { lhs, rhs in
@@ -585,7 +807,7 @@ final class MessageWindow {
         }
     }
 
-    private func messageScore(_ message: StoredMessage) -> Int {
+    private static func messageScore(_ message: StoredMessage) -> Int {
         var score = 0
         if message.contentType == "redacted" { score += 1_000 }
         if message.eventId != nil { score += 100 }
