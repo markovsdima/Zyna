@@ -21,6 +21,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         static let triggerVelocity: CGFloat = 650
         static let horizontalBias: CGFloat = 1.2
         static let hitVerticalPadding: CGFloat = 6
+        static let returnDuration: TimeInterval = 0.28
+        static let captureTail: TimeInterval = 0.05
     }
 
     // MARK: - Context Menu
@@ -436,6 +438,9 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             let translationX = gesture.translation(in: view).x
             let offsetX = max(-ReplySwipe.maxTranslation, min(0, translationX))
             bubbleWrapperNode.view.transform = CGAffineTransform(translationX: offsetX, y: 0)
+            // Keep capturing briefly after the last gesture update so its
+            // committed presentation state reaches glass even during a pause.
+            GlassService.shared.captureFor(duration: ReplySwipe.captureTail)
             emitReplySwipeProgress(abs(offsetX) / ReplySwipe.triggerTranslation)
 
             let isPrimed = abs(offsetX) >= ReplySwipe.triggerTranslation
@@ -477,9 +482,18 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     private func resetReplySwipe(animated: Bool, initialVelocity: CGFloat = 0) {
         isReplySwipePrimed = false
         guard isNodeLoaded else { return }
+        let wrapperView = bubbleWrapperNode.view
+        let needsCapture = !wrapperView.transform.isIdentity
+            || wrapperView.layer.animation(forKey: "transform") != nil
+
+        if needsCapture {
+            GlassService.shared.captureFor(
+                duration: (animated ? ReplySwipe.returnDuration : 0) + ReplySwipe.captureTail
+            )
+        }
 
         let reset = {
-            self.bubbleWrapperNode.view.transform = .identity
+            wrapperView.transform = .identity
         }
         guard animated else {
             reset()
@@ -487,12 +501,17 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         }
 
         UIView.animate(
-            withDuration: 0.28,
+            withDuration: ReplySwipe.returnDuration,
             delay: 0,
             usingSpringWithDamping: 0.82,
             initialSpringVelocity: abs(initialVelocity) / 1000,
             options: [.allowUserInteraction, .beginFromCurrentState],
-            animations: reset
+            animations: reset,
+            completion: { _ in
+                if needsCapture {
+                    GlassService.shared.captureFor(duration: ReplySwipe.captureTail)
+                }
+            }
         )
     }
 
@@ -671,6 +690,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         }
 
         return old.content == new.content
+            && old.mediaMetadata == new.mediaMetadata
+            && old.textMetadata == new.textMetadata
             && old.zynaAttributes == new.zynaAttributes
     }
 
@@ -778,6 +799,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
                     && oldItem.previewIdentity == newItem.previewIdentity
                     && oldItem.width == newItem.width
                     && oldItem.height == newItem.height
+                    && oldItem.blurhash == newItem.blurhash
+                    && oldItem.sizeBytes == newItem.sizeBytes
                     && oldItem.caption == newItem.caption
             }
         default:
@@ -890,6 +913,22 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
     // MARK: - Context Menu Reparenting
 
+    func contextMenuContentPath() -> CGPath {
+        contextMenuContentPath(for: bubbleNode, radius: bubbleNode.radius,
+                              roundedCorners: bubbleNode.roundedCorners)
+    }
+
+    /// Media without bubble chrome supplies its image node's actual corners.
+    /// Read geometry only for a menu transition, never during cell layout.
+    func contextMenuContentPath(for node: ASDisplayNode, radius: CGFloat,
+                               roundedCorners: UIRectCorner) -> CGPath {
+        let rect = node.view.convert(node.bounds, to: bubbleWrapperNode.view)
+        return UIBezierPath(
+            roundedRect: rect, byRoundingCorners: roundedCorners,
+            cornerRadii: CGSize(width: radius, height: radius)
+        ).cgPath
+    }
+
     func extractBubbleForMenu(in coordinateSpace: UICoordinateSpace) -> (node: ASDisplayNode, frame: CGRect)? {
         guard isNodeLoaded else { return nil }
         return contextSourceNode.extractContentForMenu(in: coordinateSpace)
@@ -914,7 +953,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         assignProbeName("message.contextSource", to: contextSourceNode)
         assignProbeName("message.bubbleWrapper", to: bubbleWrapperNode)
         assignProbeName("message.bubbleFallbackBackground", to: bubbleBackgroundNode)
-        assignProbeName("message.bubblePortalBackground", to: bubblePortalBackgroundNode)
+        assignProbeName(BubblePortalBackgroundNode.captureLayerName, to: bubblePortalBackgroundNode)
         assignProbeName("message.bubbleNode", to: bubbleNode)
         assignProbeName("message.directBubbleContent", to: directBubbleContentNode)
         assignProbeName("message.timeNode", to: timeNode)

@@ -1,0 +1,76 @@
+//
+// Copyright 2026 Dmitry Markovsky
+// SPDX-License-Identifier: AGPL-3.0-only
+//
+
+import Foundation
+
+/// Research switches. History-sync pausing is also available to the chat
+/// list playground in Performance builds. Ordinary Release ignores them.
+enum AttachmentsResearchSettings {
+
+    static let didChange = Notification.Name("com.zyna.attachments.research.didChange")
+
+    /// `ZYNA_ATTACHMENTS_AUTODIAG=1` in the scheme's environment: tapping a chat
+    /// opens it normally and runs `AttachmentsAutoDiagnostics` beside it.
+    static var isAutoDiagnosticsEnabled: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["ZYNA_ATTACHMENTS_AUTODIAG"] == "1"
+        #else
+        return false
+        #endif
+    }
+
+    /// Passive production-path tracing. Unlike auto-diagnostics this never
+    /// creates a second timeline or starts media requests by itself.
+    static var isTraceEnabled: Bool {
+        #if DEBUG
+        return isAutoDiagnosticsEnabled
+            || ProcessInfo.processInfo.environment["ZYNA_ATTACHMENTS_TRACE"] == "1"
+        #else
+        return false
+        #endif
+    }
+
+    private static let pauseChatHistorySyncKey = "com.zyna.debug.attachments.pauseChatHistorySync"
+    private static let useAllFilterKey = "com.zyna.debug.attachments.useAllFilter"
+
+    /// Filter the attachments timeline is built with. `.sdkOnlyMessage` is the
+    /// default now that the fork keeps `m.room.encrypted` in message-only
+    /// timelines; `.allWithSwiftFilter` stays available for A/B measurements.
+    /// Applies to the next screen open.
+    static var filterMode: AttachmentSourceFilterMode {
+        get {
+            #if DEBUG
+            return UserDefaults.standard.bool(forKey: useAllFilterKey) ? .allWithSwiftFilter : .sdkOnlyMessage
+            #else
+            return .sdkOnlyMessage
+            #endif
+        }
+        set {
+            #if DEBUG
+            UserDefaults.standard.set(newValue == .allWithSwiftFilter, forKey: useAllFilterKey)
+            NotificationCenter.default.post(name: didChange, object: nil)
+            #endif
+        }
+    }
+
+    /// When on, `ChatViewModel` skips its background full-history sync for
+    /// isolated measurements of attachments or local chat scrolling.
+    /// Off includes normal history sync in the measured workload.
+    static var isChatHistorySyncPaused: Bool {
+        get {
+            #if DEBUG || CHAT_LIST_PLAYGROUND
+            return UserDefaults.standard.bool(forKey: pauseChatHistorySyncKey)
+            #else
+            return false
+            #endif
+        }
+        set {
+            #if DEBUG || CHAT_LIST_PLAYGROUND
+            UserDefaults.standard.set(newValue, forKey: pauseChatHistorySyncKey)
+            NotificationCenter.default.post(name: didChange, object: nil)
+            #endif
+        }
+    }
+}

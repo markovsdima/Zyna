@@ -60,7 +60,9 @@ final class GlassTopBar: ASDisplayNode, AccessibilityElementsOrderProviding {
 
     // MARK: - Constants
 
-    private let barHeight: CGFloat = 44
+    /// The island alone. Content laying out inside the safe area needs
+    /// only this; content that opts out wants `coveredHeight`.
+    let barHeight: CGFloat = 44
     private let sideInset: CGFloat = 6
     private let btnSize: CGFloat = 36
     private let btnPad: CGFloat = 8

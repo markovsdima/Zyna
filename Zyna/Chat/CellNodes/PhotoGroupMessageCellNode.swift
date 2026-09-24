@@ -81,6 +81,10 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
     private let mediaHeight: CGFloat
     private var slotFrames: [CGRect] = []
     private var displayedItemIdentities: [String?]
+    /// A blurhash or raw preview can make the node non-empty without
+    /// completing the cache load. Track successful loads separately so a
+    /// transient nil result remains retryable.
+    private var loadedItemIdentities: [String?]
     private var contextMenuHighlightedIndex: Int?
 
     private var visibleItemCount: Int {
@@ -147,6 +151,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
             return node
         }
         self.displayedItemIdentities = Array(repeating: nil, count: PhotoGroupLayout.maxVisibleItems)
+        self.loadedItemIdentities = Array(repeating: nil, count: PhotoGroupLayout.maxVisibleItems)
 
         super.init(message: message, isGroupChat: isGroupChat)
 
@@ -563,11 +568,13 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
             }
 
             if displayedItemIdentities.indices.contains(index),
-               displayedItemIdentities[index] == renderIdentity,
-               imageNodes[index].image != nil {
+               loadedItemIdentities[index] == renderIdentity {
                 continue
             }
             if displayedItemIdentities.indices.contains(index) {
+                if displayedItemIdentities[index] != renderIdentity {
+                    loadedItemIdentities[index] = nil
+                }
                 displayedItemIdentities[index] = renderIdentity
             }
 
@@ -579,6 +586,26 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
                ) {
                 applyImage(cached.image, at: index, expectedRenderIdentity: renderIdentity)
                 continue
+            }
+
+            if imageNodes[index].image == nil, let blurhash = item.blurhash {
+                Task { [weak self] in
+                    let placeholder = await Task.detached(priority: .utility) {
+                        BlurhashDecoder.placeholder(
+                            for: blurhash,
+                            aspectRatio: knownAspectRatio
+                        )
+                    }.value
+                    guard !Task.isCancelled, let placeholder else { return }
+                    await MainActor.run { [weak self] in
+                        guard let self,
+                              self.displayedItemIdentities.indices.contains(index),
+                              self.displayedItemIdentities[index] == renderIdentity,
+                              self.imageNodes[index].image == nil
+                        else { return }
+                        self.imageNodes[index].image = placeholder
+                    }
+                }
             }
 
             if let previewImageData = item.previewImageData,
@@ -636,6 +663,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
         if visibleItemCount < imageNodes.count {
             for index in visibleItemCount..<imageNodes.count {
                 displayedItemIdentities[index] = nil
+                loadedItemIdentities[index] = nil
             }
         }
     }
@@ -658,6 +686,7 @@ final class PhotoGroupMessageCellNode: MessageCellNode {
         guard imageNodes.indices.contains(index),
               displayedItemIdentities.indices.contains(index),
               displayedItemIdentities[index] == expectedRenderIdentity else { return }
+        loadedItemIdentities[index] = expectedRenderIdentity
         let imageNode = imageNodes[index]
         imageNode.image = image
         imageNode.setNeedsDisplay()

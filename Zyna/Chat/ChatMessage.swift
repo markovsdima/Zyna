@@ -18,6 +18,7 @@ enum ChatMessageContent: Equatable {
     case voice(source: MediaSource?, duration: TimeInterval, waveform: [UInt16])
     case file(source: MediaSource?, filename: String, mimetype: String?, size: UInt64?, caption: String?)
     case callEvent(type: CallEventType, callId: String, reason: String?)
+    case matrixRTCCall(details: MatrixRTCCallEventDetails)
     case systemEvent(text: String, kind: SystemEventKind)
     case unsupported(typeName: String)
     case redacted
@@ -34,6 +35,8 @@ enum ChatMessageContent: Equatable {
         case (.unsupported(let a), .unsupported(let b)): return a == b
         case (.callEvent(let t1, let c1, let r1), .callEvent(let t2, let c2, let r2)):
             return t1 == t2 && c1 == c2 && r1 == r2
+        case (.matrixRTCCall(let a), .matrixRTCCall(let b)):
+            return a == b
         case (.systemEvent(let t1, let k1), .systemEvent(let t2, let k2)):
             return t1 == t2 && k1 == k2
         case (.image(let s1, let ts1, let w1, let h1, let c1, let p1),
@@ -110,6 +113,7 @@ enum ChatMessageContent: Equatable {
         case .voice: return String(localized: "Voice message")
         case .file(_, let filename, _, _, _): return filename
         case .callEvent(let type, _, let reason): return type.displayText(reason: reason)
+        case .matrixRTCCall(let details): return details.timelineText(isDirect: false, currentUserId: nil)
         case .systemEvent(let text, _): return text
         case .notice(let body): return body
         case .emote(let body): return body
@@ -120,7 +124,7 @@ enum ChatMessageContent: Equatable {
 
     var isStandaloneEvent: Bool {
         switch self {
-        case .callEvent, .systemEvent:
+        case .callEvent, .matrixRTCCall, .systemEvent:
             return true
         default:
             return false
@@ -157,6 +161,27 @@ enum ChatMessageContent: Equatable {
         return visible.isEmpty ? nil : visible
     }
 
+}
+
+/// SDK metadata that does not affect the shape of a chat bubble, but is
+/// needed by placeholders, forwarding and the durable attachments catalog.
+/// Keeping it next to the message avoids widening every media enum case.
+struct ChatMediaMetadata: Equatable {
+    let attachmentKind: RoomAttachmentKind
+    let filename: String
+    let mimetype: String?
+    let sizeBytes: UInt64?
+    let durationSeconds: TimeInterval?
+    let blurhash: String?
+    let isAnimated: Bool
+    let sourceJSON: String
+    let isSourceEncrypted: Bool
+    let thumbnailSourceJSON: String?
+    let isThumbnailEncrypted: Bool?
+    let thumbnailWidth: UInt64?
+    let thumbnailHeight: UInt64?
+    let thumbnailSizeBytes: UInt64?
+    let thumbnailMimetype: String?
 }
 
 extension ChatMessageContent {
@@ -209,6 +234,64 @@ enum CallEventType: String, Codable, Equatable {
             default:          return "Call ended"
             }
         }
+    }
+}
+
+// MARK: - MatrixRTC Call Event
+
+enum MatrixRTCCallNotificationKind: String, Codable, Equatable {
+    case ring
+    case notification
+    case unknown
+}
+
+struct MatrixRTCCallEventDetails: Codable, Equatable {
+    let parentEventId: String?
+    let callIntent: String?
+    let notificationType: MatrixRTCCallNotificationKind
+    let expiresAt: TimeInterval?
+    let declinedBy: [String]
+    let historyOutcome: MatrixRTCCallHistoryOutcome?
+
+    var isVoiceCall: Bool {
+        switch normalizedCallIntent {
+        case "audio", "m.audio":
+            return true
+        default:
+            return false
+        }
+    }
+
+    var normalizedCallIntent: String? {
+        callIntent?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    func timelineText(isDirect: Bool, currentUserId: String?) -> String {
+        if let historyOutcome {
+            return historyOutcome.displayText
+        }
+        if isDirect {
+            if let currentUserId, declinedBy.contains(currentUserId) {
+                return String(localized: "You declined a call")
+            }
+            if !declinedBy.isEmpty {
+                return String(localized: "Call declined")
+            }
+        }
+        return String(localized: "Call started")
+    }
+
+    func withHistoryOutcome(_ historyOutcome: MatrixRTCCallHistoryOutcome?) -> MatrixRTCCallEventDetails {
+        MatrixRTCCallEventDetails(
+            parentEventId: parentEventId,
+            callIntent: callIntent,
+            notificationType: notificationType,
+            expiresAt: expiresAt,
+            declinedBy: declinedBy,
+            historyOutcome: historyOutcome
+        )
     }
 }
 
@@ -297,7 +380,7 @@ enum ChatItemIdentifier: Equatable {
 /// Phantom neighbour just outside the visible window. Carries only
 /// what the cluster rule consults, so peek queries don't pay full
 /// ChatMessage construction.
-struct ClusterNeighbor {
+struct ClusterNeighbor: Equatable {
     let senderId: String
     let timestamp: Date
     let isStandaloneEvent: Bool
@@ -377,6 +460,8 @@ struct MediaGroupItem: Equatable {
     let previewIdentity: String?
     let width: UInt64?
     let height: UInt64?
+    let blurhash: String?
+    let sizeBytes: UInt64?
     let caption: String?
     let sendStatus: String
 
@@ -419,6 +504,8 @@ struct MediaGroupItem: Equatable {
             && lhs.previewIdentity == rhs.previewIdentity
             && lhs.width == rhs.width
             && lhs.height == rhs.height
+            && lhs.blurhash == rhs.blurhash
+            && lhs.sizeBytes == rhs.sizeBytes
             && lhs.caption == rhs.caption
             && lhs.sendStatus == rhs.sendStatus
     }
@@ -451,6 +538,8 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
     let isOutgoing: Bool
     let timestamp: Date
     let content: ChatMessageContent
+    private(set) var mediaMetadata: ChatMediaMetadata? = nil
+    private(set) var textMetadata: ChatTextMetadata? = nil
     let reactions: [MessageReaction]
     let replyInfo: ReplyInfo?
     let isEditable: Bool
@@ -498,6 +587,8 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             && lhs.isOutgoing == rhs.isOutgoing
             && lhs.timestamp == rhs.timestamp
             && lhs.content == rhs.content
+            && lhs.mediaMetadata == rhs.mediaMetadata
+            && lhs.textMetadata == rhs.textMetadata
             && lhs.reactions == rhs.reactions
             && lhs.replyInfo == rhs.replyInfo
             && lhs.isEditable == rhs.isEditable
@@ -536,6 +627,8 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             isOutgoing: isOutgoing,
             timestamp: timestamp,
             content: updatedContent,
+            mediaMetadata: mediaMetadata,
+            textMetadata: textMetadata,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: isEditable,
@@ -571,6 +664,8 @@ struct ChatMessage: Identifiable, Equatable, Hashable {
             isOutgoing: isOutgoing,
             timestamp: timestamp,
             content: content,
+            mediaMetadata: mediaMetadata,
+            textMetadata: textMetadata,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: isEditable,

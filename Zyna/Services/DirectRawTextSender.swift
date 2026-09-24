@@ -408,7 +408,7 @@ enum DirectRawTextSender {
         guard !zynaAttributes.isEmpty else { return content }
 
         let htmlBody = ZynaHTMLCodec.encode(
-            userHTML: ZynaHTMLCodec.escapeForHTMLAttribute(body),
+            userHTML: plainTextHTML(body),
             attributes: zynaAttributes
         )
         content["format"] = "org.matrix.custom.html"
@@ -424,7 +424,7 @@ enum DirectRawTextSender {
     ) -> String? {
         guard replyInfo != nil || !zynaAttributes.isEmpty else { return nil }
 
-        var html = ZynaHTMLCodec.escapeForHTMLAttribute(body)
+        var html = plainTextHTML(body)
         if let replyInfo {
             html = htmlReplyFallback(roomId: roomId, replyInfo: replyInfo) + html
         }
@@ -457,9 +457,7 @@ enum DirectRawTextSender {
         let senderName = ZynaHTMLCodec.escapeForHTMLAttribute(
             replyInfo.senderDisplayName ?? replyInfo.senderId
         )
-        let quotedBody = htmlLineBreaks(
-            ZynaHTMLCodec.escapeForHTMLAttribute(replyInfo.body)
-        )
+        let quotedBody = plainTextHTML(replyInfo.body)
 
         return """
         <mx-reply><blockquote><a href="\(roomEventLink)">In reply to</a> <a href="\(senderLink)">\(senderName)</a><br>\(quotedBody)</blockquote></mx-reply>
@@ -471,6 +469,10 @@ enum DirectRawTextSender {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .replacingOccurrences(of: "\n", with: "<br>")
+    }
+
+    private static func plainTextHTML(_ text: String) -> String {
+        htmlLineBreaks(ZynaHTMLCodec.escapeForHTMLAttribute(text))
     }
 
     private static func rejectedReceipt(for error: Error) -> OutgoingDispatchReceipt {

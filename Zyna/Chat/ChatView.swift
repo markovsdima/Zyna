@@ -8,11 +8,12 @@ import Combine
 import PhotosUI
 import UniformTypeIdentifiers
 import QuickLook
+import SafariServices
 import MatrixRustSDK
 
 private let logVideoUI = ScopedLog(.video, prefix: "[VideoUI]")
 
-final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource, ASTableDelegate {
+final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelegate {
 
     private enum InputBarInsetCompensation {
         static let liveEdgeTolerance: CGFloat = 2
@@ -123,7 +124,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let composerController = ChatComposerController()
     private let documentScanFlow = DocumentScanFlow()
     private var cancellables = Set<AnyCancellable>()
-    private var batchFetchCancellable: AnyCancellable?
+    private let serverBatchFetch = ChatServerBatchFetch()
+    private let olderPageLoader = ChatHistoryPageLoader()
+    private let newerPageLoader = ChatHistoryPageLoader()
+#if DEBUG
+    private let historyScrollTrace = ChatHistoryScrollTrace()
+#endif
+    private var olderPageRetryAfter: CFTimeInterval?
+    private var newerPageRetryAfter: CFTimeInterval?
     private let glassNavBar = GlassNavBar()
     private let glassInputBar = GlassInputBar()
     private let readOnlyComposerView = ReadOnlyComposerPlaceholderView()
@@ -142,6 +150,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private let scrollButtonTap = UIButton(type: .custom)
     private let scrollButtonBadgeBackground = UIView()
     private let scrollButtonBadgeLabel = UILabel()
+    private var scrollButtonBadgeMeasurement: (text: String, font: UIFont, width: CGFloat)?
     private let replySwipeIndicatorView = UIImageView()
     private let dateHeaderOverlayManager = DateHeaderOverlayManager()
     private var showsReadOnlyComposerPlaceholder = false
@@ -172,7 +181,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private var isTeleporting = false
     private var isPickerPresented = false
     private var interactionLocks = Set<String>()
-    private lazy var fpsBooster = ScrollFPSBooster(hostView: node.tableNode.view)
+    private lazy var fpsBooster = ScrollFPSBooster(hostView: node.list.view)
     private var isGroupChat = false
     private weak var photoPreviewController: PhotoGroupPreviewController?
     private weak var filePreviewController: FileAttachmentPreviewController?
@@ -241,13 +250,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        node.tableNode.dataSource = self
-        node.tableNode.delegate = self
-        node.tableNode.view.separatorStyle = .none
-        node.tableNode.view.keyboardDismissMode = .none
-        node.tableNode.view.contentInsetAdjustmentBehavior = .never
-        node.tableNode.view.showsVerticalScrollIndicator = false
-        node.tableNode.automaticallyAdjustsContentOffset = false
+        node.list.delegate = self
+        node.list.numberOfRows = { [weak self] in self?.viewModel.rows.count ?? 0 }
+        node.list.itemIdentifier = { [weak self] path in
+            guard let self, self.viewModel.rows.indices.contains(path.row) else { return "missing:\(path.row)" }
+            return self.viewModel.rows[path.row].listIdentifier
+        }
+        node.list.nodeBlock = { [weak self] path in self?.messageNodeBlock(at: path) ?? { ASCellNode() } }
+        node.list.shouldFetch = { [weak self] in self?.shouldBatchFetchHistory() ?? false }
+        node.list.beginFetch = { [weak self] context in self?.beginBatchFetchHistory(context) }
+        node.list.layout.onGeometryShift = { [weak self] shift in
+            self?.dragStartOffsetY += shift
+        }
+        node.list.view.keyboardDismissMode = .none
+        node.list.view.contentInsetAdjustmentBehavior = .never
+        node.list.view.showsVerticalScrollIndicator = false
 
         if !isPreviewMode {
             let tap = UITapGestureRecognizer(target: self, action: #selector(tableTapped))
@@ -257,8 +274,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             tap.delegate = self
             // Let the scroll pan take precedence: a flick that starts a scroll
             // shouldn't also register as a dismissing tap.
-            tap.require(toFail: node.tableNode.view.panGestureRecognizer)
-            node.tableNode.view.addGestureRecognizer(tap)
+            tap.require(toFail: node.list.view.panGestureRecognizer)
+            node.list.view.addGestureRecognizer(tap)
         }
 
         setupNavigationBar()
@@ -273,15 +290,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             glassNavBar.name = viewModel.roomName
             glassNavBar.onBack = { [weak self] in self?.onBack?() }
             glassNavBar.onCall = { [weak self] in self?.onCallTapped?() }
+            // Always room details, for DMs too — the DM details screen
+            // carries the partner's profile row. Branching on `liveRoom`
+            // here used to race with async room resolution: a chat opened
+            // from cache sent the first tap to the profile and later taps
+            // to room details.
             glassNavBar.onTitleTapped = { [weak self] in
-                guard let self else { return }
-                if self.viewModel.liveRoom != nil {
-                    self.onRoomDetailsTapped?()
-                } else if let userId = self.viewModel.partnerUserId {
-                    self.onTitleTapped?(userId)
-                } else {
-                    self.onRoomDetailsTapped?()
-                }
+                self?.onRoomDetailsTapped?()
             }
             glassNavBar.onVoicePlayPause = { [weak self] in
                 guard let self else { return }
@@ -431,12 +446,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         // Pre-set inset
         if isPreviewMode {
             let inset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
-            node.tableNode.contentInset = inset
-            node.tableNode.view.verticalScrollIndicatorInsets = inset
+            node.list.contentInset = inset
+            node.list.view.verticalScrollIndicatorInsets = inset
         } else {
             let estimatedBarHeight: CGFloat = 49 + DeviceInsets.bottom
-            node.tableNode.contentInset.top = estimatedBarHeight
-            node.tableNode.view.verticalScrollIndicatorInsets.top = estimatedBarHeight
+            node.list.contentInset.top = estimatedBarHeight
+            node.list.view.verticalScrollIndicatorInsets.top = estimatedBarHeight
         }
     }
 
@@ -445,8 +460,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         if isPreviewMode {
             let inset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
-            node.tableNode.contentInset = inset
-            node.tableNode.view.verticalScrollIndicatorInsets = inset
+            node.list.contentInset = inset
+            node.list.view.verticalScrollIndicatorInsets = inset
             return
         }
 
@@ -528,6 +543,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func cleanupViewModelIfNeeded() {
         guard !didCleanupViewModel else { return }
         didCleanupViewModel = true
+        if let token = serverBatchFetch.currentToken {
+            serverBatchFetch.finish(token)
+        }
         cancelPinnedMessagesAutoCollapseTimer()
         viewModel.cleanup()
     }
@@ -540,19 +558,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func updateTableInsetsForInputBar() {
         guard !isPreviewMode else {
             let inset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
-            node.tableNode.contentInset = inset
-            node.tableNode.view.verticalScrollIndicatorInsets = inset
+            node.list.contentInset = inset
+            node.list.view.verticalScrollIndicatorInsets = inset
             return
         }
 
         let newCoveredHeight = activeComposerCoveredHeight()
         let previousCoveredHeight = previousInputCoveredHeight
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         let liveEdgeDistance = tableDistanceToLiveEdge()
         let wasPinnedToLiveEdge = liveEdgeDistance <= InputBarInsetCompensation.liveEdgeTolerance
 
-        if node.tableNode.contentInset.top != newCoveredHeight {
-            node.tableNode.contentInset.top = newCoveredHeight
+        if node.list.contentInset.top != newCoveredHeight {
+            node.list.contentInset.top = newCoveredHeight
         }
         if tableView.verticalScrollIndicatorInsets.top != newCoveredHeight {
             tableView.verticalScrollIndicatorInsets.top = newCoveredHeight
@@ -599,11 +617,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             ? PinnedMessagesBannerView.height + 16
             : 0
         let bottom = glassNavBar.coveredHeight + activeCallHeight + pinnedHeight
-        if node.tableNode.contentInset.bottom != bottom {
-            node.tableNode.contentInset.bottom = bottom
+        if node.list.contentInset.bottom != bottom {
+            node.list.contentInset.bottom = bottom
         }
-        if node.tableNode.view.verticalScrollIndicatorInsets.bottom != bottom {
-            node.tableNode.view.verticalScrollIndicatorInsets.bottom = bottom
+        if node.list.view.verticalScrollIndicatorInsets.bottom != bottom {
+            node.list.view.verticalScrollIndicatorInsets.bottom = bottom
         }
     }
 
@@ -902,13 +920,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func tableDistanceToLiveEdge() -> CGFloat {
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         let liveOffsetY = tableOffsetBounds(for: tableView).minY
-        return max(0, node.tableNode.contentOffset.y - liveOffsetY)
+        return max(0, node.list.contentOffset.y - liveOffsetY)
     }
 
     private func shouldTeleportToLive() -> Bool {
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         let threshold = tableView.bounds.height * LiveNavigation.teleportDistanceScreens
         return tableDistanceToLiveEdge() > threshold
     }
@@ -916,7 +934,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func isViewportPinnedToLiveEdge(
         tolerance: CGFloat = ContentUpdates.liveEdgeTolerance
     ) -> Bool {
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         guard viewModel.isAtLiveEdge else { return false }
         guard !isTableRubberBanding(tableView) else { return false }
         return tableDistanceToLiveEdge() <= tolerance
@@ -935,7 +953,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func updateVisibleReadReceiptCandidate() {
         guard !isPreviewMode, !isTeleporting else { return }
 
-        node.tableNode.view.layoutIfNeeded()
+        node.list.view.layoutIfNeeded()
         let candidate = currentVisibleReadReceiptCandidate()
         let canEstablishBaseline = viewModel.isAtLiveEdge
             && tableDistanceToLiveEdge() <= ReadReceipts.baselineLiveTolerance
@@ -947,14 +965,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func currentVisibleReadReceiptCandidate() -> String? {
-        let visibleRows = node.tableNode.indexPathsForVisibleRows()
+        let visibleRows = node.list.indexPathsForVisibleItems()
         guard let viewport = unobscuredTableViewportInView(),
               !visibleRows.isEmpty
         else {
             return nil
         }
 
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         let rows = viewModel.rows
 
         for indexPath in visibleRows.sorted(by: { $0.row < $1.row }) {
@@ -964,7 +982,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
             guard let eventId = message.eventId else { continue }
 
-            let rowRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
+            let rowRect = tableView.convert(node.list.rectForItem(at: indexPath), to: view)
             guard rowRect.width > 0, rowRect.height > 0 else { continue }
 
             let visibleRect = rowRect.intersection(viewport)
@@ -982,7 +1000,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func unobscuredTableViewportInView() -> CGRect? {
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         let tableFrame = tableView.convert(tableView.bounds, to: view)
 
         let topObstruction = max(
@@ -1018,26 +1036,32 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
 
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         let isScrolling = tableView.isTracking || tableView.isDragging || tableView.isDecelerating
         dateHeaderOverlayManager.update(
             viewport: viewport,
             rows: viewModel.rows,
-            visibleIndexPaths: node.tableNode.indexPathsForVisibleRows(),
-            tableView: tableView,
+            visibleIndexPaths: node.list.indexPathsForVisibleItems(),
+            rowRect: { node.list.rectForItem(at: $0) },
+            sourceView: tableView,
             hostView: view,
             isScrolling: isScrolling,
             animated: animated || !isScrolling
         )
-        node.view.bringSubviewToFront(dateHeaderOverlayManager.containerView)
+        if node.view.subviews.last !== dateHeaderOverlayManager.containerView {
+            node.view.bringSubviewToFront(dateHeaderOverlayManager.containerView)
+        }
     }
 
     private func pinTableToLiveEdge() {
-        let tableView = node.tableNode.view
+#if DEBUG
+        historyScrollTrace.event("pin-live", table: node.list)
+#endif
+        let tableView = node.list.view
         let liveOffsetY = tableOffsetBounds(for: tableView).minY
-        var targetOffset = node.tableNode.contentOffset
+        var targetOffset = node.list.contentOffset
         targetOffset.y = liveOffsetY
-        node.tableNode.contentOffset = targetOffset
+        node.list.contentOffset = targetOffset
     }
 
     private func scrollButtonBadgeText() -> String? {
@@ -1069,13 +1093,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
 
-        let textSize = badgeText.size(withAttributes: [
-            .font: scrollButtonBadgeLabel.font as Any
-        ])
-        let badgeWidth = max(
-            ScrollToLiveBadge.minWidth,
-            ceil(textSize.width) + ScrollToLiveBadge.horizontalPadding * 2
-        )
+        let font = scrollButtonBadgeLabel.font!
+        let badgeWidth: CGFloat
+        if let measurement = scrollButtonBadgeMeasurement,
+           measurement.text == badgeText, measurement.font == font {
+            badgeWidth = measurement.width
+        } else {
+            let textSize = badgeText.size(withAttributes: [.font: font])
+            badgeWidth = max(
+                ScrollToLiveBadge.minWidth,
+                ceil(textSize.width) + ScrollToLiveBadge.horizontalPadding * 2
+            )
+            scrollButtonBadgeMeasurement = (badgeText, font, badgeWidth)
+        }
         let badgeFrame = CGRect(
             x: iconFrame.maxX - ScrollToLiveBadge.overlapX,
             y: iconFrame.minY - ScrollToLiveBadge.overlapY,
@@ -1083,7 +1113,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             height: ScrollToLiveBadge.height
         )
 
-        scrollButtonBadgeLabel.text = badgeText
+        if scrollButtonBadgeLabel.text != badgeText { scrollButtonBadgeLabel.text = badgeText }
         scrollButtonBadgeBackground.frame = badgeFrame
         scrollButtonBadgeBackground.layer.cornerRadius = ScrollToLiveBadge.height / 2
         scrollButtonBadgeLabel.frame = badgeFrame
@@ -1105,24 +1135,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         )
     }
 
-    private func noteUnseenIncomingMessagesIfNeeded(
-        insertions: [IndexPath],
-        minimumVisibleRowBeforeUpdate: Int?
-    ) {
-        guard !isPreviewMode else { return }
-        guard let minimumVisibleRowBeforeUpdate else { return }
-
-        var newUnseenIncoming = 0
-        for indexPath in insertions where indexPath.row < minimumVisibleRowBeforeUpdate {
-            guard viewModel.rows.indices.contains(indexPath.row),
-                  let message = viewModel.rows[indexPath.row].message
-            else { continue }
-            guard !message.isOutgoing, !message.content.isRedacted else { continue }
-            newUnseenIncoming += 1
-        }
-
-        guard newUnseenIncoming > 0 else { return }
-        unseenIncomingMessageCount += newUnseenIncoming
+    private func noteUnseenIncomingMessages(_ count: Int) {
+        guard !isPreviewMode, count > 0 else { return }
+        unseenIncomingMessageCount += count
         updateScrollButtonAccessibilityLabel()
     }
 
@@ -1146,9 +1161,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     private func compensateTableOffsetForInputHeightChange(from oldHeight: CGFloat, to newHeight: CGFloat) {
         let delta = newHeight - oldHeight
         guard abs(delta) > 0.5 else { return }
+#if DEBUG
+        historyScrollTrace.event("input-inset delta=\(delta)", table: node.list)
+#endif
 
-        let tableNode = node.tableNode
-        let tableView = node.tableNode.view
+        let tableNode = node.list
+        let tableView = node.list.view
         let bounds = tableOffsetBounds(for: tableView)
         let minOffsetY = bounds.minY
         let maxOffsetY = bounds.maxY
@@ -1210,7 +1228,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self.isGroupChat = flag
                 // RoomInfo resolves shortly after appear; one reload
                 // makes sender names appear on already-rendered rows.
-                self.node.tableNode.reloadData()
+                self.node.list.reloadData()
             }
             .store(in: &cancellables)
 
@@ -1330,8 +1348,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func bindViewModel() {
-        viewModel.onTableUpdate = { [weak self] update in
-            self?.applyTableUpdate(update)
+        viewModel.onOlderHistoryAvailable = { [weak self] in
+            // Let the current window commit finish before checking distance.
+            DispatchQueue.main.async { [weak self] in
+                self?.afterTableUpdates { [weak self] in self?.prefetchHistoryIfNeeded() }
+            }
+        }
+        viewModel.onTableUpdate = { [weak self] update, origin in
+            self?.applyTableUpdate(update, origin: origin)
         }
 
         ProfileAppearanceService.shared.appearanceDidChange
@@ -1343,7 +1367,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         viewModel.onInPlaceUpdate = { [weak self] indexPath, message in
             guard let self,
-                  let cellNode = self.node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode
+                  let cellNode = self.node.list.nodeForItem(at: indexPath) as? MessageCellNode
             else { return }
             self.configureMessageDrivenInteractions(for: cellNode, message: message)
             self.configureAttachmentTapHandler(for: cellNode, message: message)
@@ -1499,7 +1523,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func reloadRowsForAppearanceChange(userId: String) {
         guard isGroupChat else { return }
-        let indexPaths = node.tableNode.indexPathsForVisibleRows().compactMap { indexPath -> IndexPath? in
+        let indexPaths = node.list.indexPathsForVisibleItems().compactMap { indexPath -> IndexPath? in
             guard viewModel.rows.indices.contains(indexPath.row) else { return nil }
             let row = viewModel.rows[indexPath.row]
             guard let message = row.message,
@@ -1510,47 +1534,71 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return indexPath
         }
         guard !indexPaths.isEmpty else { return }
-        node.tableNode.reloadRows(at: indexPaths, with: .none)
+        node.list.performBatch(animated: false, preservingViewport: true, reloads: indexPaths)
     }
 
-    private func applyTableUpdate(_ update: TableUpdate) {
+    private func applyTableUpdate(_ update: TableUpdate, origin: MessageWindowChangeOrigin) {
         if isTeleporting {
+#if DEBUG
+            historyScrollTrace.event("reload teleport origin=\(origin.compactDescription)", table: node.list)
+#endif
             // During teleportation: silent reload, no animations
-            node.tableNode.reloadData()
+            node.list.reloadData()
             updateDateHeaderOverlay()
             return
         }
 
         switch update {
         case .reload:
-            node.tableNode.reloadData()
+#if DEBUG
+            historyScrollTrace.event("reload origin=\(origin.compactDescription)", table: node.list)
+#endif
+            node.list.reloadData()
             finishPostSendPinToLive()
             updateScrollToLiveVisibility()
             updateDateHeaderOverlay()
             scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         case .batch(let deletions, let insertions, let moves, let updates, let animated):
             if deletions.isEmpty && insertions.isEmpty && moves.isEmpty && updates.isEmpty { return }
-            let minimumVisibleRowBeforeUpdate = node.tableNode.indexPathsForVisibleRows().map(\.row).min()
-            let wasPinnedToLiveEdge = isViewportPinnedToLiveEdge()
+            let minimumVisibleRowBeforeUpdate = node.list.indexPathsForVisibleItems().map(\.row).min()
+            // A final newer page can mark the window live before its rows
+            // reach Texture. Preserve the viewport across that transition.
+            let wasPinnedToLiveEdge = origin != .databasePagination && isViewportPinnedToLiveEdge()
             let shouldForcePostSendPin = pendingPostSendPinToLive
             let shouldPreserveViewport = !wasPinnedToLiveEdge && !shouldForcePostSendPin
-            node.tableNode.automaticallyAdjustsContentOffset = shouldPreserveViewport
 
+            // Resolve indices against this update's rows, never against a
+            // later datasource snapshot from the asynchronous completion.
+            let unseenIncoming = shouldPreserveViewport ? update.unseenIncomingCount(
+                rows: viewModel.rows, origin: origin,
+                minimumVisibleRowBeforeUpdate: minimumVisibleRowBeforeUpdate
+            ) : 0
+            let historyGeneration = viewModel.historyGeneration
             let effectiveAnimated = animated && !shouldPreserveViewport
-            let rowAnimation: UITableView.RowAnimation = effectiveAnimated ? .automatic : .none
-            node.tableNode.performBatch(animated: effectiveAnimated, updates: {
-                if !deletions.isEmpty { node.tableNode.deleteRows(at: deletions, with: rowAnimation) }
-                if !insertions.isEmpty { node.tableNode.insertRows(at: insertions, with: rowAnimation) }
-                for move in moves {
-                    node.tableNode.moveRow(at: move.from, to: move.to)
+#if DEBUG
+            let trace = historyScrollTrace.beginBatch(
+                update, origin: origin, table: node.list,
+                live: viewModel.isAtLiveEdge, pinned: wasPinnedToLiveEdge,
+                forcePin: shouldForcePostSendPin, animated: effectiveAnimated
+            )
+#endif
+            node.list.performBatch(
+                animated: effectiveAnimated, preservingViewport: shouldPreserveViewport,
+                deletions: deletions, insertions: insertions, moves: moves, reloads: updates
+            ) { [weak self] _ in
+#if DEBUG
+                if let self {
+                    self.historyScrollTrace.endBatch(trace, table: self.node.list, phase: "commit")
+                    if trace != nil {
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self else { return }
+                            self.historyScrollTrace.endBatch(trace, table: self.node.list, phase: "next-main")
+                        }
+                    }
                 }
-                if !updates.isEmpty { node.tableNode.reloadRows(at: updates, with: .none) }
-            }, completion: { [weak self] _ in
-                if shouldPreserveViewport {
-                    self?.noteUnseenIncomingMessagesIfNeeded(
-                        insertions: insertions,
-                        minimumVisibleRowBeforeUpdate: minimumVisibleRowBeforeUpdate
-                    )
+#endif
+                if self?.viewModel.historyGeneration == historyGeneration {
+                    self?.noteUnseenIncomingMessages(unseenIncoming)
                 }
                 if shouldForcePostSendPin {
                     self?.finishPostSendPinToLive()
@@ -1560,8 +1608,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                 self?.updateScrollToLiveVisibility()
                 self?.updateDateHeaderOverlay()
                 self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
-            })
+            }
         }
+    }
+
+    private func afterTableUpdates(_ completion: @escaping () -> Void) {
+        node.list.onDidFinishProcessingUpdates(completion)
     }
 
     private func bindInput() {
@@ -1654,13 +1706,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         glassInputBar.inputNode.textInputNode.resignFirstResponder()
     }
 
-    // MARK: - ASTableDataSource
+    // MARK: - Message cells
 
-    func tableNode(_ tableNode: ASTableNode, numberOfRowsInSection section: Int) -> Int {
-        viewModel.rows.count
-    }
-
-    func tableNode(_ tableNode: ASTableNode, nodeBlockForRowAt indexPath: IndexPath) -> ASCellNodeBlock {
+    private func messageNodeBlock(at indexPath: IndexPath) -> ASCellNodeBlock {
         let rows = viewModel.rows
         guard indexPath.row < rows.count else {
             return { ASCellNode() }
@@ -1693,6 +1741,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let gradientSource = self.node.bubbleGradientSource(for: renderedMessage)
         let roomId = viewModel.roomIdentifier
         let roomName = viewModel.roomName
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         let configureMessageInteractions = makeMessageInteractionConfigurator(for: message)
         let openGroupedPhoto: (PhotoGroupMessageCellNode, Int) -> Void = { [weak self] groupCell, index in
             self?.presentImageViewer(for: groupCell, itemIndex: index)
@@ -1719,12 +1768,22 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let openReplyHeader: (String) -> Void = { [weak self] eventId in
             self?.navigateToMessage(eventId: eventId)
         }
+        let openLink: (URL) -> Void = { [weak self] url in
+            self?.presentMessageLink(url)
+        }
 
         return {
 
             // Call events use a standalone centered cell, not a MessageCellNode
             if case .callEvent = renderedMessage.content {
                 return CallEventCellNode(message: renderedMessage)
+            }
+            if case .matrixRTCCall = renderedMessage.content {
+                return MatrixRTCCallEventCellNode(
+                    message: renderedMessage,
+                    isDirect: !isGroup,
+                    currentUserId: currentUserId
+                )
             }
             if case .systemEvent = renderedMessage.content {
                 return StateEventCellNode(message: renderedMessage)
@@ -1808,6 +1867,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
             if !isPreview {
                 cellNode.onReplyHeaderTapped = openReplyHeader
+                (cellNode as? TextMessageCellNode)?.onLinkTapped = openLink
             }
 
             return cellNode
@@ -1869,7 +1929,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
                     guard let cellNode else { return }
                     presentContextMenu(cellNode, point)
                 }
-                cellNode.accessibilityActionsProvider = buildActions
+                cellNode.accessibilityActionsProvider = { [weak cellNode] in
+                    let linkActions = (cellNode as? TextMessageCellNode)?
+                        .linkAccessibilityActions() ?? []
+                    return linkActions + buildActions()
+                }
             }
             cellNode.onReactionTapped = toggleReaction
         }
@@ -1920,6 +1984,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         (cellNode as? ImageMessageCellNode)?.onImageTapped = nil
         (cellNode as? VideoMessageCellNode)?.onVideoTapped = nil
         (cellNode as? FileCellNode)?.onFileTapped = nil
+        (cellNode as? TextMessageCellNode)?.onLinkTapped = nil
 
         if Thread.isMainThread {
             cellNode.refreshAccessibilityForwarding()
@@ -2357,6 +2422,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let menuVC = ContextMenuController(
             contentNode: info.node,
             sourceFrame: info.frame,
+            // Keep the extracted cell alive until restoration, even if a
+            // timeline edit replaces its row while the menu is open.
+            contentPath: { cellNode.contextMenuContentPath() },
+            captureView: node.list.view,
             actions: actions
         )
         menuVC.onDismissComplete = { [weak self, weak cellNode] in
@@ -2438,7 +2507,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         let wasEmpty = interactionLocks.isEmpty
         interactionLocks.insert(token)
         if wasEmpty {
-            node.tableNode.view.isScrollEnabled = false
+            node.list.view.isScrollEnabled = false
             navigationController?.interactivePopGestureRecognizer?.isEnabled = false
         }
     }
@@ -2446,46 +2515,117 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     func unlockInteraction(_ token: String) {
         interactionLocks.remove(token)
         if interactionLocks.isEmpty {
-            node.tableNode.view.isScrollEnabled = true
+            node.list.view.isScrollEnabled = true
             navigationController?.interactivePopGestureRecognizer?.isEnabled = true
         }
     }
 
-    // MARK: - ASTableDelegate — Batch Fetching (Pagination)
+    // MARK: - Texture batch fetching (pagination)
 
-    func shouldBatchFetch(for tableNode: ASTableNode) -> Bool {
-        let tableView = tableNode.view
-        if isTableRubberBanding(tableView) {
-            return false
-        }
-        return !viewModel.isPaginating && (viewModel.hasOlderInDB || !viewModel.sdkPaginationExhausted)
+    private func shouldBatchFetchHistory() -> Bool {
+        guard !didCleanupViewModel, !isTeleporting,
+              !olderPageLoader.isLoading, !newerPageLoader.isLoading,
+              olderPageRetryAfter.map({ CACurrentMediaTime() >= $0 }) ?? true else { return false }
+        if !viewModel.hasOlderInDB,
+           isTableRubberBanding(node.list.view) || serverBatchFetch.isActive { return false }
+        return ChatHistoryPageLoader.canFetch(
+            hasLocal: viewModel.hasOlderInDB, serverBusy: viewModel.isPaginating,
+            serverExhausted: viewModel.sdkPaginationExhausted
+        )
     }
 
-    func tableNode(_ tableNode: ASTableNode, willBeginBatchFetchWith context: ASBatchContext) {
-        // Texture invokes this hook on a background queue — use it!
-        // The GRDB query + merge/sort stays on bg; we only marshal
-        // the UI-mutating apply step back to main.
-        if let page = viewModel.queryOlderFromDB() {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.viewModel.applyOlderPageFromDB(page)
+    private func beginBatchFetchHistory(_ context: ASBatchContext) {
+        // Capture window state on main. loadHistoryPage schedules the actual
+        // query and preparation on its serial worker, not on this queue.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.didCleanupViewModel, !self.isTeleporting else {
                 context.completeBatchFetching(true)
+                return
             }
+            let generation = self.viewModel.historyGeneration
+            self.requestHistoryPage(.older) { [weak self] result in
+                guard let self, !self.didCleanupViewModel,
+                      self.viewModel.historyGeneration == generation else {
+                    context.completeBatchFetching(true)
+                    return
+                }
+                if case .exhausted = result, !self.viewModel.sdkPaginationExhausted {
+                    self.runServerBatchFetch(context: context, generation: generation)
+                } else {
+                    context.completeBatchFetching(true)
+                }
+            }
+        }
+    }
+
+    private func requestHistoryPage(
+        _ direction: MessageWindow.PageDirection,
+        completion: @escaping (ChatHistoryPageLoader.Result) -> Void
+    ) {
+        let loader = direction == .older ? olderPageLoader : newerPageLoader
+#if DEBUG
+        if ChatHistoryScrollTrace.enabled {
+            historyScrollTrace.event("request \(direction) coalesced=\(loader.isLoading) live=\(viewModel.isAtLiveEdge)", table: node.list)
+        }
+#endif
+        loader.load(
+            fetch: { self.viewModel.loadHistoryPage(direction, completion: $0) },
+            waitForUpdates: { [weak self] done in
+                guard let self else { done(); return }
+                self.afterTableUpdates(done)
+            },
+            completion: { [weak self] result in
+#if DEBUG
+                if ChatHistoryScrollTrace.enabled, let self {
+                    self.historyScrollTrace.event("result \(direction)=\(result) live=\(self.viewModel.isAtLiveEdge)", table: self.node.list)
+                }
+#endif
+                let retryAfter = result == .failed ? CACurrentMediaTime() + 0.5 : nil
+                switch direction {
+                case .older: self?.olderPageRetryAfter = retryAfter
+                case .newer: self?.newerPageRetryAfter = retryAfter
+                }
+                completion(result)
+                if direction == .newer && result == .exhausted {
+                    self?.updateScrollToLiveVisibility()
+                }
+                if result == .applied || result == .superseded {
+                    DispatchQueue.main.async { [weak self] in self?.prefetchHistoryIfNeeded() }
+                }
+            }
+        )
+    }
+
+    private func prefetchHistoryIfNeeded() {
+        guard !didCleanupViewModel, !isTeleporting,
+              !olderPageLoader.isLoading, !newerPageLoader.isLoading else { return }
+        let table = node.list.view
+        guard table.window != nil else { return }
+        let bounds = tableOffsetBounds(for: table)
+        let offsetY = node.list.contentOffset.y
+        let now = CACurrentMediaTime()
+        guard let direction = ChatHistoryPageLoader.prefetchDirection(
+            olderRemaining: bounds.maxY - offsetY,
+            newerRemaining: offsetY - bounds.minY,
+            viewportHeight: table.bounds.height,
+            hasOlder: viewModel.hasOlderInDB && (olderPageRetryAfter.map { now >= $0 } ?? true),
+            hasNewer: !viewModel.isAtLiveEdge && (newerPageRetryAfter.map { now >= $0 } ?? true)
+        ) else { return }
+        // Prefetch in either direction while the finger is down, with enough
+        // distance for Texture to prepare the page before it becomes visible.
+        requestHistoryPage(direction) { _ in }
+    }
+
+    private func runServerBatchFetch(context: ASBatchContext, generation: UInt64) {
+        guard !didCleanupViewModel, viewModel.historyGeneration == generation,
+              viewModel.liveTimelineService != nil else {
+            context.completeBatchFetching(true)
             return
         }
-
-        // No GRDB data available — fall back to SDK pagination.
-        // These methods already manage their own threading.
-        DispatchQueue.main.async { [weak self] in
-            self?.runServerBatchFetch(context: context)
-        }
-    }
-
-    private func runServerBatchFetch(context: ASBatchContext) {
+        let token = serverBatchFetch.begin(context: context)
         let countBefore = viewModel.messages.count
-        viewModel.loadOlderFromServer()
-
-        batchFetchCancellable = viewModel.$isPaginating
+        // Subscribe before starting; an already-running SDK fetch is shared.
+        let subscription = viewModel.$isPaginating
             .dropFirst()
             .filter { !$0 }
             .first()
@@ -2493,52 +2633,59 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.resolveServerBatchFetch(
-                    context: context,
+                    token: token, generation: generation,
                     countBefore: countBefore,
                     attemptsRemaining: ServerBatchFetchWait.maxAttempts
                 )
             }
+        serverBatchFetch.setSubscription(subscription, for: token)
+        viewModel.loadOlderFromServer()
     }
 
     private func resolveServerBatchFetch(
-        context: ASBatchContext,
+        token: ChatServerBatchFetch.Token,
+        generation: UInt64,
         countBefore: Int,
         attemptsRemaining: Int
     ) {
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+        guard !didCleanupViewModel, viewModel.historyGeneration == generation,
+              serverBatchFetch.isCurrent(token) else {
+            serverBatchFetch.finish(token)
+            return
+        }
+        DispatchQueue.main.asyncAfter(
             deadline: .now() + ServerBatchFetchWait.pollInterval
         ) { [weak self] in
             guard let self else { return }
-            let page = self.viewModel.queryOlderFromDB()
-            DispatchQueue.main.async { [weak self] in
+            guard !self.didCleanupViewModel, self.viewModel.historyGeneration == generation,
+                  self.serverBatchFetch.isCurrent(token) else {
+                self.serverBatchFetch.finish(token)
+                return
+            }
+            self.requestHistoryPage(.older) { [weak self] result in
                 guard let self else { return }
-
-                if let page {
-                    self.viewModel.sdkPaginationExhausted = false
-                    self.viewModel.applyOlderPageFromDB(page)
-                    context.completeBatchFetching(true)
-                    self.batchFetchCancellable = nil
+                guard !self.didCleanupViewModel, self.viewModel.historyGeneration == generation,
+                      self.serverBatchFetch.isCurrent(token) else {
+                    self.serverBatchFetch.finish(token)
                     return
                 }
-
-                if attemptsRemaining > 1 {
+                switch ChatHistoryPageLoader.serverWaitAction(
+                    result: result, attemptsRemaining: attemptsRemaining,
+                    displayCountIncreased: self.viewModel.messages.count > countBefore
+                ) {
+                case .finish:
+                    self.serverBatchFetch.finish(token)
+                case .retry:
                     self.resolveServerBatchFetch(
-                        context: context,
+                        token: token, generation: generation,
                         countBefore: countBefore,
                         attemptsRemaining: attemptsRemaining - 1
                     )
-                    return
-                }
-
-                if self.viewModel.messages.count <= countBefore {
-                    // The SDK often flips `isPaginating` to false before the
-                    // debounced diff batcher has flushed into GRDB, so don't
-                    // treat a single miss as the true history start.
+                case .exhausted:
+                    // Only an actual empty read can establish exhaustion.
                     self.viewModel.sdkPaginationExhausted = true
+                    self.serverBatchFetch.finish(token)
                 }
-
-                context.completeBatchFetching(true)
-                self.batchFetchCancellable = nil
             }
         }
     }
@@ -2546,16 +2693,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     // MARK: - Scroll
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+#if DEBUG
+        historyScrollTrace.didScroll(node.list)
+#endif
+#if DEBUG && GLASS_PROFILING
+        if !isPreviewMode && !isTeleporting && (scrollView.isDragging || scrollView.isDecelerating) {
+            GlassCaptureProfiler.shared.noteScroll()
+        }
+#endif
         if !isPreviewMode {
             GlassService.shared.setNeedsCapture()
         }
         guard !isTeleporting else { return }
         let isRubberBanding = isTableRubberBanding(scrollView)
-
-        // Load newer messages when scrolling toward bottom (inverted: small contentOffset.y)
-        if !viewModel.isAtLiveEdge && !isRubberBanding && scrollView.contentOffset.y < 200 {
-            viewModel.loadNewerMessages()
-        }
+        prefetchHistoryIfNeeded()
 
         if !isPreviewMode {
             updateScrollToLiveVisibility()
@@ -2571,6 +2722,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     @discardableResult
     private func navigateToMessage(eventId: String, attempt: Int = 0) -> Bool {
+#if DEBUG
+        if ChatHistoryScrollTrace.enabled {
+            historyScrollTrace.event("navigate attempt=\(attempt)", table: node.list)
+        }
+#endif
         guard !isTeleporting else {
             return false
         }
@@ -2602,7 +2758,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self.viewModel.jumpToMessage(eventId: eventId)
         } scrollAfter: {
             if let idx = self.viewModel.indexOfMessage(eventId: eventId) {
-                self.node.tableNode.scrollToRow(at: IndexPath(row: idx, section: 0), at: .middle, animated: false)
+                self.node.list.scrollToItem(at: IndexPath(row: idx, section: 0), at: .centeredVertically, animated: false)
             }
             self.highlightMessage(eventId: eventId, delay: 0.1)
         }
@@ -2610,12 +2766,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func tableCanNavigate(to indexPath: IndexPath) -> Bool {
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         guard tableView.bounds.width > 0,
               tableView.bounds.height > 0,
               tableView.contentSize.height > 0,
-              indexPath.section < tableView.numberOfSections,
-              indexPath.row < tableView.numberOfRows(inSection: indexPath.section)
+              node.list.canNavigate(to: indexPath)
         else {
             return false
         }
@@ -2636,8 +2791,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func shouldJourneyToMessage(at indexPath: IndexPath) -> Bool {
-        let tableView = node.tableNode.view
-        let targetRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
+        let tableView = node.list.view
+        let targetRect = tableView.convert(node.list.rectForItem(at: indexPath), to: view)
         guard targetRect.width > 0,
               targetRect.height > 0 else {
             return isMessageIndexNearVisibleRows(indexPath.row)
@@ -2660,13 +2815,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func scrollJourneyToMessage(at indexPath: IndexPath, animated: Bool) {
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         tableView.layoutIfNeeded()
 
-        let targetRect = tableView.convert(tableView.rectForRow(at: indexPath), to: view)
+        let targetRect = tableView.convert(node.list.rectForItem(at: indexPath), to: view)
         guard targetRect.width > 0,
               targetRect.height > 0 else {
-            node.tableNode.scrollToRow(at: indexPath, at: .middle, animated: animated)
+            node.list.scrollToItem(at: indexPath, at: .centeredVertically, animated: animated)
             return
         }
 
@@ -2674,8 +2829,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             ?? tableView.convert(tableView.bounds, to: view)
         let deltaY = targetRect.midY - viewport.midY
         let offsetBounds = tableOffsetBounds(for: tableView)
-        let beforeOffset = node.tableNode.contentOffset
-        var targetOffset = node.tableNode.contentOffset
+        let beforeOffset = node.list.contentOffset
+        var targetOffset = node.list.contentOffset
         targetOffset.y = min(
             max(targetOffset.y - deltaY, offsetBounds.minY),
             offsetBounds.maxY
@@ -2689,12 +2844,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             && targetOffset.y > offsetBounds.minY + 0.5
         let applyTargetOffset = { [weak self] in
             guard let self else { return }
-            self.node.tableNode.setContentOffset(targetOffset, animated: animated)
+#if DEBUG
+            self.historyScrollTrace.event("journey target=\(targetOffset.y)", table: self.node.list)
+#endif
+            self.node.list.setContentOffset(targetOffset, animated: animated)
         }
         if isLeavingExactLiveEdge {
             var nudgeOffset = beforeOffset
             nudgeOffset.y = min(offsetBounds.minY + 1, offsetBounds.maxY)
-            node.tableNode.setContentOffset(nudgeOffset, animated: false)
+            node.list.setContentOffset(nudgeOffset, animated: false)
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + MessageNavigation.liveEdgeNudgeDelay,
                 execute: applyTargetOffset
@@ -2705,7 +2863,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func isMessageIndexNearVisibleRows(_ index: Int) -> Bool {
-        let visibleRows = node.tableNode.indexPathsForVisibleRows().map(\.row)
+        let visibleRows = node.list.indexPathsForVisibleItems().map(\.row)
         guard let minRow = visibleRows.min(),
               let maxRow = visibleRows.max() else {
             return false
@@ -2734,7 +2892,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func teleportDirectionWithinCurrentWindow(targetIndex: Int?) -> TeleportDirection {
         guard let targetIndex else { return .up }
-        let visibleRows = node.tableNode.indexPathsForVisibleRows().map(\.row)
+        let visibleRows = node.list.indexPathsForVisibleItems().map(\.row)
         guard let minRow = visibleRows.min(),
               let maxRow = visibleRows.max() else {
             return .up
@@ -2747,7 +2905,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self,
                   let idx = self.viewModel.indexOfMessage(eventId: eventId),
-                  let cellNode = self.node.tableNode.nodeForRow(at: IndexPath(row: idx, section: 0))
+                  let cellNode = self.node.list.nodeForItem(at: IndexPath(row: idx, section: 0))
                       as? MessageCellNode
             else { return }
             cellNode.highlightBubble()
@@ -2756,14 +2914,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
     private func navigateToLive() {
         if viewModel.isAtLiveEdge && !shouldTeleportToLive() {
-            node.tableNode.scrollToRow(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
+            node.list.scrollToItem(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
             return
         }
         // Jumping to live (newest) → content slides up
         teleport(direction: .down) {
             self.viewModel.jumpToLive()
         } scrollAfter: {
-            self.node.tableNode.contentOffset = CGPoint(x: 0, y: -self.node.tableNode.contentInset.top)
+            self.node.list.contentOffset = CGPoint(x: 0, y: -self.node.list.contentInset.top)
         }
     }
 
@@ -2772,7 +2930,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     /// `.up` = jumping to older messages: snapshot slides down, new content enters from top.
     /// `.down` = jumping to newer messages: snapshot slides up, new content enters from bottom.
     private func teleport(direction: TeleportDirection, swapData: () -> Void, scrollAfter: () -> Void) {
-        let tableView = node.tableNode.view
+        let tableView = node.list.view
         guard let snapshot = tableView.snapshotView(afterScreenUpdates: false) else {
             completeTeleportWithoutAnimation(
                 swapData: swapData,
@@ -2799,8 +2957,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
 
         // 2. Swap data under snapshot (invisible)
         swapData()
-        node.tableNode.reloadData()
-        node.tableNode.view.layoutIfNeeded()
+        node.list.reloadData()
+        node.list.view.layoutIfNeeded()
         scrollAfter()
 
         // 3. Animate with spring: snapshot exits one way, new content enters from the other
@@ -2838,6 +2996,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         tableAnim.delegate = TeleportAnimationDelegate { [weak self, weak snapshotContainer] in
             snapshotContainer?.removeFromSuperview()
             self?.isTeleporting = false
+            self?.afterTableUpdates { [weak self] in self?.prefetchHistoryIfNeeded() }
             self?.updateScrollToLiveVisibility()
             self?.updateDateHeaderOverlay()
             self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
@@ -2853,9 +3012,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         scrollAfter: () -> Void
     ) {
         swapData()
-        node.tableNode.reloadData()
-        node.tableNode.view.layoutIfNeeded()
+        node.list.reloadData()
+        node.list.view.layoutIfNeeded()
         scrollAfter()
+        afterTableUpdates { [weak self] in self?.prefetchHistoryIfNeeded() }
         updateScrollToLiveVisibility()
         updateDateHeaderOverlay()
         scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
@@ -2863,6 +3023,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+#if DEBUG
+        historyScrollTrace.event("drag-begin", table: node.list)
+#endif
         dragStartOffsetY = scrollView.contentOffset.y
         updateDateHeaderOverlay(animated: true)
     }
@@ -2900,7 +3063,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     }
 
     private func refreshGlassSourceBinding() {
-        let sourceView = node.tableNode.view
+        let sourceView = node.list.view
         glassNavBar.sourceView = sourceView
         glassInputBar.sourceView = sourceView
         unencryptedNoticeView.sourceView = sourceView
@@ -2988,7 +3151,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             if let pendingTarget = pendingAnimatedDeleteTargets.removeValue(forKey: messageId) {
                 clearPendingAnimatedDeleteIdentityKeys(for: [messageId])
                 PaintSplashTrigger.trigger(
-                    in: node.tableNode,
+                    in: node.list,
                     overlayView: node.paintSplashHostView,
                     target: pendingTarget
                 ) { [weak self] in
@@ -3007,14 +3170,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
 
             // If cell is off-screen, hide immediately without animation
-            guard let cellNode = node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode,
+            guard let cellNode = node.list.nodeForItem(at: indexPath) as? MessageCellNode,
                   cellNode.isNodeLoaded else {
                 viewModel.hideMessage(messageId)
                 continue
             }
 
             PaintSplashTrigger.trigger(
-                in: node.tableNode,
+                in: node.list,
                 overlayView: node.paintSplashHostView,
                 at: indexPath
             ) { [weak self] in
@@ -3101,7 +3264,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         if pending.remainingCountAfter == 0 {
             if let splashTarget = pending.splashTarget {
                 PaintSplashTrigger.trigger(
-                    in: node.tableNode,
+                    in: node.list,
                     overlayView: node.paintSplashHostView,
                     target: splashTarget
                 ) { [weak self] in
@@ -3130,7 +3293,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return nil
         }
 
-        guard let cellNode = node.tableNode.nodeForRow(at: indexPath) as? MessageCellNode,
+        guard let cellNode = node.list.nodeForItem(at: indexPath) as? MessageCellNode,
               cellNode.isNodeLoaded
         else {
             return nil
@@ -3149,7 +3312,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return false
         }
 
-        guard let groupCell = node.tableNode.nodeForRow(at: indexPath) as? PhotoGroupMessageCellNode,
+        guard let groupCell = node.list.nodeForItem(at: indexPath) as? PhotoGroupMessageCellNode,
               groupCell.isNodeLoaded,
               let target = groupCell.paintSplashTarget(for: messageId)
         else {
@@ -3162,7 +3325,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         PaintSplashTrigger.trigger(
-            in: node.tableNode,
+            in: node.list,
             overlayView: node.paintSplashHostView,
             target: target
         ) { [weak self] in
@@ -3178,7 +3341,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
     ) -> Bool {
         if let splashTarget = pendingDelete.splashTarget {
             PaintSplashTrigger.trigger(
-                in: node.tableNode,
+                in: node.list,
                 overlayView: node.paintSplashHostView,
                 target: splashTarget
             ) { [weak self] in
@@ -3196,7 +3359,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         }
 
         PaintSplashTrigger.trigger(
-            in: node.tableNode,
+            in: node.list,
             overlayView: node.paintSplashHostView,
             at: indexPath
         ) { [weak self] in
@@ -3303,7 +3466,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             return
         }
         PaintSplashTrigger.trigger(
-            in: node.tableNode,
+            in: node.list,
             overlayView: node.paintSplashHostView,
             target: target
         ) { [weak self] in
@@ -3738,7 +3901,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             }
         }
 
-        let vc = RoomSendSecurityView(viewModel: securityViewModel).wrapped()
+        let vc = RoomSendSecurityView(viewModel: securityViewModel).wrapped(forcedStyle: .light)
         vc.modalPresentationStyle = .pageSheet
         present(vc, animated: true)
     }
@@ -3754,7 +3917,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
             self?.dismiss(animated: true)
         }
 
-        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
         vc.modalPresentationStyle = .fullScreen
         present(vc, animated: true)
     }
@@ -3992,6 +4155,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, ASTableDataSource,
         ql.dataSource = self
         ql.delegate = self
         present(ql, animated: true)
+    }
+
+    private func presentMessageLink(_ url: URL) {
+        guard RichTextURLPolicy.destination(from: url.absoluteString) != nil else {
+            return
+        }
+        present(SFSafariViewController(url: url), animated: true)
     }
 }
 

@@ -5,7 +5,6 @@
 
 import UIKit
 import Combine
-import UniformTypeIdentifiers
 import MatrixRustSDK
 import GRDB
 
@@ -357,6 +356,8 @@ final class TimelineService {
         }
 
         guard let content = contentFromEvent(event) else { return nil }
+        let mediaMetadata = mediaMetadata(from: event)
+        let textMetadata = textMetadata(from: event)
 
         let eventId: String? = {
             if case .eventId(let id) = event.eventOrTransactionId {
@@ -396,6 +397,8 @@ final class TimelineService {
             isOutgoing: event.isOwn,
             timestamp: timestamp,
             content: content,
+            mediaMetadata: mediaMetadata,
+            textMetadata: textMetadata,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: event.isEditable,
@@ -415,6 +418,35 @@ final class TimelineService {
             return false
         }
         return message.isEdited
+    }
+
+    private static func textMetadata(from event: EventTimelineItem) -> ChatTextMetadata? {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let messageContent) = msgContent.kind else {
+            return nil
+        }
+
+        let formatted: FormattedBody?
+        switch messageContent.msgType {
+        case .text(let content):
+            formatted = content.formatted
+        case .notice(let content):
+            formatted = content.formatted
+        case .emote(let content):
+            formatted = content.formatted
+        default:
+            return nil
+        }
+
+        guard let formatted else { return nil }
+        let format: String
+        switch formatted.format {
+        case .html:
+            format = ChatTextMetadata.matrixHTMLFormat
+        case .unknown(let rawFormat):
+            format = rawFormat
+        }
+        return ChatTextMetadata(format: format, formattedBody: formatted.body)
     }
 
     private struct MessageEditState {
@@ -580,7 +612,8 @@ final class TimelineService {
             case .text(let t): return t.body
             case .image: return "Photo"
             case .video: return "Video"
-            case .audio: return String(localized: "Voice message")
+            case .audio(let audio):
+                return audio.voice == nil ? "File" : String(localized: "Voice message")
             case .file: return "File"
             case .notice(let t): return t.body
             case .emote(let t): return t.body
@@ -819,6 +852,16 @@ final class TimelineService {
         case .callInvite:
             return nil
 
+        case .rtcNotification(let callIntent, let declinedBy):
+            guard let details = matrixRTCCallDetails(
+                from: event,
+                sdkCallIntent: callIntent,
+                declinedBy: declinedBy
+            ) else {
+                return nil
+            }
+            return .matrixRTCCall(details: details)
+
         case .roomMembership(userId: let userId, userDisplayName: let userDisplayName, change: let change, reason: let reason):
             guard let text = membershipEventText(
                 userId: userId,
@@ -879,6 +922,68 @@ final class TimelineService {
         }
     }
 
+    private static func matrixRTCCallDetails(
+        from event: EventTimelineItem,
+        sdkCallIntent: String?,
+        declinedBy: [String]
+    ) -> MatrixRTCCallEventDetails? {
+        guard let rawJSON = event.lazyProvider.debugInfo().originalJson,
+              let data = rawJSON.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = root["content"] as? [String: Any]
+        else {
+            return MatrixRTCCallEventDetails(
+                parentEventId: nil,
+                callIntent: sdkCallIntent,
+                notificationType: .unknown,
+                expiresAt: nil,
+                declinedBy: declinedBy,
+                historyOutcome: nil
+            )
+        }
+
+        let parentEventId = (content["m.relates_to"] as? [String: Any])?["event_id"] as? String
+        let rawNotificationType = content["notification_type"] as? String
+        let notificationType = rawNotificationType
+            .flatMap(MatrixRTCCallNotificationKind.init(rawValue:))
+            ?? .unknown
+        let callIntent = sdkCallIntent ?? content["m.call.intent"] as? String
+
+        let senderTimestamp = int64Value(content["sender_ts"])
+        let lifetime = int64Value(content["lifetime"])
+        let expiresAt: TimeInterval?
+        if let senderTimestamp, let lifetime {
+            expiresAt = TimeInterval(senderTimestamp + lifetime) / 1000
+        } else {
+            expiresAt = nil
+        }
+
+        return MatrixRTCCallEventDetails(
+            parentEventId: parentEventId,
+            callIntent: callIntent,
+            notificationType: notificationType,
+            expiresAt: expiresAt,
+            declinedBy: declinedBy.sorted(),
+            historyOutcome: nil
+        )
+    }
+
+    private static func int64Value(_ value: Any?) -> Int64? {
+        if let value = value as? Int64 {
+            return value
+        }
+        if let value = value as? Int {
+            return Int64(value)
+        }
+        if let value = value as? NSNumber {
+            return value.int64Value
+        }
+        if let value = value as? String {
+            return Int64(value)
+        }
+        return nil
+    }
+
     private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent? {
         switch msgType {
         case .text(let content):
@@ -919,8 +1024,22 @@ final class TimelineService {
             return .emote(body: content.body)
         case .audio(let content):
             let duration = content.audio?.duration ?? content.info?.duration ?? 0
-            let waveform = content.audio?.waveform ?? []
-            return .voice(source: content.source, duration: duration, waveform: waveform)
+            if content.voice != nil {
+                return .voice(
+                    source: content.source,
+                    duration: duration,
+                    waveform: content.audio?.waveform ?? []
+                )
+            }
+            // Only m.audio events with voice metadata are voice messages.
+            // Other audio events use the generic file presentation.
+            return .file(
+                source: content.source,
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                size: content.info?.size,
+                caption: content.caption
+            )
         case .file(let content):
             if Self.isLikelyVideoFile(
                 filename: content.filename,
@@ -954,6 +1073,110 @@ final class TimelineService {
         }
     }
 
+    private static func mediaMetadata(from event: EventTimelineItem) -> ChatMediaMetadata? {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let messageContent) = msgContent.kind
+        else {
+            return nil
+        }
+
+        switch messageContent.msgType {
+        case .image(let content):
+            let thumbnailSource = content.info?.thumbnailSource
+            let sourceJSON = content.source.toJson()
+            let thumbnailSourceJSON = thumbnailSource?.toJson()
+            return ChatMediaMetadata(
+                attachmentKind: .image,
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                sizeBytes: content.info?.size,
+                durationSeconds: nil,
+                blurhash: content.info?.blurhash.flatMap { $0.isEmpty ? nil : $0 },
+                isAnimated: content.info?.isAnimated ?? false,
+                sourceJSON: sourceJSON,
+                isSourceEncrypted: MediaSourceInspector.isEncrypted(json: sourceJSON),
+                thumbnailSourceJSON: thumbnailSourceJSON,
+                isThumbnailEncrypted: thumbnailSourceJSON.map {
+                    MediaSourceInspector.isEncrypted(json: $0)
+                },
+                thumbnailWidth: content.info?.thumbnailInfo?.width,
+                thumbnailHeight: content.info?.thumbnailInfo?.height,
+                thumbnailSizeBytes: content.info?.thumbnailInfo?.size,
+                thumbnailMimetype: content.info?.thumbnailInfo?.mimetype
+            )
+        case .video(let content):
+            let thumbnailSource = content.info?.thumbnailSource
+            let sourceJSON = content.source.toJson()
+            let thumbnailSourceJSON = thumbnailSource?.toJson()
+            return ChatMediaMetadata(
+                attachmentKind: .video,
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                sizeBytes: content.info?.size,
+                durationSeconds: content.info?.duration,
+                blurhash: content.info?.blurhash.flatMap { $0.isEmpty ? nil : $0 },
+                isAnimated: false,
+                sourceJSON: sourceJSON,
+                isSourceEncrypted: MediaSourceInspector.isEncrypted(json: sourceJSON),
+                thumbnailSourceJSON: thumbnailSourceJSON,
+                isThumbnailEncrypted: thumbnailSourceJSON.map {
+                    MediaSourceInspector.isEncrypted(json: $0)
+                },
+                thumbnailWidth: content.info?.thumbnailInfo?.width,
+                thumbnailHeight: content.info?.thumbnailInfo?.height,
+                thumbnailSizeBytes: content.info?.thumbnailInfo?.size,
+                thumbnailMimetype: content.info?.thumbnailInfo?.mimetype
+            )
+        case .audio(let content):
+            let sourceJSON = content.source.toJson()
+            return ChatMediaMetadata(
+                attachmentKind: RoomAttachmentClassifier.kindForAudio(isVoice: content.voice != nil),
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                sizeBytes: content.info?.size,
+                durationSeconds: content.audio?.duration ?? content.info?.duration,
+                blurhash: nil,
+                isAnimated: false,
+                sourceJSON: sourceJSON,
+                isSourceEncrypted: MediaSourceInspector.isEncrypted(json: sourceJSON),
+                thumbnailSourceJSON: nil,
+                isThumbnailEncrypted: nil,
+                thumbnailWidth: nil,
+                thumbnailHeight: nil,
+                thumbnailSizeBytes: nil,
+                thumbnailMimetype: nil
+            )
+        case .file(let content):
+            let thumbnailSource = content.info?.thumbnailSource
+            let sourceJSON = content.source.toJson()
+            let thumbnailSourceJSON = thumbnailSource?.toJson()
+            return ChatMediaMetadata(
+                attachmentKind: RoomAttachmentClassifier.kindForFile(
+                    filename: content.filename,
+                    mimetype: content.info?.mimetype
+                ),
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                sizeBytes: content.info?.size,
+                durationSeconds: nil,
+                blurhash: nil,
+                isAnimated: false,
+                sourceJSON: sourceJSON,
+                isSourceEncrypted: MediaSourceInspector.isEncrypted(json: sourceJSON),
+                thumbnailSourceJSON: thumbnailSourceJSON,
+                isThumbnailEncrypted: thumbnailSourceJSON.map {
+                    MediaSourceInspector.isEncrypted(json: $0)
+                },
+                thumbnailWidth: content.info?.thumbnailInfo?.width,
+                thumbnailHeight: content.info?.thumbnailInfo?.height,
+                thumbnailSizeBytes: content.info?.thumbnailInfo?.size,
+                thumbnailMimetype: content.info?.thumbnailInfo?.mimetype
+            )
+        default:
+            return nil
+        }
+    }
+
     private static func describeEncryptedMessage(_ message: EncryptedMessage) -> String {
         switch message {
         case .olmV1Curve25519AesSha2(let senderKey):
@@ -973,7 +1196,7 @@ final class TimelineService {
         await MainActor.run { isPaginatingSubject.send(true) }
 
         do {
-            try await timeline.paginateBackwards(numEvents: numEvents)
+            _ = try await timeline.paginateBackwards(numEvents: numEvents)
             logTimeline("Paginated backwards successfully")
         } catch {
             logTimeline("Pagination failed: \(error)")
@@ -987,12 +1210,8 @@ final class TimelineService {
         await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
     }
 
-    private static func isLikelyVideoFile(filename: String, mimetype: String?) -> Bool {
-        if mimetype?.lowercased().hasPrefix("video/") == true { return true }
-        guard let type = UTType(filenameExtension: (filename as NSString).pathExtension) else {
-            return false
-        }
-        return type.conforms(to: .movie) || type.conforms(to: .video)
+    static func isLikelyVideoFile(filename: String, mimetype: String?) -> Bool {
+        RoomAttachmentClassifier.isLikelyVideoFile(filename: filename, mimetype: mimetype)
     }
 
     /// Send call signaling data through the timeline's encrypted

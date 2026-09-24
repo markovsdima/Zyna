@@ -24,7 +24,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // `appCoordinator.start()` so no Matrix client opens the crypto store
         // and destructive wipes run against files that are not held open.
         if CryptoDiagnosticsGate.isEnabled {
-            window.rootViewController = CryptoDiagnosticsView().wrapped()
+            window.rootViewController = CryptoDiagnosticsView().wrapped(forcedStyle: .light)
             window.makeKeyAndVisible()
             return
         }

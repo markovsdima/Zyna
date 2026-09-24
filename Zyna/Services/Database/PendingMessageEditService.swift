@@ -107,6 +107,8 @@ final class PendingMessageEditService {
                 sql: """
                     UPDATE storedMessage
                     SET contentBody = ?,
+                        contentFormat = NULL,
+                        contentFormattedBody = NULL,
                         zynaAttributesJSON = ?,
                         isEdited = 1,
                         isEditPending = 0,

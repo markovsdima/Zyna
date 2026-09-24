@@ -12,6 +12,9 @@ import UIKit
 /// to a shared `PortalSourceView`.
 final class BubblePortalBackgroundNode: ASDisplayNode {
 
+    /// Capture marker shared with diagnostic layer naming.
+    static let captureLayerName = "message.bubblePortalBackground"
+
     private final class WeakPortalSourceBox: NSObject {
         weak var sourceView: PortalSourceView?
 
@@ -72,7 +75,7 @@ final class BubblePortalBackgroundNode: ASDisplayNode {
 
     override func didLoad() {
         super.didLoad()
-        layer.name = "message.bubblePortalBackground"
+        layer.name = Self.captureLayerName
         Self.setCaptureSourceView(sourceView, on: view)
         installPortalIfNeeded()
         bindPortalSource(oldValue: nil)
@@ -154,24 +157,80 @@ final class BubblePortalBackgroundNode: ASDisplayNode {
 /// the slower source-remap path, and only during explicit snapshot/capture work.
 enum BubblePortalCaptureRenderer {
 
+    /// Cache only for this capture, so Texture layout/reparenting never needs
+    /// invalidation. Search lazily to avoid walking every off-screen branch.
+    private struct PortalLookup {
+        private var results: [ObjectIdentifier: Bool] = [:]
+
+        mutating func containsPortal(_ layer: CALayer) -> Bool {
+            // Presentation snapshots of the same model share one entry.
+            let id = ObjectIdentifier(layer.model())
+            if let result = results[id] { return result }
+            let result = isBubblePortalBackgroundLayer(layer)
+                || (layer.sublayers?.contains { containsPortal($0) } ?? false)
+            results[id] = result
+            return result
+        }
+    }
+
     static func renderLayerForCapture(
         _ layer: CALayer,
         in ctx: CGContext,
-        clipRectInLayer: CGRect
+        clipRectInLayer: CGRect,
+        predictions: GlassCapturePredictions = .none
+    ) {
+        var portalLookup = PortalLookup()
+        var sourceProjections: [GlassCapturePrediction] = []
+        renderLayer(layer, in: ctx, clipRectInLayer: clipRectInLayer,
+                    predictions: predictions, sourceProjections: &sourceProjections,
+                    portalLookup: &portalLookup)
+    }
+
+    private static func renderLayer(
+        _ layer: CALayer,
+        in ctx: CGContext,
+        clipRectInLayer: CGRect,
+        predictions: GlassCapturePredictions,
+        sourceProjections: inout [GlassCapturePrediction],
+        portalLookup: inout PortalLookup
     ) {
         guard !clipRectInLayer.isEmpty else { return }
 
-        if subtreeContainsBubblePortalBackground(layer) {
+        let prediction = predictions.prediction(for: layer)
+        var clip = clipRectInLayer
+        if let prediction {
+            ctx.saveGState()
+            ctx.concatenate(prediction.transform)
+            clip = clip.applying(prediction.inverse)
+            sourceProjections.append(prediction)
+        }
+        defer {
+            if prediction != nil {
+                sourceProjections.removeLast()
+                ctx.restoreGState()
+            }
+        }
+
+        // Once the predicted root's geometry is applied, a portal-free
+        // subtree can use CA's renderer, preserving its own contents/masks.
+        // A returning viewport needs a manual clip even without portals:
+        // CA's renderer would still crop it to the old presentation bounds.
+        let leadsToPrediction = predictions.hasDescendant(in: layer)
+        let changesViewport = prediction.map { $0.bounds != layer.bounds } ?? false
+        if leadsToPrediction || changesViewport || portalLookup.containsPortal(layer) {
             renderLayerSubtreeWithBubblePortalFallback(
                 layer,
                 in: ctx,
-                clipRectInLayer: clipRectInLayer
+                clipRectInLayer: clip,
+                predictions: predictions,
+                sourceProjections: &sourceProjections,
+                portalLookup: &portalLookup
             )
             return
         }
 
         ctx.saveGState()
-        ctx.clip(to: clipRectInLayer)
+        ctx.clip(to: clip)
         layer.render(in: ctx)
         ctx.restoreGState()
     }
@@ -179,14 +238,18 @@ enum BubblePortalCaptureRenderer {
     private static func renderLayerSubtreeWithBubblePortalFallback(
         _ layer: CALayer,
         in ctx: CGContext,
-        clipRectInLayer: CGRect
+        clipRectInLayer: CGRect,
+        predictions: GlassCapturePredictions,
+        sourceProjections: inout [GlassCapturePrediction],
+        portalLookup: inout PortalLookup
     ) {
         guard !clipRectInLayer.isEmpty, !layer.isHidden, layer.opacity > 0 else { return }
 
         if renderBubblePortalBackgroundLayer(
             layer,
             in: ctx,
-            clipRectInLayer: clipRectInLayer
+            clipRectInLayer: clipRectInLayer,
+            sourceProjections: sourceProjections
         ) {
             return
         }
@@ -201,19 +264,42 @@ enum BubblePortalCaptureRenderer {
 
         ctx.saveGState()
         ctx.clip(to: clipRectInLayer)
+        if layer.masksToBounds {
+            ctx.clip(to: predictions.prediction(for: layer)?.bounds ?? layer.bounds)
+        }
+        let visibleRect = ctx.boundingBoxOfClipPath
         for child in sublayers {
             guard !child.isHidden, child.opacity > 0 else { continue }
-            let childFrame = child.frame
-            guard childFrame.intersects(clipRectInLayer) else { continue }
+            let prediction = predictions.prediction(for: child)
+            let childFrame: CGRect
+            if let prediction {
+                childFrame = child.convert(prediction.bounds.applying(prediction.transform), to: layer)
+            } else {
+                childFrame = child.frame
+            }
+            guard childFrame.intersects(visibleRect) else { continue }
+            // An unclipped wrapper can have visible children outside its
+            // bounds (e.g. swipe-to-reply). Carry the capture clip through
+            // its transform instead of replacing it with child.bounds.
+            let childClip = child.convert(visibleRect, from: layer)
+            var boundsClip = childClip
+            var childBounds = child.bounds
+            if let prediction {
+                boundsClip = childClip.applying(prediction.inverse)
+                childBounds = prediction.bounds
+            }
+            if child.masksToBounds, !boundsClip.intersects(childBounds) { continue }
 
             withLayerGeometry(child, in: ctx) {
-                renderLayerForCapture(child, in: ctx, clipRectInLayer: child.bounds)
+                renderLayer(child, in: ctx, clipRectInLayer: childClip,
+                            predictions: predictions, sourceProjections: &sourceProjections,
+                            portalLookup: &portalLookup)
             }
         }
         ctx.restoreGState()
     }
 
-    private static func withLayerGeometry(
+    static func withLayerGeometry(
         _ layer: CALayer,
         in ctx: CGContext,
         body: () -> Void
@@ -227,52 +313,48 @@ enum BubblePortalCaptureRenderer {
         }
 
         ctx.translateBy(
-            x: -layer.bounds.width * layer.anchorPoint.x,
-            y: -layer.bounds.height * layer.anchorPoint.y
+            x: -layer.bounds.minX - layer.bounds.width * layer.anchorPoint.x,
+            y: -layer.bounds.minY - layer.bounds.height * layer.anchorPoint.y
         )
         body()
         ctx.restoreGState()
     }
 
-    private static func subtreeContainsBubblePortalBackground(_ layer: CALayer) -> Bool {
-        if isBubblePortalBackgroundLayer(layer) {
-            return true
-        }
-        return layer.sublayers?.contains(where: subtreeContainsBubblePortalBackground) ?? false
-    }
-
     private static func isBubblePortalBackgroundLayer(_ layer: CALayer) -> Bool {
-        if layer.name == "message.bubblePortalBackground" {
-            return true
-        }
-        guard let hostView = layer.delegate as? UIView else { return false }
-        return BubblePortalBackgroundNode.captureSourceView(for: hostView) != nil
+        layer.name == BubblePortalBackgroundNode.captureLayerName
     }
 
     private static func renderBubblePortalBackgroundLayer(
         _ layer: CALayer,
         in ctx: CGContext,
-        clipRectInLayer: CGRect
+        clipRectInLayer: CGRect,
+        sourceProjections: [GlassCapturePrediction]
     ) -> Bool {
-        guard let hostView = layer.delegate as? UIView,
+        guard isBubblePortalBackgroundLayer(layer),
+              let hostView = layer.model().delegate as? UIView,
               let sourceView = BubblePortalBackgroundNode.captureSourceView(for: hostView),
-              !hostView.isHidden,
-              hostView.alpha > 0 else {
+              !layer.isHidden,
+              layer.opacity > 0 else {
             return false
         }
 
+#if DEBUG && GLASS_PROFILING
+        let portalStart = GlassCaptureProfiler.shared.captureTimer()
+        defer { GlassCaptureProfiler.shared.endPortal(since: portalStart) }
+#endif
         ctx.saveGState()
         ctx.clip(to: clipRectInLayer)
 
-        if let maskLayer = hostView.layer.mask as? CAShapeLayer,
+        if let maskLayer = layer.mask as? CAShapeLayer,
            let maskPath = maskLayer.path {
             ctx.addPath(maskPath)
             ctx.clip()
         } else {
-            ctx.clip(to: hostView.bounds)
+            ctx.clip(to: layer.bounds)
         }
 
-        renderPortalSource(sourceView, in: ctx, mappedTo: hostView)
+        renderPortalSource(sourceView, in: ctx, mappedTo: layer, hostView: hostView,
+                           sourceProjections: sourceProjections)
 
         ctx.restoreGState()
         return true
@@ -281,14 +363,18 @@ enum BubblePortalCaptureRenderer {
     private static func renderPortalSource(
         _ sourceView: PortalSourceView,
         in ctx: CGContext,
-        mappedTo hostView: UIView
+        mappedTo hostLayer: CALayer,
+        hostView: UIView,
+        sourceProjections: [GlassCapturePrediction]
     ) {
         let sourceSubviews = sourceView.subviews.filter { !$0.isHidden && $0.alpha > 0 }
         if sourceSubviews.isEmpty {
-            renderSourceView(sourceView, in: ctx, mappedTo: hostView)
+            renderSourceView(sourceView, in: ctx, mappedTo: hostLayer, hostView: hostView,
+                             sourceProjections: sourceProjections)
         } else {
             for sourceSubview in sourceSubviews {
-                renderSourceView(sourceSubview, in: ctx, mappedTo: hostView)
+                renderSourceView(sourceSubview, in: ctx, mappedTo: hostLayer, hostView: hostView,
+                                 sourceProjections: sourceProjections)
             }
         }
     }
@@ -296,14 +382,84 @@ enum BubblePortalCaptureRenderer {
     private static func renderSourceView(
         _ sourceView: UIView,
         in ctx: CGContext,
-        mappedTo hostView: UIView
+        mappedTo hostLayer: CALayer,
+        hostView: UIView,
+        sourceProjections: [GlassCapturePrediction]
     ) {
-        let sourceFrame = sourceView.convert(sourceView.bounds, to: hostView)
-        guard !sourceFrame.isEmpty else { return }
+        let usesPresentation = hostLayer !== hostView.layer
+        let sourceLayer = usesPresentation
+            ? (sourceView.layer.presentation() ?? sourceView.layer)
+            : sourceView.layer
+        guard !sourceLayer.bounds.isEmpty else { return }
+
+        let convert: (CGPoint) -> CGPoint
+        if !usesPresentation {
+            // Model snapshots also run after reparenting into the menu window.
+            convert = { sourceView.convert($0, to: hostView) }
+        } else if let sourceWindow = sourceView.window,
+                  sourceWindow === hostView.window,
+                  sourceLayer !== sourceView.layer {
+            // Match the actual layer being captured, including ancestor shrink
+            // and scroll animations. Never mix model and presentation trees.
+            convert = { sourceLayer.convert($0, to: hostLayer) }
+        } else if let sourceWindow = sourceView.window,
+                  let hostWindow = hostView.window,
+                  let hostWindowLayer = hostWindow.layer.presentation() {
+            // Bridge window coordinate spaces if the host was reparented, or
+            // the source has not acquired a presentation layer yet.
+            guard let sourceWindowLayer = sourceLayer === sourceView.layer
+                ? sourceWindow.layer
+                : sourceWindow.layer.presentation() else { return }
+            convert = { point in
+                let inSourceWindow = sourceLayer.convert(point, to: sourceWindowLayer)
+                let inHostWindow = sourceWindow.convert(inSourceWindow, to: hostWindow)
+                return hostLayer.convert(inHostWindow, from: hostWindowLayer)
+            }
+        } else {
+            return
+        }
+
+        // A converted CGRect loses orientation; using only its origin also
+        // drops scale. Map a basis to preserve the full affine geometry.
+        func projectedPoint(_ point: CGPoint) -> CGPoint {
+            var mapped = convert(point)
+            // Predict the mask and content together, but keep the portal's
+            // shared gradient fixed in window space (matchesPosition).
+            // Undo ancestor motion before child motion. The traversal stack
+            // contains only this portal's branch, independent of start order.
+            for projection in sourceProjections {
+                mapped = projection.sourcePoint(mapped, in: hostLayer)
+            }
+            return mapped
+        }
+        let origin = projectedPoint(.zero)
+        let xAxis = projectedPoint(CGPoint(x: 1, y: 0))
+        let yAxis = projectedPoint(CGPoint(x: 0, y: 1))
+        let transform = CGAffineTransform(
+            a: xAxis.x - origin.x, b: xAxis.y - origin.y,
+            c: yAxis.x - origin.x, d: yAxis.y - origin.y,
+            tx: origin.x, ty: origin.y
+        )
 
         ctx.saveGState()
-        ctx.translateBy(x: sourceFrame.minX, y: sourceFrame.minY)
-        sourceView.layer.render(in: ctx)
+        ctx.concatenate(transform)
+#if DEBUG && GLASS_PROFILING
+        let sourceStart = GlassCaptureProfiler.shared.captureTimer()
+#endif
+        let drewCaptureImage = (sourceView as? BubbleGradientCanvasView)?
+            .drawCaptureImage(of: sourceLayer, in: ctx) ?? false
+        if !drewCaptureImage {
+            sourceLayer.render(in: ctx)
+        }
+#if DEBUG && GLASS_PROFILING
+        if let sourceStart {
+            GlassCaptureProfiler.shared.endSourceRender(
+                since: sourceStart,
+                isGradient: sourceView is BubbleGradientSource || sourceView.superview is BubbleGradientSource,
+                cachedImage: drewCaptureImage
+            )
+        }
+#endif
         ctx.restoreGState()
     }
 }

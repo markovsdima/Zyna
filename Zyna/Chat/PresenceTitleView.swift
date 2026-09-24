@@ -118,7 +118,6 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
     private var statusHidden = true
     private var glassMaterial = GlassAdaptiveMaterial.light
     private var lastAppliedGlassAppearance: CGFloat = -1
-    private var lastAppliedGlassContrast: CGFloat = -1
 
     private static let expandedVoiceWidth: CGFloat = 342
     private static let expandedSeekHeight: CGFloat = 10
@@ -133,7 +132,6 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
     private var nameAttributes: [NSAttributedString.Key: Any] {
         [
             .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
-            .foregroundColor: glassMaterial.primaryForeground,
             .paragraphStyle: {
                 let p = NSMutableParagraphStyle()
                 p.alignment = .center
@@ -142,22 +140,23 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
         ]
     }
 
-    private func statusAttributes(color: UIColor) -> [NSAttributedString.Key: Any] {
-        [
+    private func statusAttributes(color: UIColor?) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 12, weight: .regular),
-            .foregroundColor: color,
             .paragraphStyle: {
                 let p = NSMutableParagraphStyle()
                 p.alignment = .center
                 return p
             }()
         ]
+        // Semantic colors (online) override the adaptive foreground tint.
+        attributes[.foregroundColor] = color
+        return attributes
     }
 
     private var voiceTitleAttributes: [NSAttributedString.Key: Any] {
         [
             .font: UIFont.systemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: glassMaterial.primaryForeground,
             .paragraphStyle: leadingParagraph()
         ]
     }
@@ -165,7 +164,6 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
     private var voiceSubtitleAttributes: [NSAttributedString.Key: Any] {
         [
             .font: UIFont.systemFont(ofSize: 11, weight: .regular),
-            .foregroundColor: glassMaterial.secondaryForeground,
             .paragraphStyle: leadingParagraph()
         ]
     }
@@ -173,7 +171,6 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
     private var voiceTimeAttributes: [NSAttributedString.Key: Any] {
         [
             .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: glassMaterial.secondaryForeground,
             .paragraphStyle: centeredParagraph()
         ]
     }
@@ -211,6 +208,12 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
         voiceTitleNode.maximumNumberOfLines = 1
         voiceSubtitleNode.maximumNumberOfLines = 1
         voiceTimeNode.maximumNumberOfLines = 1
+        // Tint changes redraw Texture text without invalidating its layout.
+        for node in [nameNode, statusNode, voiceTitleNode, voiceSubtitleNode, voiceTimeNode,
+                     voiceSpeedButtonNode.titleNode] {
+            node.textColorFollowsTintColor = true
+        }
+        applyForegroundColors()
         voiceTitleNode.isAccessibilityElement = false
         voiceSubtitleNode.isAccessibilityElement = false
         voiceTimeNode.isAccessibilityElement = false
@@ -495,7 +498,7 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
     private func updateStatus() {
         if let connectionStatus,
            !connectionStatus.isEmpty {
-            setStatus(connectionStatus, color: glassMaterial.secondaryForeground)
+            setStatus(connectionStatus)
             return
         }
 
@@ -504,7 +507,7 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
             if presence.online {
                 setStatus(String(localized: "online"), color: .systemGreen)
             } else if let lastSeen = presence.lastSeen {
-                setStatus(lastSeen.presenceLastSeenString(style: .chat), color: glassMaterial.secondaryForeground)
+                setStatus(lastSeen.presenceLastSeenString(style: .chat))
             } else {
                 hideStatus()
             }
@@ -513,14 +516,14 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
 
         // Group: show member count
         if let memberCount {
-            setStatus(String(localized: "\(memberCount) members"), color: glassMaterial.secondaryForeground)
+            setStatus(String(localized: "\(memberCount) members"))
             return
         }
 
         hideStatus()
     }
 
-    private func setStatus(_ text: String, color: UIColor) {
+    private func setStatus(_ text: String, color: UIColor? = nil) {
         statusHidden = false
         statusNode.attributedText = NSAttributedString(
             string: text,
@@ -647,10 +650,11 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
         voiceCloseButtonNode.isHidden = !voiceExpanded
         voiceCloseButtonNode.accessibilityElementsHidden = !voiceExpanded
 
-        voiceSpeedButtonNode.setTitle(
-            voiceState.rateText,
-            with: UIFont.systemFont(ofSize: 12, weight: .semibold),
-            with: glassMaterial.glyphForeground,
+        voiceSpeedButtonNode.setAttributedTitle(
+            NSAttributedString(
+                string: voiceState.rateText,
+                attributes: [.font: UIFont.systemFont(ofSize: 12, weight: .semibold)]
+            ),
             for: .normal
         )
         voiceSpeedButtonNode.accessibilityLabel = String(localized: "Playback speed")
@@ -689,22 +693,28 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
 
 extension PresenceTitleNode {
     func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {
-        guard abs(material.appearance - lastAppliedGlassAppearance) > 0.012 ||
-              abs(material.contrast - lastAppliedGlassContrast) > 0.03 else {
+        guard abs(material.appearance - lastAppliedGlassAppearance) > 0.012 else {
             return
         }
 
         glassMaterial = material
         lastAppliedGlassAppearance = material.appearance
-        lastAppliedGlassContrast = material.contrast
+        applyForegroundColors()
+    }
 
-        nameNode.attributedText = NSAttributedString(
-            string: name,
-            attributes: nameAttributes
-        )
-        applyVoiceState()
-        updateStatus()
-        invalidateCalculatedLayout()
+    private func applyForegroundColors() {
+        let primary = glassMaterial.primaryForeground
+        let secondary = glassMaterial.secondaryForeground
+        let glyph = glassMaterial.glyphForeground
+        nameNode.tintColor = primary
+        statusNode.tintColor = secondary
+        voiceTitleNode.tintColor = primary
+        voiceSubtitleNode.tintColor = secondary
+        voiceTimeNode.tintColor = secondary
+        voiceSpeedButtonNode.tintColor = glyph
+        voiceModeButtonNode.tintColor = glyph
+        voicePlayButtonNode.tintColor = glyph
+        voiceCloseButtonNode.tintColor = glyph
     }
 }
 

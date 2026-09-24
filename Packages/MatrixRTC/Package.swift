@@ -21,7 +21,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/markovsdima/client-sdk-swift.git",
-            exact: "2.15.0-zyna.1"
+            exact: "2.15.0-zyna.2"
         ),
     ],
     targets: [

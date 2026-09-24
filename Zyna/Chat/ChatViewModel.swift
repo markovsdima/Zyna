@@ -14,6 +14,12 @@ private let logMessageEdit = ScopedLog(.timeline, prefix: "[MessageEdit]")
 private let logVideoSend = ScopedLog(.video, prefix: "[VideoSend]")
 private let timelineHealthLog = ScopedLog(.database, prefix: "[TimelineHealth]")
 private let logMatrixRTCChat = ScopedLog(.call, prefix: "[matrixrtc-chat]")
+#if DEBUG
+private let logAttachmentChatTrace = ScopedLog(
+    .attachments,
+    prefix: "[Attachments][trace][chat-all]"
+)
+#endif
 
 private protocol OutgoingOutboxFailureEvent {
     var roomId: String { get }
@@ -157,7 +163,8 @@ final class ChatViewModel {
     private var recentlyFailedTransactionOrder: [String] = []
 
     /// Called on the main queue when the table needs updating.
-    var onTableUpdate: ((TableUpdate) -> Void)?
+    var onTableUpdate: ((TableUpdate, MessageWindowChangeOrigin) -> Void)?
+    var onOlderHistoryAvailable: (() -> Void)?
 
     /// Called for lightweight in-place cell updates (e.g. send-status change)
     /// that don't require cell recreation. Index path → updated message.
@@ -214,6 +221,17 @@ final class ChatViewModel {
     private var messageIndexByEventId: [String: Int] = [:]
     private var rowIndexByEventId: [String: Int] = [:]
     private var didLoadInitialWindow = false
+    private var storedMessagePresentationCache = StoredMessagePresentationCache()
+    private let historyPageQueue = DispatchQueue(
+        label: "com.zyna.chat.history-page", qos: .userInitiated
+    )
+    private var acceptsTimelineRefreshes = true
+    private var needsSparseHistoryCheck = false
+    private var isApplyingTimelineRefresh = false
+    private lazy var timelineRefreshQueue = ChatTimelineRefreshQueue { [weak self] summary, done in
+        guard let self else { done(.failed); return }
+        self.prepareTimelineRefresh(summary, completion: done)
+    }
     private var roomResolutionTask: Task<Void, Never>?
     private var sendPermissionTask: Task<Void, Never>?
     private var pinnedMessagesTask: Task<Void, Never>?
@@ -222,6 +240,11 @@ final class ChatViewModel {
     private var matrixRTCRingExpiryWorkItem: DispatchWorkItem?
     private var matrixRTCRingValidationWorkItem: DispatchWorkItem?
     private var matrixRTCRingMembershipValidationTask: Task<Void, Never>?
+    private var matrixRTCCallProjectionRefreshWorkItem: DispatchWorkItem?
+    private let matrixRTCCallProjectionQueue = DispatchQueue(
+        label: "com.zyna.matrixrtc.callProjection",
+        qos: .userInitiated
+    )
     private var currentMatrixClientState = MatrixClientService.shared.state
     private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
     private var canSendRoomMessages = true
@@ -232,6 +255,7 @@ final class ChatViewModel {
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
     var hasOlderInDB: Bool { window.hasOlderInDB }
+    var historyGeneration: UInt64 { window.generation }
     var roomIdentifier: String { roomId }
     var liveRoom: Room? { room }
     var liveTimelineService: TimelineService? { timelineService }
@@ -297,6 +321,7 @@ final class ChatViewModel {
         matrixRTCRingExpiryWorkItem?.cancel()
         matrixRTCRingValidationWorkItem?.cancel()
         matrixRTCRingMembershipValidationTask?.cancel()
+        matrixRTCCallProjectionRefreshWorkItem?.cancel()
     }
 
     private func bindCommonServices() {
@@ -468,9 +493,12 @@ final class ChatViewModel {
     }
 
     private func bindWindow() {
-        let win = window
-        diffBatcher.onFlush = { [weak win] summary in
-            win?.refresh(origin: .timelineFlush(summary))
+        window.onOlderHistoryAvailable = { [weak self] in
+            self?.sdkPaginationExhausted = false
+            self?.onOlderHistoryAvailable?()
+        }
+        diffBatcher.onFlush = { [weak self] summary in
+            self?.timelineRefreshQueue.enqueue(summary)
         }
 
         window.onChange = { [weak self] newStored, prevStored, origin in
@@ -482,11 +510,60 @@ final class ChatViewModel {
         }
     }
 
+    private func prepareTimelineRefresh(
+        _ summary: TimelineFlushSummary,
+        completion: @escaping (ChatTimelineRefreshQueue.Result) -> Void
+    ) {
+        let request = window.refreshRequest()
+        let cache = storedMessagePresentationCache
+        let redactions = pendingRedactions
+        let refreshRoomId = roomId
+        let historyRevision = diffBatcher.historyRevision
+        historyPageQueue.async { [weak self] in
+            do {
+                let page = try request.fetch(historyRevision: historyRevision)
+                let hasResolvedRedactions = redactions.hasResolvedPendingRedactions(roomId: refreshRoomId)
+                var preparedCache = cache
+                if page.contentChanged { preparedCache.prepare(page.stored) }
+                let nextCache = preparedCache
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.acceptsTimelineRefreshes else {
+                        completion(.failed)
+                        return
+                    }
+                    guard self.window.canApply(page) else {
+                        completion(.superseded)
+                        return
+                    }
+                    if page.contentChanged { self.storedMessagePresentationCache = nextCache }
+                    // Pending deletions may be confirmed by a flush whose
+                    // stored content already matches an optimistic update.
+                    // Keep their reconciliation even when the snapshot matches.
+                    self.isApplyingTimelineRefresh = true
+                    self.window.applyRefresh(
+                        page, summary: self.timelineRefreshQueue.summaryForApplying(summary)
+                            .coveringSnapshot(historyRevision: page.committedHistoryRevision),
+                        forceNotify: hasResolvedRedactions || !self.pendingRedactionIds.isEmpty
+                            || !self.pendingRedactionKeys.isEmpty
+                    )
+                    self.isApplyingTimelineRefresh = false
+                    if self.window.hasOlderInDB { self.sdkPaginationExhausted = false }
+                    self.requestSparseHistoryCheck()
+                    completion(.applied)
+                }
+            } catch {
+                ScopedLog(.database)("Timeline refresh failed: \(error)")
+                DispatchQueue.main.async { completion(.failed) }
+            }
+        }
+    }
+
     private func bindTimelineService(_ timelineService: TimelineService) {
         timelineService.isPaginatingSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isPaginating in
                 self?.isPaginating = isPaginating
+                self?.checkSparseHistoryIfNeeded()
             }
             .store(in: &cancellables)
 
@@ -980,7 +1057,80 @@ final class ChatViewModel {
     private func loadInitialWindowIfNeeded() {
         guard !didLoadInitialWindow else { return }
         didLoadInitialWindow = true
-        window.loadInitial()
+        enqueueMatrixRTCCallProjectionRefresh(recomputeAll: true) { [weak self] in
+            self?.window.loadInitial()
+        }
+    }
+
+    private func enqueueMatrixRTCCallProjectionRefresh(
+        recomputeAll: Bool,
+        completion: (() -> Void)? = nil
+    ) {
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        guard !currentUserId.isEmpty else {
+            completion?()
+            return
+        }
+
+        let roomId = self.roomId
+        let dbQueue = DatabaseService.shared.dbQueue
+        matrixRTCCallProjectionQueue.async {
+            do {
+                try dbQueue.write { db in
+                    if recomputeAll {
+                        try StoredMatrixRTCCall.refreshRoomCallProjections(
+                            roomId: roomId,
+                            currentUserId: currentUserId,
+                            in: db
+                        )
+                    } else {
+                        try StoredMatrixRTCCall.refreshExpiredPendingCallProjections(
+                            roomId: roomId,
+                            currentUserId: currentUserId,
+                            in: db
+                        )
+                    }
+                }
+            } catch {
+                logMatrixRTCChat("Failed refreshing MatrixRTC call projections room=\(roomId): \(error)")
+            }
+
+            if let completion {
+                DispatchQueue.main.async(execute: completion)
+            }
+        }
+    }
+
+    private func scheduleMatrixRTCCallProjectionRefresh(
+        for messages: [ChatMessage],
+        now: TimeInterval
+    ) {
+        matrixRTCCallProjectionRefreshWorkItem?.cancel()
+        guard !isGroupChat else { return }
+
+        let nextExpiry = messages.compactMap { message -> TimeInterval? in
+            guard case .matrixRTCCall(let details) = message.content,
+                  details.historyOutcome == nil || details.historyOutcome == .started,
+                  let expiresAt = details.expiresAt,
+                  expiresAt > now else {
+                return nil
+            }
+            return expiresAt
+        }.min()
+
+        guard let nextExpiry else { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.enqueueMatrixRTCCallProjectionRefresh(recomputeAll: false) { [weak self] in
+                self?.window.refresh(origin: .localMutation)
+            }
+        }
+        matrixRTCCallProjectionRefreshWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0.1, nextExpiry - now + 0.2),
+            execute: work
+        )
     }
 
     // MARK: - Timeline Bootstrap
@@ -1014,6 +1164,34 @@ final class ChatViewModel {
         }
 
         guard !mode.isPreview else { return }
+        // R&D switch: the attachments screen measures its own pagination
+        // without the chat's background history sync running underneath.
+        NotificationCenter.default.publisher(for: AttachmentsResearchSettings.didChange)
+            .sink { [weak self] _ in
+                self?.applyHistorySyncResearchSetting()
+            }
+            .store(in: &cancellables)
+        startHistorySyncIfAllowed()
+    }
+
+    /// Two-way: pausing cancels the running sync, unpausing restarts it, so a
+    /// paused → unpaused measurement reproduces the real UX without
+    /// reopening the chat. A sync that already finished is not repeated.
+    private func applyHistorySyncResearchSetting() {
+        if AttachmentsResearchSettings.isChatHistorySyncPaused {
+            historySyncTask?.cancel()
+            historySyncTask = nil
+        } else {
+            startHistorySyncIfAllowed()
+        }
+    }
+
+    private func startHistorySyncIfAllowed() {
+        guard !mode.isPreview,
+              !AttachmentsResearchSettings.isChatHistorySyncPaused,
+              historySyncTask == nil else {
+            return
+        }
         historySyncTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             await self?.syncFullHistory()
@@ -1144,6 +1322,9 @@ final class ChatViewModel {
                 visibleRedactedKeys: newlyRedactedIdentityKeys
             )
         }
+        if origin != .databasePagination {
+            storedMessagePresentationCache.retain(newStored)
+        }
 
         let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: newStored)
         if !deletedMediaGroupIds.isEmpty || !newlyRedactedIds.isEmpty {
@@ -1167,6 +1348,7 @@ final class ChatViewModel {
         // 4. Compute table update
         let oldRows = self.rows
         setMessages(newMessages, olderBoundary: olderBoundary)
+        scheduleMatrixRTCCallProjectionRefresh(for: newMessages, now: now)
 
         let tableUpdate: TableUpdate
         var inPlaceUpdates: [(IndexPath, ChatMessage)] = []
@@ -1190,13 +1372,13 @@ final class ChatViewModel {
                     moves: moves,
                     updates: filtered,
                     animated: anim
-                ))
+                ), origin)
             } else {
-                onTableUpdate?(tableUpdate)
+                onTableUpdate?(tableUpdate, origin)
             }
             onRedactedDetected?(redactionBatch)
         } else {
-            onTableUpdate?(tableUpdate)
+            onTableUpdate?(tableUpdate, origin)
         }
 
         // 6. Apply lightweight in-place updates (send-status) without cell recreation
@@ -1211,7 +1393,22 @@ final class ChatViewModel {
         }
 
         // 8. Auto-paginate if too few messages and GRDB + SDK both need more
-        if newMessages.count < 20 && !isPaginating && !window.hasOlderInDB {
+        // SDK refresh completion also runs this when the snapshot is equal.
+        if !isApplyingTimelineRefresh { requestSparseHistoryCheck() }
+    }
+
+    private func requestSparseHistoryCheck() {
+        needsSparseHistoryCheck = true
+        checkSparseHistoryIfNeeded()
+    }
+
+    private func checkSparseHistoryIfNeeded() {
+        guard needsSparseHistoryCheck, !isPaginating else { return }
+        needsSparseHistoryCheck = false
+        if ChatHistoryPageLoader.shouldLoadSparseHistory(
+            displayCount: messages.count, hasLocal: window.hasOlderInDB,
+            serverExhausted: sdkPaginationExhausted
+        ) {
             loadOlderFromServer()
         }
     }
@@ -1406,7 +1603,7 @@ final class ChatViewModel {
         setMessages(newMessages, olderBoundary: olderBoundary)
 
         let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldRows, new: rows)
-        onTableUpdate?(tableUpdate)
+        onTableUpdate?(tableUpdate, .localMutation)
         for (indexPath, message) in inPlaceUpdates {
             onInPlaceUpdate?(indexPath, message)
         }
@@ -1844,6 +2041,8 @@ final class ChatViewModel {
                 ),
                 width: item.previewWidth ?? primaryImageContent?.width,
                 height: item.previewHeight ?? primaryImageContent?.height,
+                blurhash: primaryMessage?.mediaMetadata?.blurhash,
+                sizeBytes: primaryMessage?.mediaMetadata?.sizeBytes,
                 caption: group.caption ?? primaryImageContent?.caption,
                 sendStatus: isStaleSessionEnvelope ? "failed" : item.transportState.messageSendStatus
             )
@@ -2450,6 +2649,9 @@ final class ChatViewModel {
             case .callEvent(let callType, let callId, let reason):
                 type = "call"
                 detail = "\(callType.rawValue):\(callId):\(reason ?? "-")"
+            case .matrixRTCCall(let details):
+                type = "matrixRTCCall"
+                detail = "\(details.notificationType.rawValue):\(details.callIntent ?? "-"):\(details.parentEventId ?? "-"):\(details.declinedBy.joined(separator: ","))"
             case .systemEvent(let text, _):
                 type = "system"
                 detail = text
@@ -2471,23 +2673,43 @@ final class ChatViewModel {
 
     // MARK: - Pagination
 
-    /// Load older messages from GRDB. Returns true if data was available.
-    func loadOlderFromDB() -> Bool {
-        window.loadOlder()
-    }
-
-    /// Query-only part of older-page load. Safe to call from any
-    /// thread; returns merged+sorted rows or nil when exhausted.
-    /// Caller is expected to pair this with `applyOlderPageFromDB`
-    /// on the main thread.
-    func queryOlderFromDB() -> MessageWindow.OlderPage? {
-        window.queryOlder()
-    }
-
-    /// Main-thread apply step paired with `queryOlderFromDB`.
-    func applyOlderPageFromDB(_ page: MessageWindow.OlderPage) {
-        sdkPaginationExhausted = false
-        window.applyOlder(page)
+    /// Only snapshots and the final commit touch the mutable window on
+    /// main. Queries, normalization and message decoding run on the worker.
+    func loadHistoryPage(
+        _ direction: MessageWindow.PageDirection,
+        completion: @escaping (ChatHistoryPageLoader.Result) -> Void
+    ) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard acceptsTimelineRefreshes else { completion(.superseded); return }
+        guard let request = window.pageRequest(direction) else {
+            completion(.exhausted)
+            return
+        }
+        let cache = storedMessagePresentationCache
+        historyPageQueue.async { [weak self] in
+            do {
+                let page = try request.fetch()
+                var preparedCache = cache
+                if page.fetchedCount > 0 { preparedCache.prepare(page.merged) }
+                let nextCache = preparedCache
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.acceptsTimelineRefreshes else { completion(.superseded); return }
+                    guard self.window.canApply(page) else {
+                        completion(.superseded)
+                        return
+                    }
+                    if page.fetchedCount > 0 {
+                        self.storedMessagePresentationCache = nextCache
+                        if direction == .older { self.sdkPaginationExhausted = false }
+                    }
+                    self.window.applyPage(page)
+                    completion(page.fetchedCount > 0 ? .applied : .exhausted)
+                }
+            } catch {
+                ScopedLog(.database)("History page query failed (\(direction)): \(error)")
+                DispatchQueue.main.async { completion(.failed) }
+            }
+        }
     }
 
     /// Paginate from server when GRDB is exhausted.
@@ -2497,11 +2719,6 @@ final class ChatViewModel {
         Task {
             await timelineService.paginateBackwards(numEvents: 50)
         }
-    }
-
-    /// Load newer messages from GRDB (when scrolling back down after jump).
-    func loadNewerMessages() {
-        window.loadNewer()
     }
 
     // MARK: - Jump
@@ -3335,7 +3552,7 @@ final class ChatViewModel {
                 replyInfo: nil,
                 zynaAttributes: attrs
             )
-        case .file:
+        case .audio, .file:
             guard case .file(_, let filename, let mimetype, let size, _) = preview.content else {
                 return
             }
@@ -3380,13 +3597,14 @@ final class ChatViewModel {
     ) -> PendingForwardedMediaDraft? {
         switch message.content {
         case .image(let source?, let thumbnailSource, let width, let height, _, _):
+            let metadata = message.mediaMetadata
             return PendingForwardedMediaDraft(
                 kind: .image,
                 source: source,
                 thumbnailSource: thumbnailSource,
-                filename: "image.jpg",
-                mimetype: "image/jpeg",
-                size: nil,
+                filename: metadata?.filename ?? RoomAttachmentKind.image.defaultFilename,
+                mimetype: metadata?.mimetype ?? RoomAttachmentKind.image.defaultMimetype,
+                size: metadata?.sizeBytes,
                 width: width,
                 height: height,
                 duration: nil,
@@ -3406,29 +3624,36 @@ final class ChatViewModel {
                 waveform: []
             )
         case .voice(let source?, let duration, let waveform):
+            let metadata = message.mediaMetadata
             return PendingForwardedMediaDraft(
                 kind: .voice,
                 source: source,
                 thumbnailSource: nil,
-                filename: "voice.m4a",
-                mimetype: "audio/mp4",
-                size: nil,
+                filename: metadata?.filename ?? RoomAttachmentKind.voice.defaultFilename,
+                mimetype: metadata?.mimetype ?? RoomAttachmentKind.voice.defaultMimetype,
+                size: metadata?.sizeBytes,
                 width: nil,
                 height: nil,
                 duration: duration,
                 waveform: waveform
             )
         case .file(let source?, let filename, let mimetype, let size, _):
+            let metadata = message.mediaMetadata
+            let kind: PendingForwardedMediaKind = metadata?.attachmentKind == .audio
+                ? .audio
+                : .file
             return PendingForwardedMediaDraft(
-                kind: .file,
+                kind: kind,
                 source: source,
                 thumbnailSource: nil,
-                filename: filename,
-                mimetype: mimetype ?? "application/octet-stream",
+                filename: metadata?.filename ?? filename,
+                mimetype: mimetype ?? (kind == .audio
+                    ? RoomAttachmentKind.audio.defaultMimetype
+                    : RoomAttachmentKind.file.defaultMimetype),
                 size: size,
                 width: nil,
                 height: nil,
-                duration: nil,
+                duration: metadata?.durationSeconds,
                 waveform: []
             )
         default:
@@ -4321,7 +4546,7 @@ final class ChatViewModel {
         setMessages(newMessages, olderBoundary: olderBoundary)
 
         let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldRows, new: rows)
-        onTableUpdate?(tableUpdate)
+        onTableUpdate?(tableUpdate, .localMutation)
         for (indexPath, message) in inPlaceUpdates {
             onInPlaceUpdate?(indexPath, message)
         }
@@ -4378,6 +4603,8 @@ final class ChatViewModel {
     }
 
     func cleanup() {
+        acceptsTimelineRefreshes = false
+        timelineRefreshQueue.cancel()
         historySyncTask?.cancel()
         pendingRedactionPlaceholderWork?.cancel()
         readReceiptWork?.cancel()
@@ -4408,12 +4635,28 @@ final class ChatViewModel {
     private func syncFullHistory() async {
         guard let timelineService else { return }
         var stagnantBatchCount = 0
+        var batch = 0
         while !Task.isCancelled {
+            batch += 1
             let countBefore = storedMessageCount()
+            #if DEBUG
+            let started = ProcessInfo.processInfo.systemUptime
+            logAttachmentChatTrace(
+                "paginate BEGIN room=\(roomId) batch=\(batch) messages=\(countBefore)"
+            )
+            #endif
             await timelineService.paginateBackwards(numEvents: 50)
             // Wait for batcher debounce (50ms) + margin
             try? await Task.sleep(for: .milliseconds(150))
             let countAfter = storedMessageCount()
+            #if DEBUG
+            let ms = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            logAttachmentChatTrace(
+                "paginate END room=\(roomId) batch=\(batch) "
+                + "messages=\(countBefore)->\(countAfter) delta=\(countAfter - countBefore) "
+                + "ms=\(String(format: "%.0f", ms))"
+            )
+            #endif
             if countAfter <= countBefore {
                 stagnantBatchCount += 1
                 if stagnantBatchCount >= 3 { break }
@@ -4800,6 +5043,8 @@ final class ChatViewModel {
                     previewIdentity: partialReflowPreviewsByMessageId[message.id]?.identity,
                     width: width,
                     height: height,
+                    blurhash: message.mediaMetadata?.blurhash,
+                    sizeBytes: message.mediaMetadata?.sizeBytes,
                     caption: caption,
                     sendStatus: message.sendStatus
                 )
@@ -4874,7 +5119,7 @@ final class ChatViewModel {
             for: message,
             in: pendingPartialRedactions
         ) {
-            return pending.toChatMessage().map {
+            return storedMessagePresentationCache.message(for: pending).map {
                 Self.markPendingReactionRemovals(
                     in: $0,
                     removalsByEventId: pendingReactionRemovalsByEventId
@@ -4886,7 +5131,7 @@ final class ChatViewModel {
            message.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) {
             return nil
         }
-        return message.toChatMessage().map {
+        return storedMessagePresentationCache.message(for: message).map {
             Self.markPendingReactionRemovals(
                 in: $0,
                 removalsByEventId: pendingReactionRemovalsByEventId
@@ -5058,7 +5303,7 @@ final class ChatViewModel {
                 .replacingOccurrences(of: "\u{200B}", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return !body.isEmpty
-        case "image", "video", "voice", "file":
+        case "image", "video", "audio", "voice", "file":
             return true
         default:
             return false
@@ -5323,7 +5568,12 @@ final class ChatViewModel {
 
         for message in messages {
             guard case .image(let source?, let thumbnailSource, let width, let height, _, _) = message.content else { continue }
-            let displaySource = thumbnailSource ?? source
+            // Never speculate on an encrypted original. For those events a
+            // thumbnail request is a full-file download; let the rendered
+            // cell request it when it is actually needed.
+            guard let displaySource = thumbnailSource
+                ?? (message.mediaMetadata?.isSourceEncrypted == false ? source : nil)
+            else { continue }
             guard MediaCache.shared.bubbleImage(
                 for: displaySource,
                 maxPixelWidth: maxPixelWidth,
