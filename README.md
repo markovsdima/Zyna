@@ -46,6 +46,7 @@ Detailed notes for specific subsystems live in the repo:
 - [Chat bubble themes](Zyna/Glass/PORTAL.md)
 - [Message deletion animation](Zyna/Components/PaintSplash/PAINT_SPLASH.md)
 - [Outgoing message layer](Zyna/Chat/OUTGOING_LAYER.md)
+- [Rich text composer](Zyna/Chat/RICH_TEXT_COMPOSER.md)
 - [Media grouping](Zyna/Chat/MEDIA_GROUPING.md)
 - [Incoming message assembly](Zyna/Chat/INCOMING_ASSEMBLY.md)
 - [Message deletion flow](Zyna/Chat/REDACTION_FLOW.md)
