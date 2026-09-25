@@ -44,6 +44,7 @@ enum OutgoingTransportState: String, Codable, Equatable {
 
 struct OutgoingTextPayload: Codable, Equatable {
     let body: String
+    var formattedBody: String? = nil
 }
 
 struct OutgoingImagePayload: Codable, Equatable {
@@ -93,6 +94,7 @@ enum OutgoingEnvelopePayload: Equatable {
     private struct CodablePayload: Codable {
         let kind: String
         let body: String?
+        var formattedBody: String? = nil
         let caption: String?
         let captionPlacement: String?
         let expectedItemCount: Int?
@@ -115,6 +117,7 @@ enum OutgoingEnvelopePayload: Equatable {
             payload = CodablePayload(
                 kind: OutgoingEnvelopeKind.text.rawValue,
                 body: text.body,
+                formattedBody: text.formattedBody,
                 caption: nil,
                 captionPlacement: nil,
                 expectedItemCount: 1,
@@ -237,7 +240,8 @@ enum OutgoingEnvelopePayload: Equatable {
         case .text:
             return .text(
                 OutgoingTextPayload(
-                    body: payload.body ?? ""
+                    body: payload.body ?? "",
+                    formattedBody: payload.formattedBody
                 )
             )
         case .image:

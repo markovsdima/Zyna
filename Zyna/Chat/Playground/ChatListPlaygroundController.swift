@@ -91,6 +91,10 @@ final class ChatListPlaygroundController: ASDKViewController<ASDisplayNode> {
         topBar.callButtonNode.accessibilityLabel = "List experiments"
         inputBar.inputNode.onAttachTapped = { [weak self] in self?.showExperiments() }
         inputBar.inputNode.onSend = { [weak self] text, _ in self?.appendLocalMessage(text) }
+        inputBar.inputNode.textInputNode.onEditLink = { [weak self] current, completion in
+            guard let self else { return }
+            ComposerLinkPrompt.present(from: self, current: current, completion: completion)
+        }
         inputBar.inputNode.onReplyCancelled = { [weak self] in
             self?.inputBar.inputNode.setReplyPreview(senderName: nil, body: nil)
         }
@@ -482,10 +486,10 @@ final class ChatListPlaygroundController: ASDKViewController<ASDisplayNode> {
         }
     }
 
-    private func appendLocalMessage(_ text: String) {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    private func appendLocalMessage(_ text: ComposerText) {
+        guard !text.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         inputBar.inputNode.setCurrentText("")
-        submitLocal(rows + [.message(Self.localMessage(text: text, outgoing: true))], destination: .end)
+        submitLocal(rows + [.message(Self.localMessage(text: text.body, outgoing: true, formattedBody: text.formattedBody))], destination: .end)
     }
 
     private func changeHeight(_ message: ChatMessage) {
@@ -513,7 +517,7 @@ final class ChatListPlaygroundController: ASDKViewController<ASDisplayNode> {
         applyNext()
     }
 
-    static func localMessage(text: String, outgoing: Bool, replacing old: ChatMessage? = nil) -> ChatMessage {
+    static func localMessage(text: String, outgoing: Bool, replacing old: ChatMessage? = nil, formattedBody: String? = nil) -> ChatMessage {
         ChatMessage(
             id: old?.id ?? "playground:" + UUID().uuidString,
             eventId: old?.eventId, transactionId: old?.transactionId, itemIdentifier: nil,
@@ -521,7 +525,9 @@ final class ChatListPlaygroundController: ASDKViewController<ASDisplayNode> {
             senderDisplayName: old?.senderDisplayName ?? "Playground",
             senderAvatarUrl: old?.senderAvatarUrl,
             isOutgoing: outgoing, timestamp: old?.timestamp ?? Date(),
-            content: .text(body: text), reactions: [], replyInfo: old?.replyInfo,
+            content: .text(body: text),
+            textMetadata: ComposerText(body: text, formattedBody: formattedBody).metadata,
+            reactions: [], replyInfo: old?.replyInfo,
             isEditable: false, isEdited: old != nil, isEditPending: false,
             isEditFailed: false, latestEditEventId: nil,
             zynaAttributes: ZynaMessageAttributes(), sendStatus: "synced"

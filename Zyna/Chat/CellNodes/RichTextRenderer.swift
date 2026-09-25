@@ -115,6 +115,9 @@ enum RichTextRenderer {
     ) -> [NSAttributedString.Key: Any] {
         var attributes: [NSAttributedString.Key: Any] = [:]
         let fontSize = headingFontSize(level: run.headingLevel, base: baseFontSize)
+        var traits: UIFontDescriptor.SymbolicTraits = []
+        if run.style.contains(.bold) || run.headingLevel != nil { traits.insert(.traitBold) }
+        if run.style.contains(.italic) { traits.insert(.traitItalic) }
 
         if run.style.contains(.codeBlock) || run.style.contains(.inlineCode) {
             attributes[.font] = cachedFont(
@@ -122,17 +125,10 @@ enum RichTextRenderer {
                 pointSize: run.style.contains(.codeBlock)
                     ? max(14, fontSize - 1)
                     : fontSize,
-                traits: []
+                traits: traits
             )
             attributes[.zynaCodeBackground] = foregroundColor.withAlphaComponent(0.10)
         } else {
-            var traits: UIFontDescriptor.SymbolicTraits = []
-            if run.style.contains(.bold) || run.headingLevel != nil {
-                traits.insert(.traitBold)
-            }
-            if run.style.contains(.italic) {
-                traits.insert(.traitItalic)
-            }
             if !traits.isEmpty || fontSize != baseFontSize {
                 attributes[.font] = cachedFont(
                     family: .system,
@@ -188,7 +184,11 @@ enum RichTextRenderer {
                 ?? base.fontDescriptor
             font = UIFont(descriptor: descriptor, size: pointSize)
         case .monospaced:
-            font = UIFont.monospacedSystemFont(ofSize: pointSize, weight: .regular)
+            let base = UIFont.monospacedSystemFont(ofSize: pointSize, weight: .regular)
+            let descriptor = base.fontDescriptor.withSymbolicTraits(
+                base.fontDescriptor.symbolicTraits.union(traits)
+            ) ?? base.fontDescriptor
+            font = UIFont(descriptor: descriptor, size: pointSize)
         }
         fontCache.setObject(font, forKey: key)
         return font

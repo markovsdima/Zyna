@@ -15,6 +15,10 @@ struct ChatTextMetadata: Equatable {
 
     let format: String?
     let formattedBody: String?
+
+    var matrixHTML: String? {
+        format == Self.matrixHTMLFormat ? formattedBody : nil
+    }
 }
 
 struct RichTextStyle: OptionSet, Equatable, Hashable {
@@ -109,8 +113,7 @@ enum MatrixRichTextParser {
 
     static func parse(body: String, metadata: ChatTextMetadata?) -> RichTextDocument {
         let parsed: RichTextDocument
-        if metadata?.format == ChatTextMetadata.matrixHTMLFormat,
-           let html = metadata?.formattedBody,
+        if let html = metadata?.matrixHTML,
            !html.isEmpty {
             var parser = MatrixHTMLParser()
             let htmlResult = parser.parse(html)
@@ -122,7 +125,11 @@ enum MatrixRichTextParser {
             if htmlResult.hasRichTextSemantics {
                 parsed = htmlResult.document.text.isEmpty && !body.isEmpty
                     ? plainDocument(body)
-                    : htmlResult.document
+                    : restoringBodyWhitespace(
+                        in: htmlResult.document,
+                        body: htmlResult.suppressedReplyFallback
+                            ? removingPlainReplyFallback(from: body) : body
+                    )
             } else {
                 parsed = plainDocument(
                     htmlResult.suppressedReplyFallback
@@ -135,6 +142,23 @@ enum MatrixRichTextParser {
         }
 
         return addingDetectedLinks(to: parsed)
+    }
+
+    private static func restoringBodyWhitespace(in document: RichTextDocument, body: String) -> RichTextDocument {
+        // The composer substitutes NBSP and <br> to prevent HTML collapsing
+        // spaces, tabs and Unicode line separators. Recover the exact body only
+        // if every UTF-16 position agrees; never replace a different HTML label
+        // or remap style/link ranges across differing text geometry.
+        guard document.text.utf16.count == body.utf16.count else { return document }
+        for (html, plain) in zip(document.text.utf16, body.utf16) where html != plain {
+            switch (html, plain) {
+            case (0x00a0, 32), (0x00a0, 9), (10, 0x2028), (10, 0x2029):
+                continue
+            default:
+                return document
+            }
+        }
+        return RichTextDocument(text: body, runs: document.runs, links: document.links)
     }
 
     private static func plainDocument(_ text: String) -> RichTextDocument {
@@ -266,6 +290,7 @@ private struct MatrixHTMLParser {
     private var suppressionDepth = 0
     private var hasRichTextSemantics = false
     private var suppressedReplyFallback = false
+    private var preservedWhitespaceEnd = 0
 
     mutating func parse(_ html: String) -> MatrixHTMLParseResult {
         var cursor = html.startIndex
@@ -417,6 +442,7 @@ private struct MatrixHTMLParser {
             ensureLineBreak()
         case "br":
             append("\n")
+            preservedWhitespaceEnd = text.length
         case "hr":
             ensureLineBreak()
             append("—")
@@ -497,14 +523,14 @@ private struct MatrixHTMLParser {
         if context.preservesWhitespace {
             append(decoded.replacingOccurrences(of: "\r\n", with: "\n")
                 .replacingOccurrences(of: "\r", with: "\n"))
+            preservedWhitespaceEnd = text.length
             return
         }
 
         var pendingSpace = false
         var buffer = ""
         for scalar in decoded.unicodeScalars {
-            let isCollapsibleWhitespace = scalar.value != 0x00A0
-                && CharacterSet.whitespacesAndNewlines.contains(scalar)
+            let isCollapsibleWhitespace = [9, 10, 12, 13, 32].contains(scalar.value)
             if isCollapsibleWhitespace {
                 pendingSpace = true
                 continue
@@ -591,14 +617,15 @@ private struct MatrixHTMLParser {
     }
 
     private mutating func trimTrailingSpaces() {
-        while text.length > 0,
+        while text.length > preservedWhitespaceEnd,
               text.substring(with: NSRange(location: text.length - 1, length: 1)) == " " {
             truncate(to: text.length - 1)
         }
     }
 
     private mutating func trimTrailingLayoutCharacters() {
-        while text.length > 0 {
+        // Discard synthetic block separators, not explicit <br> or pre text.
+        while text.length > preservedWhitespaceEnd {
             let last = text.substring(with: NSRange(location: text.length - 1, length: 1))
             guard last == " " || last == "\n" else { break }
             truncate(to: text.length - 1)

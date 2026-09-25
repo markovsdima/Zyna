@@ -38,6 +38,7 @@ final class OutgoingEnvelopeService {
         roomId: String,
         envelopeId: String,
         body: String,
+        formattedBody: String? = nil,
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         transactionId: String? = nil
@@ -51,7 +52,7 @@ final class OutgoingEnvelopeService {
             roomId: roomId,
             envelopeId: envelopeId,
             kind: .text,
-            payload: .text(OutgoingTextPayload(body: body)),
+            payload: .text(OutgoingTextPayload(body: body, formattedBody: formattedBody)),
             caption: nil,
             captionPlacement: .bottom,
             expectedItemCount: 1,

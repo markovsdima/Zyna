@@ -128,6 +128,7 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord, Equatable {
     var latestEditEventId: String?
     var editTransactionId: String?
     var pendingEditBody: String?
+    var pendingEditFormattedBody: String?
     var pendingEditZynaAttributesJSON: String?
 
     var zynaAttributesJSON: String?
@@ -192,6 +193,7 @@ extension StoredMessage {
         self.latestEditEventId = msg.latestEditEventId
         self.editTransactionId = nil
         self.pendingEditBody = nil
+        self.pendingEditFormattedBody = nil
         self.pendingEditZynaAttributesJSON = nil
 
         switch msg.itemIdentifier {
@@ -407,7 +409,9 @@ extension MediaGroupItem {
 extension StoredMessage {
 
     func toChatMessage() -> ChatMessage? {
-        guard let content = buildContent() else { return nil }
+        guard var content = buildContent() else { return nil }
+        let showsPendingEdit = isEditPending && contentType == "text" && pendingEditBody != nil
+        if showsPendingEdit, let pendingEditBody { content = .text(body: pendingEditBody) }
 
         let itemIdentifier: ChatItemIdentifier?
         if let eventId {
@@ -442,7 +446,10 @@ extension StoredMessage {
             timestamp: Date(timeIntervalSince1970: timestamp),
             content: content,
             mediaMetadata: buildMediaMetadata(),
-            textMetadata: buildTextMetadata(),
+            textMetadata: showsPendingEdit
+                ? pendingEditFormattedBody.map {
+                    ChatTextMetadata(format: ChatTextMetadata.matrixHTMLFormat, formattedBody: $0)
+                } : buildTextMetadata(),
             reactions: Self.decodeReactions(reactionsJSON),
             replyInfo: replyInfo,
             isEditable: Self.isStoredMessageEditable(

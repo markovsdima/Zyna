@@ -67,6 +67,7 @@ enum DirectRawTextSender {
     static func send(
         room: Room,
         body: String,
+        formattedBody: String? = nil,
         replyInfo: ReplyInfo? = nil,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         transactionId: String
@@ -75,6 +76,7 @@ enum DirectRawTextSender {
             let eventId = try await sendRawTextMessage(
                 room: room,
                 body: body,
+                formattedBody: formattedBody,
                 replyInfo: replyInfo,
                 zynaAttributes: zynaAttributes,
                 transactionId: transactionId
@@ -108,6 +110,7 @@ enum DirectRawTextSender {
         room: Room,
         eventId: String,
         body: String,
+        formattedBody: String? = nil,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         transactionId: String
     ) async -> OutgoingDispatchReceipt {
@@ -116,6 +119,7 @@ enum DirectRawTextSender {
                 room: room,
                 eventId: eventId,
                 body: body,
+                formattedBody: formattedBody,
                 zynaAttributes: zynaAttributes,
                 transactionId: transactionId
             )
@@ -190,6 +194,7 @@ enum DirectRawTextSender {
     private static func sendRawTextMessage(
         room: Room,
         body: String,
+        formattedBody: String? = nil,
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes,
         transactionId: String
@@ -197,6 +202,7 @@ enum DirectRawTextSender {
         let content = try rawTextMessageContentJSON(
             roomId: room.id(),
             body: body,
+            formattedBody: formattedBody,
             replyInfo: replyInfo,
             zynaAttributes: zynaAttributes,
             transactionId: transactionId
@@ -222,11 +228,13 @@ enum DirectRawTextSender {
         room: Room,
         eventId: String,
         body: String,
+        formattedBody: String? = nil,
         zynaAttributes: ZynaMessageAttributes,
         transactionId: String
     ) async throws -> String {
         let content = try rawTextEditContentJSON(
             body: body,
+            formattedBody: formattedBody,
             eventId: eventId,
             zynaAttributes: zynaAttributes,
             transactionId: transactionId
@@ -305,9 +313,10 @@ enum DirectRawTextSender {
         }
     }
 
-    private static func rawTextMessageContentJSON(
+    static func rawTextMessageContentJSON(
         roomId: String,
         body: String,
+        formattedBody: String? = nil,
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes,
         transactionId: String
@@ -330,9 +339,10 @@ enum DirectRawTextSender {
             ]
         }
 
-        let htmlBody = formattedBody(
+        let htmlBody = makeFormattedBody(
             roomId: roomId,
             body: body,
+            formattedBody: formattedBody,
             replyInfo: replyInfo,
             zynaAttributes: zynaAttributes
         )
@@ -347,14 +357,16 @@ enum DirectRawTextSender {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    private static func rawTextEditContentJSON(
+    static func rawTextEditContentJSON(
         body: String,
+        formattedBody: String? = nil,
         eventId: String,
         zynaAttributes: ZynaMessageAttributes,
         transactionId: String
     ) throws -> String {
         let newContent = rawTextNewContent(
             body: body,
+            formattedBody: formattedBody,
             zynaAttributes: zynaAttributes
         )
         var content = newContent
@@ -399,16 +411,17 @@ enum DirectRawTextSender {
 
     private static func rawTextNewContent(
         body: String,
+        formattedBody: String? = nil,
         zynaAttributes: ZynaMessageAttributes
     ) -> [String: Any] {
         var content: [String: Any] = [
             "msgtype": "m.text",
             "body": body
         ]
-        guard !zynaAttributes.isEmpty else { return content }
+        guard formattedBody != nil || !zynaAttributes.isEmpty else { return content }
 
         let htmlBody = ZynaHTMLCodec.encode(
-            userHTML: plainTextHTML(body),
+            userHTML: formattedBody ?? plainTextHTML(body),
             attributes: zynaAttributes
         )
         content["format"] = "org.matrix.custom.html"
@@ -416,15 +429,16 @@ enum DirectRawTextSender {
         return content
     }
 
-    private static func formattedBody(
+    private static func makeFormattedBody(
         roomId: String,
         body: String,
+        formattedBody: String? = nil,
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes
     ) -> String? {
-        guard replyInfo != nil || !zynaAttributes.isEmpty else { return nil }
+        guard formattedBody != nil || replyInfo != nil || !zynaAttributes.isEmpty else { return nil }
 
-        var html = plainTextHTML(body)
+        var html = formattedBody ?? plainTextHTML(body)
         if let replyInfo {
             html = htmlReplyFallback(roomId: roomId, replyInfo: replyInfo) + html
         }

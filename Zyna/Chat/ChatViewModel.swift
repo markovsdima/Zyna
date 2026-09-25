@@ -155,7 +155,7 @@ final class ChatViewModel {
     @Published private(set) var isInvited: Bool = false
     @Published private(set) var sendFailureNotice: SendFailureNotice?
     @Published private(set) var isComposerSendBlocked: Bool = false
-    private var editingDraftOverride: String?
+    private var editingDraftOverride: ComposerText?
     private var activeEditAttemptId: UUID?
     private var recentlySentTransactionIds: Set<String> = []
     private var recentlySentTransactionOrder: [String] = []
@@ -2247,7 +2247,15 @@ final class ChatViewModel {
         switch envelope.payload {
         case .text(let textPayload):
             guard case .text(let body) = message.content else { return false }
-            return body == textPayload.body
+            guard body == textPayload.body else { return false }
+            guard textPayload.formattedBody != nil || message.textMetadata != nil else { return true }
+            // A plain echo with the same body must not retire a rich envelope.
+            // Ignore reply fallbacks and carrier spans when comparing content.
+            return MatrixRichTextParser.parse(body: body, metadata: message.textMetadata)
+                == MatrixRichTextParser.parse(
+                    body: textPayload.body,
+                    metadata: ComposerText(body: textPayload.body, formattedBody: textPayload.formattedBody).metadata
+                )
         case .image(let imagePayload):
             guard case .image(let source, _, let width, let height, let caption, _) = message.content,
                   source != nil
@@ -2430,6 +2438,9 @@ final class ChatViewModel {
             isOutgoing: true,
             timestamp: primaryTimestamp,
             content: content,
+            textMetadata: envelope.textPayload?.formattedBody.map {
+                ChatTextMetadata(format: ChatTextMetadata.matrixHTMLFormat, formattedBody: $0)
+            },
             reactions: [],
             replyInfo: envelope.replyInfo,
             isEditable: false,
@@ -2974,8 +2985,11 @@ final class ChatViewModel {
         pendingForwardContent = preview
     }
 
-    func editingInputText(for message: ChatMessage) -> String? {
-        editingDraftOverride ?? message.content.textBody
+    func editingInputText(for message: ChatMessage) -> ComposerText? {
+        if let editingDraftOverride { return editingDraftOverride }
+        return message.content.textBody.map {
+            ComposerText(body: $0, metadata: message.textMetadata)
+        }
     }
 
     func clearPendingForward() {
@@ -3047,6 +3061,7 @@ final class ChatViewModel {
                             isEditFailed = 0,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
@@ -3110,6 +3125,7 @@ final class ChatViewModel {
                             isEditFailed = 0,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND editTransactionId = ?
@@ -3140,6 +3156,7 @@ final class ChatViewModel {
                             isEditFailed = 0,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
@@ -3170,6 +3187,7 @@ final class ChatViewModel {
                             isEditFailed = 1,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND editTransactionId = ?
@@ -3200,6 +3218,7 @@ final class ChatViewModel {
                             isEditFailed = 1,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
@@ -3307,6 +3326,7 @@ final class ChatViewModel {
 
     private func sendOutgoingText(
         body: String,
+        formattedBody: String? = nil,
         replyEventId: String? = nil,
         replyInfo: ReplyInfo? = nil,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
@@ -3320,6 +3340,7 @@ final class ChatViewModel {
             roomId: roomId,
             envelopeId: envelopeId,
             body: body,
+            formattedBody: formattedBody,
             replyInfo: replyInfo,
             zynaAttributes: zynaAttributes,
             transactionId: transactionId
@@ -3661,7 +3682,8 @@ final class ChatViewModel {
         }
     }
 
-    func sendMessage(_ text: String, color: UIColor? = nil) {
+    func sendMessage(_ message: ComposerText, color: UIColor? = nil) {
+        let text = message.body
         guard guardCanCreateOutgoingEnvelope() else { return }
 
         if let editing = editingMessage {
@@ -3673,7 +3695,11 @@ final class ChatViewModel {
 
             let editedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !editedText.isEmpty else { return }
-            guard editedText != originalBody.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            let original = ComposerText(
+                body: originalBody, metadata: editing.textMetadata
+            )
+            let originalSnapshot = ComposerText(attributedText: original.attributedText(color: .label), trimming: true)
+            guard message != originalSnapshot else {
                 setEditingTarget(nil)
                 return
             }
@@ -3692,6 +3718,7 @@ final class ChatViewModel {
                        roomId: self.roomId,
                        eventId: eventId,
                        body: editedText,
+                       formattedBody: message.formattedBody,
                        zynaAttributes: editing.zynaAttributes,
                        transactionId: transactionId
                    ) {
@@ -3708,7 +3735,7 @@ final class ChatViewModel {
                     guard self.activeEditAttemptId == attemptId else { return }
                     self.activeEditAttemptId = nil
                     guard self.canRestoreFailedEditDraft?() ?? true else { return }
-                    self.editingDraftOverride = editedText
+                    self.editingDraftOverride = message
                     self.replyingTo = nil
                     self.pendingForwardContent = nil
                     self.editingMessage = editing
@@ -3728,7 +3755,7 @@ final class ChatViewModel {
 
             if let body = forward.content.textBody {
                 Task { [weak self] in
-                    await self?.sendOutgoingText(body: body, zynaAttributes: attrs)
+                    await self?.sendOutgoingText(body: body, formattedBody: forward.textMetadata?.matrixHTML, zynaAttributes: attrs)
                 }
             } else if forward.content.mediaForwardInfo != nil {
                 let caption = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
@@ -3751,6 +3778,7 @@ final class ChatViewModel {
             Task { [weak self] in
                 await self?.sendOutgoingText(
                     body: text,
+                    formattedBody: message.formattedBody,
                     replyEventId: eventId,
                     replyInfo: replyInfo,
                     zynaAttributes: attrs
@@ -3762,13 +3790,13 @@ final class ChatViewModel {
         if let color {
             let attrs = ZynaMessageAttributes(color: color)
             Task { [weak self] in
-                await self?.sendOutgoingText(body: text, zynaAttributes: attrs)
+                await self?.sendOutgoingText(body: text, formattedBody: message.formattedBody, zynaAttributes: attrs)
             }
             return
         }
 
         Task { [weak self] in
-            await self?.sendOutgoingText(body: text)
+            await self?.sendOutgoingText(body: text, formattedBody: message.formattedBody)
         }
     }
 

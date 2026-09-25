@@ -35,7 +35,7 @@ final class ChatInputNode: ASDisplayNode {
         }
     }
 
-    let textInputNode = ASEditableTextNode()
+    let textInputNode = ComposerTextNode()
     let sendButtonNode = AccessibleButtonNode()
     let micButtonNode = AccessibleButtonNode()
     let attachButtonNode = AccessibleButtonNode()
@@ -78,7 +78,7 @@ final class ChatInputNode: ASDisplayNode {
     private var isComposerLocked = false
     private var lockedTapGesture: UITapGestureRecognizer?
 
-    var onSend: ((String, UIColor?) -> Void)?
+    var onSend: ((ComposerText, UIColor?) -> Void)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
     var onAttachTapped: (() -> Void)?
     var onLockedComposerTapped: (() -> Void)?
@@ -344,10 +344,7 @@ final class ChatInputNode: ASDisplayNode {
         previewSpacerNode.backgroundColor = .clear
         previewSpacerNode.style.flexShrink = 0
 
-        textInputNode.typingAttributes = [
-            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
-            NSAttributedString.Key.foregroundColor.rawValue: glassMaterial.primaryForeground
-        ]
+        textInputNode.updateForeground(glassMaterial.primaryForeground)
         textInputNode.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
         textInputNode.style.flexGrow = 1
         textInputNode.style.flexShrink = 1
@@ -476,14 +473,17 @@ final class ChatInputNode: ASDisplayNode {
     override func didLoad() {
         super.didLoad()
         backgroundColor = .clear
-        textInputNode.delegate = self
+        textInputNode.onTextChanged = { [weak self] in
+            self?.composerTextDidChange()
+        }
+        textInputNode.updateForeground(glassMaterial.primaryForeground)
         textInputNode.view.layer.cornerRadius = 24
         textInputNode.view.clipsToBounds = true
-        textInputNode.textView.textColor = glassMaterial.primaryForeground
         textInputNode.textView.pasteDelegate = self
-        textInputNode.textView.pasteConfiguration = UIPasteConfiguration(
-            acceptableTypeIdentifiers: [UTType.plainText.identifier, UTType.image.identifier]
-        )
+        let pasteConfiguration = UIPasteConfiguration(forAccepting: NSAttributedString.self)
+        pasteConfiguration.acceptableTypeIdentifiers.insert(ComposerClipboard.contentType.identifier, at: 0)
+        pasteConfiguration.acceptableTypeIdentifiers.append(UTType.image.identifier)
+        textInputNode.textView.pasteConfiguration = pasteConfiguration
         textInputNode.textView.enableChatImagePasteMenuSupport()
         sendButtonNode.addTarget(self, action: #selector(sendTapped), forControlEvents: .touchUpInside)
         attachButtonNode.addTarget(self, action: #selector(attachTapped), forControlEvents: .touchUpInside)
@@ -906,12 +906,12 @@ final class ChatInputNode: ASDisplayNode {
             onLockedComposerTapped?()
             return
         }
-        let text = textInputNode.textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = ComposerText(attributedText: textInputNode.textView.textStorage, trimming: true)
         // Allow empty text when forwarding — the content comes from
         // the forwarded message, not the text field.
-        guard !text.isEmpty || isShowingForward else { return }
+        guard !text.body.isEmpty || isShowingForward else { return }
         onSend?(text, color)
-        textInputNode.textView.text = ""
+        textInputNode.setText(ComposerText(body: ""))
         let shouldCollapsePreview = isShowingForward || isShowingEdit
         if isShowingForward || isShowingEdit {
             previewMode = .none
@@ -1063,18 +1063,18 @@ extension ChatInputNode: UIGestureRecognizerDelegate {
     }
 }
 
-// MARK: - ASEditableTextNodeDelegate
+// MARK: - Text Changes
 
-extension ChatInputNode: ASEditableTextNodeDelegate {
-    func editableTextNodeDidUpdateText(_ editableTextNode: ASEditableTextNode) {
+extension ChatInputNode {
+    private func composerTextDidChange() {
         updateTextEmptyState()
         invalidateCalculatedLayout()
         // Enable scroll when content exceeds maxHeight, disable to allow growth
-        let contentH = editableTextNode.textView.contentSize.height
+        let contentH = textInputNode.textView.contentSize.height
         let maxH: CGFloat = 220
         let needsScroll = contentH > maxH
-        if editableTextNode.scrollEnabled != needsScroll {
-            editableTextNode.scrollEnabled = needsScroll
+        if textInputNode.scrollEnabled != needsScroll {
+            textInputNode.scrollEnabled = needsScroll
         }
         onSizeChanged?()
     }
@@ -1088,8 +1088,11 @@ extension ChatInputNode {
     }
 
     func setCurrentText(_ text: String) {
-        textInputNode.textView.text = text
-        applyInputTextColor(glassMaterial.primaryForeground)
+        setCurrentText(ComposerText(body: text))
+    }
+
+    func setCurrentText(_ text: ComposerText) {
+        textInputNode.setText(text)
         updateTextEmptyState()
         invalidateCalculatedLayout()
         onSizeChanged?()
@@ -1143,44 +1146,40 @@ extension ChatInputNode {
         let primary = material.primaryForeground
         let glyph = material.glyphForeground
 
-        textInputNode.typingAttributes = [
-            NSAttributedString.Key.font.rawValue: UIFont.systemFont(ofSize: 16),
-            NSAttributedString.Key.foregroundColor.rawValue: primary
-        ]
-
-        if isNodeLoaded {
-            textInputNode.textView.textColor = primary
-            applyInputTextColor(primary)
-        }
+        textInputNode.updateForeground(primary)
 
         attachButtonNode.imageNode.tintColor = glyph
         micButtonNode.imageNode.tintColor = glyph
-    }
-
-    private func applyInputTextColor(_ color: UIColor) {
-        guard isNodeLoaded else { return }
-        let textView = textInputNode.textView
-        let selectedRange = textView.selectedRange
-        let length = textView.textStorage.length
-        guard length > 0 else { return }
-        textView.textStorage.addAttribute(
-            .foregroundColor,
-            value: color,
-            range: NSRange(location: 0, length: length)
-        )
-        textView.selectedRange = selectedRange
     }
 }
 
 // MARK: - UITextPasteDelegate
 
 extension ChatInputNode: UITextPasteDelegate {
+    private func sanitizedPastedText(_ text: NSAttributedString) -> NSAttributedString {
+        ComposerText.sanitizedPastedText(text, color: glassMaterial.primaryForeground)
+    }
+
     func textPasteConfigurationSupporting(
         _ textPasteConfigurationSupporting: any UITextPasteConfigurationSupporting,
         transform item: any UITextPasteItem
     ) {
         guard item.itemProvider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else {
-            item.setDefaultResult()
+            if let richText = item.localObject as? NSAttributedString {
+                item.setResult(attributedString: sanitizedPastedText(richText))
+            } else if ComposerPasteLoader.canLoad(from: item.itemProvider) {
+                Task { @MainActor [weak self] in
+                    let loaded = await ComposerPasteLoader.load(from: item.itemProvider)
+                    guard let self else { item.setNoResult(); return }
+                    if let loaded {
+                        item.setResult(attributedString: self.sanitizedPastedText(loaded))
+                    } else {
+                        item.setDefaultResult()
+                    }
+                }
+            } else {
+                item.setDefaultResult()
+            }
             return
         }
         guard !isShowingEdit else {

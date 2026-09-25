@@ -74,6 +74,64 @@ struct MatrixRichTextTests {
         #expect(document.text == "a b")
     }
 
+    @Test("Explicit trailing breaks and pre whitespace survive structural trimming")
+    func explicitWhitespace() {
+        let inline = MatrixRichTextParser.parse(body: "fallback", metadata: html("<strong>a<br><br></strong>"))
+        #expect(inline.text == "a\n\n")
+        let pre = MatrixRichTextParser.parse(body: "fallback", metadata: html("<pre>a\t \n\n</pre>"))
+        #expect(pre.text == "a\t \n\n")
+        let block = MatrixRichTextParser.parse(body: "fallback", metadata: html("<p><em>a</em></p>  \n"))
+        #expect(block.text == "a")
+    }
+
+    @MainActor
+    @Test("A pre block's terminal newline adds no bubble height, but a blank line does")
+    func preTerminalNewlineGeometry() {
+        func measure(_ text: String) -> (size: CGSize, body: CGRect) {
+            let document = MatrixRichTextParser.parse(
+                body: "fallback", metadata: html("<pre><code>\(text)</code></pre>")
+            )
+            #expect(document.text == text)
+            let attributed = RichTextRenderer.attributedString(
+                from: document, foregroundColor: .label, linkColor: .link
+            )
+            // Go through the actual bubble, including its CoreText measurement
+            // and timestamp placement, rather than an unrelated text view.
+            let node = TextBubbleContentNode(
+                bodyText: attributed,
+                forwardedHeaderText: nil,
+                replyHeader: nil,
+                timeText: NSAttributedString(string: "12:34", attributes: [.font: UIFont.systemFont(ofSize: 11)]),
+                statusIcon: nil,
+                statusTintColor: .secondaryLabel,
+                quoteBarColor: .link,
+                maxTextWidth: 240
+            )
+            let size = node.calculateSizeThatFits(CGSize(width: 240, height: CGFloat.greatestFiniteMagnitude))
+            node.frame = CGRect(origin: .zero, size: size)
+            node.layout()
+            return (size, node.bodyFrame)
+        }
+
+        let plain = measure("x")
+        let terminated = measure("x\n")
+        let blankLine = measure("x\n\n")
+        #expect(terminated.size == plain.size)
+        #expect(terminated.body == plain.body)
+        #expect(blankLine.body.height > terminated.body.height)
+        #expect(blankLine.size.height > terminated.size.height)
+    }
+
+    @Test("Body whitespace is restored only when all other UTF-16 positions agree")
+    func restoresOnlyMatchingBody() {
+        let matching = MatrixRichTextParser.parse(body: "🙂\t x", metadata: html("<strong>🙂&#160; x</strong>"))
+        #expect(matching.text == "🙂\t x")
+        let differentLabel = MatrixRichTextParser.parse(body: "🙂\t y", metadata: html("<strong>🙂&#160; x</strong>"))
+        #expect(differentLabel.text == "🙂\u{00a0} x")
+        let differentLength = MatrixRichTextParser.parse(body: "a   b", metadata: html("<strong>a b</strong>"))
+        #expect(differentLength.text == "a b")
+    }
+
     @Test("Reply fallback is removed before rendering")
     func removesReplyFallback() {
         let document = MatrixRichTextParser.parse(

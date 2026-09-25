@@ -1619,6 +1619,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     private func bindInput() {
         guard !isPreviewMode else { return }
 
+        glassInputBar.inputNode.textInputNode.onEditLink = { [weak self] current, completion in
+            guard let self else { return }
+            ComposerLinkPrompt.present(from: self, current: current, completion: completion)
+        }
+
         glassInputBar.inputNode.onSend = { [weak self] text, color in
             guard let self else { return }
             let wasEditing = self.viewModel.editingMessage != nil
@@ -2454,7 +2459,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private struct CopyableMessageText {
-        let text: String
+        let text: ComposerText
         let actionTitle: String
     }
 
@@ -2466,21 +2471,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         if let text = message.content.textBody,
            !text.isEmpty {
             return CopyableMessageText(
-                text: text,
+                text: ComposerText(body: text, metadata: message.textMetadata),
                 actionTitle: String(localized: "Copy")
             )
         }
 
         if let caption = normalizedCopyCaption(message.mediaGroupPresentation?.caption) {
             return CopyableMessageText(
-                text: caption,
+                text: ComposerText(body: caption),
                 actionTitle: String(localized: "Copy Caption")
             )
         }
 
         if let caption = message.content.visibleImageCaption {
             return CopyableMessageText(
-                text: caption,
+                text: ComposerText(body: caption),
                 actionTitle: String(localized: "Copy Caption")
             )
         }
@@ -2498,7 +2503,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     private func copyMessageText(_ message: ChatMessage) {
         guard let copyable = copyableText(for: message) else { return }
-        UIPasteboard.general.string = copyable.text
+        ComposerClipboard.writeMessage(copyable.text)
     }
 
     // MARK: - Interaction Lock

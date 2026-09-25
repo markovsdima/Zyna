@@ -121,6 +121,7 @@ final class OutgoingEditOutboxService {
             room: room,
             eventId: latest.eventId,
             body: latest.body,
+            formattedBody: latest.formattedBody,
             zynaAttributes: latest.zynaAttributes,
             transactionId: latest.transactionId
         )
@@ -183,6 +184,7 @@ final class OutgoingEditOutboxService {
             transactionId: edit.transactionId,
             editEventId: editEventId,
             body: edit.body,
+            formattedBody: edit.formattedBody,
             zynaAttributes: edit.zynaAttributes
         ) {
             publishRoomDidUpdate(edit.roomId)

@@ -1061,6 +1061,12 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v28_composerFormatting") { db in
+            try db.alter(table: StoredMessage.databaseTableName) { t in
+                t.add(column: "pendingEditFormattedBody", .text)
+            }
+        }
+
         return migrator
     }
 
