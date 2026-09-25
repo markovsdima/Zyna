@@ -121,7 +121,7 @@ struct ChatMessageListTests {
         let y = try fixture.screenY(id: 23)
         fixture.insert(-20..<0)
         // Texture measures the page asynchronously; this motion must survive.
-        fixture.list.view.contentOffset.y += 37
+        fixture.list.contentOffset.y += 37
         try await fixture.ready()
         #expect(abs(fixture.list.contentOffset.y - 2_437) < 1)
         // The view is inverted, so increasing its offset moves content down.
@@ -245,7 +245,7 @@ struct ChatMessageListTests {
         fixture.insert(-10..<0)
         try await fixture.ready()
         #expect(abs(fixture.list.contentOffset.y - 1_800) < 1)
-        fixture.list.view.contentOffset.y += 23
+        fixture.list.contentOffset.y += 23
         fixture.items.removeFirst(5)
         fixture.list.performBatch(
             animated: false, preservingViewport: true,

@@ -9,7 +9,7 @@ import UIKit
 /// Presents a single local file in `QLPreviewController` from any view
 /// controller. Keeps itself alive as the data source until dismissal.
 @MainActor
-final class QuickLookPresenter: NSObject, @preconcurrency QLPreviewControllerDataSource, @preconcurrency QLPreviewControllerDelegate {
+final class QuickLookPresenter: NSObject, QLPreviewControllerDataSource, @preconcurrency QLPreviewControllerDelegate {
 
     private static var active: QuickLookPresenter?
 

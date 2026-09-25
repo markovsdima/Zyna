@@ -47,16 +47,16 @@ final class ChatMessageList: NSObject, ASCollectionDataSource, ASCollectionDeleg
     var view: ASCollectionView { node.view }
     var bounds: CGRect { node.bounds }
     var contentInset: UIEdgeInsets {
-        get { view.contentInset }
-        set { view.contentInset = newValue }
+        get { node.contentInset }
+        set { node.contentInset = newValue }
     }
     var contentOffset: CGPoint {
-        get { view.contentOffset }
+        get { node.contentOffset }
         set { setContentOffset(newValue, animated: false) }
     }
 
     func setContentOffset(_ offset: CGPoint, animated: Bool) {
-        view.setContentOffset(offset, animated: animated)
+        node.setContentOffset(offset, animated: animated)
     }
 
     func indexPathsForVisibleItems() -> [IndexPath] {

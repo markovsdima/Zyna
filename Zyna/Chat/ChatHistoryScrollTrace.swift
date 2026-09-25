@@ -90,7 +90,7 @@ final class ChatHistoryScrollTrace {
     private func state(_ table: ChatMessageList) -> String {
         let view = table.view
         let visible = table.committedVisiblePaths
-        return "offset=\(f(view.contentOffset.y)) size=\(f(view.contentSize.height)) "
+        return "offset=\(f(table.contentOffset.y)) size=\(f(view.contentSize.height)) "
             + "height=\(f(view.bounds.height)) inset=\(f(view.adjustedContentInset.top)),\(f(view.adjustedContentInset.bottom)) "
             + "visible=\(rows(visible)) "
             + "drag=\(view.isDragging) decel=\(view.isDecelerating) "

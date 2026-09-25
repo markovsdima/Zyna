@@ -302,7 +302,7 @@ class RoomsCellNode: ZynaCellNode {
         // didLoad is on main but not @MainActor in the bridge.
         if #available(iOS 17, *) {
             MainActor.assumeIsolated {
-                view.registerForTraitChanges([UITraitUserInterfaceStyle.self]) { [weak self] (_: UIView, _) in
+                _ = view.registerForTraitChanges([UITraitUserInterfaceStyle.self]) { [weak self] (_: UIView, _) in
                     self?.updateOnlineIndicatorImage()
                 }
             }

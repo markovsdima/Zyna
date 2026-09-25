@@ -119,7 +119,7 @@ final class CallKitService: NSObject {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP])
             try session.setActive(true)
             logCall("Audio session configured for voice call")
         } catch {
