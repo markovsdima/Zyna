@@ -1467,7 +1467,7 @@ final class ZynaRoomListService: NSObject {
         case .sticker:
             text = "Sticker"
         case .poll(let question, _, _, _, _, _, _):
-            text = "Poll: \(question)"
+            text = String(localized: "Poll: \(question)")
         case .redacted:
             text = "..последнее сообщение удалено.."
         case .unableToDecrypt:

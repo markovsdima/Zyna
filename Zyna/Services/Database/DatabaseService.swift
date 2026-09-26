@@ -1067,6 +1067,8 @@ final class DatabaseService {
             }
         }
 
+        migrator.registerMigration("v29_polls", migrate: PollStore.migrate)
+
         return migrator
     }
 

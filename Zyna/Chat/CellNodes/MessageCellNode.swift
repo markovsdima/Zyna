@@ -342,7 +342,11 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         if let sender = message.senderDisplayName, !message.isOutgoing {
             parts.append(sender)
         }
-        parts.append(message.content.textPreview)
+        if case .poll(let poll) = message.content {
+            parts.append(poll.accessibilityDescription)
+        } else {
+            parts.append(message.content.textPreview)
+        }
         parts.append(MessageCellHelpers.timelineTimestampText(for: message))
         if message.isEditPending {
             parts.append(String(localized: "edit pending"))
@@ -687,6 +691,11 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
 
         if isVisuallyEquivalentPendingOutgoingEnvelope(old: old, new: new) {
             return true
+        }
+
+        if case .poll(let previous) = old.content, case .poll(let current) = new.content {
+            return previous.definition == current.definition
+                && old.zynaAttributes == new.zynaAttributes
         }
 
         return old.content == new.content

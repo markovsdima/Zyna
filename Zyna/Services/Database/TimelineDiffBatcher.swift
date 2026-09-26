@@ -47,7 +47,7 @@ final class TimelineDiffBatcher {
     // MARK: - Pending ops
 
     private enum DiffOp {
-        case upsert(StoredMessage)
+        case upsert(StoredMessage, isPollStart: Bool)
         case deleteAttachment(eventId: String)
         case upsertMatrixRTCCall(StoredMatrixRTCCall)
         case upsertMatrixRTCMembership(StoredMatrixRTCCallMembership)
@@ -146,7 +146,7 @@ final class TimelineDiffBatcher {
         summary.upsertCount = ops.filter { if case .upsert = $0 { return true }; return false }.count
         summary.deleteCount = ops.filter { if case .delete = $0 { return true }; return false }.count
         summary.redactedUpsertCount = ops.reduce(into: 0) { count, op in
-            if case .upsert(let record) = op, record.contentType == "redacted" {
+            if case .upsert(let record, _) = op, record.contentType == "redacted" {
                 count += 1
             }
         }
@@ -174,7 +174,7 @@ final class TimelineDiffBatcher {
 
                     for op in ops {
                         switch op {
-                        case .upsert(var record):
+                        case .upsert(var record, let isPollStart):
                             Self.inheritExistingZynaAttributesIfNeeded(
                                 for: &record,
                                 in: db
@@ -248,6 +248,7 @@ final class TimelineDiffBatcher {
                                 record,
                                 previousGroupDescription: previousGroupDescription
                             )
+                            try PollStore.ingest(&record, isPollStart: isPollStart, in: db)
                             try record.save(db)
                             if let attachment = StoredRoomAttachment(storedMessage: record) {
                                 try attachment.saveIfChanged(in: db)
@@ -444,7 +445,9 @@ final class TimelineDiffBatcher {
     private func enqueueSidecarEvents(for item: TimelineItem, message: ChatMessage?) {
         if let message {
             let record = StoredMessage(from: message, roomId: roomId)
-            pendingOps.append(.upsert(record))
+            let isPollStart = message.content.isPoll || (message.content.isRedacted
+                && PollStore.isPollStartEvent(originalJSON: item.asEvent()?.lazyProvider.debugInfo().originalJson))
+            pendingOps.append(.upsert(record, isPollStart: isPollStart))
 
             if let call = StoredMatrixRTCCall(from: message, roomId: roomId) {
                 pendingOps.append(.upsertMatrixRTCCall(call))

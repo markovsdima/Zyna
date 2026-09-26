@@ -95,6 +95,7 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord, Equatable {
     var contentBody: String?
     var contentFormat: String?
     var contentFormattedBody: String?
+    var contentPollJSON: String? = nil
     var contentMediaJSON: String?
     var contentImageWidth: Int64?
     var contentImageHeight: Int64?
@@ -218,6 +219,10 @@ extension StoredMessage {
         )
 
         switch msg.content {
+        case .poll(let poll):
+            contentType = "poll"
+            contentBody = poll.definition.question
+            contentPollJSON = try? PollCoding.encode(poll)
         case .text(let body):
             contentType = "text"
             contentBody = body
@@ -487,10 +492,16 @@ extension StoredMessage {
         if case .text = content {
             return true
         }
+        if case .poll(let poll) = content {
+            return poll.isEditable && !poll.hasEnded && poll.pending == nil
+        }
         return false
     }
 
     private func buildContent() -> ChatMessageContent? {
+        if contentType == "poll" {
+            return PollCoding.decode(PollSnapshot.self, from: contentPollJSON).map(ChatMessageContent.poll)
+        }
         switch contentType {
         case "text":
             return .text(body: contentBody ?? "")

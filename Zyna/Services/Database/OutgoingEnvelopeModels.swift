@@ -9,6 +9,7 @@ import GRDB
 import MatrixRustSDK
 
 enum OutgoingEnvelopeKind: String, Codable, Equatable {
+    case poll
     case text
     case image
     case video
@@ -84,6 +85,8 @@ struct OutgoingMediaBatchPayload: Codable, Equatable {
 }
 
 enum OutgoingEnvelopePayload: Equatable {
+    case invalid
+    case poll(PollDefinition)
     case text(OutgoingTextPayload)
     case image(OutgoingImagePayload)
     case video(OutgoingVideoPayload)
@@ -93,6 +96,7 @@ enum OutgoingEnvelopePayload: Equatable {
 
     private struct CodablePayload: Codable {
         let kind: String
+        var pollDefinition: PollDefinition? = nil
         let body: String?
         var formattedBody: String? = nil
         let caption: String?
@@ -111,8 +115,19 @@ enum OutgoingEnvelopePayload: Equatable {
     }
 
     func encodeJSON() -> String? {
+        if case .poll(let definition) = self {
+            struct PollPayload: Encodable {
+                let kind = "poll"
+                let pollDefinition: PollDefinition
+            }
+            return try? PollCoding.encode(PollPayload(pollDefinition: definition))
+        }
         let payload: CodablePayload
         switch self {
+        case .invalid:
+            return nil
+        case .poll:
+            return nil // Encoded above without unrelated media fields.
         case .text(let text):
             payload = CodablePayload(
                 kind: OutgoingEnvelopeKind.text.rawValue,
@@ -237,6 +252,9 @@ enum OutgoingEnvelopePayload: Equatable {
         }
 
         switch kind {
+        case .poll:
+            guard let definition = payload.pollDefinition, definition.isValidForCreation else { return nil }
+            return .poll(definition)
         case .text:
             return .text(
                 OutgoingTextPayload(
@@ -337,6 +355,8 @@ struct OutgoingEnvelopeRecord: Codable, FetchableRecord, PersistableRecord {
             return payload
         }
         switch decodedKind {
+        case .poll:
+            return .invalid
         case .text:
             return .text(OutgoingTextPayload(body: caption ?? ""))
         case .image:
@@ -479,6 +499,11 @@ struct OutgoingEnvelopeSnapshot {
         return textPayload
     }
 
+    var pollPayload: PollDefinition? {
+        guard case .poll(let definition) = payload else { return nil }
+        return definition
+    }
+
     var imagePayload: OutgoingImagePayload? {
         guard case .image(let imagePayload) = payload else { return nil }
         return imagePayload
@@ -528,6 +553,8 @@ struct OutgoingEnvelopeSnapshot {
 
     var isRetryableAfterSessionChange: Bool {
         switch payload {
+        case .poll:
+            return false
         case .text:
             return true
         case .voice(let payload):

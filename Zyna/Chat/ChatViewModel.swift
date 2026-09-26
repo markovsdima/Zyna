@@ -155,6 +155,9 @@ final class ChatViewModel {
     @Published private(set) var isInvited: Bool = false
     @Published private(set) var sendFailureNotice: SendFailureNotice?
     @Published private(set) var isComposerSendBlocked: Bool = false
+    @Published var pollError: String?
+    @Published private(set) var pollPermissions = PollPermissions()
+    private var pollPowerPermissions = PollPermissions()
     private var editingDraftOverride: ComposerText?
     private var activeEditAttemptId: UUID?
     private var recentlySentTransactionIds: Set<String> = []
@@ -314,6 +317,18 @@ final class ChatViewModel {
         scheduleLiveRoomResolution()
     }
 
+    #if DEBUG
+    /// Exercises window-to-display transitions without attaching a live room.
+    init(testingRoomId: String, dbQueue: DatabaseQueue, window: MessageWindow) {
+        self.roomId = testingRoomId
+        self.roomName = "Test room"
+        self.mode = .preview
+        self.diffBatcher = TimelineDiffBatcher(roomId: testingRoomId, dbQueue: dbQueue)
+        self.window = window
+        bindWindow()
+    }
+    #endif
+
     deinit {
         roomResolutionTask?.cancel()
         sendPermissionTask?.cancel()
@@ -451,6 +466,7 @@ final class ChatViewModel {
         bindSendFailure(OutgoingEditOutboxService.shared.sendFailureSubject)
         bindRoomUpdate(OutgoingRedactionOutboxService.shared.roomDidUpdateSubject)
         bindRoomUpdate(OutgoingReactionOutboxService.shared.roomDidUpdateSubject)
+        bindRoomUpdate(PollStore.shared.roomDidUpdate)
 
         OutgoingRedactionOutboxService.shared.redactionFailureSubject
             .receive(on: DispatchQueue.main)
@@ -638,6 +654,7 @@ final class ChatViewModel {
     }
 
     private func applyRoomInfoUpdate(_ info: RoomInfo) {
+        if let powers = info.powerLevels { updatePollPowerLevels(powers) }
         updateActiveRoomCallState(from: info)
         updatePinnedMessages(from: info)
     }
@@ -651,6 +668,7 @@ final class ChatViewModel {
                 let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
                 await MainActor.run {
                     self.updateCanSendRoomMessages(canSendMessage)
+                    self.updatePollPowerLevels(powerLevels)
                     self.applyObservedRoomCallState(activeRoomCallState)
                     self.updatePinnedMessages(from: info)
                 }
@@ -695,6 +713,7 @@ final class ChatViewModel {
             let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
             await MainActor.run {
                 self.updateCanSendRoomMessages(canSendMessage)
+                self.updatePollPowerLevels(powerLevels)
             }
         }
     }
@@ -702,6 +721,11 @@ final class ChatViewModel {
     private func updateCanSendRoomMessages(_ canSend: Bool) {
         guard canSendRoomMessages != canSend else { return }
         canSendRoomMessages = canSend
+        refreshComposerSendPermission()
+    }
+
+    private func updatePollPowerLevels(_ powers: RoomPowerLevels) {
+        pollPowerPermissions = PollPermissions(powers)
         refreshComposerSendPermission()
     }
 
@@ -1207,6 +1231,7 @@ final class ChatViewModel {
                 try await room.join()
                 await MainActor.run { [weak self] in
                     self?.isInvited = false
+                    self?.refreshComposerSendPermission()
                 }
                 startTimelineAndHistory()
             } catch {
@@ -1724,6 +1749,17 @@ final class ChatViewModel {
         )
     }
 
+    #if DEBUG
+    /// Exercises the production envelope plan without a client, database, or
+    /// an active chat. Tests cover event binding and actionable local retries.
+    static func singleEnvelopePlanForTesting(_ envelope: OutgoingEnvelopeSnapshot, messages: [ChatMessage],
+                                             sessionId: String) -> (retired: Bool, pending: ChatMessage?) {
+        let plan = pendingRenderableSingleEnvelopePlan(from: [envelope], rawMessages: messages,
+            currentUserId: "@test:example.org", currentLocalSessionId: sessionId)
+        return (plan.retireEnvelopeIds.contains(envelope.id), plan.activeEnvelopes.first?.message)
+    }
+    #endif
+
     private static func incomingRenderableMediaGroupPlan(
         from rawMessages: [ChatMessage],
         deletedMediaGroupIds: Set<String>,
@@ -2157,6 +2193,8 @@ final class ChatViewModel {
 
     private static func matches(envelopeKind: OutgoingEnvelopeKind, message: ChatMessage) -> Bool {
         switch (envelopeKind, message.content) {
+        case (.poll, .poll):
+            return true
         case (.text, .text):
             return true
         case (.image, .image):
@@ -2219,6 +2257,8 @@ final class ChatViewModel {
         envelopeKind: OutgoingEnvelopeKind
     ) -> Bool {
         switch (envelopeKind, message.content) {
+        case (.poll, .poll):
+            return true
         case (.text, .text):
             return true
         case (.image, .image(let source, _, _, _, _, _)):
@@ -2245,6 +2285,11 @@ final class ChatViewModel {
         }
 
         switch envelope.payload {
+        case .invalid:
+            return false
+        case .poll(let definition):
+            guard case .poll(let poll) = message.content else { return false }
+            return poll.definition == definition
         case .text(let textPayload):
             guard case .text(let body) = message.content else { return false }
             guard body == textPayload.body else { return false }
@@ -2314,14 +2359,15 @@ final class ChatViewModel {
         currentUserId: String,
         currentLocalSessionId: String?
     ) -> PendingRenderableEnvelope {
-        let isStaleSessionEnvelope = envelope.isStaleSession(currentSessionId: currentLocalSessionId)
+        let acceptedPoll = envelope.kind == .poll && envelope.state == .sent && envelope.primaryItem?.eventId != nil
+        let isStaleSessionEnvelope = !acceptedPoll && envelope.isStaleSession(currentSessionId: currentLocalSessionId)
         let primaryMessage = observedState.primaryMessageIndex.flatMap {
             rawMessages.indices.contains($0) ? rawMessages[$0] : nil
         }
         let primaryContent = primaryMessage?.content
         let primaryTimestamp = primaryMessage?.timestamp ?? envelope.createdAt
         let primarySenderId = primaryMessage?.senderId ?? currentUserId
-        let sendStatus = isStaleSessionEnvelope
+        let sendStatus = isStaleSessionEnvelope || envelope.payload == .invalid
             ? "failed"
             : pendingSendStatus(
                 transportState: envelope.primaryItem?.transportState,
@@ -2330,6 +2376,10 @@ final class ChatViewModel {
 
         let content: ChatMessageContent = {
             switch envelope.payload {
+            case .invalid:
+                return .unsupported(typeName: String(localized: "Poll"))
+            case .poll(let definition):
+                return .poll(.empty(definition))
             case .text(let payload):
                 return .text(body: payload.body)
             case .image(let payload):
@@ -2453,8 +2503,13 @@ final class ChatViewModel {
         )
         message.outgoingEnvelopeId = envelope.id
         message.isStaleOutgoingEnvelope = isStaleSessionEnvelope
-        message.canRetryOutgoingEnvelope = (isStaleSessionEnvelope || envelope.primaryItem?.transportState == .failed)
-            && envelope.isRetryableAfterSessionChange
+        if envelope.kind == .poll {
+            message.canRetryOutgoingEnvelope = envelope.payload != .invalid
+                && !isStaleSessionEnvelope && envelope.primaryItem?.transportState == .failed
+        } else {
+            message.canRetryOutgoingEnvelope = (isStaleSessionEnvelope || envelope.primaryItem?.transportState == .failed)
+                && envelope.isRetryableAfterSessionChange
+        }
 
         logMediaGroup(
             "pending synthetic envelope=\(describe(envelope)) anchor=\(observedState.primaryMessageIndex.map(String.init) ?? "nil") hidden=\(observedState.hiddenMessageIndices.count) status=\(sendStatus)"
@@ -2636,6 +2691,9 @@ final class ChatViewModel {
             let detail: String
             let type: String
             switch message.content {
+            case .poll:
+                type = "poll"
+                detail = "poll"
             case .text(let body), .notice(let body), .emote(let body):
                 type = "text"
                 detail = body
@@ -3264,20 +3322,18 @@ final class ChatViewModel {
     }
 
     private func refreshComposerSendPermission() {
-        let reason = composerSendBlockReason()
-        let blocked = composerSendBlockedValue(reason: reason)
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if self.composerSendRestrictionReason != reason {
-                    self.composerSendRestrictionReason = reason
-                }
-                if self.isComposerSendBlocked != blocked {
-                    self.isComposerSendBlocked = blocked
-                }
+                self?.refreshComposerSendPermission()
             }
             return
         }
+        let reason = composerSendBlockReason()
+        let blocked = composerSendBlockedValue(reason: reason)
+        // Publish effective permissions so verification changes update visible
+        // poll cells through the same lightweight path as room power levels.
+        let allowed = canInteractWithPolls ? pollPowerPermissions : PollPermissions()
+        if pollPermissions != allowed { pollPermissions = allowed }
         if composerSendRestrictionReason != reason {
             composerSendRestrictionReason = reason
         }
@@ -3304,6 +3360,66 @@ final class ChatViewModel {
             && !SessionVerificationService.shared.canSendEncryptedMessages
             ? .ownDeviceVerificationRequired
             : nil
+    }
+
+    var canCreatePoll: Bool {
+        canInteractWithPolls && pollPermissions.start
+    }
+
+    private var canInteractWithPolls: Bool {
+        !mode.isPreview && !isInvited && room != nil
+            && (!requiresVerifiedDeviceForSending || SessionVerificationService.shared.canSendEncryptedMessages)
+    }
+
+    func pollActions(for message: ChatMessage) -> (vote: Bool, edit: Bool, end: Bool) {
+        guard canInteractWithPolls, message.eventId != nil, !message.isSyntheticOutgoingEnvelope,
+              case .poll(let poll) = message.content, !poll.hasEnded else { return (false, false, false) }
+        let available = poll.pending == nil || poll.pending?.failed == true
+        return (pollPermissions.response && poll.allowsVote,
+                message.isOutgoing && pollPermissions.start && poll.isEditable && available,
+                message.isOutgoing && pollPermissions.end && available)
+    }
+
+    @MainActor
+    func savePoll(_ definition: PollDefinition, editing message: ChatMessage?) async throws {
+        guard let sessionId = MatrixClientService.shared.currentLocalSessionId else { throw PollError.staleSession }
+        if let message {
+            guard pollActions(for: message).edit, let eventId = message.eventId else { throw PollError.notAllowed }
+            try await PollStore.shared.enqueue(roomId: roomId, eventId: eventId, kind: .edit,
+                                               definition: definition, sessionId: sessionId)
+        } else {
+            guard canCreatePoll else { throw PollError.notAllowed }
+            _ = try await PollStore.shared.create(roomId: roomId, definition: definition, sessionId: sessionId)
+        }
+        OutgoingPollOutboxService.shared.kick()
+    }
+
+    @MainActor
+    func performPollAction(_ action: PollMessageCellNode.Action, for message: ChatMessage) {
+        Task {
+            do {
+                if case .dismissFailure(let id) = action {
+                    try await PollStore.shared.dismissFailure(id: id)
+                    return
+                }
+                guard let sessionId = MatrixClientService.shared.currentLocalSessionId,
+                      canInteractWithPolls else { throw PollError.notAllowed }
+                let current = messages.first { $0.eventId == message.eventId } ?? message
+                switch action {
+                case .vote(let answers):
+                    guard pollActions(for: current).vote, let id = current.eventId else { throw PollError.notAllowed }
+                    try await PollStore.shared.enqueue(roomId: roomId, eventId: id, kind: .response,
+                                                       answers: answers, sessionId: sessionId)
+                case .end:
+                    guard pollActions(for: current).end, let id = current.eventId else { throw PollError.notAllowed }
+                    try await PollStore.shared.enqueue(roomId: roomId, eventId: id, kind: .end, sessionId: sessionId)
+                case .retry(let id): try await PollStore.shared.retry(id: id, sessionId: sessionId)
+                case .dismissFailure: return
+                case .edit: return
+                }
+                OutgoingPollOutboxService.shared.kick()
+            } catch { pollError = error.localizedDescription }
+        }
     }
 
     @discardableResult
@@ -4282,6 +4398,15 @@ final class ChatViewModel {
     }
 
     private func retryOutgoingEnvelopeNow(id envelopeId: String) async {
+        if let envelope = outgoingEnvelopes.envelope(id: envelopeId, roomId: roomId), envelope.kind == .poll {
+            do {
+                guard envelope.payload != .invalid else { throw PollError.invalidContent }
+                guard let sessionId = MatrixClientService.shared.currentLocalSessionId else { throw PollError.staleSession }
+                try await PollStore.shared.retry(id: envelopeId, sessionId: sessionId)
+                OutgoingPollOutboxService.shared.kick()
+            } catch { await MainActor.run { self.pollError = error.localizedDescription } }
+            return
+        }
         guard let envelope = outgoingEnvelopes.envelope(id: envelopeId, roomId: roomId),
               envelope.isRetryableAfterSessionChange
         else {
@@ -5331,7 +5456,7 @@ final class ChatViewModel {
                 .replacingOccurrences(of: "\u{200B}", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return !body.isEmpty
-        case "image", "video", "audio", "voice", "file":
+        case "image", "video", "audio", "voice", "file", "poll":
             return true
         default:
             return false

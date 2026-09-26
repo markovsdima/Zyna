@@ -355,7 +355,7 @@ final class TimelineService {
             senderAvatarUrl = nil
         }
 
-        guard let content = contentFromEvent(event) else { return nil }
+        guard var content = contentFromEvent(event) else { return nil }
         let mediaMetadata = mediaMetadata(from: event)
         let textMetadata = textMetadata(from: event)
 
@@ -378,6 +378,10 @@ final class TimelineService {
         }()
         let isEdited = messageContentIsEdited(from: event)
         let editState = messageEditState(from: event, isEdited: isEdited)
+        if case .poll(var poll) = content {
+            poll.latestEditEventID = editState.eventId
+            content = .poll(poll)
+        }
 
         let itemIdentifier: ChatItemIdentifier? = {
             switch event.eventOrTransactionId {
@@ -412,6 +416,10 @@ final class TimelineService {
     }
 
     private static func messageContentIsEdited(from event: EventTimelineItem) -> Bool {
+        if case .msgLike(let content) = event.content,
+           case .poll(_, _, _, _, _, _, let edited) = content.kind {
+            return edited
+        }
         guard case .msgLike(let msgContent) = event.content,
               case .message(let message) = msgContent.kind
         else {
@@ -902,8 +910,13 @@ final class TimelineService {
                 return content
             case .sticker:
                 return .unsupported(typeName: "sticker")
-            case .poll:
-                return .unsupported(typeName: "poll")
+            case .poll(let question, let kind, let maxSelections, let answers, let votes, let endTime, let edited):
+                return .poll(PollSnapshot.fromSDK(
+                    question: question, kind: kind, maxSelections: maxSelections,
+                    answers: answers, votes: votes, endTime: endTime,
+                    isEditable: event.isEditable, isEdited: edited,
+                    currentUserID: (try? MatrixClientService.shared.client?.userId()) ?? ""
+                ))
             case .redacted:
                 return .redacted
             case .unableToDecrypt(let message):

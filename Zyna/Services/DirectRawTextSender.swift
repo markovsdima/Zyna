@@ -497,7 +497,7 @@ enum DirectRawTextSender {
         )
     }
 
-    private static func isRetryableTransportError(_ error: Error) -> Bool {
+    static func isRetryableTransportError(_ error: Error) -> Bool {
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain {
             switch nsError.code {

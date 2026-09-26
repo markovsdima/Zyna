@@ -1348,6 +1348,27 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func bindViewModel() {
+        viewModel.$pollError.compactMap { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] error in
+                guard let self else { return }
+                let alert = UIAlertController(title: String(localized: "Poll"), message: error, preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+                self.present(alert, animated: true)
+                self.viewModel.pollError = nil
+            }.store(in: &cancellables)
+
+        viewModel.$pollPermissions.removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                for path in self.node.list.indexPathsForVisibleItems() {
+                    guard let cell = self.node.list.nodeForItem(at: path) as? PollMessageCellNode,
+                          self.viewModel.rows.indices.contains(path.item),
+                          case .message(let message) = self.viewModel.rows[path.item] else { continue }
+                    self.configureMessageDrivenInteractions(for: cell, message: message)
+                }
+            }.store(in: &cancellables)
         viewModel.onOlderHistoryAvailable = { [weak self] in
             // Let the current window commit finish before checking distance.
             DispatchQueue.main.async { [weak self] in
@@ -1371,6 +1392,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             else { return }
             self.configureMessageDrivenInteractions(for: cellNode, message: message)
             self.configureAttachmentTapHandler(for: cellNode, message: message)
+            if case .poll(let poll) = message.content {
+                (cellNode as? PollMessageCellNode)?.updatePoll(poll)
+            }
             if let groupCell = cellNode as? PhotoGroupMessageCellNode {
                 groupCell.updateMediaGroupPresentation(message.mediaGroupPresentation)
             }
@@ -1820,6 +1844,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
             let cellNode: MessageCellNode
             switch renderedMessage.content {
+            case .poll:
+                cellNode = PollMessageCellNode(message: renderedMessage, isGroupChat: isGroup)
             case .voice:
                 cellNode = VoiceMessageCellNode(
                     message: renderedMessage,
@@ -1909,11 +1935,20 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         let toggleReaction: (String) -> Void = { [weak self] key in
             self?.viewModel.toggleReaction(key, for: message)
         }
+        let pollActions = viewModel.pollActions(for: message)
+        let performPollAction: (PollMessageCellNode.Action) -> Void = { [weak self] action in
+            self?.handlePollAction(action, for: message)
+        }
 
         return { cellNode in
             guard !isPreview else {
                 Self.configurePreviewInteractions(for: cellNode)
                 return
+            }
+            if let pollCell = cellNode as? PollMessageCellNode {
+                pollCell.updateCreationStatus(for: message)
+                pollCell.updatePermissions(vote: pollActions.vote, edit: pollActions.edit, end: pollActions.end)
+                pollCell.onPollAction = performPollAction
             }
 
             if suppressSyntheticActions {
@@ -1937,7 +1972,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
                 cellNode.accessibilityActionsProvider = { [weak cellNode] in
                     let linkActions = (cellNode as? TextMessageCellNode)?
                         .linkAccessibilityActions() ?? []
-                    return linkActions + buildActions()
+                    let pollActions = (cellNode as? PollMessageCellNode)?.pollAccessibilityActions() ?? []
+                    return linkActions + pollActions + buildActions()
                 }
             }
             cellNode.onReactionTapped = toggleReaction
@@ -2083,6 +2119,28 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         var actions: [UIAccessibilityCustomAction] = []
         let suppressSyntheticActions = message.isSyntheticOutgoingEnvelope || message.isSyntheticIncomingAssembly
 
+        if case .poll(let poll) = message.content, let pending = poll.pending, pending.failed {
+            actions.append(UIAccessibilityCustomAction(name: String(localized: "Dismiss failed action")) { [weak self] _ in
+                self?.handlePollAction(.dismissFailure(pending.operationID), for: message); return true
+            })
+        }
+        let pollActions = viewModel.pollActions(for: message)
+        if pollActions.edit {
+            actions.append(UIAccessibilityCustomAction(name: String(localized: "Edit poll")) { [weak self] _ in
+                self?.handlePollAction(.edit, for: message); return true
+            })
+        }
+        if pollActions.end {
+            actions.append(UIAccessibilityCustomAction(name: String(localized: "End poll")) { [weak self] _ in
+                self?.handlePollAction(.end, for: message); return true
+            })
+        }
+        if pollActions.vote, case .poll(let poll) = message.content, !poll.displayedSelection.isEmpty {
+            actions.append(UIAccessibilityCustomAction(name: String(localized: "Withdraw vote")) { [weak self] _ in
+                self?.handlePollAction(.vote([]), for: message); return true
+            })
+        }
+
         if !suppressSyntheticActions {
             actions.append(UIAccessibilityCustomAction(name: "Reply") { [weak self] _ in
                 self?.viewModel.setReplyTarget(message)
@@ -2118,7 +2176,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             })
         }
 
-        if !message.content.isRedacted && !suppressSyntheticActions {
+        if !message.content.isRedacted && !message.content.isPoll && !suppressSyntheticActions {
             actions.append(UIAccessibilityCustomAction(name: "Forward") { [weak self] _ in
                 self?.onForwardMessage?(message)
                 return true
@@ -2251,6 +2309,23 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         let canDiscardOutgoingEnvelope = canDiscardLocalOutgoingEnvelope(message)
 
         var actions: [ContextMenuAction] = []
+        if case .poll(let poll) = message.content, let pending = poll.pending, pending.failed {
+            actions.append(ContextMenuAction(title: String(localized: "Dismiss failed action"), image: UIImage(systemName: "xmark.circle"),
+                handler: { [weak self] in self?.handlePollAction(.dismissFailure(pending.operationID), for: message) }))
+        }
+        let pollActions = viewModel.pollActions(for: message)
+        if pollActions.edit {
+            actions.append(ContextMenuAction(title: String(localized: "Edit poll"), image: UIImage(systemName: "pencil"),
+                handler: { [weak self] in self?.handlePollAction(.edit, for: message) }))
+        }
+        if pollActions.end {
+            actions.append(ContextMenuAction(title: String(localized: "End poll"), image: UIImage(systemName: "stop.circle"),
+                handler: { [weak self] in self?.handlePollAction(.end, for: message) }))
+        }
+        if pollActions.vote, case .poll(let poll) = message.content, !poll.displayedSelection.isEmpty {
+            actions.append(ContextMenuAction(title: String(localized: "Withdraw vote"), image: UIImage(systemName: "arrow.uturn.backward"),
+                handler: { [weak self] in self?.handlePollAction(.vote([]), for: message) }))
+        }
         if !isPendingOutgoingMessage {
             actions.append(ContextMenuAction(
                 title: "Reply",
@@ -2290,7 +2365,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             ))
         }
 
-        if !message.content.isRedacted && !isPendingOutgoingMessage {
+        if !message.content.isRedacted && !message.content.isPoll && !isPendingOutgoingMessage {
             actions.append(ContextMenuAction(
                 title: "Forward",
                 image: UIImage(systemName: "arrowshape.turn.up.right"),
@@ -2464,6 +2539,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func copyableText(for message: ChatMessage) -> CopyableMessageText? {
+        if case .poll(let poll) = message.content {
+            let text = ([poll.definition.question] + poll.definition.answers.enumerated().map { "\($0.offset + 1). \($0.element.text)" })
+                .joined(separator: "\n")
+            return CopyableMessageText(text: ComposerText(body: text), actionTitle: String(localized: "Copy"))
+        }
         guard !message.content.isRedacted else {
             return nil
         }
@@ -3501,7 +3581,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         message.isSyntheticOutgoingEnvelope
             && message.canRetryOutgoingEnvelope
             && message.outgoingEnvelopeId != nil
-            && !viewModel.isComposerSendBlocked
+            && (message.content.isPoll ? viewModel.canCreatePoll : !viewModel.isComposerSendBlocked)
     }
 
     private func canDiscardLocalOutgoingEnvelope(_ message: ChatMessage) -> Bool {
@@ -3636,9 +3716,50 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         sheet.addAction(UIAlertAction(title: String(localized: "Scan"), style: .default) { [weak self] _ in
             self?.presentDocumentScanner()
         })
+        if viewModel.canCreatePoll, viewModel.editingMessage == nil {
+            sheet.addAction(UIAlertAction(title: String(localized: "Poll"), style: .default) { [weak self] _ in
+                self?.presentPollComposer(editing: nil)
+            })
+        }
         sheet.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
 
         present(sheet, animated: true)
+    }
+
+    private func presentPollComposer(editing message: ChatMessage?) {
+        let definition: PollDefinition?
+        if let message, case .poll(let poll) = message.content { definition = poll.definition }
+        else { definition = nil }
+        let model = PollComposerModel(definition: definition) { [weak self] value in
+            guard let self else { throw PollError.unavailable }
+            try await self.viewModel.savePoll(value, editing: message)
+            if message == nil {
+                self.scrollToLiveAfterUserSend()
+            }
+        }
+        let controller = GlassHostingController(
+            title: message == nil ? String(localized: "New poll") : String(localized: "Edit poll"),
+            rootView: PollComposerScreen(model: model), onBack: { [weak model] in model?.close() })
+        model.dismiss = { [weak controller] in controller?.dismiss(animated: true) }
+        controller.modalPresentationStyle = .pageSheet
+        controller.isModalInPresentation = true
+        controller.sheetPresentationController?.detents = [.large()]
+        present(controller, animated: true)
+    }
+
+    private func handlePollAction(_ action: PollMessageCellNode.Action, for message: ChatMessage) {
+        switch action {
+        case .edit: presentPollComposer(editing: message)
+        case .end:
+            let alert = UIAlertController(title: String(localized: "End poll?"),
+                message: String(localized: "Voting will close and the results will be shown to everyone."), preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+            alert.addAction(UIAlertAction(title: String(localized: "End poll"), style: .destructive) { [weak self] _ in
+                self?.viewModel.performPollAction(.end, for: message)
+            })
+            present(alert, animated: true)
+        case .vote, .retry, .dismissFailure: viewModel.performPollAction(action, for: message)
+        }
     }
 
     private func enqueueImageAttachments(_ imageDataItems: [Data]) {

@@ -9,6 +9,7 @@ import MatrixRustSDK
 // MARK: - Message Content
 
 enum ChatMessageContent: Equatable {
+    case poll(PollSnapshot)
     case text(body: String)
     case image(source: MediaSource?, thumbnailSource: MediaSource?, width: UInt64?, height: UInt64?, caption: String?, previewImageData: Data?)
     case video(source: MediaSource?, thumbnailSource: MediaSource?, width: UInt64?, height: UInt64?, duration: TimeInterval?, filename: String, mimetype: String?, size: UInt64?, caption: String?, previewThumbnailData: Data?)
@@ -23,10 +24,16 @@ enum ChatMessageContent: Equatable {
     case unsupported(typeName: String)
     case redacted
 
+    var isPoll: Bool {
+        if case .poll = self { return true }
+        return false
+    }
+
     // MediaSource is a class — compare by URL, not reference.
     // Image dimensions: treat nil as "not yet loaded", not as a change.
     static func == (lhs: ChatMessageContent, rhs: ChatMessageContent) -> Bool {
         switch (lhs, rhs) {
+        case (.poll(let a), .poll(let b)): return a == b
         case (.text(let a), .text(let b)): return a == b
         case (.notice(let a), .notice(let b)): return a == b
         case (.emote(let a), .emote(let b)): return a == b
@@ -106,6 +113,7 @@ enum ChatMessageContent: Equatable {
 
     var textPreview: String {
         switch self {
+        case .poll(let poll): return String(localized: "Poll: \(poll.definition.question)")
         case .text(let body): return body
         case .image: return "Photo"
         case .video: return "Video"

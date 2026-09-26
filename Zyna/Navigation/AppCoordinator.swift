@@ -50,6 +50,7 @@ final class AppCoordinator {
         OutgoingEditOutboxService.shared.start()
         OutgoingRedactionOutboxService.shared.start()
         OutgoingReactionOutboxService.shared.start()
+        OutgoingPollOutboxService.shared.start()
         observeClientState()
         observeNetworkRestoration()
 
