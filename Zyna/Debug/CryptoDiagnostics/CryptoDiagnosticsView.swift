@@ -67,6 +67,16 @@ final class CryptoDiagnosticsViewModel: ObservableObject {
         showShareLogsConfirm = true
     }
 
+    func shareEventCacheTrace() {
+        let files = CryptoDiagnosticsService.eventCacheTraceFiles()
+        guard !files.isEmpty else {
+            log("Share event cache trace", "No trace files. Launch the normal app with ZYNA_RUST_EVENT_CACHE_TRACE=1, reproduce, then return here.")
+            return
+        }
+        pendingLogFiles = files
+        showShareLogsConfirm = true
+    }
+
     func confirmShareLogs() {
         shareItems = pendingLogFiles
         pendingLogFiles = []
@@ -211,7 +221,7 @@ struct CryptoDiagnosticsView: View {
             Button("Share", role: .destructive) { viewModel.confirmShareLogs() }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("SDK logs can contain Matrix metadata such as user IDs, room IDs, event IDs, device IDs, session IDs, and server names. Do not share them publicly.")
+            Text("SDK logs are not anonymized and may contain message content, user IDs, room IDs, event IDs, device IDs, session IDs, and server names. Review them before sharing. Do not share them publicly.")
         }
         .sheet(isPresented: $viewModel.showShareSheet) {
             CryptoDiagnosticsActivityView(activityItems: viewModel.shareItems)
@@ -312,6 +322,9 @@ struct CryptoDiagnosticsView: View {
 
     private var logsSection: some View {
         Section("SDK logs (rust tracing)") {
+            Button("Share event cache trace") {
+                viewModel.shareEventCacheTrace()
+            }
             Button("Tracing status") {
                 viewModel.tracingStatus()
             }

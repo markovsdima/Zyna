@@ -6,6 +6,8 @@
 import UIKit
 import MatrixRustSDK
 
+private let logViewer = ScopedLog(.attachments, prefix: "[Attachments][viewer]")
+
 /// Fullscreen image viewer with zoom, pan, and interactive
 /// swipe-down dismiss. Shows the cached thumbnail immediately
 /// and swaps in the full-resolution image when it loads.
@@ -44,7 +46,13 @@ final class ImageViewerController: UIViewController {
     private let items: [Item]
     private var currentIndex: Int
     private var resolvedImages: [UIImage?]
+    /// Share/Save export only the original; until it arrives `imageView`
+    /// shows a downsampled (and, from the grid, square-cropped) preview.
+    private var fullResolutionReady: [Bool]
     private var fullResLoadToken: UUID?
+    /// Cancelled on page change and dismissal so an abandoned full-res
+    /// load withdraws its demand from the shared fetch instead of holding it.
+    private var fullResLoadTask: Task<Void, Never>?
     private var dismissPanStart: CGPoint = .zero
     private var chromeVisible = true
 
@@ -54,6 +62,7 @@ final class ImageViewerController: UIViewController {
         self.items = items
         self.currentIndex = max(0, min(initialIndex, items.count - 1))
         self.resolvedImages = items.map(\.previewImage)
+        self.fullResolutionReady = items.map { _ in false }
         super.init(nibName: nil, bundle: nil)
         let initialImage = resolvedImages[currentIndex]
         imageView.image = initialImage
@@ -64,6 +73,10 @@ final class ImageViewerController: UIViewController {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    deinit {
+        fullResLoadTask?.cancel()
+    }
 
     // MARK: - Lifecycle
 
@@ -249,8 +262,16 @@ final class ImageViewerController: UIViewController {
         animateDismiss()
     }
 
+    private func updateExportButtons() {
+        let ready = items.indices.contains(currentIndex) && fullResolutionReady[currentIndex]
+        for button in [shareButton, saveButton] {
+            button.isEnabled = ready
+            button.alpha = ready ? 1 : 0.4
+        }
+    }
+
     @objc private func shareTapped() {
-        guard let image = imageView.image else { return }
+        guard fullResolutionReady[currentIndex], let image = imageView.image else { return }
         let sheet = UIActivityViewController(
             activityItems: [image],
             applicationActivities: nil
@@ -259,7 +280,7 @@ final class ImageViewerController: UIViewController {
     }
 
     @objc private func saveTapped() {
-        guard let image = imageView.image else { return }
+        guard fullResolutionReady[currentIndex], let image = imageView.image else { return }
         UIImageWriteToSavedPhotosAlbum(image, self, #selector(imageSaved(_:error:context:)), nil)
     }
 
@@ -321,25 +342,46 @@ final class ImageViewerController: UIViewController {
 
     // MARK: - Full resolution
 
-    private func loadFullResolution() {
-        loadFullResolution(for: currentIndex)
-    }
-
-    private func loadFullResolution(for index: Int) {
+    /// `delay` debounces page changes: a fast swipe past several photos
+    /// must not start a download for each (an SDK call cannot be cancelled
+    /// once started and would hold a viewer lane for the current one).
+    private func loadFullResolution(for index: Int, delay: Duration = .zero) {
+        // Cancel and refresh the export buttons before any early return: an
+        // item without a source (possible from the chat) must still stop the
+        // previous page's load and not inherit its button state.
+        fullResLoadTask?.cancel()
+        updateExportButtons()
         guard items.indices.contains(index),
               let source = items[index].mediaSource else { return }
+        // Already have the original: never fetch it again (files above the
+        // SDK's cache limit would hit the network every time).
+        guard !fullResolutionReady[index] else { return }
         let token = UUID()
         fullResLoadToken = token
-        Task {
-            guard let client = MatrixClientService.shared.client else { return }
+        fullResLoadTask = Task {
+            guard MatrixClientService.shared.client != nil else { return }
+            if delay > .zero {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+            }
             do {
-                let data = try await client.getMediaContent(mediaSource: source)
+                let fetchStart = CACurrentMediaTime()
+                // Shares one SDK call with a grid tile that may still be
+                // downloading the same original.
+                let data = try await MediaCache.shared.loadFullContent(source: source)
+                guard !Task.isCancelled else { return }
+                logViewer(
+                    "full-res mxc=\(source.url()) bytes=\(data.count) "
+                    + "ms=\(String(format: "%.0f", (CACurrentMediaTime() - fetchStart) * 1000))"
+                )
                 guard let fullImage = UIImage(data: data) else { return }
                 await MainActor.run { [weak self] in
                     guard let self,
                           self.fullResLoadToken == token,
                           self.items.indices.contains(index) else { return }
                     self.resolvedImages[index] = fullImage
+                    self.fullResolutionReady[index] = true
+                    self.updateExportButtons()
                     guard self.currentIndex == index else { return }
                     self.imageView.image = fullImage
                     self.transitionView.image = fullImage
@@ -442,7 +484,9 @@ final class ImageViewerController: UIViewController {
             layoutImageView()
         }
 
-        loadFullResolution(for: index)
+        // Debounced: a swipe-through must not start a download per page, and
+        // the delay also keeps a fast cache hit from landing mid-transition.
+        loadFullResolution(for: index, delay: .milliseconds(250))
     }
 
     private func animatePageTransition(from oldImage: UIImage, to newImage: UIImage, direction: Int) {

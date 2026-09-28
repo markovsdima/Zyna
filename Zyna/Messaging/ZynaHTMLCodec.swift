@@ -42,10 +42,36 @@ enum ZynaHTMLCodec {
         userHTML: String,
         attributes: ZynaMessageAttributes
     ) -> String {
+        // A forwarded message may already carry attributes. Replace the old
+        // carrier attributes so the first decoded value is always the new one.
+        let userHTML = removingCarrierAttributes(from: userHTML)
         guard !attributes.isEmpty else { return userHTML }
         guard let json = buildJSON(from: attributes) else { return userHTML }
         let escaped = escapeForHTMLAttribute(json)
         return userHTML + "<span \(dataAttributeName)=\"\(escaped)\"></span>"
+    }
+
+    private static let tagPattern = try! NSRegularExpression(
+        pattern: #"<(?:[^>"']|"[^"]*"|'[^']*')*>"#
+    )
+    private static let quotedAttributePattern = try! NSRegularExpression(
+        pattern: #"\s+([a-zA-Z_:][a-zA-Z0-9_:.-]*)\s*=\s*(?:"[^"]*"|'[^']*')"#
+    )
+
+    private static func removingCarrierAttributes(from html: String) -> String {
+        // Only touch attributes inside tags; literal text can contain the same
+        // spelling. Match quoted values before considering the closing bracket.
+        let result = NSMutableString(string: html)
+        for match in tagPattern.matches(in: html, range: NSRange(location: 0, length: result.length)).reversed() {
+            let tag = NSMutableString(string: result.substring(with: match.range))
+            let attributes = quotedAttributePattern.matches(in: tag as String, range: NSRange(location: 0, length: tag.length))
+            for attribute in attributes.reversed()
+                where tag.substring(with: attribute.range(at: 1)).lowercased() == dataAttributeName {
+                tag.deleteCharacters(in: attribute.range)
+            }
+            result.replaceCharacters(in: match.range, with: tag as String)
+        }
+        return result as String
     }
 
     // MARK: - Decode

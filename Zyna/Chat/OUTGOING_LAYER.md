@@ -171,6 +171,50 @@ Avoid these patterns:
 - treating filename/body equality as a stronger bind than event id;
 - making retry depend on an open chat screen.
 
+## Polls
+
+Poll creation uses an ordinary outgoing envelope with a `poll` payload and
+the typed Room-level poll-start binding. `PollStore` commits that envelope,
+its binding item, and the durable operation in one GRDB transaction. Votes,
+edits, and endings use `pendingPollOperation`, ordered per original poll-start
+event ID. Retrying preserves both the transaction ID and the full payload,
+including answer IDs. Only untouched queued votes can be coalesced.
+
+Poll actions check the `org.matrix.msc3381.poll.*` power levels. Cached
+lifecycle and author checks run before the first transport attempt; ambiguous
+transport retries keep their original intent. A confirmed poll end or
+redaction cancels obsolete operations, including retries. Late transport
+completions cannot recreate them. Unaccepted actions from an old login become
+dismissible failures, with no retry under the new session. Accepted actions
+remain accepted and can be confirmed through sync or read-only relations after
+relogin to the same account; each account has its own database.
+An attempted response with an unknown result at logout can also shed its stale
+failure once the confirmed selection matches, including vote withdrawal. This
+retires satisfied intent without resending or claiming delivery of that request.
+Unsent actions and ordinary transport failures retain their failure state.
+Session and cancellation checks run after asynchronous admission and begin
+steps, and again immediately before the SDK request after off-main payload
+preparation. A cancelled scan preserves durable intent for the next scan.
+
+Accepted votes and edits normally settle against SDK aggregates. Confirmation
+fallback waits 15 seconds for sync and uses persisted per-operation deadlines.
+Relations are paginated forward, retaining the tail cursor across scans and
+restarts; at most four pages are requested per scan. Timestamps identify a
+superseding vote, never a pagination cutoff. A superseding edit must follow
+our event in the relation order and match the effective edit ID from the SDK.
+An earlier edit or a timeout alone cannot clear pending intent.
+
+`roomPoll` holds confirmed SDK snapshots independently of the chat window.
+`storedMessage.contentPollJSON` caches the presentation with pending intent.
+Redaction keeps a content-free tombstone for known polls and clears the persisted
+question and snapshot. Unknown encrypted redactions use the ordinary message
+row to prevent resurrection until their poll type is known. Repeated tombstones
+do not rewrite the catalog; its pagination index contains only active polls.
+The deletion animation retains its temporary content in memory.
+The catalog's keyset API returns decoded `RoomPollItem` values off-main, ready
+for a future attachments tab. It currently indexes polls observed by the
+timeline; a complete room-history listing will also need history backfill.
+
 ## Related Documents
 
 - `MEDIA_DIRECT_SEND.md` explains image, video, file, voice, photo group, and

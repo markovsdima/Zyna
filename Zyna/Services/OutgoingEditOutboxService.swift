@@ -58,7 +58,10 @@ final class OutgoingEditOutboxService {
         guard scanCoordinator.isSyncing,
               DirectRawTextSender.isEnabled else { return }
 
-        let candidates = pendingEdits.pendingDirectRawEdits()
+        let sessionId = matrixService.currentLocalSessionId
+        let candidates = await pendingEdits.pendingDirectRawEdits()
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
         guard !candidates.isEmpty else {
             logOutgoingEditOutbox("outbox scan reason=\(reason) count=0")
             return
@@ -69,8 +72,8 @@ final class OutgoingEditOutboxService {
         )
 
         for candidate in candidates {
-            guard !Task.isCancelled,
-                  scanCoordinator.isSyncing else { return }
+            guard !Task.isCancelled, scanCoordinator.isSyncing,
+                  matrixService.currentLocalSessionId == sessionId else { return }
             await sendIfEligible(candidate, reason: reason)
         }
     }
@@ -97,9 +100,11 @@ final class OutgoingEditOutboxService {
             return
         }
 
-        guard let latest = pendingEdits
-            .pendingDirectRawEdits(roomId: candidate.roomId, eventId: candidate.eventId)
-            .first,
+        let sessionId = matrixService.currentLocalSessionId
+        let refreshed = await pendingEdits.pendingDirectRawEdits(roomId: candidate.roomId, eventId: candidate.eventId)
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
+        guard let latest = refreshed.first,
             latest.transactionId == candidate.transactionId else {
             clearRetryMetadata(for: id)
             return
@@ -121,6 +126,7 @@ final class OutgoingEditOutboxService {
             room: room,
             eventId: latest.eventId,
             body: latest.body,
+            formattedBody: latest.formattedBody,
             zynaAttributes: latest.zynaAttributes,
             transactionId: latest.transactionId
         )
@@ -183,6 +189,7 @@ final class OutgoingEditOutboxService {
             transactionId: edit.transactionId,
             editEventId: editEventId,
             body: edit.body,
+            formattedBody: edit.formattedBody,
             zynaAttributes: edit.zynaAttributes
         ) {
             publishRoomDidUpdate(edit.roomId)

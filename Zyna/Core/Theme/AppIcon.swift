@@ -43,6 +43,7 @@ enum AppIcon {
     case noSign
     case magnifyingGlass
     case settings
+    case photoOnRectangle
 
     var systemName: String {
         switch self {
@@ -83,6 +84,7 @@ enum AppIcon {
         case .noSign:           return "nosign"
         case .magnifyingGlass:  return "magnifyingglass"
         case .settings:         return "gearshape.fill"
+        case .photoOnRectangle: return "photo.on.rectangle"
         }
     }
 

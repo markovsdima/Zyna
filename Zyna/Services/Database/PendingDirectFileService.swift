@@ -39,7 +39,7 @@ final class PendingDirectFileService {
 
     static let shared = PendingDirectFileService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private var dbQueue: AccountDatabase { DatabaseService.shared.dbQueue }
 
     private init() {}
 
@@ -127,12 +127,12 @@ final class PendingDirectFileService {
         return didChange
     }
 
-    func outboxCandidates(envelopeIds: Set<String>? = nil) -> [PendingDirectFileCandidate] {
+    func outboxCandidates(envelopeIds: Set<String>? = nil) async -> [PendingDirectFileCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Column("kind") == OutgoingEnvelopeKind.file.rawValue)
                 .order(Column("createdAt").asc)
@@ -185,12 +185,12 @@ final class PendingDirectFileService {
 
     func missingAssetCandidates(
         envelopeIds: Set<String>? = nil
-    ) -> [PendingDirectFileMissingAssetCandidate] {
+    ) async -> [PendingDirectFileMissingAssetCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Column("kind") == OutgoingEnvelopeKind.file.rawValue)
                 .order(Column("createdAt").asc)

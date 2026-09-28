@@ -18,12 +18,12 @@ enum PaintSplashTrigger {
     private static weak var activeSplashLayer: PaintSplashLayer?
 
     static func trigger(
-        in tableNode: ASTableNode,
+        in tableNode: ChatMessageList,
         overlayView preferredOverlayView: UIView? = nil,
         at indexPath: IndexPath,
         completion: @escaping () -> Void
     ) {
-        guard let cellNode = tableNode.nodeForRow(at: indexPath) as? MessageCellNode,
+        guard let cellNode = tableNode.nodeForItem(at: indexPath) as? MessageCellNode,
               cellNode.isNodeLoaded
         else {
             completion()
@@ -37,7 +37,7 @@ enum PaintSplashTrigger {
     }
 
     static func trigger(
-        in tableNode: ASTableNode,
+        in tableNode: ChatMessageList,
         overlayView preferredOverlayView: UIView? = nil,
         target: SnapshotTarget,
         completion: @escaping () -> Void

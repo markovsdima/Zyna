@@ -6,94 +6,162 @@
 import GRDB
 import Foundation
 
-final class DatabaseService {
+// Lifecycle work is serial. The lock only publishes account handles; getters
+// never wait for SQL, file removal, or opening the next account.
+final class DatabaseService: @unchecked Sendable {
 
     static let shared = DatabaseService()
 
-    private static let userIdKey = "com.zyna.matrix.lastUserId"
-
-    // This guards DatabaseQueue lifecycle work (close/open/migrate/recover).
-    // Keep NSLock here instead of Atomic/OSAllocatedUnfairLock: the critical
-    // section can perform file IO and Keychain-backed SQLCipher setup.
+    private let lifecycleQueue = DispatchQueue(label: "com.zyna.db.lifecycle", qos: .userInitiated)
     private let lock = NSLock()
     private var activeUserId: String?
-    private var currentDbQueue: DatabaseQueue?
+    private var activeDatabase: AccountDatabase?
+    private var didPrepare = false
+    private let openAccount: (String?) throws -> DatabaseQueue
+    private let prepareLocalFiles: () -> Void
 
-    var dbQueue: DatabaseQueue {
+    var dbQueue: AccountDatabase {
         lock.lock()
         defer { lock.unlock() }
-        if let currentDbQueue {
-            return currentDbQueue
+        guard let database = activeDatabase else {
+            preconditionFailure("Await local database startup before accessing app storage")
         }
-        return openActiveDatabaseLocked()
+        return database
     }
 
-    private init() {
-        LocalDataProtection.removeLegacyGlobalLocalData()
-        LocalDataProtection.removeTemporaryLocalData()
-
-        let userId = UserDefaults.standard.string(forKey: Self.userIdKey)
-        activeUserId = userId
-        currentDbQueue = nil
-        _ = openActiveDatabaseLocked()
+    /// No filesystem, Keychain, or SQLite work runs in this initializer.
+    /// Dependencies also allow lifecycle tests to use isolated databases.
+    init(
+        openAccount: @escaping (String?) throws -> DatabaseQueue = DatabaseService.openAccountDatabase,
+        prepareLocalFiles: @escaping () -> Void = {
+            LocalDataProtection.removeLegacyGlobalLocalData()
+            LocalDataProtection.removeTemporaryLocalData()
+        }
+    ) {
+        self.openAccount = openAccount
+        self.prepareLocalFiles = prepareLocalFiles
     }
 
-    func activate(userId: String?) {
-        lock.lock()
-        defer { lock.unlock() }
+    /// Prepare account caches on the same worker before publishing the DB.
+    /// This prevents another account's activation from overtaking that work.
+    func activate(userId: String?, preparingLocalData: @escaping () -> Void = {}) async throws {
+        try await performLifecycle {
+            try self.activateOnLifecycleQueue(userId: userId, preparingLocalData: preparingLocalData)
+        }
+    }
 
-        guard activeUserId != userId || currentDbQueue == nil else {
+    /// Close, remove files, and open the anonymous store as one lifecycle
+    /// operation. Queued activations cannot reopen files during removal.
+    func resetToNoSession(removingLocalData: @escaping () throws -> Void) async throws {
+        try await performLifecycle {
+            try self.closeOnLifecycleQueue()
+            #if DEBUG
+            PollCacheDiagnostics.log("database-cleanup-begin")
+            #endif
+            try removingLocalData()
+            #if DEBUG
+            PollCacheDiagnostics.log("database-cleanup-end")
+            #endif
+            try self.activateOnLifecycleQueue(userId: nil)
+        }
+    }
+
+    private func performLifecycle(_ work: @escaping () throws -> Void) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            lifecycleQueue.async {
+                do {
+                    try work()
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func activateOnLifecycleQueue(userId: String?, preparingLocalData: () -> Void = {}) throws {
+        dispatchPrecondition(condition: .onQueue(lifecycleQueue))
+        if !didPrepare {
+            prepareLocalFiles()
+            didPrepare = true
+        }
+        guard activeDatabase?.isActive != true || activeUserId != userId else {
+            preparingLocalData()
             return
         }
-
-        try? currentDbQueue?.close()
-        activeUserId = userId
-        currentDbQueue = nil
-        _ = openActiveDatabaseLocked()
-    }
-
-    func closeForLocalDataRemoval(userId: String?) {
+        try closeOnLifecycleQueue()
+        let database = try openAccount(userId)
+        preparingLocalData()
+        let handle = AccountDatabase(database)
         lock.lock()
-        defer { lock.unlock() }
-
-        if activeUserId == userId || userId == nil {
-            try? currentDbQueue?.close()
-            activeUserId = nil
-            currentDbQueue = nil
-        }
+        activeUserId = userId
+        activeDatabase = handle
+        lock.unlock()
+        #if DEBUG
+        DatabaseHandoffProbe.shared.didActivate(handle, userID: userId)
+        #endif
     }
 
-    private func openActiveDatabaseLocked() -> DatabaseQueue {
+    private func closeOnLifecycleQueue() throws {
+        dispatchPrecondition(condition: .onQueue(lifecycleQueue))
+        if let database = activeDatabase, !database.isClosed {
+            #if DEBUG
+            let context = "db=\(PollCacheDiagnostics.databaseKey(database.path))"
+            let began = ProcessInfo.processInfo.systemUptime
+            PollCacheDiagnostics.log("database-close-begin \(context)")
+            #endif
+            try database.close()
+            #if DEBUG
+            PollCacheDiagnostics.log("database-close-end \(context) totalMs=\(PollCacheDiagnostics.milliseconds(since: began))")
+            DatabaseHandoffProbe.shared.didClose(database)
+            #endif
+        }
+        // Keep the retired handle available until replacement. Its accesses
+        // fail safely, including during a failed open; getters never block
+        // main or hand old work a connection belonging to the next account.
+    }
+
+    private static func openAccountDatabase(userId: String?) throws -> DatabaseQueue {
         do {
-            let dbQueue = try openAndMigrateDatabase(userId: activeUserId)
-            currentDbQueue = dbQueue
-            return dbQueue
+            return try openAndMigrateDatabase(userId: userId)
         } catch {
-            guard Self.canRecoverByRecreatingDatabase(from: error) else {
-                fatalError("Unable to open encrypted app database: \(error)")
-            }
-
-            LocalDataProtection.removeAppDatabase(for: activeUserId)
-
-            do {
-                let dbQueue = try openAndMigrateDatabase(userId: activeUserId)
-                currentDbQueue = dbQueue
-                return dbQueue
-            } catch {
-                fatalError("Unable to recreate encrypted app database: \(error)")
-            }
+            guard canRecoverByRecreatingDatabase(from: error) else { throw error }
+            #if DEBUG
+            PollCacheDiagnostics.log("database-recreate account=\(LocalDataProtection.userScope(for: userId).prefix(12)) error=\(PollCacheDiagnostics.error(error))")
+            #endif
+            LocalDataProtection.removeAppDatabase(for: userId)
+            return try openAndMigrateDatabase(userId: userId)
         }
     }
 
-    private func openAndMigrateDatabase(userId: String?) throws -> DatabaseQueue {
-        let dbQueue = try Self.openDatabase(userId: userId)
+    private static func openAndMigrateDatabase(userId: String?) throws -> DatabaseQueue {
+        #if DEBUG
+        let began = ProcessInfo.processInfo.systemUptime
+        PollCacheDiagnostics.log("database-open-begin db=\(PollCacheDiagnostics.databaseKey(LocalDataProtection.databaseURL(for: userId).path))")
+        #endif
+        let dbQueue = try openDatabase(userId: userId)
+        #if DEBUG
+        PollCacheDiagnostics.log("database-open-end db=\(PollCacheDiagnostics.databaseKey(dbQueue.path)) totalMs=\(PollCacheDiagnostics.milliseconds(since: began))")
+        PollCacheDiagnostics.database(dbQueue, phase: "before-migrate")
+        let migrationBegan = ProcessInfo.processInfo.systemUptime
+        #endif
         do {
             try migrator.migrate(dbQueue)
         } catch {
+            #if DEBUG
+            PollCacheDiagnostics.log("database-migration-failed error=\(PollCacheDiagnostics.error(error))")
+            #endif
             try? dbQueue.close()
             throw error
         }
+        #if DEBUG
+        PollCacheDiagnostics.log("database-migrate-end db=\(PollCacheDiagnostics.databaseKey(dbQueue.path)) totalMs=\(PollCacheDiagnostics.milliseconds(since: migrationBegan))")
+        PollCacheDiagnostics.database(dbQueue, phase: "after-migrate")
+        #endif
         LocalDataProtection.protectExistingDatabaseFiles(for: userId)
+        #if DEBUG
+        PollCacheDiagnostics.log("database-ready db=\(PollCacheDiagnostics.databaseKey(dbQueue.path)) totalMs=\(PollCacheDiagnostics.milliseconds(since: began))")
+        #endif
         return dbQueue
     }
 
@@ -114,6 +182,11 @@ final class DatabaseService {
 
         var config = Configuration()
         config.foreignKeysEnabled = true
+        #if DEBUG
+        config.prepareDatabase { db in
+            PollCacheDiagnostics.traceDatabase(db, path: dbURL.path)
+        }
+        #endif
 
         #if SQLITE_HAS_CODEC
         config.prepareDatabase { db in
@@ -139,10 +212,12 @@ final class DatabaseService {
     }
     #endif
 
-    private var migrator: DatabaseMigrator {
+    static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
 
-        migrator.eraseDatabaseOnSchemaChange = true
+        // Apply versioned migrations only. Schema comparison creates and
+        // migrates a temporary encrypted database on every launch, and its
+        // automatic erase would also discard durable outgoing intents.
 
         migrator.registerMigration("v1_initial") { db in
             try db.create(table: "storedMessage") { t in
@@ -820,6 +895,259 @@ final class DatabaseService {
                     t.add(column: "lastOwnMessageStatus", .text)
                 }
             }
+        }
+
+        migrator.registerMigration("v25_matrixRTCCallLog") { db in
+            try db.create(table: "storedMatrixRTCCall", ifNotExists: true) { t in
+                t.primaryKey("notificationEventId", .text)
+                t.column("roomId", .text).notNull()
+                t.column("parentEventId", .text)
+                t.column("senderId", .text).notNull()
+                t.column("senderDisplayName", .text)
+                t.column("isOutgoing", .boolean).notNull()
+                t.column("timestamp", .double).notNull()
+                t.column("notificationType", .text).notNull()
+                t.column("callIntent", .text)
+                t.column("expiresAt", .double)
+                t.column("declinedByJSON", .text).notNull().defaults(to: "[]")
+                t.column("isDirect", .boolean).notNull().defaults(to: false)
+                t.column("hasOwnJoin", .boolean).notNull().defaults(to: false)
+                t.column("hasRemoteJoin", .boolean).notNull().defaults(to: false)
+                t.column("hasOwnLeave", .boolean).notNull().defaults(to: false)
+                t.column("hasRemoteLeave", .boolean).notNull().defaults(to: false)
+                t.column("lastMembershipEventTimestamp", .double)
+                t.column("lastOwnLeaveTimestamp", .double)
+                t.column("lastRemoteLeaveTimestamp", .double)
+                t.column("outcome", .text).notNull().defaults(to: "started")
+                t.column("updatedAt", .double).notNull()
+            }
+            try db.create(
+                index: "idx_storedMatrixRTCCall_timestamp",
+                on: "storedMatrixRTCCall",
+                columns: ["timestamp"]
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCall_room_timestamp",
+                on: "storedMatrixRTCCall",
+                columns: ["roomId", "timestamp"]
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCall_parent",
+                on: "storedMatrixRTCCall",
+                columns: ["parentEventId"],
+                condition: Column("parentEventId") != nil
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCall_outcome_expiry",
+                on: "storedMatrixRTCCall",
+                columns: ["outcome", "expiresAt"],
+                condition: Column("expiresAt") != nil
+            )
+
+            try db.create(table: "storedMatrixRTCCallMembership", ifNotExists: true) { t in
+                t.primaryKey("eventId", .text)
+                t.column("roomId", .text).notNull()
+                t.column("eventType", .text).notNull()
+                t.column("stateKey", .text)
+                t.column("senderId", .text).notNull()
+                t.column("timestamp", .double).notNull()
+                t.column("isLeave", .boolean).notNull()
+                t.column("userId", .text)
+                t.column("deviceId", .text)
+                t.column("memberId", .text)
+                t.column("callIntent", .text)
+                t.column("expiresAt", .double)
+            }
+            try db.create(
+                index: "idx_storedMatrixRTCCallMembership_room_timestamp",
+                on: "storedMatrixRTCCallMembership",
+                columns: ["roomId", "timestamp"]
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCallMembership_timestamp",
+                on: "storedMatrixRTCCallMembership",
+                columns: ["timestamp"]
+            )
+            try db.create(
+                index: "idx_storedMatrixRTCCallMembership_stateKey",
+                on: "storedMatrixRTCCallMembership",
+                columns: ["roomId", "stateKey", "timestamp"],
+                condition: Column("stateKey") != nil
+            )
+        }
+
+        migrator.registerMigration("v26_roomAttachmentIndex") { db in
+            // Media metadata the chat persists next to each message and
+            // shares with the attachment catalog through ChatMediaMetadata.
+            try db.alter(table: StoredMessage.databaseTableName) { t in
+                t.add(column: "contentBlurhash", .text)
+                t.add(column: "contentIsAnimated", .boolean)
+                t.add(column: "contentMediaIsEncrypted", .boolean)
+                t.add(column: "contentThumbnailIsEncrypted", .boolean)
+                t.add(column: "contentThumbnailWidth", .integer)
+                t.add(column: "contentThumbnailHeight", .integer)
+                t.add(column: "contentThumbnailSize", .integer)
+                t.add(column: "contentThumbnailMimetype", .text)
+            }
+            // Ruma serializes an encrypted source as {"file":...} and a
+            // plain one as {"url":...}. The JSON is compact, so INSTR is an
+            // exact test here and in the seed below.
+            try db.execute(
+                sql: """
+                    UPDATE storedMessage
+                    SET contentMediaIsEncrypted = INSTR(contentMediaJSON, '"file":') > 0
+                    WHERE contentMediaJSON IS NOT NULL
+                    """
+            )
+            try db.execute(
+                sql: """
+                    UPDATE storedMessage
+                    SET contentThumbnailIsEncrypted = INSTR(contentThumbnailMediaJSON, '"file":') > 0
+                    WHERE contentThumbnailMediaJSON IS NOT NULL
+                    """
+            )
+
+            try db.create(table: StoredRoomAttachment.databaseTableName) { t in
+                t.column("roomId", .text).notNull()
+                t.column("eventId", .text).notNull()
+                t.column("kind", .text).notNull()
+                t.column("timestampMs", .integer).notNull()
+                t.column("senderId", .text).notNull()
+                t.column("senderDisplayName", .text)
+                t.column("isOutgoing", .boolean).notNull()
+                t.column("filename", .text).notNull()
+                t.column("caption", .text)
+                t.column("mimetype", .text)
+                t.column("sizeBytes", .integer)
+                t.column("pixelWidth", .integer)
+                t.column("pixelHeight", .integer)
+                t.column("durationSeconds", .double)
+                t.column("blurhash", .text)
+                t.column("isAnimated", .boolean).notNull().defaults(to: false)
+                t.column("sourceJSON", .text).notNull()
+                t.column("isSourceEncrypted", .boolean).notNull().defaults(to: false)
+                t.column("thumbnailSourceJSON", .text)
+                t.column("thumbnailIsEncrypted", .boolean)
+                t.column("thumbnailWidth", .integer)
+                t.column("thumbnailHeight", .integer)
+                t.column("thumbnailSizeBytes", .integer)
+                t.column("thumbnailMimetype", .text)
+                t.primaryKey(["roomId", "eventId"])
+            }
+            try db.create(
+                index: "idx_roomAttachment_room_timestamp",
+                on: StoredRoomAttachment.databaseTableName,
+                columns: ["roomId", "timestampMs", "eventId"]
+            )
+            try db.create(
+                index: "idx_roomAttachment_room_kind_timestamp",
+                on: StoredRoomAttachment.databaseTableName,
+                columns: ["roomId", "kind", "timestampMs", "eventId"]
+            )
+
+            // Preserve the useful work already done by the main chat. This
+            // does not claim history completeness; it only seeds attachments
+            // that are already present in the local message window.
+            // Use the schema that exists at this exact migration. Decoding
+            // the live StoredMessage type here would make an old migration
+            // depend on columns introduced by later app versions.
+            try db.execute(
+                sql: """
+                    WITH candidates AS (
+                        SELECT *,
+                            CASE
+                                WHEN contentType = 'image' THEN 'image'
+                                WHEN contentType = 'video' THEN 'video'
+                                WHEN contentType = 'audio' THEN 'audio'
+                                WHEN contentType = 'voice' THEN 'voice'
+                                WHEN contentType = 'file' AND (
+                                    LOWER(COALESCE(contentMimetype, '')) LIKE 'video/%'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.mp4'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.mov'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.m4v'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.webm'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.mkv'
+                                ) THEN 'video'
+                                WHEN contentType = 'file' AND (
+                                    LOWER(COALESCE(contentMimetype, '')) LIKE 'audio/%'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.m4a'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.mp3'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.ogg'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.wav'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.flac'
+                                    OR LOWER(COALESCE(contentFilename, '')) GLOB '*.aac'
+                                ) THEN 'audio'
+                                ELSE 'file'
+                            END AS attachmentKind
+                        FROM storedMessage
+                        WHERE eventId IS NOT NULL AND eventId != ''
+                          AND contentMediaJSON IS NOT NULL AND contentMediaJSON != ''
+                          AND contentType IN ('image', 'video', 'file', 'audio', 'voice')
+                    )
+                    INSERT OR IGNORE INTO roomAttachment (
+                        roomId, eventId, kind, timestampMs, senderId,
+                        senderDisplayName, isOutgoing, filename, caption,
+                        mimetype, sizeBytes, pixelWidth, pixelHeight,
+                        durationSeconds, blurhash, isAnimated, sourceJSON,
+                        isSourceEncrypted, thumbnailSourceJSON,
+                        thumbnailIsEncrypted, thumbnailWidth, thumbnailHeight,
+                        thumbnailSizeBytes, thumbnailMimetype
+                    )
+                    SELECT
+                        roomId, eventId, attachmentKind,
+                        CAST(ROUND(timestamp * 1000.0) AS INTEGER), senderId,
+                        senderDisplayName, isOutgoing,
+                        COALESCE(NULLIF(contentFilename, ''), CASE attachmentKind
+                            WHEN 'image' THEN 'image.jpg'
+                            WHEN 'video' THEN 'video.mp4'
+                            WHEN 'audio' THEN 'audio'
+                            WHEN 'voice' THEN 'voice.m4a'
+                            ELSE 'file'
+                        END),
+                        contentCaption, contentMimetype, contentFileSize,
+                        CASE attachmentKind
+                            WHEN 'image' THEN contentImageWidth
+                            WHEN 'video' THEN contentVideoWidth
+                        END,
+                        CASE attachmentKind
+                            WHEN 'image' THEN contentImageHeight
+                            WHEN 'video' THEN contentVideoHeight
+                        END,
+                        CASE attachmentKind
+                            WHEN 'video' THEN contentVideoDuration
+                            WHEN 'audio' THEN contentVoiceDuration
+                            WHEN 'voice' THEN contentVoiceDuration
+                        END,
+                        NULL, 0, contentMediaJSON,
+                        INSTR(contentMediaJSON, '"file":') > 0,
+                        contentThumbnailMediaJSON,
+                        CASE WHEN contentThumbnailMediaJSON IS NULL THEN NULL
+                             ELSE INSTR(contentThumbnailMediaJSON, '"file":') > 0 END,
+                        NULL, NULL, NULL, NULL
+                    FROM candidates
+                    """
+            )
+        }
+
+        migrator.registerMigration("v27_formattedText") { db in
+            try db.alter(table: StoredMessage.databaseTableName) { t in
+                t.add(column: "contentFormat", .text)
+                t.add(column: "contentFormattedBody", .text)
+            }
+        }
+
+        migrator.registerMigration("v28_composerFormatting") { db in
+            try db.alter(table: StoredMessage.databaseTableName) { t in
+                t.add(column: "pendingEditFormattedBody", .text)
+            }
+        }
+
+        migrator.registerMigration("v29_polls", migrate: PollStore.migrate)
+        migrator.registerMigration("v30_messageDecryptionRepair") { db in
+            try MessageDecryptionRepairStore.migrate(db)
+        }
+        migrator.registerMigration("v31_decryptionPresentation") { db in
+            try MessageDecryptionRepairStore.migratePresentation(db)
         }
 
         return migrator

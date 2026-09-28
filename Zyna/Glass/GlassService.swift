@@ -77,7 +77,7 @@ final class GlassService {
     private struct Registration {
         weak var anchor: GlassAnchor?
         // Cached for render-without-capture (liquid wave animation)
-        var lastTexture: MTLTexture?
+        var lastCapture: GlassCaptureBuffer?
         var lastCaptureFrame: CGRect?
         var lastShapes: GlassRenderer.ShapeParams?
         var lastIsHDR: Bool = false
@@ -103,7 +103,8 @@ final class GlassService {
     }
 
     private struct CaptureResult {
-        let texture: MTLTexture
+        let buffer: GlassCaptureBuffer
+        var texture: MTLTexture { buffer.texture }
         let stats: BackdropStats?
     }
 
@@ -209,7 +210,29 @@ final class GlassService {
 
     private var tickCount = 0
 
-    private init() {}
+#if DEBUG || CHAT_LIST_PLAYGROUND
+    private static let lowCaptureInterpolationKey =
+        "com.zyna.debug.glass.lowCaptureInterpolation"
+
+    /// Read preferences once; capture ticks only read this in-memory value.
+    var usesLowCaptureInterpolation: Bool {
+        didSet {
+            guard usesLowCaptureInterpolation != oldValue else { return }
+            UserDefaults.standard.set(
+                usesLowCaptureInterpolation, forKey: Self.lowCaptureInterpolationKey
+            )
+            setNeedsCapture()
+        }
+    }
+#endif
+
+    private init() {
+#if DEBUG || CHAT_LIST_PLAYGROUND
+        usesLowCaptureInterpolation = UserDefaults.standard.object(
+            forKey: Self.lowCaptureInterpolationKey
+        ) as? Bool ?? true
+#endif
+    }
 
     // MARK: - Public API
 
@@ -235,9 +258,13 @@ final class GlassService {
 
     func deregister(id: UUID) {
         registrations.removeValue(forKey: id)
+        captureCaches = captureCaches.filter { $0.key.registrationID != id }
+        for host in rendererHosts.values { host.renderer.discardPendingFrame() }
 
         if registrations.isEmpty {
             tearDown()
+        } else {
+            setNeedsCapture()
         }
     }
 
@@ -456,8 +483,8 @@ final class GlassService {
     private func startRenderLoop() {
         guard displayLinkToken == nil else { return }
         idleTicks = 0
-        displayLinkToken = DisplayLinkDriver.shared.subscribe(rate: .fps(120)) { [weak self] _ in
-            self?.tick()
+        displayLinkToken = DisplayLinkDriver.shared.subscribe(rate: .fps(120)) { [weak self] frame in
+            self?.tick(displayFrame: frame)
         }
     }
 
@@ -512,12 +539,18 @@ final class GlassService {
     }
 
     private func ensureSharedRendererAttached(_ renderer: GlassRenderer, to container: UIView) {
-        let insertionView = registrations.values
-            .compactMap { $0.anchor?.superview }
-            .filter { $0.superview === container }
-            .min { lhs, rhs in
-                (container.subviews.firstIndex(of: lhs) ?? Int.max) < (container.subviews.firstIndex(of: rhs) ?? Int.max)
+        // Read the order once. Recheck each tick so new/reordered bars still
+        // place glass below controls, without mutating a stable hierarchy.
+        let subviews = container.subviews
+        var insertionIndex: Int?
+        for registration in registrations.values {
+            guard let bar = registration.anchor?.superview, bar.superview === container,
+                  let index = subviews.firstIndex(of: bar) else { continue }
+            if index < (insertionIndex ?? Int.max) {
+                insertionIndex = index
             }
+        }
+        let insertionView = insertionIndex.map { subviews[$0] }
 
         if renderer.superview !== container {
             renderer.removeFromSuperview()
@@ -528,13 +561,13 @@ final class GlassService {
             }
             renderer.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             renderer.accessibilityElementsHidden = true
-        } else if let insertionView {
+        } else if let insertionView, let insertionIndex,
+                  subviews.firstIndex(of: renderer).map({ $0 + 1 }) != insertionIndex {
             container.insertSubview(renderer, belowSubview: insertionView)
         }
 
-        renderer.frame = container.bounds
-        renderer.contentScaleFactor = container.window?.screen.scale ?? UIScreen.main.scale
-        renderer.layoutIfNeeded()
+        if renderer.frame != container.bounds { renderer.frame = container.bounds }
+        renderer.updateDrawableSize(scale: container.window?.screen.scale ?? UIScreen.main.scale)
     }
 
     private func renderDestinationFrame(
@@ -563,13 +596,19 @@ final class GlassService {
         }
     }
 
-    private func tick() {
+    private func tick(displayFrame: DisplayLinkDriver.Frame) {
         guard let sourceWindow else { return }
+#if DEBUG && GLASS_PROFILING
+        GlassCaptureProfiler.shared.beginTick(displayFrame)
+        defer { GlassCaptureProfiler.shared.endTick() }
+#endif
+        var capturePredictions: GlassCapturePredictions?
         let hadPendingCaptureRequest = needsCapture
         let hadPendingRenderRequest = needsRender
         var renderItemsByContainer: [ObjectIdentifier: (container: UIView, renderer: GlassRenderer, items: [GlassRenderer.RenderItem])] = [:]
         var deferredCaptureRequest = false
         var deferredRenderRequest = false
+        var incompleteRenderers = Set<ObjectIdentifier>()
 
         // Check capture drivers:
         // 1. Explicit trigger (scroll, layout)
@@ -648,6 +687,11 @@ final class GlassService {
             ensureSharedRendererAttached(host.renderer, to: container)
         }
         cleanupRendererHosts(liveContainers: uniqueRenderHostContainers)
+        if shouldRender {
+            // Discard every waiting frame before any shared capture memory
+            // is rewritten, including when an anchor changes renderer hosts.
+            for host in rendererHosts.values { host.renderer.discardPendingFrame() }
+        }
 
         for (id, reg) in registrations {
             guard let anchor = reg.anchor,
@@ -660,13 +704,14 @@ final class GlassService {
 
             let renderHost = rendererHost(for: renderHostContainer)
             if shouldRender, renderHost.renderer.isFrameInFlight {
-                if hadPendingCaptureRequest {
-                    deferredCaptureRequest = true
+#if DEBUG && GLASS_PROFILING
+                GlassCaptureProfiler.shared.rendererBusy(renderHost.renderer, needsCapture: shouldCapture)
+#endif
+                if !GlassRenderer.captureOverlapEnabled {
+                    if hadPendingCaptureRequest { deferredCaptureRequest = true }
+                    if hadPendingRenderRequest { deferredRenderRequest = true }
+                    continue
                 }
-                if hadPendingRenderRequest {
-                    deferredRenderRequest = true
-                }
-                continue
             }
 
             let glassFrame = snappedFrame(rawFrame, scale: scale)
@@ -772,10 +817,35 @@ final class GlassService {
                     shapes = s
                 }
 
-                guard let capture = captureRegion(captureFrame, from: sourceWindow, scale: scale,
+                // Resolve once for the bars that actually capture this frame.
+                // Render-only ticks need no presentation-tree walk.
+                if capturePredictions == nil {
+                    let targetTime = displayFrame.estimatedPresentationTimestamp(at: CACurrentMediaTime())
+                    capturePredictions = GlassCapturePredictions(GlassCaptureAnimation.predictions(at: targetTime))
+                }
+#if DEBUG && GLASS_PROFILING
+                GlassCaptureProfiler.shared.beginCapture(renderer: renderHost.renderer)
+#endif
+                let capturedRegion = captureRegion(captureFrame, from: sourceWindow, scale: scale,
                                                   sourceView: anchor.sourceView,
+                                                  registrationID: id,
                                                   clearPattern: anchor.clearPatternBGRA,
-                                                  shapes: shapes) else { continue }
+                                                  shapes: shapes,
+                                                  capturePredictions: capturePredictions ?? .none)
+#if DEBUG && GLASS_PROFILING
+                GlassCaptureProfiler.shared.endCapture(
+                    name: anchor.debugName,
+                    width: capturedRegion?.texture.width, height: capturedRegion?.texture.height
+                )
+#endif
+                guard let capture = capturedRegion else {
+                    // A moving anchor can briefly have readers in two hosts.
+                    // Preserve the complete drawable instead of clearing one
+                    // bar when both of its buffers are still in use.
+                    incompleteRenderers.insert(ObjectIdentifier(renderHost.renderer))
+                    deferredCaptureRequest = true
+                    continue
+                }
                 let texture = capture.texture
                 let adaptiveMaterial = updateAdaptiveMaterial(
                     for: id,
@@ -803,7 +873,7 @@ final class GlassService {
                 let voiceData = anchor.voiceProvider?(glassFrame, captureFrame, scale)
 
                 // Cache for render-only frames
-                registrations[id]?.lastTexture = texture
+                registrations[id]?.lastCapture = capture.buffer
                 registrations[id]?.lastCaptureFrame = captureFrame
                 registrations[id]?.lastShapes = shapes
                 registrations[id]?.lastIsHDR = texture.pixelFormat == .bgr10a2Unorm
@@ -828,7 +898,7 @@ final class GlassService {
                             name: anchor.debugName,
                             frame: destinationFrame,
                             captureFrameInWindow: captureFrame,
-                            sourceTexture: texture,
+                            source: capture.buffer,
                             shapes: shapes,
                             isHDR: texture.pixelFormat == .bgr10a2Unorm,
                             liquidZone: liquidZone,
@@ -850,7 +920,7 @@ final class GlassService {
                 }
 
             } else if shouldRender,
-                      let texture = reg.lastTexture,
+                      let buffer = reg.lastCapture,
                       let shapes = reg.lastShapes,
                       let captureFrame = reg.lastCaptureFrame {
                 // ── Render-only: reuse cached texture, update wave animation ──
@@ -891,7 +961,7 @@ final class GlassService {
                             name: anchor.debugName,
                             frame: destinationFrame,
                             captureFrameInWindow: captureFrame,
-                            sourceTexture: texture,
+                            source: buffer,
                             shapes: renderShapes,
                             isHDR: reg.lastIsHDR,
                             liquidZone: lz,
@@ -915,13 +985,21 @@ final class GlassService {
         }
 
         for group in renderItemsByContainer.values {
-            _ = group.renderer.render(items: group.items)
+            guard !incompleteRenderers.contains(ObjectIdentifier(group.renderer)) else { continue }
+#if DEBUG && GLASS_PROFILING
+            let renderStart = GlassCaptureProfiler.shared.renderTimer()
+            let result = group.renderer.render(items: group.items)
+            GlassCaptureProfiler.shared.endRender(since: renderStart, result: result)
+#else
+            let result = group.renderer.render(items: group.items)
+#endif
+            if result == nil { deferredRenderRequest = true }
         }
 
-        if hadPendingCaptureRequest {
+        if hadPendingCaptureRequest || deferredCaptureRequest {
             needsCapture = deferredCaptureRequest
         }
-        if hadPendingRenderRequest {
+        if hadPendingRenderRequest || deferredRenderRequest {
             needsRender = deferredRenderRequest
         }
 
@@ -1102,149 +1180,56 @@ final class GlassService {
         ceil(value * scale / bucket) * bucket
     }
 
-    /// Cached capture: MTLBuffer(.shared) backs both CGContext and MTLTexture (zero-copy CPU→GPU).
-    /// Double-buffered: CPU writes slot A while GPU reads slot B, then flip.
-    /// Falls back to texture.replace() on devices that don't support buffer-backed textures (Intel sim).
-    private struct CaptureSlot {
-        let ctx: CGContext
-        let buffer: MTLBuffer? // nil in fallback mode
-        let texture: MTLTexture
-        let bytesPerRow: Int
-        let zeroCopy: Bool // true = buffer-backed, false = texture.replace()
-    }
-    private struct CaptureCache {
-        let slots: [CaptureSlot]
+    private struct CaptureCacheKey: Hashable {
+        let registrationID: UUID
         let width: Int
         let height: Int
-        let byteCost: Int
-        var lastUsedTick: Int
-        var current: Int = 0
-
-        mutating func next() -> CaptureSlot {
-            let slot = slots[current]
-            current = 1 - current
-            return slot
-        }
     }
-    private var captureCaches: [String: CaptureCache] = [:]
+    private var captureCaches: [CaptureCacheKey: GlassCaptureBufferPool] = [:]
     // Keyboard/liquid animation can produce many one-frame capture sizes.
-    // Keep stable nav/input caches hot while evicting transient buffers.
+    // This is a pool budget; cached captures and GPU leases retain any
+    // evicted buffers they still need until replacement or completion.
     private let maxCaptureCacheBytes = 96 * 1024 * 1024
-
-    /// Align bytesPerRow to 256 for MTLBuffer.makeTexture() requirement.
-    private static func alignedBytesPerRow(_ width: Int) -> Int {
-        let raw = width * 4
-        return (raw + 255) & ~255
-    }
-
-    /// Buffer-backed textures work on device and Apple Silicon simulator.
-    /// Intel simulator GPU doesn't support buffer-backed textures.
-    private let supportsBufferTexture: Bool = {
-        #if targetEnvironment(simulator) && arch(x86_64)
-        return false
-        #else
-        return true
-        #endif
-    }()
 
     /// Render source view's layer tree into a texture for the given region.
     /// Zero-copy CPU→GPU on device (CGContext → MTLBuffer → texture view), fallback on Intel simulator.
     private func captureRegion(_ frame: CGRect, from window: UIWindow, scale: CGFloat,
                                 sourceView: UIView? = nil,
+                                registrationID: UUID,
                                 clearPattern: UInt32,
-                                shapes: GlassRenderer.ShapeParams) -> CaptureResult? {
+                                shapes: GlassRenderer.ShapeParams,
+                                capturePredictions: GlassCapturePredictions) -> CaptureResult? {
         let renderScale = captureScale
         let w = Int((frame.width * renderScale).rounded(.toNearestOrAwayFromZero))
         let h = Int((frame.height * renderScale).rounded(.toNearestOrAwayFromZero))
         guard w > 0, h > 0 else { return nil }
 
-        // Double-buffered: pick next slot so CPU writes while GPU reads previous
-        let key = "\(w)x\(h)"
+        let key = CaptureCacheKey(registrationID: registrationID, width: w, height: h)
         if captureCaches[key] == nil {
-            let device = MetalContext.shared.device
-            let zeroCopy = supportsBufferTexture
-            let alignedBPR = zeroCopy ? Self.alignedBytesPerRow(w) : w * 4
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-
-            var slots: [CaptureSlot] = []
-            for _ in 0..<2 {
-                let ctx: CGContext
-                let buffer: MTLBuffer?
-                let texture: MTLTexture
-
-                if zeroCopy {
-                    let bufferSize = alignedBPR * h
-                    guard let buf = device.makeBuffer(length: bufferSize, options: .storageModeShared) else { return nil }
-
-                    guard let c = CGContext(
-                        data: buf.contents(),
-                        width: w, height: h,
-                        bitsPerComponent: 8, bytesPerRow: alignedBPR,
-                        space: colorSpace,
-                        bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                            | CGBitmapInfo.byteOrder32Little.rawValue
-                    ) else { return nil }
-
-                    let desc = MTLTextureDescriptor.texture2DDescriptor(
-                        pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false
-                    )
-                    desc.usage = .shaderRead
-                    desc.storageMode = .shared
-                    guard let tex = buf.makeTexture(
-                        descriptor: desc, offset: 0, bytesPerRow: alignedBPR
-                    ) else { return nil }
-
-                    ctx = c
-                    buffer = buf
-                    texture = tex
-                } else {
-                    // Fallback: separate CGContext + texture, connected via replace()
-                    guard let c = CGContext(
-                        data: nil, width: w, height: h,
-                        bitsPerComponent: 8, bytesPerRow: alignedBPR,
-                        space: colorSpace,
-                        bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                            | CGBitmapInfo.byteOrder32Little.rawValue
-                    ) else { return nil }
-
-                    let desc = MTLTextureDescriptor.texture2DDescriptor(
-                        pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false
-                    )
-                    desc.usage = .shaderRead
-                    desc.storageMode = .shared
-                    guard let tex = device.makeTexture(descriptor: desc) else { return nil }
-
-                    ctx = c
-                    buffer = nil
-                    texture = tex
-                }
-
-                slots.append(CaptureSlot(ctx: ctx, buffer: buffer, texture: texture,
-                                         bytesPerRow: alignedBPR, zeroCopy: zeroCopy))
-            }
-
-            let byteCost = slots.reduce(0) { $0 + $1.bytesPerRow * h }
-            captureCaches[key] = CaptureCache(
-                slots: slots,
-                width: w,
-                height: h,
-                byteCost: byteCost,
-                lastUsedTick: tickCount
-            )
+            guard let pool = GlassCaptureBufferPool(
+                width: w, height: h, device: MetalContext.shared.device,
+                tick: tickCount
+            ) else { return nil }
+            captureCaches[key] = pool
             pruneCaptureCachesIfNeeded()
         }
-
-        let slot: CaptureSlot = {
-            var cache = captureCaches[key]!
-            cache.lastUsedTick = tickCount
-            let s = cache.next()
-            captureCaches[key] = cache
-            return s
-        }()
+        guard let pool = captureCaches[key], let slot = pool.writableBuffer() else { return nil }
+        pool.lastUsedTick = tickCount
         let ctx = slot.ctx
 
         // Reset transform (CGContext accumulates transforms)
         ctx.saveGState()
+
+#if DEBUG || CHAT_LIST_PLAYGROUND
+        // Keep the original interpolation available for device comparisons.
+        // Restoring graphics state also restores the pooled context's
+        // original quality when switching back to the Default baseline.
+        if usesLowCaptureInterpolation {
+            ctx.interpolationQuality = .low
+        }
+#else
+        ctx.interpolationQuality = .low
+#endif
 
         // Pre-fill backing memory with the anchor's backdrop color.
         // The sublayer-only render below skips sourceView.backgroundColor,
@@ -1276,7 +1261,7 @@ final class GlassService {
             frameInTarget = frame
         }
 
-        // Inverted ASTableNode uses a flipped Y axis. Match the previous working
+        // Inverted Texture lists use a flipped Y axis. Match the previous working
         // table-capture behaviour at the root, then preserve nested layer
         // transforms explicitly while walking portal-backed subtrees below.
         let isFlipped = sourceView.map { $0.transform.d < 0 } ?? false
@@ -1291,6 +1276,9 @@ final class GlassService {
             ctx.scaleBy(x: renderScale, y: -renderScale)
         }
 
+#if DEBUG && GLASS_PROFILING
+        GlassCaptureProfiler.shared.beginCaptureTree()
+#endif
         // Render only sublayers that intersect the capture frame.
         // Skips off-screen cells — critical for Texture/ASDK where layer.contents
         // is pre-rendered and layer.render still composites all sublayers.
@@ -1298,23 +1286,26 @@ final class GlassService {
             let visibleRect = frameInTarget
             for sublayer in sublayers {
                 guard !sublayer.isHidden, sublayer.opacity > 0 else { continue }
-                let sublayerFrame = sublayer.frame
+                let sublayerFrame: CGRect
+                if let prediction = capturePredictions.prediction(for: sublayer) {
+                    sublayerFrame = sublayer.convert(prediction.bounds.applying(prediction.transform), to: targetLayer)
+                } else {
+                    sublayerFrame = sublayer.frame
+                }
                 guard sublayerFrame.intersects(visibleRect) else { continue }
                 let intersection = sublayerFrame.intersection(visibleRect)
                 guard !intersection.isEmpty else { continue }
 
                 // Clip each top-level render to the actual visible band inside the
                 // capture strip so tall cells do not redraw their full height.
-                let localClipRect = intersection.offsetBy(
-                    dx: -sublayerFrame.minX,
-                    dy: -sublayerFrame.minY
-                )
+                let localClipRect = sublayer.convert(intersection, from: targetLayer)
 
-                withLayerGeometry(sublayer, in: ctx) {
+                BubblePortalCaptureRenderer.withLayerGeometry(sublayer, in: ctx) {
                     renderLayerForCapture(
                         sublayer,
                         in: ctx,
-                        clipRectInLayer: localClipRect
+                        clipRectInLayer: localClipRect,
+                        predictions: capturePredictions
                     )
                 }
             }
@@ -1322,28 +1313,22 @@ final class GlassService {
             targetLayer.render(in: ctx)
         }
         ctx.restoreGState()
+#if DEBUG && GLASS_PROFILING
+        GlassCaptureProfiler.shared.endCaptureTree()
+#endif
 
-        // Zero-copy CPU→GPU: GPU reads directly from buffer memory
-        // Fallback: copy CGContext data into texture
-        if !slot.zeroCopy, let data = ctx.data {
-            slot.texture.replace(
-                region: MTLRegionMake2D(0, 0, w, h),
-                mipmapLevel: 0,
-                withBytes: data,
-                bytesPerRow: slot.bytesPerRow
-            )
-        }
+        slot.didCapture()
 
         let stats = sampleBackdropStats(
             from: slot,
             shapes: shapes,
             captureSize: CGSize(width: CGFloat(w), height: CGFloat(h))
         )
-        return CaptureResult(texture: slot.texture, stats: stats)
+        return CaptureResult(buffer: slot, stats: stats)
     }
 
     private func sampleBackdropStats(
-        from slot: CaptureSlot,
+        from slot: GlassCaptureBuffer,
         shapes: GlassRenderer.ShapeParams,
         captureSize: CGSize
     ) -> BackdropStats? {
@@ -1482,7 +1467,6 @@ final class GlassService {
         let keysByAge = captureCaches.keys.sorted {
             let lhs = captureCaches[$0]?.lastUsedTick ?? 0
             let rhs = captureCaches[$1]?.lastUsedTick ?? 0
-            if lhs == rhs { return $0 < $1 }
             return lhs < rhs
         }
 
@@ -1497,34 +1481,15 @@ final class GlassService {
     private func renderLayerForCapture(
         _ layer: CALayer,
         in ctx: CGContext,
-        clipRectInLayer: CGRect
+        clipRectInLayer: CGRect,
+        predictions: GlassCapturePredictions
     ) {
         BubblePortalCaptureRenderer.renderLayerForCapture(
             layer,
             in: ctx,
-            clipRectInLayer: clipRectInLayer
+            clipRectInLayer: clipRectInLayer,
+            predictions: predictions
         )
-    }
-
-    private func withLayerGeometry(
-        _ layer: CALayer,
-        in ctx: CGContext,
-        body: () -> Void
-    ) {
-        ctx.saveGState()
-        ctx.translateBy(x: layer.position.x, y: layer.position.y)
-
-        let transform = layer.transform
-        if CATransform3DIsAffine(transform) {
-            ctx.concatenate(CATransform3DGetAffineTransform(transform))
-        }
-
-        ctx.translateBy(
-            x: -layer.bounds.width * layer.anchorPoint.x,
-            y: -layer.bounds.height * layer.anchorPoint.y
-        )
-        body()
-        ctx.restoreGState()
     }
 
 }

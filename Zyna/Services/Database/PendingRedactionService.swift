@@ -45,7 +45,7 @@ struct PendingRedactionIntent {
     let itemIdentifier: ChatItemIdentifier
 }
 
-struct PendingRedactionRecord: Codable, FetchableRecord, PersistableRecord {
+struct PendingRedactionRecord: Equatable, Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "pendingRedaction"
 
     var messageId: String
@@ -138,7 +138,7 @@ final class PendingRedactionService {
         case directRaw(eventId: String, transactionId: String)
     }
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private var dbQueue: AccountDatabase { DatabaseService.shared.dbQueue }
     private let activeAttemptsQueue = DispatchQueue(
         label: "com.zyna.pendingRedaction.activeAttempts"
     )
@@ -215,6 +215,15 @@ final class PendingRedactionService {
         }) ?? []
     }
 
+    /// The app-lifetime outbox must not block main while scanning the cache.
+    func outboxCandidates() async -> [PendingRedactionRecord] {
+        (try? await dbQueue.read { db in
+            try PendingRedactionRecord.order(Column("createdAt").asc)
+                .fetchAll(db)
+                .filter { ($0.redactionEventId ?? "").isEmpty }
+        }) ?? []
+    }
+
     func register(_ intents: [PendingRedactionIntent]) {
         guard !intents.isEmpty else { return }
 
@@ -244,37 +253,14 @@ final class PendingRedactionService {
     }
 
     func reconcileResolvedPendingRedactions(roomId: String) -> ResolvedPendingRedactions {
-        let records: [PendingRedactionRecord] = (try? dbQueue.read { db in
-            try PendingRedactionRecord
-                .filter(Column("roomId") == roomId)
-                .fetchAll(db)
-        }) ?? []
-        guard !records.isEmpty else {
-            return ResolvedPendingRedactions(messageIds: [], identityKeys: [])
-        }
-
-        let resolved: [(String, Set<String>)] = (try? dbQueue.read { db in
-            var ids: [String] = []
-            var keys: [Set<String>] = []
-            for record in records {
-                if try Self.isResolvedRedaction(record, in: db) {
-                    ids.append(record.messageId)
-                    keys.append(try Self.identityKeys(for: record, in: db))
-                }
-            }
-            return zip(ids, keys).map { ($0.0, $0.1) }
-        }) ?? []
-
-        guard !resolved.isEmpty else {
-            return ResolvedPendingRedactions(messageIds: [], identityKeys: [])
-        }
-
-        let resolvedIds = resolved.map(\.0)
-        let resolvedKeys = resolved.flatMap(\.1)
+        let resolved = (try? dbQueue.read { db in
+            try Self.resolvedPendingRedactions(roomId: roomId, in: db)
+        }) ?? ResolvedPendingRedactions(messageIds: [], identityKeys: [])
+        guard !resolved.messageIds.isEmpty else { return resolved }
 
         do {
             try dbQueue.write { db in
-                for messageId in resolvedIds {
+                for messageId in resolved.messageIds {
                     _ = try PendingRedactionRecord.deleteOne(db, key: messageId)
                 }
             }
@@ -282,10 +268,26 @@ final class PendingRedactionService {
             logPendingRedaction("reconcile failed: \(error)")
         }
 
-        return ResolvedPendingRedactions(
-            messageIds: Set(resolvedIds),
-            identityKeys: Set(resolvedKeys)
-        )
+        return resolved
+    }
+
+    /// A read-only worker probe. The UI commit still owns reconciliation;
+    /// discarding a stale snapshot must not consume its confirmations.
+    func hasResolvedPendingRedactions(roomId: String) -> Bool {
+        (try? dbQueue.read { db in
+            try !Self.resolvedPendingRedactions(roomId: roomId, in: db).messageIds.isEmpty
+        }) ?? false
+    }
+
+    static func resolvedPendingRedactions(roomId: String, in db: Database) throws -> ResolvedPendingRedactions {
+        let records = try PendingRedactionRecord.filter(Column("roomId") == roomId).fetchAll(db)
+        var ids = Set<String>()
+        var keys = Set<String>()
+        for record in records where try isResolvedRedaction(record, in: db) {
+            ids.insert(record.messageId)
+            keys.formUnion(try identityKeys(for: record, in: db))
+        }
+        return ResolvedPendingRedactions(messageIds: ids, identityKeys: keys)
     }
 
     func attempt(_ intent: PendingRedactionIntent) async throws {

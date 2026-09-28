@@ -16,9 +16,9 @@ final class ContactsViewModel {
     var onContactSelected: ((ContactModel) -> Void)?
 
     private var searchTask: Task<Void, Never>?
-    private let dbQueue: DatabaseQueue
+    private let dbQueue: AccountDatabase
 
-    init(dbQueue: DatabaseQueue = DatabaseService.shared.dbQueue) {
+    init(dbQueue: AccountDatabase = DatabaseService.shared.dbQueue) {
         self.dbQueue = dbQueue
         loadDMContacts()
     }

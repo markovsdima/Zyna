@@ -54,11 +54,10 @@ struct AvatarViewModel: Equatable {
         return Self.mxcToHTTPS(mxc, size: size)
     }
 
-    /// Pre-rendered circle with baked-in initials. Cached by userId + diameter
-    /// so identical avatars share one UIImage. No cornerRadius needed, no
-    /// offscreen rendering on every frame.
+    /// Pre-rendered initials circle. The cache key includes `initials`
+    /// because a display name may arrive after the first render.
     func circleImage(diameter: CGFloat, fontSize: CGFloat) -> UIImage {
-        let key = "\(userId):\(Int(diameter)):\(colorOverrideHex ?? "")" as NSString
+        let key = "\(userId):\(Int(diameter)):\(Int(fontSize)):\(initials):\(colorOverrideHex ?? "")" as NSString
         if let cached = Self.imageCache.object(forKey: key) {
             return cached
         }

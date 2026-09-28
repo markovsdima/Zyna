@@ -47,7 +47,7 @@ final class PendingDirectVideoService {
 
     static let shared = PendingDirectVideoService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private var dbQueue: AccountDatabase { DatabaseService.shared.dbQueue }
 
     private init() {}
 
@@ -141,12 +141,12 @@ final class PendingDirectVideoService {
         return didChange
     }
 
-    func outboxCandidates(envelopeIds: Set<String>? = nil) -> [PendingDirectVideoCandidate] {
+    func outboxCandidates(envelopeIds: Set<String>? = nil) async -> [PendingDirectVideoCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Column("kind") == OutgoingEnvelopeKind.video.rawValue)
                 .order(Column("createdAt").asc)
@@ -199,12 +199,12 @@ final class PendingDirectVideoService {
 
     func missingAssetCandidates(
         envelopeIds: Set<String>? = nil
-    ) -> [PendingDirectVideoMissingAssetCandidate] {
+    ) async -> [PendingDirectVideoMissingAssetCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Column("kind") == OutgoingEnvelopeKind.video.rawValue)
                 .order(Column("createdAt").asc)

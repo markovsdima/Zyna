@@ -1381,6 +1381,9 @@ final class ZynaRoomListService: NSObject {
                         _ = try StoredMessage
                             .filter(Column("roomId") == roomId)
                             .deleteAll(db)
+                        _ = try StoredRoomAttachment
+                            .filter(Column("roomId") == roomId)
+                            .deleteAll(db)
                     }
                 }
                 logRooms("Removed room \(roomId) from local cache")
@@ -1464,7 +1467,7 @@ final class ZynaRoomListService: NSObject {
         case .sticker:
             text = "Sticker"
         case .poll(let question, _, _, _, _, _, _):
-            text = "Poll: \(question)"
+            text = String(localized: "Poll: \(question)")
         case .redacted:
             text = "..последнее сообщение удалено.."
         case .unableToDecrypt:
