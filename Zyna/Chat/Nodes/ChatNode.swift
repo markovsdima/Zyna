@@ -20,6 +20,7 @@ final class ChatNode: ASDisplayNode {
     weak var unencryptedNoticeView: UIView?
     weak var activeCallBannerView: UIView?
     weak var pinnedMessagesBannerView: UIView?
+    weak var historyRecoveryNotice: UIView?
 
     /// Set by ChatViewController. The scroll-to-live floating button lives
     /// at this node's view level (not inside the input bar) so its tap
@@ -123,6 +124,9 @@ final class ChatNode: ASDisplayNode {
                 } else {
                     elements.append(contentsOf: inputElements)
                 }
+            }
+            if let historyRecoveryNotice, !historyRecoveryNotice.isHidden {
+                elements.append(historyRecoveryNotice)
             }
             if let readOnlyComposerView,
                readOnlyComposerView.superview === view,

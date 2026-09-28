@@ -73,7 +73,7 @@ final class PendingReactionService {
 
     static let shared = PendingReactionService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private var dbQueue: AccountDatabase { DatabaseService.shared.dbQueue }
 
     private init() {}
 
@@ -182,8 +182,8 @@ final class PendingReactionService {
         }
     }
 
-    func outboxCandidates() -> [PendingReactionRecord] {
-        (try? dbQueue.read { db in
+    func outboxCandidates() async -> [PendingReactionRecord] {
+        (try? await dbQueue.read { db in
             try PendingReactionRecord.fetchAll(
                 db,
                 sql: """
@@ -212,29 +212,31 @@ final class PendingReactionService {
     }
 
     func pendingRemovalKeysByEventId(roomId: String) -> [String: Set<String>] {
-        (try? dbQueue.read { db in
-            let records = try PendingReactionRecord
-                .filter(Column("roomId") == roomId)
-                .order(Column("updatedAt").asc)
-                .fetchAll(db)
-            var latestByTargetAndKey: [String: PendingReactionRecord] = [:]
-            for record in records {
-                latestByTargetAndKey[
-                    "\(record.targetEventId)\u{1F}\(record.reactionKey)"
-                ] = record
-            }
+        (try? dbQueue.read { try Self.pendingRemovalKeysByEventId(roomId: roomId, in: $0) }) ?? [:]
+    }
 
-            var result: [String: Set<String>] = [:]
-            for record in latestByTargetAndKey.values {
-                switch record.decodedState {
-                case .removeQueued, .removed:
-                    result[record.targetEventId, default: []].insert(record.reactionKey)
-                case .addQueued, .addAccepted, .failed:
-                    break
-                }
+    static func pendingRemovalKeysByEventId(roomId: String, in db: Database) throws -> [String: Set<String>] {
+        let records = try PendingReactionRecord
+            .filter(Column("roomId") == roomId)
+            .order(Column("updatedAt").asc)
+            .fetchAll(db)
+        var latestByTargetAndKey: [String: PendingReactionRecord] = [:]
+        for record in records {
+            latestByTargetAndKey[
+                "\(record.targetEventId)\u{1F}\(record.reactionKey)"
+            ] = record
+        }
+
+        var result: [String: Set<String>] = [:]
+        for record in latestByTargetAndKey.values {
+            switch record.decodedState {
+            case .removeQueued, .removed:
+                result[record.targetEventId, default: []].insert(record.reactionKey)
+            case .addQueued, .addAccepted, .failed:
+                break
             }
-            return result
-        }) ?? [:]
+        }
+        return result
     }
 
     func markAttemptStarted(id: String) {

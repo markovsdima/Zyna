@@ -4,9 +4,11 @@
 //
 
 import AsyncDisplayKit
+import Combine
 import Foundation
 import GRDB
 import MatrixRustSDK
+import os
 import Testing
 @testable import Zyna
 
@@ -97,13 +99,13 @@ struct PollTests {
 struct PollRedactionDisplayTests {
     @Test("A live poll redaction starts deletion and removes the row on animation completion",
           arguments: [true, false])
-    func deletionLifecycle(localDeletion: Bool) throws {
+    func deletionLifecycle(localDeletion: Bool) async throws {
         let roomId = "!poll-redaction-\(UUID().uuidString):example.org"
         let original = StoredMessage(from: message(.empty(definition())), roomId: roomId)
-        let database = try DatabaseQueue()
+        let database = AccountDatabase(try DatabaseQueue())
         // Match the message record without duplicating unrelated app migrations.
         let columns = Mirror(reflecting: original).children.compactMap(\.label)
-        try database.write { db in
+        try await database.write { db in
             let definitions = columns.map { column in
                 switch column {
                 case "id": return "\"id\" TEXT PRIMARY KEY"
@@ -118,6 +120,7 @@ struct PollRedactionDisplayTests {
         let model = ChatViewModel(testingRoomId: roomId, dbQueue: database, window: window)
         defer { model.cleanup() }
         window.loadInitial()
+        try await model.waitForPresentation()
         #expect(model.messages.map(\.id) == [original.id])
         if localDeletion {
             // The context menu retains the bubble until the splash finishes.
@@ -134,7 +137,7 @@ struct PollRedactionDisplayTests {
         let originalRow = try #require(model.rows.firstIndex { $0.message?.id == original.id })
 
         // Materialize the server echo, then use the production observation path.
-        try database.write { db in
+        try await database.write { db in
             var redacted = original
             redacted.contentType = "redacted"
             redacted.contentBody = nil
@@ -142,6 +145,7 @@ struct PollRedactionDisplayTests {
             try redacted.update(db)
         }
         window.refresh(origin: .timelineFlush(TimelineFlushSummary(setCount: 1, redactedUpsertCount: 1)))
+        try await model.waitForPresentation()
         #expect(batches.count == 1)
         let batch = try #require(batches.first)
         #expect(batch.messageIds == [original.id])
@@ -157,18 +161,25 @@ struct PollRedactionDisplayTests {
 
         // ChatView calls this when the splash completes (or immediately offscreen).
         model.hideMessages(batch.messageIds)
+        try await model.waitForPresentation()
         #expect(model.messages.isEmpty)
         #expect(model.rows.isEmpty)
         #expect(rowDeletions.contains(IndexPath(row: originalRow, section: 0)))
         window.refresh()
+        try await model.waitForPresentation()
         #expect(model.messages.isEmpty)
         #expect(batches.count == 1)
     }
 }
 
+
 @Suite("Durable poll operations")
 struct PollStoreTests {
-    private func database(beforePolls: Bool = false) throws -> DatabaseQueue {
+    private func database() throws -> AccountDatabase {
+        AccountDatabase(try rawDatabase())
+    }
+
+    private func rawDatabase(beforePolls: Bool = false) throws -> DatabaseQueue {
         let queue = try DatabaseQueue()
         try queue.write { db in
             try db.execute(sql: """
@@ -192,7 +203,7 @@ struct PollStoreTests {
         return queue
     }
 
-    private func ingest(_ snapshot: PollSnapshot, in queue: DatabaseQueue, id: String = "$poll") throws {
+    private func ingest(_ snapshot: PollSnapshot, in queue: AccountDatabase, id: String = "$poll") throws {
         try queue.write { db in
             var record = StoredMessage(from: message(snapshot, id: id), roomId: pollRoom)
             try PollStore.ingest(&record, in: db)
@@ -205,18 +216,24 @@ struct PollStoreTests {
     func creationRetry() async throws {
         let db = try database()
         let store = PollStore(database: { db })
+        let updates = OSAllocatedUnfairLock(initialState: [PollStore.RoomUpdate]())
+        let subscription = store.roomDidUpdate.sink { update in updates.withLock { $0.append(update) } }
+        defer { subscription.cancel() }
         let id = try await store.create(roomId: pollRoom, definition: definition(), sessionId: "session")
         let initial = try #require(try await store.candidates().first)
         #expect(initial.id == id && initial.transactionId == id && initial.envelopeId == id)
         let sending = try #require(try await store.begin(initial))
         try await store.fail(sending, retryAfter: nil)
         let reopened = PollStore(database: { db })
+        let reopenedSubscription = reopened.roomDidUpdate.sink { update in updates.withLock { $0.append(update) } }
+        defer { reopenedSubscription.cancel() }
         try await reopened.retry(id: id, sessionId: "session")
         let retry = try #require(try await reopened.candidates().first)
         #expect(retry.transactionId == initial.transactionId)
         #expect(retry.definitionJSON == initial.definitionJSON)
         #expect(retry.attemptCount == 1)
         try await reopened.accept(retry, eventId: "$created")
+        #expect(updates.withLock { $0 } == Array(repeating: .init(roomId: pollRoom, origin: .localMutation), count: 4))
         try await db.read { (db: Database) throws -> Void in
             #expect(try OutgoingEnvelopeRecord.fetchCount(db) == 1)
             #expect(try OutgoingEnvelopeItemRecord.fetchOne(db)?.eventId == "$created")
@@ -842,7 +859,8 @@ struct PollStoreTests {
 
     @Test("The poll migration preserves existing messages and outgoing media and runs only once")
     func pollMigration() async throws {
-        let db = try database(beforePolls: true)
+        let raw = try rawDatabase(beforePolls: true)
+        let db = AccountDatabase(raw)
         try await db.write { db in
             try db.execute(sql: """
                 INSERT INTO storedMessage (id, roomId, eventId, contentType, contentBody)
@@ -855,10 +873,10 @@ struct PollStoreTests {
         }
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v29_polls", migrate: PollStore.migrate)
-        try migrator.migrate(db)
+        try migrator.migrate(raw)
         let store = PollStore(database: { db })
         let id = try await store.create(roomId: pollRoom, definition: definition(), sessionId: "session")
-        try migrator.migrate(db)
+        try migrator.migrate(raw)
         try await db.read { db in
             #expect(try String.fetchOne(db, sql: "SELECT contentBody FROM storedMessage WHERE id = 'existing'") == "Keep this message")
             #expect(try String.fetchOne(db, sql: "SELECT contentPollJSON FROM storedMessage WHERE id = 'existing'") == nil)

@@ -8,7 +8,35 @@ import MatrixRustSDK
 
 // MARK: - Message Content
 
+/// Local presentation state, not message text. Trust failures must remain
+/// distinguishable from a temporary absence of decryption keys.
+enum ChatDecryptionFailure: String, Equatable, Sendable {
+    case unavailable
+    case trustRequirement
+
+    init(_ message: EncryptedMessage) {
+        guard case .megolmV1AesSha2(_, let cause) = message else {
+            self = .unavailable
+            return
+        }
+        switch cause {
+        case .verificationViolation, .unsignedDevice, .unknownDevice,
+             .withheldForUnverifiedOrInsecureDevice, .historicalMessageAndDeviceIsUnverified:
+            self = .trustRequirement
+        case .unknown, .sentBeforeWeJoined, .historicalMessageAndBackupIsDisabled, .withheldBySender:
+            self = .unavailable
+        }
+    }
+
+    /// Old releases persisted this localized label as ordinary text.
+    /// A match identifies a repair candidate, never proof for deletion.
+    static func isLegacyPlaceholderText(_ body: String?) -> Bool {
+        body == "Unable to decrypt message" || body == "Не удалось расшифровать сообщение"
+    }
+}
+
 enum ChatMessageContent: Equatable {
+    case unableToDecrypt(ChatDecryptionFailure)
     case poll(PollSnapshot)
     case text(body: String)
     case image(source: MediaSource?, thumbnailSource: MediaSource?, width: UInt64?, height: UInt64?, caption: String?, previewImageData: Data?)
@@ -33,6 +61,7 @@ enum ChatMessageContent: Equatable {
     // Image dimensions: treat nil as "not yet loaded", not as a change.
     static func == (lhs: ChatMessageContent, rhs: ChatMessageContent) -> Bool {
         switch (lhs, rhs) {
+        case (.unableToDecrypt(let a), .unableToDecrypt(let b)): return a == b
         case (.poll(let a), .poll(let b)): return a == b
         case (.text(let a), .text(let b)): return a == b
         case (.notice(let a), .notice(let b)): return a == b
@@ -85,6 +114,11 @@ enum ChatMessageContent: Equatable {
         return false
     }
 
+    var isUnableToDecrypt: Bool {
+        if case .unableToDecrypt = self { return true }
+        return false
+    }
+
     /// Returns the text body for text/notice/emote, nil for media.
     var textBody: String? {
         switch self {
@@ -113,6 +147,7 @@ enum ChatMessageContent: Equatable {
 
     var textPreview: String {
         switch self {
+        case .unableToDecrypt: return String(localized: "Unable to decrypt message")
         case .poll(let poll): return String(localized: "Poll: \(poll.definition.question)")
         case .text(let body): return body
         case .image: return "Photo"

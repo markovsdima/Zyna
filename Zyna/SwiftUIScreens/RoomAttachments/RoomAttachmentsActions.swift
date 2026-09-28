@@ -23,6 +23,9 @@ struct RoomAttachmentsActions {
         _ onEvent: @escaping (AttachmentDownloadEvent) -> Void
     ) -> Void
     var openFile: (_ item: AttachmentItem, _ onEvent: @escaping (AttachmentDownloadEvent) -> Void) -> Void
+    var openPoll: @MainActor (_ eventId: String) async throws -> PreparedPollNavigation = { _ in
+        throw PollNavigationError.unavailable
+    }
 
     static let none = RoomAttachmentsActions(
         openImages: { _, _ in },

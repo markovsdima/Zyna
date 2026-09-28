@@ -15,9 +15,9 @@ final class CallsViewModel {
 
     var onCallTapped: ((String) -> Void)?
 
-    private let dbQueue: DatabaseQueue
+    private let dbQueue: AccountDatabase
 
-    init(dbQueue: DatabaseQueue = DatabaseService.shared.dbQueue) {
+    init(dbQueue: AccountDatabase = DatabaseService.shared.dbQueue) {
         self.dbQueue = dbQueue
         reload()
     }

@@ -1,23 +1,126 @@
 # Room Attachments (Shared Media)
 
-A screen reachable from Room Details ("Attachments") that lists a room's photos/videos and files,
-Telegram-style. Built as an R&D iteration to learn how matrix-rust-sdk behaves for attachments in
-**encrypted** rooms; measured on real accounts (2026-09-02/03) and kept as the basis for the
-production UI. Fast custom UI (Texture) comes later.
+Room Details → Attachments lists media, voice messages, files and polls.
+The SwiftUI screen uses account-bound GRDB catalogs with SDK history discovery.
+Data sources and lifecycle are separate from the view for a future Texture UI.
+
+## Polls tab
+
+The SwiftUI screen now includes Polls. Each visited tab keeps its view and scroll
+position while another tab is selected. Footer visibility belongs to each tab;
+only the active tab can request pagination, and an interrupted attachment fill
+resumes its remaining target on return. The polls list shows question, author,
+date, lifecycle state, and the voter count only when results are disclosed.
+Tapping a row returns to the matching room's chat and focuses its event.
+If the poll exists only in the catalog, navigation joins ordinary chat history
+pagination and its writer barrier until the full message is available. It never
+inserts an isolated catalog row or inspection result into chat history. Cached
+full messages need no SDK pagination. SQL and presentation preparation run off
+main before the attachments screen is dismissed.
+
+The list shows loading, Cancel, and a retryable failure. Leaving Polls, closing
+attachments, or changing accounts prevents late navigation. Preparation is
+committed synchronously only while the requesting screen is still current.
+History search has a 30-second budget between pages (a running shared SDK call
+may exceed it); reaching the server start allows up to 3 seconds for trailing
+listener/decryption updates. A missing, deleted, hidden, or undecodable target
+leaves attachments open. Cancel stops the navigation waiter, not a shared page
+that background history sync may still need.
+
+`RoomPollsViewModel`, `RoomPollCatalog`, and `SDKRoomPollHistorySource` live outside
+the SwiftUI screen so a future Texture pager can reuse their state and lifecycle.
+The source starts only on first opening Polls; switching away stops further fill
+batches, while its listener and bounded catalog observation remain alive. Popping
+the attachments screen explicitly cancels observation and the SDK listener.
+
+The account-bound catalog observes `roomPoll` and pending operations, initially
+30 rows plus a lookahead. Load More expands that window. Reads, JSON decoding,
+SDK diff mapping, and database writes run off-main. Discovery does not insert
+partial rows into `storedMessage`; existing poll bubbles receive updated content
+and explicit redactions without replacing their storage identity. Committed
+changes to chat rows or outgoing actions notify the chat once per committed chunk; its
+snapshot and presentation are prepared on the existing background refresh queue.
+Notifications carry their origin: catalog changes preserve history provenance,
+while local poll actions do not suppress concurrent live deletion animations.
+Both refresh outgoing presentation even when stored history is unchanged.
+Unavailable sender profiles preserve cached names, while loaded profiles can
+rename or clear them. Failed writes remain queued, and their error stays visible
+until the source acknowledges a successful flush, including an explicit retry.
+
+The filtered SDK timeline includes unstable/stable poll starts and undecrypted
+`m.room.encrypted` events. Rust still aggregates edits, responses, and ends; the
+integration test exercises this filter through the linked XCFramework. A missing
+key remains visible in the pending banner and can be retried. Timeline trims and
+resets never delete catalog entries. Explicit redactions use the existing poll
+tombstones and outgoing-action reconciliation.
+
+History discovery uses 100-event batches with a 2.5-second fill budget and a
+100-batch safety cap. A running SDK call can exceed the budget. Sparse history
+then requires Load More; incoming snapshots do not restart it. The room start
+requires a confirming call with no additional rows, followed by a bounded quiet
+window for listener delivery. This does not claim that all missing keys arrived.
+
+Catalog writes share the bounded transaction policy described in
+`SCROLL_AND_PAGINATION.md`. Poll discovery and media-index writes yield the
+account's database connection between whole-event updates, allowing cached
+reads while a large timeline flush is still running.
+
+For Media, Voice, and Files, the initial-page check uses indexed counts once
+available and timeline counts otherwise. A full page already in the timeline
+does not trigger extra initial pagination while the index is still loading.
+
+### Poll cache diagnostics
+
+Enable the `.polls` log scope in a Debug build when investigating the catalog.
+It is disabled by default during compact history timing measurements. Filter
+Xcode's console or Console.app for `[PollCache]` and retain output from both
+sides of an app restart.
+`run` identifies the process; `db`, `room`, and event tags are stable hashes.
+Poll text, answers, and raw identifiers are excluded. The trace covers database
+row counts before/after migration, committed/rolled-back writes, decoded reads,
+model publication, row appearance, and SDK startup/pagination. A `pollRows=-1`
+means the catalog table did not exist yet. `undecodable` counts stored entries
+excluded because their snapshots could not be decoded. At most 12 event tags
+are printed per read, alongside total counts and the requested window limit.
+
+`tMs` is monotonic time since the first trace entry. `waitMs`, `workMs`, and
+`deliveryMs` separate connection wait, fetching/decoding, and delivery.
+`writer-begin`/`writer-end` identify bulk producers and chunk sizes. `workMs`
+measures the write closure; `transactionMs` also includes commit and synchronous
+observers. `writer-batch-end` reports total elapsed time, committed entries,
+chunk count, and success/failure for one original batch. The `batch` tag groups
+interleaved producers. `db-settings` records the actual journal mode,
+synchronous level (2 = FULL), and WAL auto-checkpoint threshold after migration.
+`database-open-begin`/`database-open-end`, `database-migrate-end`, and
+`database-ready` separate opening, migration, and total preparation time.
+They run on the database lifecycle worker (`main=false`); the UI awaits the
+shared bootstrap before constructing screens that read storage.
+
+Slow transactions include `access=read` for query-only reads and bounded
+statement fingerprints. A COMMIT does not imply a write; `write-capable` only
+means writes were allowed. `traceDatabase(includeCallStacks: true)` adds caller
+symbols but is off by default: symbolication can itself hold the connection.
+Asynchronous callers may show only worker frames. SQL text and arguments are
+never logged. Database tags exclude the installation's iOS container prefix.
+
+The trace is diagnostic only: it does not change caching or pagination. Its
+database checks run on the database queue; per-row write tracing only records
+changed polls after transaction completion. Disable `.polls` in `LogConfig`
+after collecting the reproduction.
 
 ## What the screen does
 
-```
-Room ──timelineWithConfiguration(.live, filter: .onlyMessage [fork] / .all [A/B])──▶ Timeline
-        │ addListener (TimelineDiff)                       │ paginateBackwards(100)
-        ▼                                                  ▼
-AttachmentTimelineStore (serial queue, rows 1:1 with SDK items)
-        │ Snapshot (month groups, newest first, UTD count) — main, leading edge + 50 ms trailing
-        ▼
-RoomAttachmentsViewModel ──▶ RoomAttachmentsView (SwiftUI in GlassHostingController)
-        │ AttachmentThumbnailPlan per tile
-        ▼
-MediaCache.loadAttachmentThumbnail  (memory → disk → SDK, de-dup by mxc, lanes: 3 thumbnails / 1 original / 2 viewer)
+```text
+Chat timeline ── TimelineDiffBatcher ───────────────┐
+Filtered SDK timeline ── AttachmentTimelineStore ──┤
+                                                  ▼
+                                     GRDB roomAttachment
+                                                  │ observation / off-main grouping
+                                                  ▼
+                           RoomAttachmentsViewModel → SwiftUI
+                                                  │ per-tile thumbnail plan
+                                                  ▼
+                      MediaCache (memory → disk → SDK; demand tickets and lanes)
 ```
 
 Files: `Zyna/SwiftUIScreens/RoomAttachments/*`, `Zyna/Services/Media/AttachmentThumbnailPlan.swift`,
@@ -26,10 +129,11 @@ Files: `Zyna/SwiftUIScreens/RoomAttachments/*`, `Zyna/Services/Media/AttachmentT
 `Zyna/Models/RoomAttachmentKind.swift`, `Zyna/Services/Database/StoredRoomAttachment.swift`, and
 `ChatsCoordinator.showRoomAttachments`.
 
-The data source sits behind `AttachmentSource`; `SDKTimelineAttachmentSource` is the only screen
-implementation today. It now also feeds the persistent GRDB projection described at the end.
+Media discovery uses `AttachmentSource` / `SDKTimelineAttachmentSource`;
+[the persistent index](#persistent-attachment-index) is the screen's catalog.
+Poll discovery has its own source described above.
 
-## SDK facts (verified in the fork checkout, which matches upstream unless noted)
+## SDK constraints
 
 1. **Thumbnails of encrypted media are the full file.** `crates/matrix-sdk/src/media.rs:450-481`:
    for `MediaSource::Encrypted` the `Thumbnail(w,h)` format is ignored; the whole file is
@@ -70,16 +174,12 @@ implementation today. It now also feeds the persistent GRDB projection described
    is mapped through `map_pagination_status` (`controller/mod.rs`) — two channels of one fact that can
    disagree. The event-cache broadcast to timelines holds 32 updates (`caches/room/updates.rs`); an
    overflow resets the timeline (`Lagged behind event cache updates`) — **never observed** here.
-7. **Keys**: backup download on UTD is automatic (`backupDownloadStrategy(.afterDecryptionFailure)`).
-   After a relogin keys arrive in waves: the crypto store's `room_keys_received` broadcast has
-   capacity 10 (`matrix-sdk-crypto/src/store/crypto_store_wrapper.rs:63`), lags under backup imports
-   (`The room key stream lagged`, 6× in 17 s) and the redecryptor then re-scans all in-memory UTDs.
-   Self-healing; last decryptions landed 20–45 s after start. Keys received by the NSE are invisible
-   to the main process's redecryptor, hence `retryDecryption(sessionIds:)` on foreground; the retry
-   only collects session ids of *visible* UTD items (`decryption_retry_task.rs:38-65`). After each
-   key wave the redecryptor also re-touches already decrypted events (encryption-info refresh); in a
-   message-only timeline that logs one `Set update dropped…` warning per text message — noisy,
-   harmless.
+7. **Keys**: backup download on UTD is automatic
+   (`backupDownloadStrategy(.afterDecryptionFailure)`). Relogin recovery can
+   arrive in waves. Keys written by the NSE may need an explicit retry in the
+   main process; a completed pagination call does not prove decryption finished.
+   Current chat recovery is described in
+   [SDK projection recovery](SCROLL_AND_PAGINATION.md#sdk-projection-recovery).
 8. **FFI model**: `ImageInfo/VideoInfo` carry `thumbnailSource`, `thumbnailInfo`, `blurhash`,
    dimensions, `duration`; `AudioMessageContent.voice != nil` marks voice notes. `MediaSource`
    exposes only `url()` (same for plain and encrypted) and `toJson()` (`"file"` key ⇒ encrypted).
@@ -136,18 +236,15 @@ implementation today. It now also feeds the persistent GRDB projection described
   present when the screen is still on top with nothing presented over it. Share/Save in the viewer
   are enabled only once the original has loaded.
 
-## Measured (encrypted DM, up to ~1800 events / 54 attachments)
+## Measurement baseline
 
-| Scenario | Result |
-|---|---|
-| Warm re-open | 1 batch, ~25 ms, tiles from memory — at the floor |
-| Cold start, `.onlyMessage` | 35–42 disk chunks, 1.2–1.8 s (one network gap fill ≈ 1 s of it), all attachments found, `lateSnapshots` 1–2 |
-| Cold start, `.all` (A/B) | 66–80 ms per 100 events (Rust items + 100 `asEvent()`), ~3.4 s for 1505 events; a 600-event text stretch costs 8 batches for nothing |
-| Relogin | everything from the network: 440–680 ms batches, 6 fills (5 by budget), room start at ~20 s, 51 late decryptions in waves 1.3 / 5 / 20 / 25 s |
-| Relogin, text-heavy room (`!VxxHLV…`) | UTDs climb to 504, decrypt in waves 7–45 s, the SDK removes text decryptions in bulk (`removed=451`); every tile `queue=0ms` with lanes |
-| Fork patch 2 | untouched 296 KB original: `getMediaThumbnail` 570 ms (network), then `getMediaContent` 6 ms, identical bytes — one download, one row |
-| GRDB coverage | `sdkMedia` = GRDB count and `onlyGRDB=[] onlySDK=[]` on every completed run; 180 stale "Unable to decrypt message" rows in GRDB are a known relogin artefact around call events |
-| Lifecycle | `stopped` then `deinit` on every pop; auto-diagnostics 9/9 cold, 9/9 warm, 8/8 relogin |
+The initial attachment investigation (2026-09-02/03, encrypted DMs of roughly
+1,800 events) found warm opens near 25 ms, cold filtered discovery around
+1.2–1.8 s, and relogin history reaching the start around 20 s with later key
+waves. These are historical observations, not current performance guarantees.
+The encrypted-media cache fix was verified by thumbnail then original access
+returning identical bytes with only one download. Repeat the scenarios below
+when changing cache policy, discovery or SDK versions.
 
 ## Auto-diagnostics (DEBUG)
 
@@ -162,7 +259,7 @@ the chat's `syncFullHistory` and GRDB writer in the experiment. The probe reprod
 real cold-start ordering: it starts the source asynchronously and fires the sentinel as soon as
 the index makes the content eligible, even if the filtered timeline is still starting.
 
-Console tags attribute the work: `[trace][chat-all]` is the chat's background pagination,
+Console tags attribute the work: `[HistoryPerf]` summarizes the chat's background/demand pagination,
 `[trace][filtered]` is the attachments timeline, `[trace][index] trace filtered` is its queued
 write/commit, and `trace index mapped` is observation materialisation. The real tile loader starts
 on the first 12 visual items as soon as the catalog is published, concurrently with remaining
@@ -212,7 +309,9 @@ every open under the default retention policy); fresh device + NSE key delivery 
 foreground); 300+ tiles under Time Profiler (no ImageIO on main); live insert / redaction / caption
 edit (tile appears on top / disappears / stays).
 
-## Done in the fork (`26.5.13-zyna.5-beta.12`, xcframework `zyna-ffi-26.05.13-attachments-utd-media-cache-beta.1`)
+## Attachment-specific fork behavior
+
+Introduced in beta.12 and retained in the linked package:
 
 - **`OnlyMessage` keeps `m.room.encrypted`** (`bindings/matrix-sdk-ffi/src/room/mod.rs`): UTDs get a
   timeline item, the redecryptor's `Set` replaces it, a mismatching msgtype is removed by the
@@ -224,20 +323,17 @@ edit (tile appears on top / disappears / stays).
   key may download once more. `remove_thumbnail` now uses `thumbnail_source()`. (The send queue
   still writes a second row for its own uploads; Zyna sends directly, so irrelevant here.)
 
-Analysed with the fork maintainers and deliberately **not** changed: a pipeline barrier so
-`paginate_backwards` awaits the timeline's own diffs (design change across two crates, needs
-`Lagged`/closed-task handling, does not cover the FFI hop); aligning the returned `bool` with the
-skip count (cheap and upstream-friendly, unnecessary for us thanks to the confirming call); raising
-the event-cache (32) and room-key (10) broadcast capacities (the first never overflowed here, the
-second is not that simple). The client-side settling + confirming call cover the gap.
+The SDK does not provide an end-to-end pagination/listener barrier. The
+client uses a confirming call and bounded settling; neither proves all
+late decryptions have arrived.
 
 ## Known limits carried into the production UI
 
 SwiftUI grid has no viewport anchoring on live inserts; the derivative disk cache is unbounded;
 tiles load in demand order, not visibility order (prefetch is a Texture-UI concern: the source is
 ordered, `loadMore` can run ahead of the viewport, and demand tickets make speculative tile loads
-cancel cleanly); settling is a heuristic; `syncFullHistory` in the chat stops on row-count
-stagnation, not on reconciling existing rows.
+cancel cleanly); settling is a heuristic. Chat history now uses the SDK's
+`reachedStart`, independently of cached-row availability and late decryption.
 
 ## Recommendations (still open)
 
@@ -246,7 +342,7 @@ stagnation, not on reconciling existing rows.
 - **Chat bubbles** — route `MediaCache.loadBubbleImage` through the attachment lanes and demand
   tickets so bubble loads obey the same concurrency and cancellation rules as the grid.
 
-## Production path: a client-side attachment index in GRDB
+## Persistent attachment index
 
 E2EE Matrix offers neither server-side media search nor server thumbnails, and the SDK has no
 persistent index by msgtype (the event cache is a linked chunk without queries; Tantivy search

@@ -28,6 +28,16 @@ struct TimelineFlushSummary: Equatable {
     var redactedUpsertCount = 0
     var committedHistoryRevision: UInt64 = 0
     var includesUnreportedHistory = false
+    var recoveredEventIDs: Set<String> = []
+    /// Outgoing state may change without changing a stored message row.
+    var requiresPresentationRefresh = false
+    /// Positive proof from repair that no admitted row changed. Ordinary
+    /// notifications default to false, including local presentation changes.
+    var onlyUnadmittedChanges = false
+
+    var canRefreshBoundsOnly: Bool {
+        onlyUnadmittedChanges && !requiresPresentationRefresh && recoveredEventIDs.isEmpty
+    }
 
     /// Preserve history/reset provenance when several flushes are prepared
     /// together; combining them must not enable a remote deletion animation.
@@ -48,6 +58,9 @@ struct TimelineFlushSummary: Equatable {
         result.redactedUpsertCount += other.redactedUpsertCount
         result.committedHistoryRevision = max(committedHistoryRevision, other.committedHistoryRevision)
         result.includesUnreportedHistory = includesUnreportedHistory || other.includesUnreportedHistory
+        result.recoveredEventIDs.formUnion(other.recoveredEventIDs)
+        result.requiresPresentationRefresh = requiresPresentationRefresh || other.requiresPresentationRefresh
+        result.onlyUnadmittedChanges = onlyUnadmittedChanges && other.onlyUnadmittedChanges
         return result
     }
 
@@ -103,6 +116,12 @@ enum MessageWindowChangeOrigin: Equatable {
     case jump
     case localMutation
     case timelineFlush(TimelineFlushSummary)
+
+    var preservesHistoryViewport: Bool {
+        if case .databasePagination = self { return true }
+        if case .timelineFlush(let summary) = self { return summary.includesUnreportedHistory }
+        return false
+    }
 
     var allowsRemoteRedactionAnimation: Bool {
         if case .timelineFlush(let summary) = self {
@@ -167,7 +186,7 @@ final class MessageWindow {
     // MARK: - Dependencies
 
     private let roomId: String
-    private let dbQueue: DatabaseQueue
+    private let dbQueue: AccountDatabase
     private let log = ScopedLog(.database)
 
     // MARK: - Callback
@@ -175,32 +194,144 @@ final class MessageWindow {
     /// Fired after any window content change with (new, previous, origin).
     var onChange: ((_ new: [StoredMessage], _ previous: [StoredMessage]?, _ origin: MessageWindowChangeOrigin) -> Void)?
     var onOlderHistoryAvailable: (() -> Void)?
+    var onRecoveryFocusChange: ((MessageDecryptionRepairStore.Focus) -> Void)?
+    private(set) var recoveryFocus: MessageDecryptionRepairStore.Focus?
 
     private var previousStored: [StoredMessage]?
-    private var revision: UInt64 = 0
+    private(set) var revision: UInt64 = 0
     private(set) var generation: UInt64 = 0
     private var olderCursor: Cursor?
     private var newerCursor: Cursor?
     fileprivate struct Neighbors: Equatable {
         let older: ClusterNeighbor?
         let newer: ClusterNeighbor?
+        let hasOlder: Bool
+        let hasNewer: Bool
     }
 
     private var cachedNeighbors: Neighbors?
 
     // MARK: - Init
 
-    init(roomId: String, dbQueue: DatabaseQueue) {
+    init(roomId: String, dbQueue: AccountDatabase) {
         self.roomId = roomId
         self.dbQueue = dbQueue
     }
 
+    #if DEBUG
+    func messageDiagnosticRequest(for message: ChatMessage) -> MessageDiagnostics.Request {
+        .init(database: dbQueue, roomID: roomId, rowID: message.id, eventID: message.eventId,
+              displayedPlaceholder: MessageDiagnostics.placeholderTextMatches(message.content.textBody))
+    }
+    #endif
+
     // MARK: - Initial Load
 
-    func loadInitial() {
-        let stored = queryNewest(limit: Self.windowSize)
-        emitChange(stored, origin: .initialLoad, live: true)
-        log("loadInitial: \(stored.count) messages")
+    // Synchronous conveniences for isolated window tests. The chat uses
+    // replacementRequest and prepares its snapshot on historyPageQueue.
+    func loadInitial() { replaceSynchronously(.newest) }
+
+    enum Destination { case newest, oldest, live, event(String) }
+
+    struct ReplacementRequest {
+        fileprivate let revision: UInt64
+        fileprivate let destination: Destination
+        fileprivate let oldest: Cursor?
+        fileprivate let live: Bool
+        fileprivate let roomId: String
+        fileprivate let database: AccountDatabase
+
+        func fetch(includingLocalState: Bool = false) throws -> ReplacementPage? {
+            try database.read { db in
+                let query = StoredMessage.filter(Column("roomId") == roomId && Column("contentType") != "call")
+                let raw: [StoredMessage]
+                let origin: MessageWindowChangeOrigin
+                let atLive: Bool
+                switch destination {
+                case .newest:
+                    raw = try query.order(Column("timestamp").desc, Column("id").desc)
+                        .limit(MessageWindow.windowSize).fetchAll(db)
+                    origin = .initialLoad; atLive = true
+                case .oldest:
+                    raw = try query.order(Column("timestamp").asc, Column("id").asc)
+                        .limit(MessageWindow.windowSize).fetchAll(db).reversed()
+                    origin = .jump; atLive = false
+                case .live:
+                    var tail = query.order(Column("timestamp").desc, Column("id").desc)
+                    if live, let oldest { tail = tail.filter(oldest.atOrNewerPredicate) }
+                    else { tail = tail.limit(MessageWindow.windowSize) }
+                    raw = try tail.fetchAll(db)
+                    origin = .jump; atLive = true
+                case .event(let eventId):
+                    guard let target = try query.filter(Column("eventId") == eventId).fetchOne(db) else { return nil }
+                    let cursor = Cursor(target)
+                    let before = try query.filter(cursor.olderPredicate)
+                        .order(Column("timestamp").desc, Column("id").desc)
+                        .limit(MessageWindow.windowSize / 2 - 1).fetchAll(db)
+                    let after = try query.filter(cursor.newerPredicate)
+                        .order(Column("timestamp").asc, Column("id").asc)
+                        .limit(MessageWindow.windowSize / 2).fetchAll(db)
+                    raw = before + [target] + after
+                    origin = .jump; atLive = false
+                }
+                let oldest = raw.map(Cursor.init).min { $0.precedes($1) }
+                let newest = raw.map(Cursor.init).max { $0.precedes($1) }
+                let rawOlder = try MessageWindow.olderNeighbor(in: db, roomId: roomId, cursor: oldest)
+                let rawNewer = try MessageWindow.newerNeighbor(in: db, roomId: roomId, cursor: newest, live: atLive)
+                return ReplacementPage(revision: revision,
+                    stored: MessageWindow.normalizedStored(try MessageDecryptionRepairStore.admitted(raw, in: db)),
+                    oldest: oldest, newest: newest,
+                    neighbors: try MessageWindow.neighbors(in: db, roomId: roomId, oldest: oldest,
+                        newest: newest, rawOlder: rawOlder, rawNewer: rawNewer),
+                    origin: origin, focus: MessageWindow.focus(for: raw),
+                    localState: includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, in: db) : ChatTimelineLocalState())
+            }
+        }
+    }
+
+    struct ReplacementPage {
+        fileprivate let revision: UInt64
+        let stored: [StoredMessage]
+        fileprivate let oldest: Cursor?
+        fileprivate let newest: Cursor?
+        fileprivate let neighbors: Neighbors
+        let origin: MessageWindowChangeOrigin
+        fileprivate let focus: MessageDecryptionRepairStore.Focus?
+        let localState: ChatTimelineLocalState
+        var olderNeighbor: ClusterNeighbor? { neighbors.older }
+        var newerNeighbor: ClusterNeighbor? { neighbors.newer }
+    }
+
+    func replacementRequest(_ destination: Destination) -> ReplacementRequest {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return ReplacementRequest(revision: revision, destination: destination,
+            oldest: olderCursor, live: isAtLiveEdge, roomId: roomId, database: dbQueue)
+    }
+
+    func canApply(_ page: ReplacementPage) -> Bool {
+        dbQueue.isActive && page.revision == revision
+    }
+
+    @discardableResult
+    func applyReplacement(_ page: ReplacementPage) -> Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard canApply(page) else { return false }
+        let previous = previousStored
+        let wasAvailable = hasOlderInDB
+        previousStored = page.stored
+        olderCursor = page.oldest; newerCursor = page.newest
+        cachedNeighbors = page.neighbors
+        hasOlderInDB = page.neighbors.hasOlder; hasNewerInDB = page.neighbors.hasNewer
+        revision &+= 1
+        generation &+= 1
+        updateRecoveryFocus(page.focus)
+        onChange?(page.stored, previous, page.origin)
+        notifyOlderHistoryAvailable(wasAvailable: wasAvailable)
+        return true
+    }
+
+    private func replaceSynchronously(_ destination: Destination) {
+        if let page = try? replacementRequest(destination).fetch() { applyReplacement(page) }
     }
 
     // MARK: - Local Pagination
@@ -263,14 +394,14 @@ final class MessageWindow {
         fileprivate let cursor: Cursor
         fileprivate let stored: [StoredMessage]
         fileprivate let roomId: String
-        fileprivate let database: DatabaseQueue
+        fileprivate let database: AccountDatabase
         fileprivate let count: Int
         fileprivate let oldest: Cursor?
         fileprivate let newest: Cursor?
         fileprivate let live: Bool
 
-        func fetch() throws -> Page {
-            let (records, olderNeighbor, newerNeighbor) = try database.read { db in
+        func fetch(includingLocalState: Bool = false) throws -> Page {
+            let (records, admitted, neighbors, localState) = try database.read { db in
                 let query = StoredMessage
                     .filter(Column("roomId") == roomId && Column("contentType") != "call")
                 let fetched: [StoredMessage]
@@ -292,17 +423,27 @@ final class MessageWindow {
                     older = try MessageWindow.olderNeighbor(in: db, roomId: roomId, cursor: oldest)
                     newer = fetched.dropFirst(count).first
                 }
-                return (Array(fetched.prefix(count)), older, newer)
+                let records = Array(fetched.prefix(count))
+                let nextOldest = direction == .older ? records.last.map(Cursor.init) ?? cursor : oldest
+                let nextNewest = direction == .newer ? records.last.map(Cursor.init) ?? cursor : newest
+                return (records, try MessageDecryptionRepairStore.admitted(records, in: db),
+                        try MessageWindow.neighbors(in: db, roomId: roomId,
+                            oldest: nextOldest, newest: nextNewest, rawOlder: older, rawNewer: newer),
+                        includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, in: db) : ChatTimelineLocalState())
             }
-            let merged = records.isEmpty ? stored : MessageWindow.normalizedStored(stored + records)
+            let merged = admitted.isEmpty ? stored : MessageWindow.normalizedStored(stored + admitted)
+            #if DEBUG
+            let trace = HistoryPerformanceTrace.capture(database: database)
+            trace?.count(.pageRaw, records.count)
+            trace?.count(.pageShown, admitted.count)
+            if let trace { trace.count(.pageRedacted, admitted.filter { $0.contentType == "redacted" }.count) }
+            if admitted.isEmpty { trace?.count(.pageEmpty) }
+            #endif
             return Page(
                 revision: revision, direction: direction,
                 merged: merged, fetchedCount: records.count,
                 cursor: records.last.map(Cursor.init) ?? cursor,
-                neighbors: Neighbors(
-                    older: olderNeighbor.map(MessageWindow.clusterNeighbor),
-                    newer: newerNeighbor.map(MessageWindow.clusterNeighbor)
-                )
+                neighbors: neighbors, focus: MessageWindow.focus(for: records), localState: localState
             )
         }
     }
@@ -315,6 +456,10 @@ final class MessageWindow {
         let fetchedCount: Int
         fileprivate let cursor: Cursor
         fileprivate let neighbors: Neighbors
+        fileprivate let focus: MessageDecryptionRepairStore.Focus?
+        let localState: ChatTimelineLocalState
+        var olderNeighbor: ClusterNeighbor? { neighbors.older }
+        var newerNeighbor: ClusterNeighbor? { neighbors.newer }
     }
 
     func pageRequest(_ direction: PageDirection, count: Int = pageSize) -> PageRequest? {
@@ -331,7 +476,7 @@ final class MessageWindow {
 
     func canApply(_ page: Page) -> Bool {
         dispatchPrecondition(condition: .onQueue(.main))
-        return page.revision == revision
+        return dbQueue.isActive && page.revision == revision
     }
 
     /// A refresh, opposite page, or jump invalidates a prepared page.
@@ -345,9 +490,10 @@ final class MessageWindow {
         case .older: olderCursor = page.cursor
         case .newer: newerCursor = page.cursor
         }
-        hasOlderInDB = page.neighbors.older != nil
-        hasNewerInDB = page.neighbors.newer != nil
+        hasOlderInDB = page.neighbors.hasOlder
+        hasNewerInDB = page.neighbors.hasNewer
         cachedNeighbors = page.neighbors
+        updateRecoveryFocus(page.focus)
         // Even an empty read can reach live after the remaining rows were
         // deleted. Retire requests that still carry the old window bounds.
         if page.fetchedCount > 0 || neighborsChanged { revision &+= 1 }
@@ -372,10 +518,28 @@ final class MessageWindow {
         fileprivate let live: Bool
         fileprivate let neighbors: Neighbors?
         fileprivate let roomId: String
-        fileprivate let database: DatabaseQueue
+        fileprivate let database: AccountDatabase
 
-        func fetch(historyRevision: TimelineHistoryRevision? = nil) throws -> RefreshPage {
-            let (records, nextOlder, nextNewer, older, newer, committedHistoryRevision) = try database.read { db in
+        var canRefreshBoundsOnly: Bool { previous != nil && oldest != nil && neighbors != nil }
+
+        /// Cleanup cannot change an admitted cluster neighbor. Read only
+        /// raw paging eligibility, leaving the retained messages untouched.
+        func fetchBounds() throws -> BoundsPage {
+            try database.read { db in
+                let room = StoredMessage.filter(Column("roomId") == roomId && Column("contentType") != "call")
+                    .select(Column("id"))
+                let hasOlder = try oldest.map {
+                    try room.filter($0.olderPredicate).limit(1).asRequest(of: String.self).fetchOne(db) != nil
+                } ?? false
+                let hasNewer = try !live && (newest.map {
+                    try room.filter($0.newerPredicate).limit(1).asRequest(of: String.self).fetchOne(db) != nil
+                } ?? false)
+                return BoundsPage(revision: revision, hasOlder: hasOlder, hasNewer: hasNewer)
+            }
+        }
+
+        func fetch(historyRevision: TimelineHistoryRevision? = nil, includingLocalState: Bool = false) throws -> RefreshPage {
+            let (records, nextOlder, nextNewer, neighbors, committedHistoryRevision, localState) = try database.read { db in
                 let room = StoredMessage
                     .filter(Column("roomId") == roomId && Column("contentType") != "call")
                 var query = room.order(Column("timestamp").desc, Column("id").desc)
@@ -394,23 +558,42 @@ final class MessageWindow {
                 let newer = try MessageWindow.newerNeighbor(
                     in: db, roomId: roomId, cursor: nextNewer, live: live
                 )
-                return (records, nextOlder, nextNewer, older, newer, historyRevision?.current ?? 0)
+                return (try MessageDecryptionRepairStore.admitted(records, in: db), nextOlder, nextNewer,
+                    try MessageWindow.neighbors(in: db, roomId: roomId, oldest: nextOlder,
+                        newest: nextNewer, rawOlder: older, rawNewer: newer), historyRevision?.current ?? 0,
+                    includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, in: db) : ChatTimelineLocalState())
             }
             let normalized = previous == records ? records : MessageWindow.normalizedStored(records)
-            let nextNeighbors = Neighbors(
-                older: older.map(MessageWindow.clusterNeighbor),
-                newer: newer.map(MessageWindow.clusterNeighbor)
-            )
             return RefreshPage(
                 revision: revision, stored: normalized,
                 cursor: nextOlder, newerCursor: nextNewer,
-                neighbors: nextNeighbors, initializesWindow: oldest == nil,
+                neighbors: neighbors, initializesWindow: oldest == nil,
                 contentChanged: previous != normalized,
-                neighborsChanged: neighbors != nextNeighbors,
-                committedHistoryRevision: committedHistoryRevision
+                neighborsChanged: self.neighbors != neighbors,
+                committedHistoryRevision: committedHistoryRevision, localState: localState
             )
         }
 
+    }
+
+    struct BoundsPage {
+        fileprivate let revision: UInt64
+        fileprivate let hasOlder: Bool
+        fileprivate let hasNewer: Bool
+    }
+
+    @discardableResult
+    func applyBounds(_ page: BoundsPage) -> Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard dbQueue.isActive, revision == page.revision, let neighbors = cachedNeighbors else { return false }
+        let wasAvailable = hasOlderInDB
+        if hasOlderInDB != page.hasOlder || hasNewerInDB != page.hasNewer { revision &+= 1 }
+        hasOlderInDB = page.hasOlder
+        hasNewerInDB = page.hasNewer
+        cachedNeighbors = Neighbors(older: neighbors.older, newer: neighbors.newer,
+                                   hasOlder: page.hasOlder, hasNewer: page.hasNewer)
+        notifyOlderHistoryAvailable(wasAvailable: wasAvailable)
+        return true
     }
 
     struct RefreshPage {
@@ -423,6 +606,14 @@ final class MessageWindow {
         let contentChanged: Bool
         fileprivate let neighborsChanged: Bool
         let committedHistoryRevision: UInt64
+        let localState: ChatTimelineLocalState
+        var olderNeighbor: ClusterNeighbor? { neighbors.older }
+        var newerNeighbor: ClusterNeighbor? { neighbors.newer }
+
+        func origin(summary: TimelineFlushSummary) -> MessageWindowChangeOrigin {
+            initializesWindow ? .initialLoad : .timelineFlush(summary)
+        }
+        func needsPresentation(force: Bool) -> Bool { contentChanged || neighborsChanged || force }
     }
 
     func refreshRequest() -> RefreshRequest {
@@ -436,7 +627,7 @@ final class MessageWindow {
 
     func canApply(_ page: RefreshPage) -> Bool {
         dispatchPrecondition(condition: .onQueue(.main))
-        return revision == page.revision
+        return dbQueue.isActive && revision == page.revision
     }
 
     @discardableResult
@@ -445,7 +636,8 @@ final class MessageWindow {
         summary: TimelineFlushSummary,
         forceNotify: Bool = false
     ) -> Bool {
-        applyRefresh(page, origin: .timelineFlush(summary), forceNotify: forceNotify)
+        applyRefresh(page, origin: .timelineFlush(summary),
+                     forceNotify: forceNotify || summary.requiresPresentationRefresh)
     }
 
     @discardableResult
@@ -458,10 +650,13 @@ final class MessageWindow {
         let cursorChanged = olderCursor != page.cursor || newerCursor != page.newerCursor
         olderCursor = page.cursor
         newerCursor = page.newerCursor
-        hasOlderInDB = page.neighbors.older != nil
-        hasNewerInDB = page.neighbors.newer != nil
+        hasOlderInDB = page.neighbors.hasOlder
+        hasNewerInDB = page.neighbors.hasNewer
         cachedNeighbors = page.neighbors
 
+        if recoveryFocus == nil, let oldest = page.cursor, let newest = page.newerCursor {
+            updateRecoveryFocus(.init(oldest: oldest.timestamp, newest: newest.timestamp))
+        }
         // Even an unchanged window may have gained history beyond its edge.
         // Update eligibility above without rebuilding the table. Don't retire
         // an in-flight local page when the complete snapshot is unchanged.
@@ -482,49 +677,9 @@ final class MessageWindow {
 
     // MARK: - Jump
 
-    func jumpTo(eventId: String) {
-        guard let target = queryByEventId(eventId) else { return }
-        let cursor = Cursor(target)
-        let half = Self.windowSize / 2
-
-        let olderHalf = queryOlderThan(cursor: cursor, limit: half - 1)
-        let newerHalf = queryNewerThan(cursor: cursor, limit: half)
-
-        var combined = newerHalf + olderHalf
-        if !combined.contains(where: { $0.id == target.id }) {
-            combined.append(target)
-        }
-        // Deduplicate by eventId — DB may briefly have two records
-        // with the same eventId but different id (local echo → server echo race)
-        var seenEventIds = Set<String>()
-        combined = combined.filter { msg in
-            guard let eid = msg.eventId, !eid.isEmpty else { return true }
-            return seenEventIds.insert(eid).inserted
-        }
-        emitChange(combined, origin: .jump)
-        log("jumpTo \(eventId): window=\(combined.count)")
-    }
-
-    func jumpToLive() {
-        guard let cursor = olderCursor else {
-            loadInitial()
-            return
-        }
-
-        // A jump from a detached history window must not materialize the
-        // entire gap to live. Keep retained history only when already live.
-        let stored = isAtLiveEdge
-            ? queryAtOrNewerThan(cursor: cursor)
-            : queryNewest(limit: Self.windowSize)
-        emitChange(stored, origin: .jump, live: true)
-        log("jumpToLive: window=\(stored.count)")
-    }
-
-    func jumpToOldest() {
-        let stored = queryOldest(limit: Self.windowSize)
-        emitChange(stored, origin: .jump)
-        log("jumpToOldest: window=\(stored.count)")
-    }
+    func jumpTo(eventId: String) { replaceSynchronously(.event(eventId)) }
+    func jumpToLive() { replaceSynchronously(.live) }
+    func jumpToOldest() { replaceSynchronously(.oldest) }
 
     func position(of eventId: String) -> MessageWindowPosition {
         guard let target = queryByEventId(eventId) else {
@@ -544,6 +699,12 @@ final class MessageWindow {
 
     // MARK: - Cluster Peek
 
+    /// Presentation-only mutations reuse the accepted window boundaries.
+    /// Unlike navigation peeks, this never performs a synchronous DB read.
+    var presentationNeighbors: (older: ClusterNeighbor?, newer: ClusterNeighbor?) {
+        (cachedNeighbors?.older, cachedNeighbors?.newer)
+    }
+
     /// One row just outside the top edge of the window, used by
     /// cluster decoration so the oldest visible message sees its
     /// real predecessor instead of nil.
@@ -559,15 +720,41 @@ final class MessageWindow {
 
     private func boundaryNeighbors(live: Bool) -> Neighbors {
         if let cachedNeighbors { return cachedNeighbors }
-        let records = try? dbQueue.read { db in
-            (try Self.olderNeighbor(in: db, roomId: roomId, cursor: olderCursor),
-             try Self.newerNeighbor(in: db, roomId: roomId, cursor: newerCursor, live: live))
-        }
-        let neighbors = Neighbors(
-            older: records?.0.map(Self.clusterNeighbor), newer: records?.1.map(Self.clusterNeighbor)
-        )
+        let neighbors = (try? dbQueue.read { db in
+            try Self.neighbors(in: db, roomId: roomId, oldest: olderCursor, newest: newerCursor,
+                rawOlder: Self.olderNeighbor(in: db, roomId: roomId, cursor: olderCursor),
+                rawNewer: Self.newerNeighbor(in: db, roomId: roomId, cursor: newerCursor, live: live))
+        }) ?? Neighbors(older: nil, newer: nil, hasOlder: false, hasNewer: false)
         cachedNeighbors = neighbors
         return neighbors
+    }
+
+    private static func neighbors(in db: Database, roomId: String, oldest: Cursor?, newest: Cursor?,
+                                  rawOlder: StoredMessage?, rawNewer: StoredMessage?) throws -> Neighbors {
+        func admittedNeighbor(_ raw: StoredMessage?, cursor: Cursor?, older: Bool) throws -> ClusterNeighbor? {
+            guard let raw, let cursor else { return nil }
+            if try !MessageDecryptionRepairStore.admitted([raw], in: db).isEmpty { return clusterNeighbor(raw) }
+            let query = StoredMessage.filter(Column("roomId") == roomId && Column("contentType") != "call")
+                .filter(sql: MessageDecryptionRepairStore.admittedSQL)
+            let record = try (older
+                ? query.filter(cursor.olderPredicate).order(Column("timestamp").desc, Column("id").desc)
+                : query.filter(cursor.newerPredicate).order(Column("timestamp").asc, Column("id").asc)).fetchOne(db)
+            return record.map(clusterNeighbor)
+        }
+        return Neighbors(older: try admittedNeighbor(rawOlder, cursor: oldest, older: true),
+            newer: try admittedNeighbor(rawNewer, cursor: newest, older: false),
+            hasOlder: rawOlder != nil, hasNewer: rawNewer != nil)
+    }
+
+    private static func focus(for records: [StoredMessage]) -> MessageDecryptionRepairStore.Focus? {
+        guard let oldest = records.map(\.timestamp).min(), let newest = records.map(\.timestamp).max() else { return nil }
+        return .init(oldest: oldest, newest: newest)
+    }
+
+    private func updateRecoveryFocus(_ focus: MessageDecryptionRepairStore.Focus?) {
+        guard let focus, recoveryFocus != focus else { return }
+        recoveryFocus = focus
+        onRecoveryFocusChange?(focus)
     }
 
     private static func clusterNeighbor(_ msg: StoredMessage) -> ClusterNeighbor {
@@ -584,65 +771,6 @@ final class MessageWindow {
     }
 
     // MARK: - GRDB Queries
-
-    private func queryNewest(limit: Int) -> [StoredMessage] {
-        (try? dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == self.roomId)
-                .filter(Column("contentType") != "call")
-                .order(Column("timestamp").desc, Column("id").desc)
-                .limit(limit)
-                .fetchAll(db)
-        }) ?? []
-    }
-
-    private func queryOldest(limit: Int) -> [StoredMessage] {
-        let asc = (try? dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == self.roomId)
-                .filter(Column("contentType") != "call")
-                .order(Column("timestamp").asc, Column("id").asc)
-                .limit(limit)
-                .fetchAll(db)
-        }) ?? []
-        return asc.reversed()
-    }
-
-    private func queryOlderThan(cursor: Cursor, limit: Int) -> [StoredMessage] {
-        (try? dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == self.roomId)
-                .filter(cursor.olderPredicate)
-                .filter(Column("contentType") != "call")
-                .order(Column("timestamp").desc, Column("id").desc)
-                .limit(limit)
-                .fetchAll(db)
-        }) ?? []
-    }
-
-    private func queryNewerThan(cursor: Cursor, limit: Int) -> [StoredMessage] {
-        let asc = (try? dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == self.roomId)
-                .filter(cursor.newerPredicate)
-                .filter(Column("contentType") != "call")
-                .order(Column("timestamp").asc, Column("id").asc)
-                .limit(limit)
-                .fetchAll(db)
-        }) ?? []
-        return asc.reversed()
-    }
-
-    private func queryAtOrNewerThan(cursor: Cursor) -> [StoredMessage] {
-        (try? dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == self.roomId)
-                .filter(cursor.atOrNewerPredicate)
-                .filter(Column("contentType") != "call")
-                .order(Column("timestamp").desc, Column("id").desc)
-                .fetchAll(db)
-        }) ?? []
-    }
 
     private func queryByEventId(_ eventId: String) -> StoredMessage? {
         try? dbQueue.read { db in
@@ -681,38 +809,6 @@ final class MessageWindow {
 
     private func notifyOlderHistoryAvailable(wasAvailable: Bool) {
         if !wasAvailable && hasOlderInDB { onOlderHistoryAvailable?() }
-    }
-
-    private func emitChange(
-        _ stored: [StoredMessage],
-        origin: MessageWindowChangeOrigin,
-        live: Bool = false
-    ) {
-        let wasAvailable = hasOlderInDB
-        defer { notifyOlderHistoryAvailable(wasAvailable: wasAvailable) }
-        let normalized = Self.normalizedStored(stored)
-        let prev = previousStored
-        previousStored = normalized
-        revision &+= 1
-        cachedNeighbors = nil
-        let oldest = stored.min {
-            Cursor($0).precedes(Cursor($1))
-        }.map(Cursor.init)
-        let newest = stored.max {
-            Cursor($0).precedes(Cursor($1))
-        }.map(Cursor.init)
-        if origin == .jump || origin == .initialLoad {
-            generation &+= 1
-            olderCursor = oldest
-            newerCursor = newest
-        } else {
-            olderCursor = Cursor.oldest(olderCursor, oldest)
-            newerCursor = Cursor.newest(newerCursor, newest)
-        }
-        let neighbors = boundaryNeighbors(live: live)
-        hasOlderInDB = neighbors.older != nil
-        hasNewerInDB = neighbors.newer != nil
-        onChange?(normalized, prev, origin)
     }
 
     private static func normalizedStored(_ stored: [StoredMessage]) -> [StoredMessage] {

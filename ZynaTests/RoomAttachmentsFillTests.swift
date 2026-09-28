@@ -22,8 +22,14 @@ private final class FakeAttachmentSource: AttachmentSource, @unchecked Sendable 
     var reachStartAfter = Int.max
     private var generation = 0
     private var rows = 0
+    var mediaCount = 0
+    var voiceCount = 0
+    var fileCount = 0
+    var emitSnapshotOnStart = false
 
-    func start() async throws {}
+    func start() async throws {
+        if emitSnapshotOnStart { emitSnapshot() }
+    }
     func stop() {}
     func retryDecryption(sessionIds: [String]) {}
     func describeTimelineItem(eventId: String) async -> String? { nil }
@@ -44,7 +50,7 @@ private final class FakeAttachmentSource: AttachmentSource, @unchecked Sendable 
         generation += 1
         let snapshot = AttachmentTimelineStore.Snapshot(
             generation: generation, rowCount: rows, media: [], voice: [], files: [],
-            mediaCount: 0, voiceCount: 0, fileCount: 0,
+            mediaCount: mediaCount, voiceCount: voiceCount, fileCount: fileCount,
             pendingCount: 0, pendingSessionIds: []
         )
         let handler = onSnapshot
@@ -99,6 +105,34 @@ struct RoomAttachmentsFillTests {
         viewModel.stop()
     }
 
+    @Test("Initial pagination uses the loaded timeline until index counts are available",
+          arguments: [RoomAttachmentsViewModel.Tab.media, .voice, .files], [true, false])
+    func initialTimelinePage(tab: RoomAttachmentsViewModel.Tab, fullPage: Bool) async throws {
+        let source = FakeAttachmentSource()
+        source.emitSnapshotOnStart = true
+        let shortfall = fullPage ? 0 : 1
+        source.mediaCount = RoomAttachmentsViewModel.mediaPageSize - shortfall
+        source.voiceCount = RoomAttachmentsViewModel.voicePageSize - shortfall
+        source.fileCount = RoomAttachmentsViewModel.filesPageSize - shortfall
+        let model = makeViewModel(source: source)
+        model.tab = tab
+        await model.start()
+        #expect(!model.isInitialLoading)
+        if fullPage {
+            #expect(!model.isFillActive)
+            #expect(source.loadMoreCalls == 0)
+            source.emitSnapshot()
+            try await Task.sleep(for: .milliseconds(30))
+            #expect(source.loadMoreCalls == 0)
+            // A full first page is not evidence that history is exhausted.
+            model.loadMoreTapped()
+        } else {
+            #expect(model.isFillActive)
+        }
+        #expect(await waitUntil { source.loadMoreCalls > 0 })
+        model.stop()
+    }
+
     @Test("A tab switch during a fill is replayed once, and stop clears it")
     func tabSwitchReplaysOnce() async throws {
         let source = FakeAttachmentSource()
@@ -135,5 +169,68 @@ struct RoomAttachmentsFillTests {
         try await Task.sleep(for: .milliseconds(150))
         #expect(source.loadMoreCalls == 4)
         viewModel.stop()
+    }
+
+    @Test("Retained tabs keep independent sentinels and resume only the visible tab", arguments: [
+        RoomAttachmentsViewModel.Tab.voice, .files
+    ])
+    func retainedSentinels(other: RoomAttachmentsViewModel.Tab) async throws {
+        let source = FakeAttachmentSource()
+        source.mediaCount = 100
+        source.voiceCount = 100
+        source.fileCount = 100
+        let model = makeViewModel(source: source)
+        // Start on Polls so the warm snapshot can arrive without an initial fill.
+        model.tab = .polls
+        await model.start()
+        source.emitSnapshot()
+        #expect(await waitUntil { !model.isInitialLoading })
+        model.tab = .media
+        model.sentinelAppeared(in: .media)
+        #expect(await waitUntil { source.loadMoreCalls > 0 })
+        model.tab = other
+        #expect(await waitUntil { !model.isFillActive })
+        let calls = source.loadMoreCalls
+        for _ in 0..<3 { source.emitSnapshot() }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(source.loadMoreCalls == calls)
+
+        // The hidden tab's callbacks must not reset the retained Media footer.
+        let hiddenTab: RoomAttachmentsViewModel.Tab = other == .files ? .voice : .files
+        model.sentinelAppeared(in: hiddenTab)
+        model.sentinelDisappeared(in: hiddenTab)
+        model.tab = .media
+        #expect(await waitUntil { source.loadMoreCalls > calls })
+        model.stop()
+    }
+
+    @Test("A fill paused by Polls resumes its unfinished target without a new sentinel callback")
+    func resumeAfterPolls() async throws {
+        let source = FakeAttachmentSource()
+        source.mediaCount = 45
+        let model = makeViewModel(source: source, budget: 5)
+        model.tab = .polls
+        await model.start()
+        source.emitSnapshot()
+        #expect(await waitUntil { !model.isInitialLoading })
+        model.tab = .media
+        model.loadMoreTapped()
+        #expect(await waitUntil { source.loadMoreCalls > 0 })
+        model.tab = .polls
+        #expect(await waitUntil { !model.isFillActive })
+        #expect(model.fillState == .idle)
+        #expect(model.diagnostics.fillsEndedByTimeBudget == 0)
+        let calls = source.loadMoreCalls
+        // Enough for the initial-page check, but short of the interrupted target.
+        source.mediaCount = 60
+        source.emitSnapshot()
+        try await Task.sleep(for: .milliseconds(30))
+        model.tab = .media
+        #expect(await waitUntil { source.loadMoreCalls > calls })
+        source.mediaCount = 90
+        source.emitSnapshot()
+        #expect(await waitUntil { !model.isFillActive })
+        #expect(model.fillState == .idle)
+        model.stop()
     }
 }

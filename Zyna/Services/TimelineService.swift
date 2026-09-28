@@ -193,6 +193,27 @@ final class TimelineService {
         self.room = room
     }
 
+    var recoveryTimeline: Timeline? { timeline }
+
+    #if DEBUG
+    var messageDiagnosticTimeline: Timeline? { timeline }
+
+    /// Probe the same content mapper used by normal diffs, off the main thread.
+    static func messageDiagnosticProjection(_ event: EventTimelineItem) -> HistoryPerformanceTrace.Count {
+        switch event.content {
+        case .msgLike(let content):
+            switch content.kind {
+            case .unableToDecrypt: return .projectionUTD
+            case .redacted: return .projectionRedacted
+            default: break
+            }
+        case .failedToParseMessageLike, .failedToParseState: return .projectionParseError
+        default: break
+        }
+        return contentFromEvent(event) == nil ? .projectionFiltered : .projectionMapped
+    }
+    #endif
+
     var hasLiveTimeline: Bool { timeline != nil }
 
     func prepareDirectRawTextTransactionId(
@@ -854,12 +875,9 @@ final class TimelineService {
     }
 
     private static func contentFromEvent(_ event: EventTimelineItem) -> ChatMessageContent? {
-        // Call events: invite is native SDK, signaling rides in span.
-        // CallService writes call events to GRDB directly — skip here.
+        let attributes = extractZynaAttributes(from: event)
+        guard ChatEventVisibility.exclusion(for: event.content, attributes: attributes) == nil else { return nil }
         switch event.content {
-        case .callInvite:
-            return nil
-
         case .rtcNotification(let callIntent, let declinedBy):
             guard let details = matrixRTCCallDetails(
                 from: event,
@@ -901,9 +919,6 @@ final class TimelineService {
             return .systemEvent(text: text, kind: .roomState)
 
         case .msgLike(let msgContent):
-            let attrs = extractZynaAttributes(from: event)
-            if attrs.callSignal != nil { return nil }
-
             switch msgContent.kind {
             case .message(let messageContent):
                 guard let content = contentFromMessageType(messageContent.msgType) else { return nil }
@@ -921,7 +936,7 @@ final class TimelineService {
                 return .redacted
             case .unableToDecrypt(let message):
                 logTimeline("UTD: eventId=\(event.eventOrTransactionId) sender=\(event.sender) \(describeEncryptedMessage(message))")
-                return .text(body: String(localized: "Unable to decrypt message"))
+                return .unableToDecrypt(ChatDecryptionFailure(message))
             case .other:
                 return nil
             case .liveLocation(content: _):
@@ -1000,11 +1015,6 @@ final class TimelineService {
     private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent? {
         switch msgType {
         case .text(let content):
-            // Skip zero-width-space-only bodies — carrier messages
-            // (call signaling) that slipped past the span check.
-            let visible = content.body.replacingOccurrences(of: "\u{200B}", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if visible.isEmpty { return nil }
             return .text(body: content.body)
         case .image(let content):
             return .image(
@@ -1203,20 +1213,50 @@ final class TimelineService {
 
     // MARK: - Pagination
 
-    func paginateBackwards(numEvents: UInt16 = 20) async {
-        guard let timeline, !isPaginatingSubject.value else { return }
+    #if DEBUG
+    var historyPerformance: HistoryPerformanceTrace.Session?
+    #endif
+
+    func paginateBackwards(numEvents: UInt16 = 20) async -> HistoryPaginationResult {
+        #if DEBUG
+        if timeline == nil { historyPerformance?.count(.sdkMissing) }
+        #endif
+        // The chat coordinator serializes callers, including the writer drain.
+        guard !Task.isCancelled else { return .cancelled }
+        guard let timeline else { return .unavailable }
 
         await MainActor.run { isPaginatingSubject.send(true) }
 
+        #if DEBUG
+        let operation = historyPerformance?.begin(.sdk)
+        defer { operation?.finish() }
+        #endif
+        let result: HistoryPaginationResult
         do {
-            _ = try await timeline.paginateBackwards(numEvents: numEvents)
+            let hitStart = try await timeline.paginateBackwards(numEvents: numEvents)
+            #if DEBUG
+            if hitStart { historyPerformance?.count(.sdkStart) }
+            operation?.finish()
+            #endif
+            result = .page(reachedStart: hitStart)
             logTimeline("Paginated backwards successfully")
+        } catch is CancellationError {
+            result = .cancelled
         } catch {
-            logTimeline("Pagination failed: \(error)")
-            await handleMatrixTransportError(error)
+            if Task.isCancelled {
+                result = .cancelled
+            } else {
+                #if DEBUG
+                operation?.finish(failed: true)
+                #endif
+                logTimeline("Pagination failed: \(error)")
+                await handleMatrixTransportError(error)
+                result = .failed
+            }
         }
 
         await MainActor.run { isPaginatingSubject.send(false) }
+        return Task.isCancelled ? .cancelled : result
     }
 
     private func handleMatrixTransportError(_ error: Error) async {

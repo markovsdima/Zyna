@@ -219,6 +219,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         case media
         case voice
         case files
+        case polls
 
         var id: String { rawValue }
 
@@ -227,6 +228,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
             case .media: return String(localized: "Media")
             case .voice: return String(localized: "Voice")
             case .files: return String(localized: "Files")
+            case .polls: return String(localized: "Polls")
             }
         }
     }
@@ -284,7 +286,9 @@ final class RoomAttachmentsViewModel: ObservableObject {
     @Published var tab: Tab = .media {
         didSet {
             guard tab != oldValue else { return }
-            if needsInitialPage(for: tab) {
+            pendingFill = nil
+            guard tab != .polls else { return }
+            if sentinelVisible || interruptedTargets[tab] != nil || needsInitialPage(for: tab) {
                 fillIfNeeded(reason: "tab", force: true, intent: .tab)
             }
         }
@@ -318,7 +322,9 @@ final class RoomAttachmentsViewModel: ObservableObject {
     private var hasStarted = false
     private var isStopped = false
     private var hitStart = false
-    private var sentinelVisible = false
+    private var visibleSentinels: Set<Tab> = []
+    private var sentinelVisible: Bool { visibleSentinels.contains(tab) }
+    private var interruptedTargets: [Tab: Int] = [:]
     private var fillTask: Task<Void, Never>?
     private var lateRetryTask: Task<Void, Never>?
     private var foregroundObserver: NSObjectProtocol?
@@ -629,13 +635,15 @@ final class RoomAttachmentsViewModel: ObservableObject {
 
     // MARK: - Pagination
 
-    func sentinelAppeared() {
-        sentinelVisible = true
+    func sentinelAppeared(in visibleTab: Tab? = nil) {
+        let visibleTab = visibleTab ?? tab
+        visibleSentinels.insert(visibleTab)
+        guard visibleTab == tab else { return }
         fillIfNeeded(reason: "sentinel", force: true, intent: .sentinel)
     }
 
-    func sentinelDisappeared() {
-        sentinelVisible = false
+    func sentinelDisappeared(in hiddenTab: Tab? = nil) {
+        visibleSentinels.remove(hiddenTab ?? tab)
     }
 
     func loadMoreTapped() {
@@ -650,6 +658,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         case .media: return mediaCount
         case .voice: return voiceCount
         case .files: return fileCount
+        case .polls: return 0
         }
     }
 
@@ -658,12 +667,12 @@ final class RoomAttachmentsViewModel: ObservableObject {
         case .media: return indexedMediaCount
         case .voice: return indexedVoiceCount
         case .files: return indexedFileCount
+        case .polls: return 0
         }
     }
 
     private func needsInitialPage(for tab: Tab) -> Bool {
-        guard attachmentIndex != nil, hasReceivedIndexSnapshot else { return true }
-        return indexedCount(for: tab) < pageSize(for: tab)
+        currentCount(for: tab) < pageSize(for: tab)
     }
 
     private func pageSize(for tab: Tab) -> Int {
@@ -671,6 +680,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         case .media: return Self.mediaPageSize
         case .voice: return Self.voicePageSize
         case .files: return Self.filesPageSize
+        case .polls: return 0
         }
     }
 
@@ -689,6 +699,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         case timeBudget
         case batchCap
         case stopped
+        case tabChanged
     }
 
     private var fillStopReason: FillStopReason = .pageFilled
@@ -718,7 +729,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         case manual
     }
 
-    private var pendingFill: FillIntent?
+    private var pendingFill: (tab: Tab, intent: FillIntent)?
 
     /// True while a fill is running or one is queued behind it.
     var isFillActive: Bool {
@@ -726,11 +737,12 @@ final class RoomAttachmentsViewModel: ObservableObject {
     }
 
     private func fillIfNeeded(reason: String, force: Bool = false, intent: FillIntent? = nil) {
+        guard tab != .polls else { return }
         guard hasStarted, !isStopped, !hitStart else { return }
         guard force || sentinelVisible || isInitialLoading else { return }
         if fillTask != nil {
             if let intent {
-                pendingFill = intent
+                pendingFill = (tab, intent)
             }
             return
         }
@@ -738,8 +750,9 @@ final class RoomAttachmentsViewModel: ObservableObject {
         if case .failed = fillState, !force { return }
 
         let tab = self.tab
-        let target = currentCount(for: tab) + pageSize(for: tab)
+        let target = interruptedTargets.removeValue(forKey: tab) ?? (currentCount(for: tab) + pageSize(for: tab))
         let source = self.source
+        fillStopReason = .pageFilled
 
         fillTask = Task { [weak self] in
             let fillStart = CACurrentMediaTime()
@@ -828,6 +841,11 @@ final class RoomAttachmentsViewModel: ObservableObject {
             fillStopReason = .hitStart
             return nil
         }
+        guard self.tab == tab else {
+            fillStopReason = .tabChanged
+            if currentCount(for: tab) < target { interruptedTargets[tab] = target }
+            return nil
+        }
         guard startReportedByLastBatch || currentCount(for: tab) < target else {
             fillStopReason = .pageFilled
             return nil
@@ -902,6 +920,8 @@ final class RoomAttachmentsViewModel: ObservableObject {
             // The room start is a fact even when the settle hit its cap;
             // items still landing arrive through the listener regardless.
             fillState = .exhausted
+        } else if fillStopReason == .tabChanged {
+            fillState = .idle
         } else if currentCount(for: tab) < target {
             fillState = .capped
         } else {
@@ -952,11 +972,11 @@ final class RoomAttachmentsViewModel: ObservableObject {
         // now; a sentinel only if it is still on screen.
         if let pending = pendingFill {
             pendingFill = nil
-            if pending != .sentinel || sentinelVisible {
+            if pending.tab == self.tab, pending.intent != .sentinel || sentinelVisible {
                 #if DEBUG
                 diagnostics.pendingFillsReplayed += 1
                 #endif
-                fillIfNeeded(reason: "pending(\(pending.rawValue))", force: true, intent: pending)
+                fillIfNeeded(reason: "pending(\(pending.intent.rawValue))", force: true, intent: pending.intent)
             }
         }
     }

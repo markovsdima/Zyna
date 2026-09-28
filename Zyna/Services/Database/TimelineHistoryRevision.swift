@@ -15,7 +15,8 @@ import GRDB
 /// database read. With DatabasePool, the revision would need to live in the
 /// database and advance in the same transaction as the history changes.
 ///
-/// Scoped to one TimelineDiffBatcher and its ordered flush notifications.
+/// Scoped to one TimelineDiffBatcher and its decryption repair worker, which
+/// share a serial write queue and ordered main-queue notifications.
 /// Commits from another batcher, even for the same room, are not tracked.
 /// Supporting concurrent writers would require shared revision tracking
 /// and notification provenance, not just sharing this counter.
@@ -30,7 +31,7 @@ final class TimelineHistoryRevision: @unchecked Sendable {
     }
 
     func observeCommit(_ summary: TimelineFlushSummary, in db: Database) {
-        guard summary.hasHistoryOrResetShape else { return }
+        guard summary.hasHistoryOrResetShape || summary.includesUnreportedHistory else { return }
         db.afterNextTransaction(onCommit: { [self] _ in
             lock.lock()
             revision &+= 1

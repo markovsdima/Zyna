@@ -45,7 +45,7 @@ struct PendingRedactionIntent {
     let itemIdentifier: ChatItemIdentifier
 }
 
-struct PendingRedactionRecord: Codable, FetchableRecord, PersistableRecord {
+struct PendingRedactionRecord: Equatable, Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "pendingRedaction"
 
     var messageId: String
@@ -138,7 +138,7 @@ final class PendingRedactionService {
         case directRaw(eventId: String, transactionId: String)
     }
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private var dbQueue: AccountDatabase { DatabaseService.shared.dbQueue }
     private let activeAttemptsQueue = DispatchQueue(
         label: "com.zyna.pendingRedaction.activeAttempts"
     )
@@ -212,6 +212,15 @@ final class PendingRedactionService {
                 request = request.filter(Column("roomId") == roomId)
             }
             return try request.fetchAll(db)
+        }) ?? []
+    }
+
+    /// The app-lifetime outbox must not block main while scanning the cache.
+    func outboxCandidates() async -> [PendingRedactionRecord] {
+        (try? await dbQueue.read { db in
+            try PendingRedactionRecord.order(Column("createdAt").asc)
+                .fetchAll(db)
+                .filter { ($0.redactionEventId ?? "").isEmpty }
         }) ?? []
     }
 

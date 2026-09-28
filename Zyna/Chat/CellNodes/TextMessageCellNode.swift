@@ -37,7 +37,7 @@ final class TextMessageCellNode: MessageCellNode {
 
         let bodyDocument: RichTextDocument
         switch message.content {
-        case .poll:
+        case .poll, .unableToDecrypt:
             bodyDocument = MatrixRichTextParser.parse(body: message.content.textPreview, metadata: nil)
         case .text(let body):
             bodyDocument = MatrixRichTextParser.parse(

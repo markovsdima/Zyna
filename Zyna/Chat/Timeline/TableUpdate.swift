@@ -21,14 +21,15 @@ enum TableUpdate {
         rows: [ChatTimelineRow], origin: MessageWindowChangeOrigin,
         minimumVisibleRowBeforeUpdate: Int?
     ) -> Int {
-        guard case .timelineFlush = origin,
+        guard case .timelineFlush(let summary) = origin,
               case .batch(_, let insertions, _, _, _) = self,
               let minimumVisibleRowBeforeUpdate else { return 0 }
         return insertions.reduce(into: 0) { count, indexPath in
             guard indexPath.row < minimumVisibleRowBeforeUpdate,
                   rows.indices.contains(indexPath.row),
                   let message = rows[indexPath.row].message,
-                  !message.isOutgoing, !message.content.isRedacted else { return }
+                  !message.isOutgoing, !message.content.isRedacted,
+                  !summary.recoveredEventIDs.contains(message.eventId ?? "") else { return }
             count += 1
         }
     }

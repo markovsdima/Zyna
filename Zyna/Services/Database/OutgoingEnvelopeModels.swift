@@ -317,7 +317,7 @@ enum OutgoingEnvelopePayload: Equatable {
     }
 }
 
-struct OutgoingEnvelopeRecord: Codable, FetchableRecord, PersistableRecord {
+struct OutgoingEnvelopeRecord: Equatable, Codable, FetchableRecord, PersistableRecord {
     // Legacy table name kept to avoid churn in the physical schema while
     // the logical model moves from "pending media group" to generic
     // outgoing envelopes.
@@ -423,7 +423,7 @@ struct OutgoingEnvelopeRecord: Codable, FetchableRecord, PersistableRecord {
     }
 }
 
-struct OutgoingEnvelopeItemRecord: Codable, FetchableRecord, PersistableRecord {
+struct OutgoingEnvelopeItemRecord: Equatable, Codable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "pendingMediaGroupItem"
 
     var id: String

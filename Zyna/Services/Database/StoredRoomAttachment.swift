@@ -259,7 +259,7 @@ final class RoomAttachmentIndex: @unchecked Sendable {
     private static let batchDelay: TimeInterval = 0.04
 
     private let roomId: String
-    private let dbQueue: DatabaseQueue
+    private let dbQueue: AccountDatabase
     private let writeQueue = DispatchQueue(
         label: "com.zyna.db.room-attachment-index",
         qos: .utility
@@ -275,7 +275,7 @@ final class RoomAttachmentIndex: @unchecked Sendable {
     private var pendingSince: TimeInterval?
     private var flushScheduled = false
 
-    init(roomId: String, dbQueue: DatabaseQueue) {
+    init(roomId: String, dbQueue: AccountDatabase) {
         self.roomId = roomId
         self.dbQueue = dbQueue
     }
@@ -319,6 +319,11 @@ final class RoomAttachmentIndex: @unchecked Sendable {
         }
     }
 
+    private enum Change {
+        case upsert(StoredRoomAttachment)
+        case remove(String)
+    }
+
     private func flushPending() {
         dispatchPrecondition(condition: .onQueue(writeQueue))
         flushScheduled = false
@@ -333,25 +338,21 @@ final class RoomAttachmentIndex: @unchecked Sendable {
         #if DEBUG
         let writeStarted = ProcessInfo.processInfo.systemUptime
         #endif
+        let changes = removals.map(Change.remove) + upserts.map(Change.upsert)
+        var committedCount = 0
         do {
             var changedUpserts = 0
-            let deleted = try dbQueue.write { db in
-                let deleted: Int
-                if removals.isEmpty {
-                    deleted = 0
-                } else {
-                    deleted = try StoredRoomAttachment
-                        .filter(Column("roomId") == roomId)
-                        .filter(removals.contains(Column("eventId")))
-                        .deleteAll(db)
-                }
-                for record in upserts {
-                    if try record.saveIfChanged(in: db) {
-                        changedUpserts += 1
+            var deleted = 0
+            try DatabaseWriteBatch.write(changes, to: dbQueue, source: "attachment-index", apply: { db, change in
+                switch change {
+                case .remove(let eventId):
+                    if try StoredRoomAttachment.deleteOne(db, key: ["roomId": roomId, "eventId": eventId]) {
+                        deleted += 1
                     }
+                case .upsert(let record):
+                    if try record.saveIfChanged(in: db) { changedUpserts += 1 }
                 }
-                return deleted
-            }
+            }, didCommit: { range in committedCount = range.upperBound })
             #if DEBUG
             let finished = ProcessInfo.processInfo.systemUptime
             logRoomAttachmentIndex(
@@ -362,6 +363,14 @@ final class RoomAttachmentIndex: @unchecked Sendable {
             )
             #endif
         } catch {
+            // Retain only the uncommitted suffix. Future discoveries retry
+            // it; this serial queue then merges newer values over the old.
+            for change in changes.dropFirst(committedCount) {
+                switch change {
+                case .remove(let eventId): pendingRemovals.insert(eventId)
+                case .upsert(let record): pendingUpserts[record.eventId] = record
+                }
+            }
             logRoomAttachmentIndex("batch write failed: \(error)")
         }
     }
@@ -386,9 +395,8 @@ final class RoomAttachmentIndex: @unchecked Sendable {
             #endif
             return records
         }.removeDuplicates()
-        return observation.start(
-            in: dbQueue,
-            scheduling: .async(onQueue: observationQueue),
+        return dbQueue.observe(
+            observation, on: observationQueue,
             onError: onError,
             onChange: onChange
         )

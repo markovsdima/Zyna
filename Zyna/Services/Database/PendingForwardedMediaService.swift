@@ -220,7 +220,7 @@ final class PendingForwardedMediaService {
 
     static let shared = PendingForwardedMediaService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private var dbQueue: AccountDatabase { DatabaseService.shared.dbQueue }
 
     private init() {}
 
@@ -275,12 +275,12 @@ final class PendingForwardedMediaService {
 
     func outboxCandidates(
         envelopeIds: Set<String>? = nil
-    ) -> [PendingForwardedMediaCandidate] {
+    ) async -> [PendingForwardedMediaCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var recordRequest = PendingForwardedMediaRecord
                 .order(Column("createdAt").asc)
 
@@ -331,12 +331,12 @@ final class PendingForwardedMediaService {
 
     func missingRecordCandidates(
         envelopeIds: Set<String>? = nil
-    ) -> [PendingForwardedMediaMissingRecordCandidate] {
+    ) async -> [PendingForwardedMediaMissingRecordCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Self.forwardedEnvelopeKinds.contains(Column("kind")))
                 .order(Column("createdAt").asc)

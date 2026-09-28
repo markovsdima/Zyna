@@ -21,10 +21,10 @@ final class PendingMessageEditService {
 
     static let shared = PendingMessageEditService()
 
-    private let database: DatabaseQueue?
-    private var dbQueue: DatabaseQueue { database ?? DatabaseService.shared.dbQueue }
+    private let database: AccountDatabase?
+    private var dbQueue: AccountDatabase { database ?? DatabaseService.shared.dbQueue }
 
-    init(database: DatabaseQueue? = nil) { self.database = database }
+    init(database: AccountDatabase? = nil) { self.database = database }
 
     func prepareDirectRawEdit(
         roomId: String,
@@ -69,8 +69,8 @@ final class PendingMessageEditService {
     func pendingDirectRawEdits(
         roomId: String? = nil,
         eventId: String? = nil
-    ) -> [PendingMessageEditSnapshot] {
-        (try? dbQueue.read { db in
+    ) async -> [PendingMessageEditSnapshot] {
+        (try? await dbQueue.read { db in
             var sql = """
                 SELECT roomId, eventId, editTransactionId,
                        pendingEditBody, pendingEditFormattedBody, pendingEditZynaAttributesJSON

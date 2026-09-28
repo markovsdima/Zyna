@@ -1090,7 +1090,7 @@ struct ComposerTextTests {
     }
 
     @Test("Pending edits persist HTML, project locally, accept it and can remove it")
-    func pendingEdit() throws {
+    func pendingEdit() async throws {
         let message = ChatMessage(
             id: "message", eventId: "$event", transactionId: nil, itemIdentifier: nil,
             senderId: "@me:example.org", senderDisplayName: nil, senderAvatarUrl: nil,
@@ -1100,9 +1100,9 @@ struct ComposerTextTests {
             zynaAttributes: ZynaMessageAttributes(), sendStatus: "sent"
         )
         let record = StoredMessage(from: message, roomId: "room")
-        let db = try DatabaseQueue()
+        let db = AccountDatabase(try DatabaseQueue())
         let columns = Mirror(reflecting: record).children.compactMap(\.label)
-        try db.write {
+        try await db.write {
             let definitions = columns.map { "\"\($0)\"" + ($0 == "id" ? " TEXT PRIMARY KEY" : "") }
             try $0.execute(sql: "CREATE TABLE storedMessage (\(definitions.joined(separator: ",")))")
             try record.insert($0)
@@ -1111,14 +1111,14 @@ struct ComposerTextTests {
         let html = "<strong>Hello</strong>"
         #expect(service.prepareDirectRawEdit(roomId: "room", eventId: "$event", body: "Hello", formattedBody: html, zynaAttributes: ZynaMessageAttributes(), transactionId: "one"))
         let recreated = PendingMessageEditService(database: db)
-        #expect(recreated.pendingDirectRawEdits().first?.formattedBody == html)
-        let pending = try db.read { try StoredMessage.fetchOne($0, key: record.id) }
+        #expect(await recreated.pendingDirectRawEdits().first?.formattedBody == html)
+        let pending = try await db.read { try StoredMessage.fetchOne($0, key: record.id) }
         #expect(pending?.toChatMessage()?.textMetadata?.formattedBody == html)
         #expect(recreated.applyAcceptedDirectRawEdit(roomId: "room", eventId: "$event", transactionId: "one", editEventId: "$edit", body: "Hello", formattedBody: html, zynaAttributes: ZynaMessageAttributes()))
-        let accepted = try db.read { try StoredMessage.fetchOne($0, key: record.id) }
+        let accepted = try await db.read { try StoredMessage.fetchOne($0, key: record.id) }
         #expect(accepted?.toChatMessage()?.textMetadata?.formattedBody == html)
         #expect(recreated.prepareDirectRawEdit(roomId: "room", eventId: "$event", body: "Hello", zynaAttributes: ZynaMessageAttributes(), transactionId: "two"))
-        let plain = try db.read { try StoredMessage.fetchOne($0, key: record.id) }
+        let plain = try await db.read { try StoredMessage.fetchOne($0, key: record.id) }
         #expect(plain?.toChatMessage()?.textMetadata == nil)
         #expect(!recreated.applyAcceptedDirectRawEdit(roomId: "room", eventId: "$event", transactionId: "one", editEventId: "$stale", body: "Hello", formattedBody: html, zynaAttributes: ZynaMessageAttributes()))
     }

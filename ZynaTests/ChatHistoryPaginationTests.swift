@@ -33,8 +33,8 @@ struct ChatHistoryPaginationTests {
         return stored
     }
 
-    private func database(_ records: [StoredMessage]) throws -> DatabaseQueue {
-        let database = try DatabaseQueue()
+    private func database(_ records: [StoredMessage]) throws -> AccountDatabase {
+        let database = AccountDatabase(try DatabaseQueue())
         // Include nullable record fields too, without copying the production
         // migrations for unrelated room, attachment and outbox tables.
         let columns = Mirror(reflecting: message(0)).children.compactMap(\.label)
@@ -48,8 +48,22 @@ struct ChatHistoryPaginationTests {
             }
             try db.execute(sql: "CREATE TABLE storedMessage (\(definitions.joined(separator: ",")))")
             for record in records { try record.insert(db) }
+            try MessageDecryptionRepairStore.migrate(db)
+            try MessageDecryptionRepairStore.migratePresentation(db)
         }
         return database
+    }
+
+    /// Prepared UI application must not query again, while the account must
+    /// remain active. Retirement is tested separately as a rejection case.
+    private func forbidFurtherSQL(_ database: AccountDatabase) throws {
+        let active = Atomic(false)
+        try database.write { db in
+            db.trace { _ in
+                if active.wrappedValue { Issue.record("Prepared page performed SQL") }
+            }
+        }
+        active.wrappedValue = true
     }
 
     @Test("Equal timestamps paginate without gaps and retain earlier pages")
@@ -78,7 +92,7 @@ struct ChatHistoryPaginationTests {
         window.loadInitial()
         let request = try #require(window.pageRequest(.older))
         let page = try await Task.detached { try request.fetch() }.value
-        try database.close()
+        try forbidFurtherSQL(database)
         var changes = 0
         window.onChange = { records, _, origin in
             #expect(Thread.isMainThread)
@@ -349,7 +363,7 @@ struct ChatHistoryPaginationTests {
         let request = window.refreshRequest()
         let page = try await Task.detached { try request.fetch() }.value
         #expect(!page.contentChanged)
-        try database.close()
+        try forbidFurtherSQL(database)
         var changes = 0
         window.onChange = { records, _, _ in
             #expect(records.count == 200)
@@ -374,7 +388,7 @@ struct ChatHistoryPaginationTests {
         let request = window.refreshRequest()
         let page = try await Task.detached { try request.fetch() }.value
         #expect(page.contentChanged)
-        try database.close()
+        try forbidFurtherSQL(database)
         var changes = 0
         let summary = TimelineFlushSummary(pushBackCount: 1, setCount: 1, readReceiptCount: 1)
         window.onChange = { records, previous, origin in
@@ -501,6 +515,62 @@ struct ChatHistoryPaginationTests {
         #expect(!queue.hasPending)
     }
 
+    @Test("Only catalog poll updates suppress a coalesced live deletion",
+          arguments: [PollStore.RoomUpdate.Origin.localMutation, .catalog], [true, false])
+    func pollUpdateProvenance(origin: PollStore.RoomUpdate.Origin, pollFirst: Bool) {
+        var summaries: [TimelineFlushSummary] = []
+        var finish: ((ChatTimelineRefreshQueue.Result) -> Void)?
+        let queue = ChatTimelineRefreshQueue { summary, completion in
+            summaries.append(summary)
+            finish = completion
+        }
+        let poll = PollStore.RoomUpdate(roomId: roomId, origin: origin)
+        let liveDeletion = TimelineFlushSummary(setCount: 1, redactedUpsertCount: 1)
+        if pollFirst {
+            queue.enqueue(poll)
+            queue.enqueue(liveDeletion)
+        } else {
+            queue.enqueue(liveDeletion)
+            queue.enqueue(poll)
+        }
+        #expect(summaries.count == 1)
+        let effective = queue.summaryForApplying(summaries[0])
+        #expect(effective.allowsRemoteRedactionAnimation == (origin == .localMutation))
+        #expect(effective.requiresPresentationRefresh)
+        // A stale snapshot must retain the same provenance when retried.
+        finish?(.superseded)
+        #expect(summaries.count == 2)
+        #expect(summaries[1] == effective)
+        finish?(.applied)
+        // Catalog provenance does not leak into a later, independent deletion.
+        queue.enqueue(liveDeletion)
+        #expect(summaries.last?.allowsRemoteRedactionAnimation == true)
+        #expect(summaries.last?.requiresPresentationRefresh == false)
+        finish?(.applied)
+    }
+
+    @Test("Poll notifications refresh outgoing presentation even when stored history is unchanged",
+          arguments: [PollStore.RoomUpdate.Origin.localMutation, .catalog])
+    func pollUpdateRefreshesUnchangedWindow(origin: PollStore.RoomUpdate.Origin) async throws {
+        let database = try database([message(1)])
+        let window = MessageWindow(roomId: roomId, dbQueue: database)
+        window.loadInitial()
+        _ = window.peekOlderNeighbor()
+        let request = window.refreshRequest()
+        let page = try await Task.detached { try request.fetch() }.value
+        #expect(!page.contentChanged)
+        var changes = 0
+        window.onChange = { _, _, _ in changes += 1 }
+        let queue = ChatTimelineRefreshQueue { summary, completion in
+            #expect(window.applyRefresh(page, summary: summary))
+            completion(.applied)
+        }
+        queue.enqueue(PollStore.RoomUpdate(roomId: roomId, origin: origin))
+        #expect(changes == 1)
+        queue.enqueue(TimelineFlushSummary(readReceiptCount: 1))
+        #expect(changes == 1)
+    }
+
     @Test("A failed refresh retains provenance without a busy retry loop")
     func failedTimelineRefresh() {
         var summaries: [TimelineFlushSummary] = []
@@ -544,19 +614,37 @@ struct ChatHistoryPaginationTests {
         #expect(!queue.hasPending)
     }
 
-    @Test("Superseded server reads retry but cannot establish exhaustion")
+    @Test("Only SDK exhaustion ends service-only history; stale reads retry locally")
     func supersededServerRead() {
         #expect(ChatHistoryPageLoader.serverWaitAction(
-            result: .superseded, attemptsRemaining: 3, displayCountIncreased: false
+            result: .superseded, attemptsRemaining: 3, displayCountIncreased: false, reachedStart: false, hasLocal: false
         ) == .retry)
         #expect(ChatHistoryPageLoader.serverWaitAction(
-            result: .superseded, attemptsRemaining: 1, displayCountIncreased: false
+            result: .superseded, attemptsRemaining: 1, displayCountIncreased: false, reachedStart: false, hasLocal: false
         ) == .finish)
         #expect(ChatHistoryPageLoader.serverWaitAction(
-            result: .exhausted, attemptsRemaining: 1, displayCountIncreased: false
-        ) == .exhausted)
+            result: .exhausted, attemptsRemaining: 1, displayCountIncreased: false, reachedStart: false, hasLocal: false
+        ) == .loadMore)
         #expect(ChatHistoryPageLoader.serverWaitAction(
-            result: .exhausted, attemptsRemaining: 1, displayCountIncreased: true
+            result: .exhausted, attemptsRemaining: 1, displayCountIncreased: true, reachedStart: false, hasLocal: false
+        ) == .finish)
+        #expect(ChatHistoryPageLoader.serverWaitAction(
+            result: .exhausted, attemptsRemaining: 3, displayCountIncreased: false, reachedStart: true, hasLocal: false
+        ) == .finish)
+        #expect(ChatHistoryPageLoader.serverWaitAction(
+            result: .failed, attemptsRemaining: 3, displayCountIncreased: false, reachedStart: false, hasLocal: false
+        ) == .finish)
+        #expect(ChatHistoryPageLoader.serverWaitAction(
+            result: .applied, attemptsRemaining: 3, displayCountIncreased: false,
+            reachedStart: false, hasLocal: false
+        ) == .loadMore)
+        #expect(ChatHistoryPageLoader.serverWaitAction(
+            result: .applied, attemptsRemaining: 3, displayCountIncreased: false,
+            reachedStart: false, hasLocal: true
+        ) == .finish)
+        #expect(ChatHistoryPageLoader.serverWaitAction(
+            result: .applied, attemptsRemaining: 3, displayCountIncreased: false,
+            reachedStart: true, hasLocal: false
         ) == .finish)
     }
 
@@ -649,7 +737,7 @@ struct ChatHistoryPaginationTests {
         window.jumpTo(eventId: "$0210")
         let request = try #require(window.pageRequest(.newer))
         let page = try await Task.detached { try request.fetch() }.value
-        try database.close()
+        try forbidFurtherSQL(database)
         var changes = 0
         window.onChange = { records, _, origin in
             #expect(Thread.isMainThread)
@@ -779,6 +867,11 @@ struct ChatHistoryPaginationTests {
             rows: rows, origin: .timelineFlush(TimelineFlushSummary(pushBackCount: 50)),
             minimumVisibleRowBeforeUpdate: 30
         ) == 30)
+        #expect(update.unseenIncomingCount(
+            rows: rows, origin: .timelineFlush(TimelineFlushSummary(pushBackCount: 50,
+                includesUnreportedHistory: true, recoveredEventIDs: ["$0000", "$0001"])),
+            minimumVisibleRowBeforeUpdate: 30
+        ) == 28)
         // SDK summaries can combine live arrivals with a history flush;
         // the history/reset flag is an animation policy, not a read count.
         #expect(update.unseenIncomingCount(

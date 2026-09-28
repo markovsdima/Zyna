@@ -139,6 +139,16 @@ struct StoredMessage: Codable, FetchableRecord, PersistableRecord, Equatable {
 
 extension StoredMessage {
 
+    var decryptionFailure: ChatDecryptionFailure? {
+        guard contentType == "unableToDecrypt" else { return nil }
+        // Unknown persisted reasons must not bypass a trust restriction.
+        return ChatDecryptionFailure(rawValue: contentBody ?? "") ?? .trustRequirement
+    }
+
+    var isLegacyDecryptionCandidate: Bool {
+        contentType == "text" && ChatDecryptionFailure.isLegacyPlaceholderText(contentBody)
+    }
+
     var timelineIdentity: MessageIdentity {
         MessageIdentity.from(
             eventId: eventId,
@@ -219,6 +229,9 @@ extension StoredMessage {
         )
 
         switch msg.content {
+        case .unableToDecrypt(let failure):
+            contentType = "unableToDecrypt"
+            contentBody = failure.rawValue
         case .poll(let poll):
             contentType = "poll"
             contentBody = poll.definition.question
@@ -503,6 +516,8 @@ extension StoredMessage {
             return PollCoding.decode(PollSnapshot.self, from: contentPollJSON).map(ChatMessageContent.poll)
         }
         switch contentType {
+        case "unableToDecrypt":
+            return .unableToDecrypt(decryptionFailure ?? .trustRequirement)
         case "text":
             return .text(body: contentBody ?? "")
         case "image":

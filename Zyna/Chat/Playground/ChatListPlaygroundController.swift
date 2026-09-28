@@ -361,23 +361,28 @@ final class ChatListPlaygroundController: ASDKViewController<ASDisplayNode> {
 
     private func jump(eventID: String) {
         if let row = rows.first(where: { $0.message?.eventId == eventID }) {
+            viewModel.cancelPendingHistoryReplacement()
             list.scroll(to: .item(ChatPlaygroundItem.id(for: row)))
             return
         }
         navigationRevision += 1
-        localEdits = false
-        destination = .item("message:" + eventID)
-        changingWindow = true
-        viewModel.jumpToMessage(eventId: eventID)
-        // A composite may use its group ID rather than its Matrix event ID.
-        if let row = viewModel.rows.first(where: {
-            $0.message?.eventId == eventID
-                || $0.message?.mediaGroupPresentation?.items.contains(where: { $0.eventId == eventID }) == true
-        }) {
-            destination = .item(ChatPlaygroundItem.id(for: row))
+        let revision = navigationRevision
+        viewModel.prepareHistoryReplacement(.event(eventID)) { [weak self] apply in
+            guard let self, self.navigationRevision == revision else { return }
+            self.localEdits = false
+            self.destination = .item("message:" + eventID)
+            self.changingWindow = true
+            apply()
+            // A composite may use its group ID rather than its Matrix event ID.
+            if let row = self.viewModel.rows.first(where: {
+                $0.message?.eventId == eventID
+                    || $0.message?.mediaGroupPresentation?.items.contains(where: { $0.eventId == eventID }) == true
+            }) {
+                self.destination = .item(ChatPlaygroundItem.id(for: row))
+            }
+            self.changingWindow = false
+            self.receiveRows()
         }
-        changingWindow = false
-        receiveRows()
     }
 
     private func showExperiments() {
@@ -414,12 +419,16 @@ final class ChatListPlaygroundController: ASDKViewController<ASDisplayNode> {
 
     private func jumpToEdge(latest: Bool) {
         navigationRevision += 1
-        localEdits = false
-        destination = latest ? .end : .start
-        changingWindow = true
-        if latest { viewModel.jumpToLive() } else { viewModel.jumpToOldest() }
-        changingWindow = false
-        receiveRows()
+        let revision = navigationRevision
+        viewModel.prepareHistoryReplacement(latest ? .live : .oldest) { [weak self] apply in
+            guard let self, self.navigationRevision == revision else { return }
+            self.localEdits = false
+            self.destination = latest ? .end : .start
+            self.changingWindow = true
+            apply()
+            self.changingWindow = false
+            self.receiveRows()
+        }
     }
 
     private func updateScrollToLiveVisibility() {

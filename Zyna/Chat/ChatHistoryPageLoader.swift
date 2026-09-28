@@ -70,23 +70,30 @@ final class ChatHistoryPageLoader {
         return older ? .older : nil
     }
 
-    enum ServerWaitAction: Equatable { case retry, finish, exhausted }
+    enum ServerWaitAction: Equatable { case retry, finish, loadMore }
 
     static func shouldLoadSparseHistory(displayCount: Int, hasLocal: Bool, serverExhausted: Bool) -> Bool {
         displayCount < 20 && !hasLocal && !serverExhausted
     }
 
     static func serverWaitAction(
-        result: Result, attemptsRemaining: Int, displayCountIncreased: Bool
+        result: Result, attemptsRemaining: Int, displayCountIncreased: Bool,
+        reachedStart: Bool, hasLocal: Bool
     ) -> ServerWaitAction {
         switch result {
-        case .applied, .failed:
+        case .failed:
             return .finish
+        case .applied:
+            // A raw page can advance the cursor without admitting a bubble.
+            // Local prefetch handles remaining rows; otherwise keep the SDK
+            // request alive until a visible page or the actual start arrives.
+            return !hasLocal && !reachedStart && !displayCountIncreased ? .loadMore : .finish
         case .superseded:
             return attemptsRemaining > 1 ? .retry : .finish
         case .exhausted:
-            if attemptsRemaining > 1 { return .retry }
-            return displayCountIncreased ? .finish : .exhausted
+            // The writer was drained. Polling an empty DB cannot tell us
+            // whether the SDK has more history, nor advance a filtered page.
+            return reachedStart || displayCountIncreased ? .finish : .loadMore
         }
     }
 }

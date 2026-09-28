@@ -25,9 +25,11 @@ enum RoomAttachmentsMetrics {
 struct RoomAttachmentsView: View {
 
     @ObservedObject var viewModel: RoomAttachmentsViewModel
+    let pollsViewModel: RoomPollsViewModel
     let audioPlayer: AudioPlayerService
     let roomName: String
     let actions: RoomAttachmentsActions
+    @State private var visitedTabs: Set<RoomAttachmentsViewModel.Tab> = [.media]
 
     #if DEBUG
     @State private var showDiagnostics = false
@@ -36,12 +38,13 @@ struct RoomAttachmentsView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if viewModel.pendingDecryptionCount > 0 {
+            if viewModel.tab != .polls, viewModel.pendingDecryptionCount > 0 {
                 pendingBanner
             }
             content
         }
         .background(Color.appBackground)
+        .onChange(of: viewModel.tab) { _, tab in visitedTabs.insert(tab) }
         .task {
             await viewModel.start()
         }
@@ -110,7 +113,21 @@ struct RoomAttachmentsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let startError = viewModel.startError {
+        ZStack {
+            ForEach(RoomAttachmentsViewModel.Tab.allCases.filter { visitedTabs.contains($0) }) { tab in
+                tabContent(tab)
+                    .opacity(viewModel.tab == tab ? 1 : 0)
+                    .allowsHitTesting(viewModel.tab == tab)
+                    .accessibilityHidden(viewModel.tab != tab)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tabContent(_ tab: RoomAttachmentsViewModel.Tab) -> some View {
+        if tab == .polls {
+            RoomPollsView(viewModel: pollsViewModel, isActive: viewModel.tab == .polls, openPoll: actions.openPoll)
+        } else if let startError = viewModel.startError {
             VStack(spacing: 12) {
                 Text("Couldn't load attachments.")
                 Text(startError)
@@ -124,13 +141,15 @@ struct RoomAttachmentsView: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            switch viewModel.tab {
+            switch tab {
             case .media:
                 mediaGrid
             case .voice:
                 voiceList
             case .files:
                 filesList
+            case .polls:
+                EmptyView()
             }
         }
     }
@@ -163,7 +182,7 @@ struct RoomAttachmentsView: View {
                         }
                     }
                 }
-                footer
+                footer(for: .media)
             }
         }
     }
@@ -193,7 +212,7 @@ struct RoomAttachmentsView: View {
                         }
                     }
                 }
-                footer
+                footer(for: .voice)
             }
         }
     }
@@ -220,7 +239,7 @@ struct RoomAttachmentsView: View {
                         }
                     }
                 }
-                footer
+                footer(for: .files)
             }
         }
     }
@@ -253,7 +272,7 @@ struct RoomAttachmentsView: View {
     }
 
     /// Wrapped in a lazy container so `onAppear` fires reliably.
-    private var footer: some View {
+    private func footer(for tab: RoomAttachmentsViewModel.Tab) -> some View {
         LazyVStack(spacing: 10) {
             if isBusy {
                 ProgressView()
@@ -278,8 +297,8 @@ struct RoomAttachmentsView: View {
             }
             Color.clear
                 .frame(height: 1)
-                .onAppear { viewModel.sentinelAppeared() }
-                .onDisappear { viewModel.sentinelDisappeared() }
+                .onAppear { viewModel.sentinelAppeared(in: tab) }
+                .onDisappear { viewModel.sentinelDisappeared(in: tab) }
         }
         .padding(.vertical, 12)
     }

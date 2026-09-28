@@ -732,6 +732,12 @@ final class ChatsCoordinator {
 
     @MainActor
     private func showRoomAttachments(room: Room) {
+        let sessionId = MatrixClientService.shared.currentLocalSessionId
+        let catalog = RoomPollCatalog(roomId: room.id(), database: DatabaseService.shared.dbQueue)
+        let pollsViewModel = RoomPollsViewModel(catalog: catalog,
+            source: SDKRoomPollHistorySource(room: room,
+                userID: (try? MatrixClientService.shared.client?.userId()) ?? "", catalog: catalog),
+            isCurrentSession: { MatrixClientService.shared.currentLocalSessionId == sessionId })
         let viewModel = RoomAttachmentsViewModel(
             room: room,
             filterMode: AttachmentsResearchSettings.filterMode,
@@ -759,12 +765,29 @@ final class ChatsCoordinator {
                 Task { @MainActor in
                     self?.openAttachmentFile(item, presenter: presenter, onEvent: onEvent)
                 }
+            },
+            openPoll: { [weak self] eventId in
+                guard let self, self.activeAttachmentPresenter(presenter) != nil,
+                      MatrixClientService.shared.currentLocalSessionId == sessionId,
+                      let chat = self.navigationController.stack.last(where: {
+                          ($0 as? ChatViewController)?.roomIdentifier == room.id()
+                      }) as? ChatViewController else { throw PollNavigationError.unavailable }
+                let prepared = try await chat.preparePollNavigation(eventId: eventId)
+                return PreparedPollNavigation { [weak self, weak chat] in
+                    guard let self, let chat, self.activeAttachmentPresenter(presenter) != nil,
+                          MatrixClientService.shared.currentLocalSessionId == sessionId,
+                          let index = self.navigationController.stack.firstIndex(where: { $0 === chat }),
+                          prepared.open() else { return false }
+                    self.navigationController.setStack(Array(self.navigationController.stack.prefix(index + 1)), animated: true)
+                    return true
+                }
             }
         )
         let vc = GlassHostingController(
             title: String(localized: "Attachments"),
             rootView: RoomAttachmentsView(
                 viewModel: viewModel,
+                pollsViewModel: pollsViewModel,
                 audioPlayer: audioPlayer,
                 roomName: room.displayName() ?? String(localized: "Chat"),
                 actions: actions
@@ -775,8 +798,9 @@ final class ChatsCoordinator {
             }
         )
         presenter.viewController = vc
-        vc.onRemovedFromParent = { [weak viewModel] in
+        vc.onRemovedFromParent = { [weak viewModel, weak pollsViewModel] in
             viewModel?.stop()
+            pollsViewModel?.stop()
         }
         navigationController.push(vc)
     }

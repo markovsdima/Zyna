@@ -8,6 +8,13 @@ import Foundation
 import GRDB
 import MatrixRustSDK
 
+/// A profile that has not loaded must not erase a cached name. A loaded
+/// profile with no display name is an intentional update, including nil.
+enum PollSenderProfile: Sendable {
+    case unavailable
+    case ready(name: String?)
+}
+
 struct StoredRoomPoll: Codable, FetchableRecord, PersistableRecord, Equatable {
     static let databaseTableName = "roomPoll"
     var roomId: String
@@ -57,15 +64,21 @@ struct PendingPollOperation: Codable, FetchableRecord, PersistableRecord {
 /// `storedMessage.contentPollJSON` is only a materialized presentation cache;
 /// confirmed state and pending intent are always kept separate here.
 final class PollStore {
+    struct RoomUpdate: Equatable, Sendable {
+        enum Origin: Equatable, Sendable { case localMutation, catalog }
+        let roomId: String
+        let origin: Origin
+    }
+
     static let shared = PollStore()
-    let roomDidUpdate = PassthroughSubject<String, Never>()
+    let roomDidUpdate = PassthroughSubject<RoomUpdate, Never>()
     private let queue = DispatchQueue(label: "com.zyna.polls.store", qos: .userInitiated)
-    private let database: () -> DatabaseQueue
+    private let database: () -> AccountDatabase
     static let confirmationDelay: TimeInterval = 15
     static let confirmationPageDelay: TimeInterval = 2
     static let confirmationRetryDelay: TimeInterval = 30
 
-    init(database: @escaping () -> DatabaseQueue = { DatabaseService.shared.dbQueue }) {
+    init(database: @escaping () -> AccountDatabase = { DatabaseService.shared.dbQueue }) {
         self.database = database
     }
 
@@ -120,7 +133,8 @@ final class PollStore {
     }
 
     /// Called inside the timeline batcher's write transaction, off-main.
-    static func ingest(_ record: inout StoredMessage, isPollStart: Bool = false, in db: Database) throws {
+    static func ingest(_ record: inout StoredMessage, isPollStart: Bool = false,
+                       senderProfile: PollSenderProfile = .unavailable, in db: Database) throws {
         guard let eventId = record.eventId else { return }
         let key: [String: DatabaseValueConvertible] = ["roomId": record.roomId, "eventId": eventId]
         if record.contentType == "redacted" {
@@ -142,6 +156,9 @@ final class PollStore {
             try StoredRoomPoll(roomId: record.roomId, eventId: eventId, timestamp: record.timestamp,
                 senderId: record.senderId, senderName: record.senderDisplayName,
                 snapshotJSON: "{}", isRedacted: true).save(db)
+            #if DEBUG
+            PollCacheDiagnostics.stored(roomId: record.roomId, eventId: eventId, ended: false, redacted: true, in: db)
+            #endif
             try deleteOperations(roomId: record.roomId, eventId: eventId, in: db)
             try deleteCreation(roomId: record.roomId, eventId: eventId, in: db)
             return
@@ -174,10 +191,20 @@ final class PollStore {
             }
         }
         snapshot.pending = nil
+        switch senderProfile {
+        case .unavailable: record.senderDisplayName = record.senderDisplayName ?? previous?.senderName
+        case .ready(let name): record.senderDisplayName = name
+        }
         let poll = StoredRoomPoll(roomId: record.roomId, eventId: eventId,
             timestamp: record.timestamp, senderId: record.senderId, senderName: record.senderDisplayName,
             snapshotJSON: try PollCoding.encode(snapshot), isRedacted: false)
-        if previous != poll { try poll.save(db) }
+        if previous != poll {
+            try poll.save(db)
+            #if DEBUG
+            PollCacheDiagnostics.stored(roomId: record.roomId, eventId: eventId,
+                                        ended: snapshot.hasEnded, redacted: false, in: db)
+            #endif
+        }
         try reconcile(snapshot, roomId: record.roomId, eventId: eventId, in: db)
         record.contentPollJSON = try PollCoding.encode(presentation(snapshot, roomId: record.roomId, eventId: eventId, in: db))
     }
@@ -295,7 +322,7 @@ final class PollStore {
                 sessionId: sessionId, kind: .start, definition: definition, answers: nil, in: db)
             try operation.insert(db)
         }
-        roomDidUpdate.send(roomId)
+        roomDidUpdate.send(RoomUpdate(roomId: roomId, origin: .localMutation))
         return id
     }
 
@@ -335,7 +362,7 @@ final class PollStore {
             try operation.insert(db)
             try Self.refreshPresentation(roomId: roomId, eventId: eventId, in: db)
         }
-        roomDidUpdate.send(roomId)
+        roomDidUpdate.send(RoomUpdate(roomId: roomId, origin: .localMutation))
     }
 
     private static func makeOperation(id: String, roomId: String, target: String?, envelopeId: String?,
@@ -420,7 +447,7 @@ final class PollStore {
             try Self.refreshPresentation(roomId: current.roomId, eventId: target, in: db)
             return false
         }
-        if changed { roomDidUpdate.send(operation.roomId) }
+        if changed { roomDidUpdate.send(RoomUpdate(roomId: operation.roomId, origin: .localMutation)) }
     }
 
     /// A wake scheduled by another operation must not bypass this deadline.
@@ -452,7 +479,7 @@ final class PollStore {
             }
             return rooms
         }
-        for room in rooms { roomDidUpdate.send(room) }
+        for room in rooms { roomDidUpdate.send(RoomUpdate(roomId: room, origin: .localMutation)) }
     }
 
     func begin(_ candidate: PendingPollOperation) async throws -> PendingPollOperation? {
@@ -495,28 +522,47 @@ final class PollStore {
     /// Indexed keyset pagination, independent of the chat window and UI toolkit.
     func polls(roomId: String, before cursor: Cursor? = nil, limit: Int = 50) async throws -> [RoomPollItem] {
         try await perform { db in
-            var query = StoredRoomPoll.filter(Column("roomId") == roomId && Column("isRedacted") == false)
-            if let cursor {
-                query = query.filter(Column("timestamp") < cursor.timestamp
-                    || (Column("timestamp") == cursor.timestamp && Column("eventId") < cursor.eventId))
-            }
-            let records = try query.order(Column("timestamp").desc, Column("eventId").desc)
-                .limit(max(1, min(limit, 100))).fetchAll(db)
-            let ids = records.map(\.eventId)
-            let operations = try PendingPollOperation
-                .filter(Column("roomId") == roomId && ids.contains(Column("pollStartEventId")))
-                .order(Column("sequence").asc).fetchAll(db)
-            var latest: [String: PendingPollOperation] = [:]
-            for operation in operations {
-                if let id = operation.pollStartEventId { latest[id] = operation }
-            }
-            return records.compactMap { record in
-                guard let snapshot = record.snapshot else { return nil }
-                return RoomPollItem(roomId: roomId, eventId: record.eventId, timestamp: record.timestamp,
-                    senderId: record.senderId, senderName: record.senderName,
-                    snapshot: Self.presentation(snapshot, operation: latest[record.eventId]))
-            }
+            try Self.fetchPolls(in: db, roomId: roomId, before: cursor, limit: max(1, min(limit, 100)))
         }
+    }
+
+    /// Also used by the bounded, observed window in room attachments.
+    static func fetchPolls(in db: Database, roomId: String, before cursor: Cursor? = nil,
+                           limit: Int) throws -> [RoomPollItem] {
+        #if DEBUG
+        let began = ProcessInfo.processInfo.systemUptime
+        #endif
+        var query = StoredRoomPoll.filter(Column("roomId") == roomId && Column("isRedacted") == false)
+        if let cursor {
+            query = query.filter(Column("timestamp") < cursor.timestamp
+                || (Column("timestamp") == cursor.timestamp && Column("eventId") < cursor.eventId))
+        }
+        let records = try query.order(Column("timestamp").desc, Column("eventId").desc)
+            .limit(limit).fetchAll(db)
+        #if DEBUG
+        let fetchedRecords = ProcessInfo.processInfo.systemUptime
+        #endif
+        let ids = records.map(\.eventId)
+        let operations = try PendingPollOperation
+            .filter(Column("roomId") == roomId && ids.contains(Column("pollStartEventId")))
+            .order(Column("sequence").asc).fetchAll(db)
+        #if DEBUG
+        let fetchedOperations = ProcessInfo.processInfo.systemUptime
+        #endif
+        var latest: [String: PendingPollOperation] = [:]
+        for operation in operations {
+            if let id = operation.pollStartEventId { latest[id] = operation }
+        }
+        let items = records.compactMap { record -> RoomPollItem? in
+            guard let snapshot = record.snapshot else { return nil }
+            return RoomPollItem(roomId: roomId, eventId: record.eventId, timestamp: record.timestamp,
+                senderId: record.senderId, senderName: record.senderName,
+                snapshot: Self.presentation(snapshot, operation: latest[record.eventId]))
+        }
+        #if DEBUG
+        PollCacheDiagnostics.log("read-result room=\(PollCacheDiagnostics.key(roomId)) limit=\(limit) stored=\(records.count) undecodable=\(records.count - items.count) rowsMs=\(Int((fetchedRecords - began) * 1000)) operationsMs=\(Int((fetchedOperations - fetchedRecords) * 1000)) decodeMs=\(PollCacheDiagnostics.milliseconds(since: fetchedOperations)) \(PollCacheDiagnostics.items(items))")
+        #endif
+        return items
     }
 
     func accept(_ operation: PendingPollOperation, eventId: String,
@@ -541,7 +587,7 @@ final class PollStore {
             try Self.updateEnvelope(record, state: .sent, in: db)
             try Self.refreshPresentation(roomId: record.roomId, eventId: record.pollStartEventId, in: db)
         }
-        roomDidUpdate.send(operation.roomId)
+        roomDidUpdate.send(RoomUpdate(roomId: operation.roomId, origin: .localMutation))
     }
 
     func fail(_ operation: PendingPollOperation, retryAfter: TimeInterval?) async throws {
@@ -553,7 +599,7 @@ final class PollStore {
             try Self.updateEnvelope(record, state: retryAfter == nil ? .failed : .retrying, in: db)
             try Self.refreshPresentation(roomId: record.roomId, eventId: record.pollStartEventId, in: db)
         }
-        roomDidUpdate.send(operation.roomId)
+        roomDidUpdate.send(RoomUpdate(roomId: operation.roomId, origin: .localMutation))
     }
 
     @MainActor
@@ -568,7 +614,7 @@ final class PollStore {
             try Self.refreshPresentation(roomId: operation.roomId, eventId: operation.pollStartEventId, in: db)
             return operation.roomId
         }
-        roomDidUpdate.send(roomId)
+        roomDidUpdate.send(RoomUpdate(roomId: roomId, origin: .localMutation))
     }
 
     func dismissFailure(id: String) async throws {
@@ -578,7 +624,7 @@ final class PollStore {
             try Self.refreshPresentation(roomId: operation.roomId, eventId: operation.pollStartEventId, in: db)
             return operation.roomId
         }
-        if let roomId { roomDidUpdate.send(roomId) }
+        if let roomId { roomDidUpdate.send(RoomUpdate(roomId: roomId, origin: .localMutation)) }
     }
 
     private static func updateEnvelope(_ operation: PendingPollOperation, state: OutgoingTransportState, in db: Database) throws {
