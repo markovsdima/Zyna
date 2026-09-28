@@ -43,6 +43,10 @@ struct LogScope: OptionSet {
     static let attachments      = LogScope(rawValue: bit(16))
     static let glassPerf        = LogScope(rawValue: bit(17))
     static let historyScroll    = LogScope(rawValue: bit(18))
+    static let polls            = LogScope(rawValue: bit(19))
+
+    static let messageDiagnostics = LogScope(rawValue: bit(20))
+    static let historyPerformance = LogScope(rawValue: bit(21))
 
     // MARK: - Presets
 
@@ -65,7 +69,10 @@ struct LogScope: OptionSet {
         .video,
         .attachments,
         .glassPerf,
-        .historyScroll
+        .historyScroll,
+        .polls,
+        .messageDiagnostics,
+        .historyPerformance
     ]
 
     static let none: LogScope = []
@@ -122,18 +129,24 @@ struct ScopedLog {
         self.mode = mode
     }
 
-    func callAsFunction(_ message: String) {
+    /// Guard diagnostic preparation that happens outside the log expression.
+    var isEnabled: Bool {
 #if DEBUG
-        let shouldLog: Bool
         switch mode {
         case .any:
-            shouldLog = !scope.intersection(LogConfig.enabled).isEmpty
+            return !scope.intersection(LogConfig.enabled).isEmpty
         case .all:
-            shouldLog = scope.isSubset(of: LogConfig.enabled)
+            return scope.isSubset(of: LogConfig.enabled)
         }
+#else
+        return false
+#endif
+    }
 
-        guard shouldLog else { return }
-        os_log("%{public}s %{public}s", log: .default, type: .debug, prefix, message)
+    func callAsFunction(_ message: @autoclosure () -> String) {
+#if DEBUG
+        guard isEnabled else { return }
+        os_log("%{public}s %{public}s", log: .default, type: .debug, prefix, message())
 #endif
     }
 
@@ -163,6 +176,9 @@ private extension LogScope {
         if contains(.attachments)   { names.append("attachments") }
         if contains(.glassPerf)     { names.append("glassPerf") }
         if contains(.historyScroll) { names.append("historyScroll") }
+        if contains(.polls)         { names.append("polls") }
+        if contains(.messageDiagnostics) { names.append("messageDiagnostics") }
+        if contains(.historyPerformance) { names.append("historyPerformance") }
         return names.isEmpty ? "NONE" : names.joined(separator: "|")
     }
 }
