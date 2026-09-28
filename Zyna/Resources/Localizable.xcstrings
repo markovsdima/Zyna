@@ -1881,6 +1881,16 @@
         }
       }
     },
+    "Check again" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Проверить снова"
+          }
+        }
+      }
+    },
     "Check the participants below, resolve the trust issue, then retry the failed message manually." : {
       "localizations" : {
         "ru" : {
@@ -2443,6 +2453,16 @@
         }
       }
     },
+    "Couldn't load polls." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить опросы."
+          }
+        }
+      }
+    },
     "Couldn't load voice message. Tap to retry." : {
       "localizations" : {
         "ru" : {
@@ -2459,6 +2479,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось загрузить список заблокированных пользователей."
+          }
+        }
+      }
+    },
+    "Couldn't open poll in chat." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось открыть опрос в чате."
           }
         }
       }
@@ -3126,6 +3156,16 @@
         }
       }
     },
+    "Encryption keys are still missing for part of the history. Restoring your encrypted history may help." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для части истории пока нет ключей шифрования. Может помочь восстановление зашифрованной истории."
+          }
+        }
+      }
+    },
     "Encryption keys couldn't be transferred automatically. Enter the recovery key you saved when setting up this account to restore access to message history." : {
       "localizations" : {
         "ru" : {
@@ -3596,6 +3636,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "История со входа"
+          }
+        }
+      }
+    },
+    "History recovery" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Восстановление истории"
           }
         }
       }
@@ -4202,6 +4252,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Загрузка прав"
+          }
+        }
+      }
+    },
+    "Loading poll in chat…" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузка опроса в чате…"
           }
         }
       }
@@ -4971,6 +5031,16 @@
         }
       }
     },
+    "No polls yet." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Опросов пока нет."
+          }
+        }
+      }
+    },
     "No reactions yet." : {
       "localizations" : {
         "ru" : {
@@ -5207,6 +5277,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Открыть ссылку"
+          }
+        }
+      }
+    },
+    "Open poll in chat" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть опрос в чате"
           }
         }
       }
@@ -5597,6 +5677,16 @@
         }
       }
     },
+    "Poll active" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Опрос активен"
+          }
+        }
+      }
+    },
     "Poll ended" : {
       "localizations" : {
         "ru" : {
@@ -5613,6 +5703,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Опрос: %@"
+          }
+        }
+      }
+    },
+    "Polls" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Опросы"
           }
         }
       }
@@ -6470,7 +6570,7 @@
     "SDK logs (rust tracing)" : {
 
     },
-    "SDK logs can contain Matrix metadata such as user IDs, room IDs, event IDs, device IDs, session IDs, and server names. Do not share them publicly." : {
+    "SDK logs are not anonymized and may contain message content, user IDs, room IDs, event IDs, device IDs, session IDs, and server names. Review them before sharing. Do not share them publicly." : {
 
     },
     "Safe chats. Stunning vibes." : {
@@ -6941,6 +7041,9 @@
     "Share SDK logs?" : {
 
     },
+    "Share event cache trace" : {
+
+    },
     "Share logs" : {
 
     },
@@ -7173,6 +7276,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Некоторые устройства не подписаны идентичностью участника. Попросите участника подтвердить их."
+          }
+        }
+      }
+    },
+    "Some history could not be checked. Check your connection and try again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Часть истории не удалось проверить. Проверьте подключение и попробуйте снова."
+          }
+        }
+      }
+    },
+    "Some history is still being recovered. Available messages appear automatically." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Часть истории ещё восстанавливается. Доступные сообщения появятся автоматически."
           }
         }
       }
