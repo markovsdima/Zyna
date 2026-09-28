@@ -130,6 +130,10 @@ enum CryptoDiagnosticsService {
         MatrixRustSDKTracing.logFiles()
     }
 
+    static func eventCacheTraceFiles() -> [URL] {
+        MatrixRustSDKTracing.eventCacheTraceFiles()
+    }
+
     static func clearTracingLogs() -> String {
         MatrixRustSDKTracing.clearLogs()
     }
