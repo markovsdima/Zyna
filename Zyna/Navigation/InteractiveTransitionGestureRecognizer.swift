@@ -6,6 +6,13 @@
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
 
+/// A pager can reserve touch locations for interactive back according
+/// to its current section and transition state.
+/// Other horizontal scroll views keep the existing conflict policy.
+protocol InteractiveBackScrollPolicy: AnyObject {
+    func allowsInteractiveBack(at point: CGPoint) -> Bool
+}
+
 /// `UIPanGestureRecognizer` subclass driving interactive navigation
 /// on `ZynaNavigationController`. Three responsibilities:
 ///
@@ -121,6 +128,11 @@ public final class InteractiveTransitionGestureRecognizer: UIPanGestureRecognize
                 return true
             }
             if let scroll = v as? UIScrollView, isHorizontallyScrollable(scroll) {
+                if let policy = scroll as? InteractiveBackScrollPolicy,
+                   policy.allowsInteractiveBack(at: rootView.convert(point, to: scroll)) {
+                    current = v.superview
+                    continue
+                }
                 return true
             }
             current = v.superview

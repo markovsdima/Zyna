@@ -338,12 +338,12 @@ final class ChatViewModel {
     #if DEBUG
     /// Exercises window-to-display transitions without attaching a live room.
     init(testingRoomId: String, dbQueue: AccountDatabase, window: MessageWindow,
-         includesLocalState: Bool = false) {
+         includesLocalState: Bool = false, mode: ChatPresentationMode = .preview) {
         self.presentationDatabase = dbQueue
         self.includesLocalPresentationState = includesLocalState
         self.roomId = testingRoomId
         self.roomName = "Test room"
-        self.mode = .preview
+        self.mode = mode
         self.diffBatcher = TimelineDiffBatcher(roomId: testingRoomId, dbQueue: dbQueue)
         self.window = window
         bindWindow()
@@ -1229,8 +1229,14 @@ final class ChatViewModel {
         guard !didLoadInitialWindow else { return }
         didLoadInitialWindow = true
         enqueueMatrixRTCCallProjectionRefresh(recomputeAll: true) { [weak self] in
-            self?.prepareHistoryReplacement(.newest) { apply in apply() }
+            self?.prepareInitialHistoryWindow()
         }
+    }
+
+    /// Bootstrap is not a navigation request. An abandoned catalog jump
+    /// must not cancel it; an already committed window always wins.
+    func prepareInitialHistoryWindow() {
+        prepareHistoryReplacement(.newest, id: nil) { apply in apply() }
     }
 
     private func enqueueMatrixRTCCallProjectionRefresh(
@@ -3164,7 +3170,8 @@ final class ChatViewModel {
     /// attachments visible until both history and its presentation are ready.
     @MainActor
     func preparePollNavigation(
-        eventId: String, paginate: (() async -> HistoryPaginationResult)? = nil
+        eventId: String, targetKind: ChatCatalogTarget = .poll,
+        paginate: (() async -> HistoryPaginationResult)? = nil
     ) async throws -> PreparedPollNavigation {
         let id = UUID()
         historyReplacementID = id
@@ -3174,7 +3181,7 @@ final class ChatViewModel {
                 && self.historyReplacementID == id
         }
         try await ChatPollNavigation.load(eventId: eventId, roomId: roomId,
-            database: presentationDatabase, isCurrent: isCurrent,
+            database: presentationDatabase, targetKind: targetKind, isCurrent: isCurrent,
             paginate: { [weak self] in
                 if let paginate { return await paginate() }
                 guard let self else { return .cancelled }
@@ -3197,8 +3204,7 @@ final class ChatViewModel {
                         let prepared = Self.prepareRender(input, stored: page.stored, origin: page.origin,
                             olderBoundary: page.olderNeighbor, newerBoundary: page.newerNeighbor, local: page.localState)
                         guard prepared.messages.contains(where: {
-                            guard $0.eventId == eventId, case .poll = $0.content else { return false }
-                            return true
+                            $0.eventId == eventId && targetKind.accepts($0.content)
                         }) else { throw PollNavigationError.unavailable }
                         continuation.resume(returning: (page, prepared))
                     } catch { continuation.resume(throwing: error) }
@@ -3233,9 +3239,9 @@ final class ChatViewModel {
     }
 
     private func prepareHistoryReplacement(
-        _ destination: MessageWindow.Destination, id: UUID, ready: @escaping (() -> Void) -> Void
+        _ destination: MessageWindow.Destination, id: UUID?, ready: @escaping (() -> Void) -> Void
     ) {
-        guard acceptsTimelineRefreshes, id == historyReplacementID else { return }
+        guard acceptsHistoryReplacement(id) else { return }
         // A live flush may have initialized the same window while initial
         // preparation was queued. Do not replace its more recent snapshot.
         if case .newest = destination, window.generation > 0 { return }
@@ -3264,8 +3270,7 @@ final class ChatViewModel {
                     #if DEBUG
                     operation?.finish()
                     #endif
-                    guard let self, self.acceptsTimelineRefreshes, self.presentationDatabase.isActive,
-                          id == self.historyReplacementID else { return }
+                    guard let self, self.acceptsHistoryReplacement(id) else { return }
                     guard self.window.canApply(page), self.canApplyRender(prepared) else {
                         #if DEBUG
                         trace?.count(.pageStale)
@@ -3274,7 +3279,7 @@ final class ChatViewModel {
                         return
                     }
                     ready { [weak self] in
-                        guard let self, self.acceptsTimelineRefreshes, id == self.historyReplacementID,
+                        guard let self, self.acceptsHistoryReplacement(id),
                               self.window.canApply(page), self.canApplyRender(prepared) else { return }
                         self.preparedWindowRender = prepared
                         self.window.applyReplacement(page)
@@ -3290,6 +3295,11 @@ final class ChatViewModel {
                 ScopedLog(.database)("History replacement failed: \(error)")
             }
         }
+    }
+
+    private func acceptsHistoryReplacement(_ id: UUID?) -> Bool {
+        acceptsTimelineRefreshes && presentationDatabase.isActive
+            && (id.map { $0 == historyReplacementID } ?? (window.generation == 0))
     }
 
     func retryHistoryRecovery() { decryptionRepair?.retry() }

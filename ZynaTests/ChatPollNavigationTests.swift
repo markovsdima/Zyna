@@ -13,6 +13,96 @@ import Testing
 struct ChatPollNavigationTests {
     private let roomId = TimelineWriteFixture.roomID
 
+    @Test("Bootstrap survives an overlapping failed or cancelled catalog jump", arguments: [false, true])
+    func bootstrapDuringJump(cancel: Bool) async throws {
+        let database = try TimelineWriteFixture.database(legacyMessages: (0..<250).map(TimelineWriteFixture.message))
+        let (window, model) = model(database)
+        defer { model.cleanup() }
+        var gate: CheckedContinuation<HistoryPaginationResult, Never>?
+        let navigation = Task {
+            try await model.preparePollNavigation(eventId: "$missing", paginate: {
+                await withCheckedContinuation { gate = $0 }
+            })
+        }
+        try await ChatBackgroundPresentationTests.wait { gate != nil }
+        // The call-projection bootstrap completion arrives during the jump.
+        model.prepareInitialHistoryWindow()
+        try await ChatBackgroundPresentationTests.wait { window.generation > 0 }
+        if cancel { navigation.cancel() }
+        gate?.resume(returning: .failed)
+        do { _ = try await navigation.value; Issue.record("The jump unexpectedly succeeded") }
+        catch is CancellationError { #expect(cancel) }
+        catch is PollNavigationError { #expect(!cancel) }
+        #expect(model.indexOfMessage(eventId: "$event-249") != nil)
+        #expect(window.currentStoredMessages().count == MessageWindow.windowSize)
+    }
+
+    @Test("Abandoned preparation does not suppress bootstrap; a committed jump wins", arguments: [false, true])
+    func bootstrapAfterPreparation(commit: Bool) async throws {
+        let database = try TimelineWriteFixture.database(legacyMessages: [poll()] + (0..<250).map(TimelineWriteFixture.message))
+        let (window, model) = model(database)
+        defer { model.cleanup() }
+        let prepared = try await model.preparePollNavigation(eventId: "$poll")
+        if commit { #expect(prepared.open()) }
+        model.prepareInitialHistoryWindow()
+        try await ChatBackgroundPresentationTests.wait { window.generation > 0 }
+        #expect((model.indexOfMessage(eventId: "$poll") != nil) == commit)
+        #expect((model.indexOfMessage(eventId: "$event-249") != nil) == !commit)
+    }
+
+    @Test("Late failure from an older jump does not replace a newer committed destination")
+    func supersededBootstrap() async throws {
+        let database = try TimelineWriteFixture.database(legacyMessages: [poll()] + (0..<250).map(TimelineWriteFixture.message))
+        let (window, model) = model(database)
+        defer { model.cleanup() }
+        var gate: CheckedContinuation<HistoryPaginationResult, Never>?
+        let old = Task {
+            try await model.preparePollNavigation(eventId: "$missing", paginate: {
+                await withCheckedContinuation { gate = $0 }
+            })
+        }
+        try await ChatBackgroundPresentationTests.wait { gate != nil }
+        let current = try await model.preparePollNavigation(eventId: "$poll")
+        #expect(current.open())
+        let generation = window.generation
+        gate?.resume(returning: .failed)
+        await #expect(throws: Error.self) { _ = try await old.value }
+        model.prepareInitialHistoryWindow()
+        #expect(window.generation == generation)
+        #expect(model.indexOfMessage(eventId: "$poll") != nil)
+        #expect(model.indexOfMessage(eventId: "$event-249") == nil)
+    }
+
+    @Test("Profile media uses full history and rejects redacted attachments", arguments: [false, true])
+    func profileAttachment(redacted: Bool) async throws {
+        let database = try TimelineWriteFixture.database()
+        var record = TimelineWriteFixture.message(42)
+        record.contentType = redacted ? "redacted" : "image"
+        record.contentMediaJSON = "{\"url\":\"mxc://example.org/photo\"}"
+        let target = record
+        let (window, model) = model(database)
+        defer { model.cleanup() }
+        model.onRenderPreparedForTesting = { #expect(!Thread.isMainThread) }
+        var calls = 0
+        let prepare = {
+            try await model.preparePollNavigation(eventId: "$event-42", targetKind: .attachment, paginate: {
+                calls += 1
+                try? await database.write { try target.save($0) }
+                return .page(reachedStart: true)
+            })
+        }
+        if redacted {
+            await #expect(throws: PollNavigationError.self) { _ = try await prepare() }
+            #expect(window.currentStoredMessages().isEmpty)
+        } else {
+            let prepared = try await prepare()
+            #expect(window.currentStoredMessages().isEmpty)
+            #expect(prepared.open())
+            #expect(model.indexOfMessage(eventId: "$event-42") != nil)
+        }
+        #expect(calls == 1)
+    }
+
     private func poll() -> StoredMessage {
         var record = RoomPollFixture.poll("$poll", time: -1).record!
         record.roomId = roomId

@@ -12,6 +12,26 @@ struct PreparedPollNavigation {
     let open: @MainActor () -> Bool
 }
 
+/// Catalog entries must resolve to a full, still-visible chat message.
+enum ChatCatalogTarget: Sendable {
+    case poll, attachment
+
+    func accepts(_ contentType: String) -> Bool {
+        switch self {
+        case .poll: return contentType == "poll"
+        case .attachment: return ["image", "video", "file", "audio", "voice"].contains(contentType)
+        }
+    }
+
+    func accepts(_ content: ChatMessageContent) -> Bool {
+        switch (self, content) {
+        case (.poll, .poll), (.attachment, .image), (.attachment, .video),
+             (.attachment, .file), (.attachment, .voice): return true
+        default: return false
+        }
+    }
+}
+
 enum PollNavigationError: Error {
     case unavailable
     case loadingFailed
@@ -25,6 +45,7 @@ enum ChatPollNavigation {
     @MainActor
     static func load(
         eventId: String, roomId: String, database: AccountDatabase,
+        targetKind: ChatCatalogTarget = .poll,
         budget: Duration = .seconds(30), settle: Duration = .seconds(3),
         isCurrent: () -> Bool,
         paginate: () async -> HistoryPaginationResult
@@ -38,7 +59,7 @@ enum ChatPollNavigation {
                 guard let record = try StoredMessage
                     .filter(Column("roomId") == roomId && Column("eventId") == eventId).fetchOne(db)
                 else { return .pending }
-                if record.contentType == "poll" { return .ready }
+                if targetKind.accepts(record.contentType) { return .ready }
                 if record.contentType == "unableToDecrypt" { return .pending }
                 if try MessageDecryptionRepairStore.isPendingLegacy(record, in: db) { return .pending }
                 return .unavailable
@@ -58,7 +79,10 @@ enum ChatPollNavigation {
                 try await Task.sleep(for: .milliseconds(100))
                 continue
             }
-            switch await paginate() {
+            let result = await paginate()
+            try Task.checkCancellation()
+            guard isCurrent(), database.isActive else { throw CancellationError() }
+            switch result {
             case .page(let reachedStart):
                 if reachedStart { settledDeadline = ContinuousClock.now.advanced(by: settle) }
             case .cancelled: throw CancellationError()

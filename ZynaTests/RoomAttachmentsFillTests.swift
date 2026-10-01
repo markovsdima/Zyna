@@ -5,6 +5,7 @@
 
 import Testing
 import Foundation
+import GRDB
 import MatrixRustSDK
 @testable import Zyna
 
@@ -26,11 +27,14 @@ private final class FakeAttachmentSource: AttachmentSource, @unchecked Sendable 
     var voiceCount = 0
     var fileCount = 0
     var emitSnapshotOnStart = false
+    private(set) var startCalls = 0
+    private(set) var stopCalls = 0
 
     func start() async throws {
+        startCalls += 1
         if emitSnapshotOnStart { emitSnapshot() }
     }
-    func stop() {}
+    func stop() { stopCalls += 1 }
     func retryDecryption(sessionIds: [String]) {}
     func describeTimelineItem(eventId: String) async -> String? { nil }
     func storeRowDescription(uniqueId: String) -> String? { nil }
@@ -78,6 +82,115 @@ struct RoomAttachmentsFillTests {
             try? await Task.sleep(for: .milliseconds(20))
         }
         return condition()
+    }
+
+    @Test("Paged media readiness is independent of optimistic and durable file snapshots", arguments: [0, 300])
+    func independentCounts(mediaCount: Int) async throws {
+        let database = try TimelineWriteFixture.database()
+        let gate = DispatchSemaphore(value: 0)
+        let entered = Atomic(false)
+        let blocked = Task.detached {
+            try await database.read { _ in
+                entered.wrappedValue = true
+                _ = gate.wait(timeout: .now() + 8)
+            }
+        }
+        defer { gate.signal() }
+        try #require(await waitUntil { entered.wrappedValue })
+        let source = FakeAttachmentSource()
+        source.emitSnapshotOnStart = true; source.mediaCount = 100; source.fileCount = 77
+        let model = RoomAttachmentsViewModel(roomId: TimelineWriteFixture.roomID, source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128,
+            attachmentIndex: RoomAttachmentIndex(roomId: TimelineWriteFixture.roomID, dbQueue: database), usesPagedMedia: true)
+        defer { model.stop() }
+        model.tab = .polls
+        await model.start()
+        model.updatePagedMediaCount(mediaCount)
+        #expect(model.currentCount(for: .files) == 77)
+        var message = TimelineWriteFixture.message(1)
+        message.contentType = "file"; message.contentMediaJSON = "{\"url\":\"mxc://example.org/file\"}"
+        let record = try #require(StoredRoomAttachment(storedMessage: message))
+        source.onAttachmentsDiscovered?([record])
+        try #require(await waitUntil { !model.files.isEmpty })
+        #expect(model.currentCount(for: .media) == mediaCount)
+        #expect(model.currentCount(for: .files) == 77)
+        // The durable empty snapshot makes file readiness authoritative.
+        gate.signal()
+        try await blocked.value
+        try #require(await waitUntil { model.currentCount(for: .files) == 1 })
+        #expect(model.currentCount(for: .media) == mediaCount)
+    }
+
+    @Test("The research presentation borrows discovery and releases its full media projection")
+    func sharedDiscovery() async throws {
+        let database = try TimelineWriteFixture.database()
+        var message = TimelineWriteFixture.message(1)
+        message.contentType = "image"; message.contentMediaJSON = "{\"url\":\"mxc://example.org/photo\"}"
+        let record = try #require(StoredRoomAttachment(storedMessage: message))
+        try await database.write { try record.save($0) }
+        let source = FakeAttachmentSource()
+        source.emitSnapshotOnStart = true
+        let model = RoomAttachmentsViewModel(roomId: TimelineWriteFixture.roomID, source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128,
+            attachmentIndex: RoomAttachmentIndex(roomId: TimelineWriteFixture.roomID, dbQueue: database), usesPagedMedia: true)
+        defer { model.stop() }
+        model.tab = .polls
+        await model.start()
+        try #require(await waitUntil { !model.isInitialLoading })
+        #expect(model.media.isEmpty)
+        model.setLegacyMediaPresentation(true)
+        await model.start()
+        try #require(await waitUntil { model.media.first?.items.first?.id == record.eventId })
+        model.setLegacyMediaPresentation(false)
+        try #require(await waitUntil { model.media.isEmpty })
+        #expect(source.startCalls == 1)
+        #expect(source.stopCalls == 0)
+    }
+
+    @Test("The shared research screen displays discoveries before persistence and drops visual optimistic rows on return")
+    func sharedOptimisticMedia() async throws {
+        let database = try TimelineWriteFixture.database()
+        let source = FakeAttachmentSource()
+        source.emitSnapshotOnStart = true
+        let model = RoomAttachmentsViewModel(roomId: TimelineWriteFixture.roomID, source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128,
+            attachmentIndex: RoomAttachmentIndex(roomId: TimelineWriteFixture.roomID, dbQueue: database), usesPagedMedia: true)
+        defer { model.stop() }
+        model.tab = .polls
+        await model.start()
+        try #require(await waitUntil { !model.isInitialLoading })
+        model.setLegacyMediaPresentation(true)
+        var message = TimelineWriteFixture.message(1)
+        message.contentType = "image"; message.contentMediaJSON = "{\"url\":\"mxc://example.org/photo\"}"
+        let photo = try #require(StoredRoomAttachment(storedMessage: message))
+        source.onAttachmentsDiscovered?([photo])
+        try #require(await waitUntil { model.media.first?.items.first?.id == photo.eventId })
+        #expect(try await database.read { try StoredRoomAttachment.fetchCount($0) } == 0)
+        model.setLegacyMediaPresentation(false)
+        try #require(await waitUntil { model.media.isEmpty })
+        // A nonvisual publication acts as a barrier for the late callback.
+        message.eventId = "$file"; message.contentType = "file"
+        let file = try #require(StoredRoomAttachment(storedMessage: message))
+        source.onAttachmentsDiscovered?([photo, file])
+        try #require(await waitUntil { model.files.first?.items.first?.id == file.eventId })
+        #expect(model.media.isEmpty)
+        #expect(source.startCalls == 1)
+    }
+
+    @Test("A disappearing presentation does not withdraw the other presentation's pagination demand",
+          arguments: [RoomAttachmentsViewModel.Presentation.profile, .research])
+    func sharedSentinel(disappearing: RoomAttachmentsViewModel.Presentation) async throws {
+        let source = FakeAttachmentSource()
+        source.emitSnapshotOnStart = true; source.mediaCount = 100
+        let model = makeViewModel(source: source)
+        defer { model.stop() }
+        await model.start()
+        let remaining: RoomAttachmentsViewModel.Presentation = disappearing == .profile ? .research : .profile
+        model.sentinelAppeared(from: disappearing)
+        model.sentinelAppeared(from: remaining)
+        model.sentinelDisappeared(from: disappearing)
+        try #require(await waitUntil { !model.isFillActive })
+        #expect(model.diagnostics.pendingFillsReplayed == 1)
     }
 
     @Test("Snapshots never restart a fill that stopped on its budget")

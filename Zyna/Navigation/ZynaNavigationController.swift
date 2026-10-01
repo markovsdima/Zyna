@@ -82,11 +82,14 @@ public class ZynaNavigationController: UIViewController {
         case push(UIViewController, animated: Bool)
         case pop(animated: Bool)
         case popToRoot(animated: Bool)
+        case popTo(UIViewController, animated: Bool, completion: (() -> Void)?)
     }
 
     private var deferredStackMutations: [DeferredStackMutation] = []
 
-    private var isTransitionInFlight: Bool {
+    /// Prepared navigation commits must not queue another pop behind a
+    /// back gesture or mutate the destination during a stack transition.
+    var isTransitionInFlight: Bool {
         isInteractivePopActive || isAnimatingTransition
     }
 
@@ -353,11 +356,32 @@ public class ZynaNavigationController: UIViewController {
             return []
         }
 
-        let root = stack[0]
+        return pop(to: stack[0], animated: animated)
+    }
+
+    /// Reveal an existing controller with one transition, removing every
+    /// screen above it. Completion runs after containment is finalized.
+    @discardableResult
+    public func pop(to destination: UIViewController, animated: Bool = true,
+                    completion: (() -> Void)? = nil) -> [UIViewController] {
+        guard !isTransitionInFlight else {
+            deferredStackMutations.append(.popTo(destination, animated: animated, completion: completion))
+            return []
+        }
+        guard let index = stack.firstIndex(where: { $0 === destination }) else {
+            flushDeferredStackMutationsIfPossible()
+            return []
+        }
+        guard index < stack.count - 1 else {
+            completion?()
+            flushDeferredStackMutationsIfPossible()
+            return []
+        }
+
         let currentTop = topViewController!  // safe: count was > 1
         var popped: [UIViewController] = []
 
-        while stack.count > 1 {
+        while stack.count > index + 1 {
             let vc = stack.removeLast()
             vc.willMove(toParent: nil)
             popped.append(vc)
@@ -367,17 +391,18 @@ public class ZynaNavigationController: UIViewController {
             for vc in popped {
                 vc.removeFromParent()
             }
+            completion?()
         }
 
         if isViewLoaded, animated {
-            // Animate the slide between currentTop → root. The middle
+            // Animate the slide between currentTop → destination. The middle
             // controllers were never in the hierarchy, so visually it
-            // looks like a single pop from the actual top to the root.
+            // looks like a single pop from the actual top to the destination.
             GlassService.shared.captureFor(duration: IOS26Spring.duration + 0.1)
-            performAnimatedPop(removing: currentTop, revealing: root, completion: finalize)
+            performAnimatedPop(removing: currentTop, revealing: destination, completion: finalize)
         } else {
             if isViewLoaded {
-                attachView(of: root)
+                attachView(of: destination)
                 for vc in popped {
                     detachView(of: vc)
                 }
@@ -661,6 +686,8 @@ public class ZynaNavigationController: UIViewController {
             _ = pop(animated: animated)
         case .popToRoot(let animated):
             _ = popToRoot(animated: animated)
+        case .popTo(let destination, let animated, let completion):
+            _ = pop(to: destination, animated: animated, completion: completion)
         }
     }
 

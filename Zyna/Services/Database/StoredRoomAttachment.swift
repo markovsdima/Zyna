@@ -378,6 +378,7 @@ final class RoomAttachmentIndex: @unchecked Sendable {
     /// Emits the complete known catalog immediately and after committed
     /// changes. One room-level observation replaces per-tile database reads.
     func observe(
+        excludingVisualMedia: Bool = false,
         onError: @escaping @Sendable (Error) -> Void,
         onChange: @escaping @Sendable ([StoredRoomAttachment]) -> Void
     ) -> AnyDatabaseCancellable {
@@ -386,7 +387,8 @@ final class RoomAttachmentIndex: @unchecked Sendable {
             #if DEBUG
             let started = ProcessInfo.processInfo.systemUptime
             #endif
-            let records = try StoredRoomAttachment.fetchAll(in: db, roomId: roomId)
+            let records = try StoredRoomAttachment.fetchAll(in: db, roomId: roomId,
+                kinds: excludingVisualMedia ? Set(RoomAttachmentKind.allCases.filter { !$0.isVisual }) : nil)
             #if DEBUG
             logRoomAttachmentIndex(
                 "trace observe fetch room=\(roomId) records=\(records.count) "

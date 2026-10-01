@@ -19,4 +19,10 @@ extension String {
         }
         return mutableString.trimmingCharacters(in: .whitespaces)
     }
+
+    /// Preserve the case of suffixes and abbreviations such as Russian "г.".
+    func capitalizingFirstCharacter(with locale: Locale = .current) -> String {
+        guard let first else { return self }
+        return String(first).uppercased(with: locale) + dropFirst()
+    }
 }

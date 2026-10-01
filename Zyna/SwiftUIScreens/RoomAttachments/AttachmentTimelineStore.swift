@@ -125,14 +125,16 @@ final class AttachmentTimelineStore {
 
     private let queue = DispatchQueue(label: "com.zyna.attachments.store", qos: .userInitiated)
     private let publishDelay: TimeInterval
+    private let projectsMedia: Bool
     private var rows: [AttachmentRow] = []
     private var generation = 0
     private var pendingSummary = ApplySummary()
     private var publishWorkItem: DispatchWorkItem?
     private var lastPublishTime: CFTimeInterval = 0
 
-    init(publishDelay: TimeInterval = 0.05) {
+    init(publishDelay: TimeInterval = 0.05, projectsMedia: Bool = true) {
         self.publishDelay = publishDelay
+        self.projectsMedia = projectsMedia
     }
 
     // MARK: - Input
@@ -327,6 +329,7 @@ final class AttachmentTimelineStore {
 
     private func makeSnapshot() -> Snapshot {
         var mediaItems: [AttachmentItem] = []
+        var mediaCount = 0
         var voiceItems: [AttachmentItem] = []
         var fileItems: [AttachmentItem] = []
         var pendingCount = 0
@@ -336,7 +339,8 @@ final class AttachmentTimelineStore {
             switch row {
             case .attachment(let item):
                 if item.kind.isVisual {
-                    mediaItems.append(item)
+                    mediaCount += 1
+                    if projectsMedia { mediaItems.append(item) }
                 } else if item.kind == .voice {
                     voiceItems.append(item)
                 } else {
@@ -355,10 +359,10 @@ final class AttachmentTimelineStore {
         return Snapshot(
             generation: generation,
             rowCount: rows.count,
-            media: Self.groupByMonth(mediaItems),
+            media: projectsMedia ? Self.groupByMonth(mediaItems) : [],
             voice: Self.groupByMonth(voiceItems),
             files: Self.groupByMonth(fileItems),
-            mediaCount: mediaItems.count,
+            mediaCount: mediaCount,
             voiceCount: voiceItems.count,
             fileCount: fileItems.count,
             pendingCount: pendingCount,
@@ -383,7 +387,7 @@ final class AttachmentTimelineStore {
             if components.year == nowComponents.year, components.month == nowComponents.month {
                 title = String(localized: "This Month")
             } else {
-                title = titleFormatter.string(from: first.date).capitalized
+                title = titleFormatter.string(from: first.date).capitalizingFirstCharacter()
             }
             groups.append(AttachmentMonthGroup(id: key, title: title, items: currentItems))
             currentItems = []

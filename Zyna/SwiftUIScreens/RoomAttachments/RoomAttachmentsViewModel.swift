@@ -75,6 +75,11 @@ struct RoomAttachmentCatalogState {
         return changed
     }
 
+    mutating func excludeVisualMedia() {
+        indexed = indexed.filter { $0.value.attachmentKind?.isVisual != true }
+        optimistic = optimistic.filter { $0.value.attachmentKind?.isVisual != true }
+    }
+
     var visibleRecords: [StoredRoomAttachment] {
         var records = indexed.compactMap { eventId, record in
             tombstones.contains(eventId) ? nil : record
@@ -126,6 +131,22 @@ private final class RoomAttachmentCatalogProjection: @unchecked Sendable {
         qos: .userInitiated
     )
     private var state = RoomAttachmentCatalogState()
+    private var excludingVisualMedia: Bool
+
+    init(excludingVisualMedia: Bool = false) { self.excludingVisualMedia = excludingVisualMedia }
+
+    func setExcludingVisualMedia(_ exclude: Bool) {
+        queue.async { [self] in
+            guard !isStopped, excludingVisualMedia != exclude else { return }
+            excludingVisualMedia = exclude
+            if exclude { state.excludeVisualMedia() }
+            schedulePublish()
+        }
+    }
+
+    private func included(_ records: [StoredRoomAttachment]) -> [StoredRoomAttachment] {
+        excludingVisualMedia ? records.filter { $0.attachmentKind?.isVisual != true } : records
+    }
     private var onChange: ((RoomAttachmentCatalogSnapshot) -> Void)?
     private var lastSnapshot: RoomAttachmentCatalogSnapshot?
     private var publishScheduled = false
@@ -141,7 +162,7 @@ private final class RoomAttachmentCatalogProjection: @unchecked Sendable {
     func replaceIndexed(with records: [StoredRoomAttachment]) {
         queue.async { [self] in
             guard !isStopped else { return }
-            state.replaceIndexed(with: records)
+            state.replaceIndexed(with: included(records))
             schedulePublish()
         }
     }
@@ -150,7 +171,7 @@ private final class RoomAttachmentCatalogProjection: @unchecked Sendable {
         guard !records.isEmpty else { return }
         queue.async { [self] in
             guard !isStopped else { return }
-            if state.upsertOptimistically(records) {
+            if state.upsertOptimistically(included(records)) {
                 schedulePublish()
             }
         }
@@ -313,6 +334,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
     let tilePixelSize: Int
     let filterMode: AttachmentSourceFilterMode
     let fillTimeBudgetSeconds: CFTimeInterval
+    let usesPagedMedia: Bool
 
     private let source: AttachmentSource
     private let attachmentIndex: RoomAttachmentIndex?
@@ -322,15 +344,18 @@ final class RoomAttachmentsViewModel: ObservableObject {
     private var hasStarted = false
     private var isStopped = false
     private var hitStart = false
-    private var visibleSentinels: Set<Tab> = []
-    private var sentinelVisible: Bool { visibleSentinels.contains(tab) }
+    enum Presentation: Hashable { case profile, research }
+    private var visibleSentinels: [Tab: Set<Presentation>] = [:]
+    private var sentinelVisible: Bool { visibleSentinels[tab]?.isEmpty == false }
     private var interruptedTargets: [Tab: Int] = [:]
     private var fillTask: Task<Void, Never>?
     private var lateRetryTask: Task<Void, Never>?
     private var foregroundObserver: NSObjectProtocol?
     private var researchObserver: NSObjectProtocol?
     private var attachmentObservation: AnyDatabaseCancellable?
+    private var presentsLegacyMedia = false
     private var hasReceivedIndexSnapshot = false
+    private var hasReceivedPagedMediaSnapshot = false
     private var indexedMediaCount = 0
     private var indexedVoiceCount = 0
     private var indexedFileCount = 0
@@ -351,21 +376,23 @@ final class RoomAttachmentsViewModel: ObservableObject {
         tilePixelSize: Int,
         attachmentIndex: RoomAttachmentIndex? = nil,
         room: Room? = nil,
-        fillTimeBudgetSeconds: CFTimeInterval = RoomAttachmentsViewModel.defaultFillTimeBudgetSeconds
+        fillTimeBudgetSeconds: CFTimeInterval = RoomAttachmentsViewModel.defaultFillTimeBudgetSeconds,
+        usesPagedMedia: Bool = false
     ) {
         self.roomId = roomId
         self.source = source
         self.attachmentIndex = attachmentIndex
+        self.usesPagedMedia = usesPagedMedia
         catalogProjection = attachmentIndex == nil
             ? nil
-            : RoomAttachmentCatalogProjection()
+            : RoomAttachmentCatalogProjection(excludingVisualMedia: usesPagedMedia)
         self.filterMode = filterMode
         self.tilePixelSize = tilePixelSize
         self.room = room
         self.fillTimeBudgetSeconds = fillTimeBudgetSeconds
     }
 
-    convenience init(room: Room, filterMode: AttachmentSourceFilterMode, tilePixelSize: Int) {
+    convenience init(room: Room, filterMode: AttachmentSourceFilterMode, tilePixelSize: Int, usesPagedMedia: Bool = false) {
         let attachmentIndex = RoomAttachmentIndex(
             roomId: room.id(),
             dbQueue: DatabaseService.shared.dbQueue
@@ -375,12 +402,14 @@ final class RoomAttachmentsViewModel: ObservableObject {
             source: SDKTimelineAttachmentSource(
                 room: room,
                 filterMode: filterMode,
+                store: AttachmentTimelineStore(projectsMedia: !usesPagedMedia),
                 attachmentIndex: attachmentIndex
             ),
             filterMode: filterMode,
             tilePixelSize: tilePixelSize,
             attachmentIndex: attachmentIndex,
-            room: room
+            room: room,
+            usesPagedMedia: usesPagedMedia
         )
     }
 
@@ -411,7 +440,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         source.onPaginationStatus = { [weak self] status in
             self?.handlePaginationStatus(status)
         }
-        if let attachmentIndex, let catalogProjection {
+        if attachmentIndex != nil, let catalogProjection {
             catalogProjection.setOnChange { [weak self] snapshot in
                 self?.handleCatalogSnapshot(snapshot)
             }
@@ -421,19 +450,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
             source.onAttachmentsInvalidated = { [weak catalogProjection] eventIds in
                 catalogProjection?.invalidate(eventIds: eventIds)
             }
-            attachmentObservation = attachmentIndex.observe(
-                onError: { [weak self] error in
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self, !self.isStopped else { return }
-                        self.startError = error.localizedDescription
-                        self.isInitialLoading = false
-                        log("index observation failed room=\(self.roomId) error=\(error)")
-                    }
-                },
-                onChange: { [weak catalogProjection] records in
-                    catalogProjection?.replaceIndexed(with: records)
-                }
-            )
+            observeCatalog()
         }
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
@@ -487,6 +504,40 @@ final class RoomAttachmentsViewModel: ObservableObject {
         log("started room=\(roomId) filter=\(filterMode.rawValue) tilePx=\(tilePixelSize)")
         if needsInitialPage(for: tab) {
             fillIfNeeded(reason: "start", force: true)
+        }
+    }
+
+    /// The SDK research screen borrows this model. Only while it is open
+    /// do we decode the full visual projection required by its SwiftUI grid.
+    func setLegacyMediaPresentation(_ visible: Bool) {
+        guard usesPagedMedia, !isStopped, presentsLegacyMedia != visible else { return }
+        presentsLegacyMedia = visible
+        catalogProjection?.setExcludingVisualMedia(!visible)
+        if hasStarted { observeCatalog() }
+    }
+
+    private func observeCatalog() {
+        guard let attachmentIndex, let catalogProjection else { return }
+        attachmentObservation?.cancel()
+        let current = Atomic(true)
+        let token = attachmentIndex.observe(
+            excludingVisualMedia: usesPagedMedia && !presentsLegacyMedia,
+            onError: { [weak self] error in
+                DispatchQueue.main.async { [weak self] in
+                    guard current.wrappedValue, let self, !self.isStopped else { return }
+                    self.startError = error.localizedDescription
+                    self.isInitialLoading = false
+                    log("index observation failed room=\(self.roomId) error=\(error)")
+                }
+            },
+            onChange: { [weak catalogProjection] records in
+                guard current.wrappedValue else { return }
+                catalogProjection?.replaceIndexed(with: records)
+            }
+        )
+        attachmentObservation = AnyDatabaseCancellable {
+            current.wrappedValue = false
+            token.cancel()
         }
     }
 
@@ -595,7 +646,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
         if files != snapshot.files {
             files = snapshot.files
         }
-        indexedMediaCount = snapshot.mediaCount
+        if !usesPagedMedia { indexedMediaCount = snapshot.mediaCount }
         indexedVoiceCount = snapshot.voiceCount
         indexedFileCount = snapshot.fileCount
         hasReceivedIndexSnapshot = snapshot.hasIndexedSnapshot
@@ -635,22 +686,33 @@ final class RoomAttachmentsViewModel: ObservableObject {
 
     // MARK: - Pagination
 
-    func sentinelAppeared(in visibleTab: Tab? = nil) {
+    func updatePagedMediaCount(_ count: Int) {
+        guard !isStopped, usesPagedMedia else { return }
+        indexedMediaCount = count
+        hasReceivedPagedMediaSnapshot = true
+        if isInitialLoading { isInitialLoading = false }
+        if sentinelVisible { fillIfNeeded(reason: "paged-catalog") }
+    }
+
+    func sentinelAppeared(in visibleTab: Tab? = nil, from presentation: Presentation = .research) {
         let visibleTab = visibleTab ?? tab
-        visibleSentinels.insert(visibleTab)
+        visibleSentinels[visibleTab, default: []].insert(presentation)
         guard visibleTab == tab else { return }
         fillIfNeeded(reason: "sentinel", force: true, intent: .sentinel)
     }
 
-    func sentinelDisappeared(in hiddenTab: Tab? = nil) {
-        visibleSentinels.remove(hiddenTab ?? tab)
+    func sentinelDisappeared(in hiddenTab: Tab? = nil, from presentation: Presentation = .research) {
+        visibleSentinels[hiddenTab ?? tab]?.remove(presentation)
     }
 
     func loadMoreTapped() {
         fillIfNeeded(reason: "manual", force: true, intent: .manual)
     }
 
-    private func currentCount(for tab: Tab) -> Int {
+    func currentCount(for tab: Tab) -> Int {
+        if tab == .media, usesPagedMedia {
+            return hasReceivedPagedMediaSnapshot ? indexedMediaCount : mediaCount
+        }
         if attachmentIndex != nil, hasReceivedIndexSnapshot {
             return indexedCount(for: tab)
         }

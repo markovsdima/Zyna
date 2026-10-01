@@ -95,6 +95,21 @@ struct AttachmentTimelineStoreTests {
         #expect(snapshot.media.first?.items.map(\.id) == ["b", "utd", "a"])
     }
 
+    @Test("Paged media discovery keeps counts and callbacks without publishing a second media array")
+    func pagedProjection() throws {
+        let store = AttachmentTimelineStore(publishDelay: 0, projectsMedia: false)
+        var discovered: [String] = []
+        store.onAttachmentsDiscovered = { discovered += $0.map(\.id) }
+        store.apply([.reset([try attachment("photo"), pending("utd"), try attachment("doc", kind: .file)])])
+        store.apply([.set(1, try attachment("utd", kind: .video))])
+        let snapshot = store.currentSnapshot()
+        #expect(snapshot.media.isEmpty)
+        #expect(snapshot.mediaCount == 2 && snapshot.fileCount == 1)
+        #expect(snapshot.pendingCount == 0)
+        #expect(Set(discovered) == ["photo", "doc", "utd"])
+        #expect(snapshot.files.first?.items.first?.id == "doc")
+    }
+
     @Test("Decrypting into a non-attachment removes the tile")
     func mediaReplacedByOther() throws {
         let store = AttachmentTimelineStore(publishDelay: 0)

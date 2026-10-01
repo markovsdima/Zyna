@@ -1149,6 +1149,9 @@ final class DatabaseService: @unchecked Sendable {
         migrator.registerMigration("v31_decryptionPresentation") { db in
             try MessageDecryptionRepairStore.migratePresentation(db)
         }
+        migrator.registerMigration("v32_roomMediaCatalog",
+            merging: ["v32_roomMediaPaging", "v33_roomMediaOrderRevision", "v34_roomMediaCoveringIndex"],
+            migrate: RoomMediaDatabase.migrate)
 
         return migrator
     }

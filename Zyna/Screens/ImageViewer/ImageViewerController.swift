@@ -24,6 +24,15 @@ final class ImageViewerController: UIViewController {
         let sourceFrame: CGRect
     }
 
+    struct Page {
+        let item: Item
+        let eventId: String
+        let timestampMs: UInt64
+        let index: Int
+        let count: Int
+        let catalogRevision: Int64
+    }
+
     // MARK: - Public
 
     let imageView = UIImageView()
@@ -43,7 +52,10 @@ final class ImageViewerController: UIViewController {
     private let pageLabel = UILabel()
     private let shareButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
-    private let items: [Item]
+    private var items: [Item]
+    private var catalogPage: Page?
+    private var adjacentPage: ((Page, Int) async throws -> Page?)?
+    private var adjacentTask: Task<Void, Never>?
     private var currentIndex: Int
     private var resolvedImages: [UIImage?]
     /// Share/Save export only the original; until it arrives `imageView`
@@ -74,8 +86,15 @@ final class ImageViewerController: UIViewController {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    convenience init(page: Page, adjacentPage: @escaping (Page, Int) async throws -> Page?) {
+        self.init(items: [page.item], initialIndex: 0)
+        self.catalogPage = page
+        self.adjacentPage = adjacentPage
+    }
+
     deinit {
         fullResLoadTask?.cancel()
+        adjacentTask?.cancel()
     }
 
     // MARK: - Lifecycle
@@ -374,7 +393,10 @@ final class ImageViewerController: UIViewController {
                     "full-res mxc=\(source.url()) bytes=\(data.count) "
                     + "ms=\(String(format: "%.0f", (CACurrentMediaTime() - fetchStart) * 1000))"
                 )
-                guard let fullImage = UIImage(data: data) else { return }
+                guard let fullImage = await Task.detached(priority: .userInitiated, operation: {
+                    guard let image = UIImage(data: data) else { return UIImage?.none }
+                    return image.preparingForDisplay() ?? image
+                }).value else { return }
                 await MainActor.run { [weak self] in
                     guard let self,
                           self.fullResLoadToken == token,
@@ -413,7 +435,7 @@ final class ImageViewerController: UIViewController {
     }
 
     @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
-        guard items.count > 1, scrollView.zoomScale <= 1 else { return }
+        guard (catalogPage?.count ?? items.count) > 1, scrollView.zoomScale <= 1 else { return }
         switch gesture.direction {
         case .left:
             showItem(at: currentIndex + 1, direction: 1)
@@ -460,12 +482,42 @@ final class ImageViewerController: UIViewController {
     // MARK: - Dismiss
 
     private func updatePageLabel() {
-        pageLabel.isHidden = items.count <= 1
-        guard items.count > 1 else { return }
-        pageLabel.text = "\(currentIndex + 1) / \(items.count)"
+        let count = catalogPage?.count ?? items.count
+        pageLabel.isHidden = count <= 1
+        guard count > 1 else { return }
+        pageLabel.text = "\((catalogPage?.index ?? currentIndex) + 1) / \(count)"
     }
 
     private func showItem(at index: Int, direction: Int) {
+        if let page = catalogPage, let adjacentPage {
+            adjacentTask?.cancel()
+            adjacentTask = Task { [weak self] in
+                do {
+                    guard let next = try await adjacentPage(page, direction), !Task.isCancelled,
+                          let self, self.view.window != nil else { return }
+                    let previous = self.imageView.image
+                    self.fullResLoadTask?.cancel()
+                    self.fullResLoadToken = nil
+                    self.catalogPage = next
+                    self.items = [next.item]
+                    self.currentIndex = 0
+                    self.resolvedImages = [next.item.previewImage]
+                    self.fullResolutionReady = [false]
+                    self.sourceFrame = next.item.sourceFrame
+                    self.scrollView.setZoomScale(1, animated: false)
+                    self.updatePageLabel()
+                    self.transitionView.image = next.item.previewImage
+                    if let previous, let image = next.item.previewImage {
+                        self.animatePageTransition(from: previous, to: image, direction: direction)
+                    } else {
+                        self.imageView.image = next.item.previewImage
+                        self.layoutImageView()
+                    }
+                    self.loadFullResolution(for: 0, delay: .milliseconds(250))
+                } catch { /* Keep the current image on catalog failure. */ }
+            }
+            return
+        }
         guard items.indices.contains(index), index != currentIndex else { return }
 
         let previousImage = imageView.image
@@ -521,6 +573,9 @@ final class ImageViewerController: UIViewController {
     }
 
     private func animateDismiss() {
+        adjacentTask?.cancel()
+        fullResLoadTask?.cancel()
+        fullResLoadToken = nil
         toolbar.alpha = 0
         closeButton.alpha = 0
         pageLabel.alpha = 0

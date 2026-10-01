@@ -239,9 +239,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         navigateToMessage(eventId: eventId)
     }
 
-    func preparePollNavigation(eventId: String) async throws -> PreparedPollNavigation {
+    func preparePollNavigation(eventId: String, targetKind: ChatCatalogTarget = .poll) async throws -> PreparedPollNavigation {
         guard !isPreviewMode else { throw PollNavigationError.unavailable }
-        let prepared = try await viewModel.preparePollNavigation(eventId: eventId)
+        let prepared = try await viewModel.preparePollNavigation(eventId: eventId, targetKind: targetKind)
         return PreparedPollNavigation { [weak self] in
             guard let self, !self.isTeleporting else { return false }
             // Attachments still cover the chat. Swap without a second slide
