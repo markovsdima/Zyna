@@ -16,7 +16,7 @@ final class ProfileCoordinator {
     }
 
     func start() {
-        let vc = ProfileViewController(mode: .own, audioPlayer: audioPlayer)
+        let vc = ProfileViewController(audioPlayer: audioPlayer)
         vc.onLogout = { [weak self] in
             self?.onLogout?()
         }

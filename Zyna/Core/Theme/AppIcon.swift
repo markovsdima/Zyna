@@ -47,9 +47,11 @@ enum AppIcon {
     case bell
     case bellSlash
     case ellipsis
+    case copy
 
     var systemName: String {
         switch self {
+        case .copy:             return "doc.on.doc"
         case .play:             return "play.fill"
         case .pause:            return "pause.fill"
         case .stop:             return "stop.circle.fill"

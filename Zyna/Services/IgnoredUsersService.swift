@@ -12,13 +12,23 @@ enum IgnoredUsersServiceError: Error {
 
 /// Matrix `m.ignored_user_list`, stored as account data so it follows the
 /// user across devices. Homeservers suppress ignored users' non-state events.
-final class IgnoredUsersService {
+protocol IgnoredUsersProviding: Sendable {
+    func ignoredUserIds() async throws -> [String]
+    func observeIgnoredUsers(_ onChange: @escaping @Sendable ([String]) -> Void) -> TaskHandle?
+    func ignore(userId: String) async throws
+    func unignore(userId: String) async throws
+}
+
+final class IgnoredUsersService: IgnoredUsersProviding, @unchecked Sendable {
 
     static let shared = IgnoredUsersService()
 
-    private init() {}
+    private let fixedClient: Client?
 
-    private var client: Client? { MatrixClientService.shared.client }
+    private init() { fixedClient = nil }
+    init(client: Client) { fixedClient = client }
+
+    private var client: Client? { fixedClient ?? MatrixClientService.shared.client }
 
     func ignoredUserIds() async throws -> [String] {
         guard let client else { throw IgnoredUsersServiceError.noClient }

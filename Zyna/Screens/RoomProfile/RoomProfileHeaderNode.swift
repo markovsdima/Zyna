@@ -23,6 +23,7 @@ extension RoomProfileAction {
         case .edit: String(localized: "Edit")
         case .information: String(localized: "Room Details")
         case .attachments: String(localized: "Attachments")
+        case .message: String(localized: "Chat")
         }
     }
 
@@ -37,6 +38,7 @@ extension RoomProfileAction {
         case .edit: .pencil
         case .information: .settings
         case .attachments: .attach
+        case .message: .bubbleLeft
         }
     }
 }
@@ -107,9 +109,32 @@ final class RoomProfileHeaderNode: ASDisplayNode {
         if topic != (snapshot.topic ?? "") { topicExpanded = false }
         topic = snapshot.topic ?? ""
         address = snapshot.isDirect ? "" : (snapshot.address ?? "")
+        let actions = RoomProfileAction.primary(for: snapshot)
+        applyActions(actions, enabled: { $0.isEnabled(in: snapshot) })
+    }
+
+    func apply(_ snapshot: PersonProfileSnapshot, canOpenChat: Bool, presence: String?) {
+        titleText = snapshot.title
+        showsMembers = false
+        subtitleText = [snapshot.userID, presence].compactMap { $0 }.joined(separator: "\n")
+        topic = snapshot.group.map { group in
+            let membership: String
+            switch group.membership {
+            case .join: membership = group.role.localizedLabel
+            case .invite: membership = String(localized: "Invited", table: "RoomProfile")
+            case .ban: membership = String(localized: "Banned", table: "RoomProfile")
+            default: membership = String(localized: "Not a member", table: "RoomProfile")
+            }
+            return "\(group.title)\n\(membership)"
+        } ?? ""
+        address = ""
+        let actions: [RoomProfileAction] = snapshot.isSelf ? [.more] : [.message, .more]
+        applyActions(actions, enabled: { $0 != .message || canOpenChat })
+    }
+
+    private func applyActions(_ actions: [RoomProfileAction], enabled: (RoomProfileAction) -> Bool) {
         subtitleNode.isUserInteractionEnabled = showsMembers
         subtitleNode.accessibilityTraits = showsMembers ? .button : .staticText
-        let actions = RoomProfileAction.primary(for: snapshot)
         if buttons.map(\.action) != actions {
             buttons = actions.map { action in
                 let button = RoomProfileActionNode(action: action)
@@ -117,9 +142,11 @@ final class RoomProfileHeaderNode: ASDisplayNode {
                 return button
             }
         }
-        for button in buttons { button.setEnabled(button.action.isEnabled(in: snapshot)) }
+        for button in buttons { button.setEnabled(enabled(button.action)) }
         updateTypography()
     }
+
+    func setMoreMenu(_ menu: UIMenu) { buttons.first { $0.action == .more }?.setMenu(menu) }
 
     func setMenus(more: UIMenu, notifications: UIMenu, notificationDetail: String, isMuted: Bool) {
         buttons.first { $0.action == .more }?.setMenu(more)
@@ -180,9 +207,10 @@ final class RoomProfileHeaderNode: ASDisplayNode {
             let row = ASStackLayoutSpec.horizontal()
             row.spacing = 8
             row.alignItems = .stretch
+            let count = CGFloat(buttons.count)
             for button in buttons {
                 button.style.width = ASDimension(unit: .points,
-                    value: max(0, (constrainedSize.max.width - 32 - 24) / 4))
+                    value: max(0, (constrainedSize.max.width - 32 - 8 * (count - 1)) / count))
             }
             row.children = buttons
             children.append(row)

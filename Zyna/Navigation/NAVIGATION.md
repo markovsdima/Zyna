@@ -39,6 +39,39 @@ Important properties:
 - `hidesBottomBarWhenPushed` is forwarded manually to `ZynaTabBarController`
 - `UIViewController.navigationController` does not apply here; screens should use `zynaNavigationController`
 
+### Chat routes and resident content
+
+`ChatRouteViewController` is the stable stack entry for a room. Its child
+`ChatViewController` owns the expensive content and can be recreated. Use
+`chatRoomIdentifier` to find routes and `materializedChat()` when an action
+needs their content; do not cast navigation stack entries to a chat controller.
+
+Opening another chat from a person card or the forwarding picker preserves
+the Back route. Opening a room already in the stack returns to that entry.
+Forwarding installs its preview after the picker closes and any pop finishes.
+Cross-tab routing still belongs to `MainCoordinator`.
+
+The navigation controller keeps the nearest two chat contents resident.
+Older entries retain session state: a message anchor and its viewport
+distance, formatted input and selection, reply/edit/forward targets,
+attachment drafts, and the search query/current result. They release their
+SDK listeners, message window and Texture collection. Attachment payloads
+belong to the draft and remain retained; this is a bound on chat contents,
+not on the total bytes of all drafts or non-chat screens.
+
+Hidden resident chats coalesce presentation refreshes until they become
+visible. Departure resolves the visible-message debounce and flushes the
+pending read receipt. That request retains only its SDK timeline until it
+finishes, so unloading the chat cannot discard an already viewed target.
+Restoring an older chat reads a bounded window around its event
+off-main, falling back near the saved timestamp if the event has disappeared.
+Factories are scoped to the account session. Routes are not persisted across
+app restarts. A Back history menu can later use these stable entries.
+
+Interactive cancellation preserves residency and route state. Stack mutations
+requested during a transition wait for its completion. Deep pops materialize
+the destination before the transition; afterward the preceding chat is warmed.
+
 ### Cross-tab navigation
 
 Cross-tab flows should not chain a visible tab switch plus a visible push.

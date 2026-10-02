@@ -14,7 +14,11 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     var onShowInChat: ((String) async throws -> PreparedPollNavigation)?
     var onOpenMediaImage: ((RoomMediaDatabase, AttachmentItem, CGRect) async throws -> Void)?
 
-    private let model: RoomAttachmentsViewModel
+    private let model: RoomAttachmentsViewModel?
+    private let personModel: PersonProfileViewModel?
+    private let blockingFactory: (String) -> UserBlockingViewModel?
+    private var blocking: UserBlockingViewModel?
+    private var blockingObservations = Set<AnyCancellable>()
     private let actions: RoomAttachmentsActions
     private let room: Room?
     private let titleText: String
@@ -75,14 +79,25 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         let hasInformationError: Bool
     }
     private var renderedMenuState: MenuState?
+    private struct PersonMenuState: Equatable {
+        let snapshot: PersonProfileSnapshot
+        let performingAction: Bool
+        let hasProfileError: Bool
+        let isBlocked: Bool?
+        let savingBlock: Bool
+        let canChangeBlock: Bool
+        let hasBlockError: Bool
+    }
+    private var renderedPersonMenuState: PersonMenuState?
     private var navigationTask: Task<Void, Never>?
     private var imageTask: Task<Void, Never>?
     private var playerHost: EmbeddedVoiceTopPlayerHost?
     private var attached = false
+    private var hasBegunAppearance = false
     private var layingOut = false
     private var previousWidth: CGFloat = 0
     private var isPresentingError = false
-    private let tabHeight: CGFloat = 48
+    private var tabHeight: CGFloat { personModel == nil ? 48 : 0 }
     private struct HeaderGeometry: Equatable {
         let top: CGFloat
         let width: CGFloat
@@ -92,9 +107,11 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
     private var renderedHeaderGeometry: HeaderGeometry?
 
-    init(room: Room?, title: String, subtitle: String, model: RoomAttachmentsViewModel,
+    init(room: Room?, title: String, subtitle: String, model: RoomAttachmentsViewModel?,
          actions: RoomAttachmentsActions, audioPlayer: AudioPlayerService? = nil, mediaCatalog: RoomMediaCatalog? = nil,
          profileModel: RoomProfileViewModel? = nil,
+         personModel: PersonProfileViewModel? = nil,
+         blockingFactory: ((String) -> UserBlockingViewModel?)? = nil,
          avatarLoader: @escaping @Sendable (String, Int) async -> UIImage? = { mxc, pixels in
              await RoomProfileAvatarImageLoader.load(mxc, pixels)
          },
@@ -104,6 +121,8 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         self.room = room
         self.titleText = title
         self.model = model
+        self.personModel = personModel
+        self.blockingFactory = blockingFactory ?? UserBlockingViewModel.currentSessionFactory()
         self.actions = actions
         self.profileModel = profileModel
         self.avatarLoader = avatarLoader
@@ -117,6 +136,11 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    convenience init(personModel: PersonProfileViewModel, audioPlayer: AudioPlayerService? = nil) {
+        self.init(room: nil, title: personModel.snapshot.title, subtitle: personModel.snapshot.userID,
+            model: nil, actions: .none, audioPlayer: audioPlayer, personModel: personModel)
+    }
 
     deinit {
         startTask?.cancel(); avatarTask?.cancel(); largeAvatarTask?.cancel()
@@ -154,6 +178,8 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         pager.scrollsToTop = false
         pager.contentInsetAdjustmentBehavior = .never
         pager.accessibilityIdentifier = "profile.pager"
+        pager.isScrollEnabled = personModel == nil
+        tabBackground.isHidden = personModel != nil
         tabs.selectedSegmentIndex = 0
         tabs.accessibilityIdentifier = "profile.sections"
         tabs.addTarget(self, action: #selector(selectTab), for: .valueChanged)
@@ -187,7 +213,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         ensurePage(.media)
         bind()
         bindProfile()
-        startTask = Task { [weak self] in await self?.model.start() }
+        startTask = Task { [weak self] in await self?.model?.start() }
         NotificationCenter.default.publisher(for: UIContentSizeCategory.didChangeNotification)
             .sink { [weak self] _ in
                 self?.header.updateTypography()
@@ -204,8 +230,10 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             avatarTask?.cancel()
             largeAvatarTask?.cancel()
             stopAvatarAnimation(finish: true)
-            model.stop()
+            model?.stop()
             profileModel?.stop()
+            personModel?.stop()
+            blocking?.stop()
             mediaCatalog.stop()
             cancellables.removeAll()
         }
@@ -218,11 +246,19 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         loadLargeAvatarIfNeeded(retry: true)
         playerHost?.refresh()
         profileModel?.refreshNotifications()
+        // Binding starts the first reads. Refresh only when returning so the
+        // initial appearance does not cancel and repeat those requests.
+        if hasBegunAppearance {
+            personModel?.refresh()
+            blocking?.refresh()
+        }
+        hasBegunAppearance = true
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         showProfileError()
+        showPersonError()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -272,7 +308,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             updateSharedPan()
         }
         pager.frame = CGRect(x: 0, y: top, width: width, height: max(0, view.bounds.height - top))
-        pager.contentSize = CGSize(width: width * 2, height: pager.bounds.height)
+        pager.contentSize = CGSize(width: width * (personModel == nil ? 2 : 1), height: pager.bounds.height)
         if width != previousWidth { pager.contentOffset.x = width * CGFloat(state.selected.rawValue); previousWidth = width }
         bar.frame = CGRect(x: 0, y: 0, width: width, height: top)
         backButton.frame = CGRect(x: 8, y: top - 48, width: 44, height: 44)
@@ -295,6 +331,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     private func bind() {
+        guard let model else { return }
         let usesPagedMedia = model.usesPagedMedia
         model.$media.combineLatest(model.$files)
             .receive(on: projectionQueue)
@@ -315,8 +352,9 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     private func bindProfile() {
+        if let personModel { bindPerson(personModel); return }
         guard let profileModel else {
-            loadAvatar(AvatarIdentity(id: model.roomId, title: titleText, url: room?.avatarUrl()))
+            loadAvatar(AvatarIdentity(id: model?.roomId ?? "", title: titleText, url: room?.avatarUrl()))
             return
         }
         profileModel.$snapshot.sink { [weak self] snapshot in
@@ -325,6 +363,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             self.compactTitle.text = snapshot.title
             self.loadAvatar(AvatarIdentity(id: snapshot.directUserID ?? snapshot.roomID,
                 title: snapshot.title, url: snapshot.avatarURL))
+            self.updateBlocking(userID: snapshot.isDirect ? snapshot.directUserID : nil)
             // @Published delivers before its property changes. Use this value
             // for permissions so a revoked action cannot remain in the menu.
             self.updateProfileMenus(snapshot: snapshot)
@@ -342,12 +381,79 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     private func perform(_ action: RoomProfileAction) {
+        if let personModel {
+            if action == .message { personModel.openChat() }
+            return
+        }
         guard profileModel.map({ action.isEnabled(in: $0.snapshot) }) != false else { return }
         switch action {
         case .information: onInformation?()
         case .attachments: onLegacyAttachments?()
         default: onAction?(action)
         }
+    }
+
+    private func bindPerson(_ person: PersonProfileViewModel) {
+        person.$snapshot.combineLatest(person.$isPerformingAction, person.$presence, person.$loadError)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.renderPerson() }.store(in: &cancellables)
+        person.$actionError.receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.showPersonError() }.store(in: &cancellables)
+        updateBlocking(userID: person.snapshot.userID)
+        person.start()
+        renderPerson()
+    }
+
+    private func renderPerson() {
+        guard let person = personModel else { return }
+        let snapshot = person.snapshot
+        let presence = person.presence.map { value in
+            value.online ? String(localized: "online") : value.lastSeen?.presenceLastSeenString(style: .expanded)
+        } ?? nil
+        header.apply(snapshot, canOpenChat: person.canOpenChat, presence: presence)
+        compactTitle.text = snapshot.title
+        loadAvatar(AvatarIdentity(id: snapshot.userID, title: snapshot.title, url: snapshot.avatarURL))
+        let menuState = PersonMenuState(snapshot: snapshot,
+            performingAction: person.isPerformingAction, hasProfileError: person.loadError != nil,
+            isBlocked: person.blocking.isBlocked, savingBlock: person.blocking.isSaving,
+            canChangeBlock: person.blocking.canChange, hasBlockError: person.blocking.loadError != nil)
+        if renderedPersonMenuState != menuState {
+            renderedPersonMenuState = menuState
+            let menu = ProfileActionMenus.person(person, presenter: self)
+            moreButton.menu = menu
+            header.setMoreMenu(menu)
+        }
+        if person.isPerformingAction { navigationProgress.startAnimating() }
+        else { navigationProgress.stopAnimating() }
+        moreButton.isHidden = person.isPerformingAction
+        view.setNeedsLayout()
+    }
+
+    private func updateBlocking(userID: String?) {
+        guard blocking?.userID != userID else { return }
+        blocking?.stop()
+        blockingObservations.removeAll()
+        blocking = personModel?.blocking ?? userID.flatMap(blockingFactory)
+        guard let blocking else { return }
+        blocking.$isBlocked.combineLatest(blocking.$isSaving, blocking.$loadError)
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in
+                guard let self else { return }
+                if self.personModel != nil { self.renderPerson() }
+                else { self.renderedMenuState = nil; self.updateProfileMenus() }
+            }.store(in: &blockingObservations)
+        blocking.$actionError.receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.showPersonError() }.store(in: &blockingObservations)
+        blocking.start()
+    }
+
+    private func showPersonError() {
+        guard view.window != nil, presentedViewController == nil,
+              let error = personModel?.actionError ?? blocking?.actionError else { return }
+        personModel?.actionError = nil
+        blocking?.actionError = nil
+        let alert = UIAlertController(title: String(localized: "Something went wrong"), message: error, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+        present(alert, animated: true)
     }
 
     private func updateProfileMenus(snapshot: RoomProfileSnapshot? = nil) {
@@ -368,6 +474,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
                 attributes: action.isEnabled(in: snapshot) ? [] : .disabled) { [weak self] _ in self?.perform(action) })
         }
         entries.insert(notificationMenu, at: min(1, entries.count))
+        if let action = ProfileActionMenus.blocking(blocking, presenter: self) { entries.append(action) }
         if profileModel.informationError != nil {
             entries.append(UIAction(title: String(localized: "Reload profile", table: "RoomProfile")) { [weak profileModel] _ in
                 profileModel?.reloadInformation()
@@ -420,6 +527,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     private func updatePages(catalogChanged: Bool = false) {
+        guard model != nil else { return }
         for (section, page) in pages {
             let base = catalog[section] ?? []
             let footer = footerRow(isEmpty: section == .media && mediaCatalog.source != nil ? mediaCatalog.count == 0 : base.isEmpty, section: section)
@@ -433,6 +541,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     private func footerRow(isEmpty: Bool, section: RoomProfileScrollState.Section) -> RoomProfileRow {
+        guard let model else { return .init(id: "footer", title: "", detail: nil, item: nil, isHeader: false, isAction: false) }
         var title = ""
         var detail: String?
         var action = false
@@ -460,12 +569,12 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private func ensurePage(_ section: RoomProfileScrollState.Section) -> any RoomProfileContentPage {
         if let page = pages[section] { return page }
         let page: any RoomProfileContentPage
-        if section == .media {
+        if section == .media, personModel == nil {
             let grid = RoomMediaGrid(catalog: mediaCatalog, columns: mediaColumns)
             grid.onColumnsChanged = { [weak self] in self?.mediaColumns = $0 }
             grid.onCountChanged = { [weak self] count in
                 guard let self else { return }
-                if self.model.usesPagedMedia { self.model.updatePagedMediaCount(count) }
+                if self.model?.usesPagedMedia == true { self.model?.updatePagedMediaCount(count) }
                 self.updatePages()
             }
             page = grid
@@ -478,8 +587,8 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         pager.addSubview(page.view)
         page.install()
         page.isActive = section == state.selected
-        page.forceLoadIds = model.forceLoadIds
-        page.fullFileThreshold = model.fullFileThreshold
+        page.forceLoadIds = model?.forceLoadIds ?? []
+        page.fullFileThreshold = model?.fullFileThreshold ?? AttachmentThumbnailPlan.defaultFullFileThreshold
         page.restorationAnchor = anchors.removeValue(forKey: section)
         page.onScroll = { [weak self, weak page] in
             guard let self, let page, self.pages[section] === page,
@@ -526,15 +635,16 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         page.onSelect = { [weak self] item, preview, frame in self?.open(item, preview: preview, from: frame) }
         page.onShowInChat = { [weak self] item in self?.showInChat(item.id) }
         page.onContextInteractionChanged = { [weak self] locked in
-            self?.pager.isScrollEnabled = !locked
-            self?.tabs.isEnabled = !locked
-            self?.topButton.isEnabled = !locked
-        }
-        page.onRequestImage = { [weak self] item in self?.model.requestLoad(item) }
-        page.onLoad = { [weak self] in
             guard let self else { return }
-            if self.model.pendingDecryptionCount > 0 { self.model.retryDecryption(reason: "profile") }
-            self.model.loadMoreTapped()
+            self.pager.isScrollEnabled = !locked && self.personModel == nil
+            self.tabs.isEnabled = !locked
+            self.topButton.isEnabled = !locked
+        }
+        page.onRequestImage = { [weak self] item in self?.model?.requestLoad(item) }
+        page.onLoad = { [weak self] in
+            guard let model = self?.model else { return }
+            if model.pendingDecryptionCount > 0 { model.retryDecryption(reason: "profile") }
+            model.loadMoreTapped()
         }
         page.onAnchorRestored = { [weak self, weak page] depth in
             guard let self, let page, self.pages[section] === page else { return }
@@ -542,8 +652,8 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         }
         page.onNearEnd = { [weak self] near in
             let tab: RoomAttachmentsViewModel.Tab = section == .media ? .media : .files
-            if near { self?.model.sentinelAppeared(in: tab, from: .profile) }
-            else { self?.model.sentinelDisappeared(in: tab, from: .profile) }
+            if near { self?.model?.sentinelAppeared(in: tab, from: .profile) }
+            else { self?.model?.sentinelDisappeared(in: tab, from: .profile) }
         }
         if section == state.selected { updateSharedPan() }
         updatePages()
@@ -584,7 +694,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             let alpha = state.regularCollapseProgress
             compactTitle.alpha = alpha
             compactAvatar.alpha = alpha
-            if profileModel != nil {
+            if profileModel != nil || personModel != nil {
                 moreButton.alpha = alpha
                 moreButton.accessibilityElementsHidden = alpha < 0.95
             }
@@ -675,7 +785,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     @objc private func toggleAvatar() {
-        guard hasAvatarPhoto, state.transition == nil, pager.isScrollEnabled else { return }
+        guard hasAvatarPhoto, state.transition == nil, personModel != nil || pager.isScrollEnabled else { return }
         if state.avatarProgress < 0.5 { loadLargeAvatarIfNeeded(retry: true) }
         avatarHaptic.impactOccurred()
         animateAvatar(to: state.avatarProgress >= 0.5 ? state.avatarExpansionHeight : 0)
@@ -746,6 +856,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     private func beginPaging() {
+        guard personModel == nil else { return }
         settleInterruptedAvatar()
         pagingAvatarTarget = avatarAnimationTarget
         stopAvatarAnimation(finish: false)
@@ -781,7 +892,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         state.finishTransition(at: section)
         updateSharedPan()
         tabs.selectedSegmentIndex = index
-        model.tab = section == .media ? .media : .files
+        model?.tab = section == .media ? .media : .files
         for (key, page) in pages {
             page.isActive = key == section
             page.view.accessibilityElementsHidden = key != section
@@ -798,13 +909,14 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     private func open(_ item: AttachmentItem, preview: UIImage?, from frame: CGRect) {
+        guard let model else { return }
         if item.kind == .image {
             if let source = mediaCatalog.source, let onOpenMediaImage {
                 imageTask?.cancel()
                 imageTask = Task { [weak self] in
                     do { try await onOpenMediaImage(source, item, frame) }
                     catch is CancellationError {}
-                    catch { self?.model.downloadError = error.localizedDescription }
+                    catch { self?.model?.downloadError = error.localizedDescription }
                 }
                 return
             }
@@ -862,11 +974,11 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     private func showDownloadError() {
-        guard let error = model.downloadError, !isPresentingError, presentedViewController == nil, view.window != nil else { return }
+        guard let error = model?.downloadError, !isPresentingError, presentedViewController == nil, view.window != nil else { return }
         isPresentingError = true
         let alert = UIAlertController(title: String(localized: "Download failed"), message: error, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default) { [weak self] _ in
-            self?.model.downloadError = nil; self?.isPresentingError = false
+            self?.model?.downloadError = nil; self?.isPresentingError = false
         })
         present(alert, animated: true)
     }

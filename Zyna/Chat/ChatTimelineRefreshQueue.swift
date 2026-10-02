@@ -15,6 +15,7 @@ final class ChatTimelineRefreshQueue {
     private var pending: TimelineFlushSummary?
     private var isRunning = false
     private var isCancelled = false
+    private var isPaused = false
     private let scheduleRepair: (@escaping () -> Void) -> Void
     private var repairSequence: UInt64 = 0
     private var scheduledRepair: UInt64?
@@ -80,8 +81,16 @@ final class ChatTimelineRefreshQueue {
         hasImmediatePending = false
     }
 
+    /// Retain one merged notification while hidden, without reading or
+    /// rendering successive snapshots. Resume consumes the latest state.
+    func setPaused(_ paused: Bool) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        isPaused = paused
+        if !paused { startNext() }
+    }
+
     private func startNext() {
-        guard !isCancelled, !isRunning, scheduledRepair == nil, let summary = pending else { return }
+        guard !isCancelled, !isPaused, !isRunning, scheduledRepair == nil, let summary = pending else { return }
         let wasImmediate = hasImmediatePending
         pending = nil
         hasImmediatePending = false

@@ -188,6 +188,8 @@ final class ChatViewModel {
     @Published private(set) var memberCount: Int?
     @Published private(set) var isGroupChat: Bool = false
     @Published private(set) var searchState: ChatSearchState?
+    private var searchRevision: UInt64 = 0
+    private var pendingSearchRestorationEventID: String?
     @Published private(set) var connectionStatusText: String?
     @Published private(set) var composerSendRestrictionReason: OutgoingSendFailureReason?
     @Published private(set) var isRoomEncrypted: Bool = true
@@ -249,6 +251,9 @@ final class ChatViewModel {
         label: "com.zyna.chat.history-page", qos: .userInitiated
     )
     private var acceptsTimelineRefreshes = true
+    private var navigationPresentationActive = true
+    private var initialNavigationAnchor: ChatNavigationAnchor?
+    private let presenceRegistration = "chat-" + UUID().uuidString
     private var needsSparseHistoryCheck = false
     private var isApplyingTimelineRefresh = false
     private lazy var timelineRefreshQueue = ChatTimelineRefreshQueue { [weak self] summary, done in
@@ -289,7 +294,7 @@ final class ChatViewModel {
         return room.encryptionState() != .notEncrypted
     }
 
-    init(room: Room, mode: ChatPresentationMode = .normal) {
+    init(room: Room, mode: ChatPresentationMode = .normal, navigationAnchor: ChatNavigationAnchor? = nil) {
         let roomId = room.id()
         self.presentationDatabase = DatabaseService.shared.dbQueue
         self.room = nil
@@ -306,11 +311,13 @@ final class ChatViewModel {
             dbQueue: presentationDatabase
         )
 
+        initialNavigationAnchor = navigationAnchor
+        if navigationAnchor != nil { timelineRefreshQueue.setPaused(true) }
         bindCommonServices()
         attachLiveRoom(room)
     }
 
-    init(cachedRoom: RoomModel, mode: ChatPresentationMode = .normal) {
+    init(cachedRoom: RoomModel, mode: ChatPresentationMode = .normal, navigationAnchor: ChatNavigationAnchor? = nil) {
         self.presentationDatabase = DatabaseService.shared.dbQueue
         self.room = nil
         self.roomId = cachedRoom.id
@@ -330,6 +337,8 @@ final class ChatViewModel {
         self.isGroupChat = cachedRoom.directUserId == nil
         self.isRoomEncrypted = cachedRoom.isEncrypted
 
+        initialNavigationAnchor = navigationAnchor
+        if navigationAnchor != nil { timelineRefreshQueue.setPaused(true) }
         bindCommonServices()
         loadInitialWindowIfNeeded()
         scheduleLiveRoomResolution()
@@ -338,7 +347,8 @@ final class ChatViewModel {
     #if DEBUG
     /// Exercises window-to-display transitions without attaching a live room.
     init(testingRoomId: String, dbQueue: AccountDatabase, window: MessageWindow,
-         includesLocalState: Bool = false, mode: ChatPresentationMode = .preview) {
+         includesLocalState: Bool = false, mode: ChatPresentationMode = .preview,
+         navigationAnchor: ChatNavigationAnchor? = nil, timelineService: TimelineService? = nil) {
         self.presentationDatabase = dbQueue
         self.includesLocalPresentationState = includesLocalState
         self.roomId = testingRoomId
@@ -346,6 +356,9 @@ final class ChatViewModel {
         self.mode = mode
         self.diffBatcher = TimelineDiffBatcher(roomId: testingRoomId, dbQueue: dbQueue)
         self.window = window
+        self.timelineService = timelineService
+        initialNavigationAnchor = navigationAnchor
+        if navigationAnchor != nil { timelineRefreshQueue.setPaused(true) }
         bindWindow()
         bindPollUpdates()
     }
@@ -637,6 +650,7 @@ final class ChatViewModel {
                         completion(.failed)
                         return
                     }
+                    guard self.navigationPresentationActive else { completion(.superseded); return }
                     let applyingSummary = self.timelineRefreshQueue.summaryForApplying(summary)
                         .coveringSnapshot(historyRevision: page.committedHistoryRevision)
                     let applyingOrigin = page.origin(summary: applyingSummary)
@@ -692,6 +706,7 @@ final class ChatViewModel {
                     operation?.finish()
                     #endif
                     guard let self, self.acceptsTimelineRefreshes else { completion(.failed); return }
+                    guard self.navigationPresentationActive else { completion(.superseded); return }
                     // A live/local update arriving during this read needs a
                     // full snapshot. Retain its provenance in the same queue.
                     guard self.timelineRefreshQueue.summaryForApplying(summary).canRefreshBoundsOnly,
@@ -833,7 +848,7 @@ final class ChatViewModel {
                     self.isGroupChat = false
                 }
                 if !self.mode.isPreview {
-                    PresenceTracker.shared.register(userIds: [userId], for: "chat")
+                    PresenceTracker.shared.register(userIds: [userId], for: self.presenceRegistration)
                 }
                 PresenceTracker.shared.$statuses
                     .map { $0[userId] }
@@ -1236,7 +1251,15 @@ final class ChatViewModel {
     /// Bootstrap is not a navigation request. An abandoned catalog jump
     /// must not cancel it; an already committed window always wins.
     func prepareInitialHistoryWindow() {
-        prepareHistoryReplacement(.newest, id: nil) { apply in apply() }
+        let destination: MessageWindow.Destination = initialNavigationAnchor.map {
+            .restoration(eventID: $0.eventID, timestamp: $0.timestamp)
+        } ?? .newest
+        prepareHistoryReplacement(destination, id: nil) { [weak self] apply in
+            apply()
+            guard let self else { return }
+            self.initialNavigationAnchor = nil
+            self.timelineRefreshQueue.setPaused(!self.navigationPresentationActive)
+        }
     }
 
     private func enqueueMatrixRTCCallProjectionRefresh(
@@ -1652,6 +1675,14 @@ final class ChatViewModel {
     private func handleObservationChange(
         newStored: [StoredMessage], prevStored: [StoredMessage]?, origin: MessageWindowChangeOrigin
     ) {
+        // An explicit jump can commit before the restoration read. Whichever
+        // window wins bootstrap must release its pause on live refreshes.
+        defer {
+            if initialNavigationAnchor != nil, window.generation > 0 {
+                initialNavigationAnchor = nil
+                timelineRefreshQueue.setPaused(!navigationPresentationActive)
+            }
+        }
         if let prepared = preparedWindowRender {
             preparedWindowRender = nil
             applyRender(prepared, origin: origin)
@@ -1739,7 +1770,8 @@ final class ChatViewModel {
     }
 
     private func preparePresentationRefresh() {
-        guard acceptsTimelineRefreshes, let origin = pendingPresentationOrigin else { return }
+        guard acceptsTimelineRefreshes, navigationPresentationActive,
+              !presentationRefreshRunning, let origin = pendingPresentationOrigin else { return }
         pendingPresentationOrigin = nil
         presentationRefreshRunning = true
         let input = renderInput()
@@ -1776,7 +1808,7 @@ final class ChatViewModel {
                     guard let self else { return }
                     self.presentationRefreshRunning = false
                     guard self.acceptsTimelineRefreshes, database.isActive else { return }
-                    if self.canApplyRender(prepared), self.window.revision == windowRevision {
+                    if self.navigationPresentationActive, self.canApplyRender(prepared), self.window.revision == windowRevision {
                         self.applyRender(prepared, origin: origin)
                         if self.pendingPresentationOrigin != nil {
                             self.enqueuePresentationRefresh(origin: .localMutation)
@@ -1820,7 +1852,7 @@ final class ChatViewModel {
     }
 
     private func checkSparseHistoryIfNeeded() {
-        guard needsSparseHistoryCheck, !isPaginating else { return }
+        guard navigationPresentationActive, needsSparseHistoryCheck, !isPaginating else { return }
         needsSparseHistoryCheck = false
         if ChatHistoryPageLoader.shouldLoadSparseHistory(
             displayCount: messages.count, hasLocal: window.hasOlderInDB,
@@ -3293,6 +3325,14 @@ final class ChatViewModel {
                 trace?.count(.pageError)
                 #endif
                 ScopedLog(.database)("History replacement failed: \(error)")
+                if id == nil {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.initialNavigationAnchor != nil else { return }
+                        self.initialNavigationAnchor = nil
+                        self.timelineRefreshQueue.setPaused(!self.navigationPresentationActive)
+                        self.prepareInitialHistoryWindow()
+                    }
+                }
             }
         }
     }
@@ -3326,9 +3366,10 @@ final class ChatViewModel {
         eventId: String?,
         canEstablishBaseline: Bool
     ) {
-        guard !mode.isPreview else { return }
+        guard !mode.isPreview, acceptsTimelineRefreshes, navigationPresentationActive else { return }
         guard let eventId else {
             readReceiptWork?.cancel()
+            readReceiptWork = nil
             pendingReadReceiptSend = nil
             return
         }
@@ -3339,34 +3380,44 @@ final class ChatViewModel {
             guard canEstablishBaseline else { return }
             guard pendingReadReceiptSend != .bootstrap(target) else { return }
             guard lastBootstrapReadReceiptTarget != target else { return }
-            scheduleReadReceiptSend(to: target, mode: .bootstrap(target))
+            scheduleReadReceiptSend(.bootstrap(target))
             return
         }
 
         guard shouldAdvanceReadReceipt(to: target) else { return }
         guard pendingReadReceiptSend != .advance(target) else { return }
 
-        scheduleReadReceiptSend(to: target, mode: .advance(target))
+        scheduleReadReceiptSend(.advance(target))
     }
 
-    private func scheduleReadReceiptSend(
-        to target: VisibleReadReceiptTarget,
-        mode: PendingReadReceiptSend
-    ) {
-        guard let timelineService else { return }
+    private func scheduleReadReceiptSend(_ mode: PendingReadReceiptSend) {
+        guard timelineService != nil else { return }
         readReceiptWork?.cancel()
         pendingReadReceiptSend = mode
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            Task {
-                let didSend = await timelineService.sendReadReceipt(for: target.eventId)
-                await MainActor.run {
-                    self.finishReadReceiptSend(mode, didSend: didSend)
-                }
-            }
+            self?.flushPendingReadReceipt()
         }
         readReceiptWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    /// Finish the debounce on departure. An in-flight request has no work
+    /// item and must not be started a second time by another lifecycle hook.
+    func flushPendingReadReceipt() {
+        guard readReceiptWork != nil, let pending = pendingReadReceiptSend else { return }
+        readReceiptWork?.cancel()
+        readReceiptWork = nil
+        guard let request = timelineService?.readReceiptRequest(for: pending.target.eventId) else {
+            pendingReadReceiptSend = nil
+            return
+        }
+        let database = presentationDatabase
+        Task { @MainActor [weak self] in
+            guard database.isActive else { return }
+            let didSend = await request.send()
+            guard let self, self.acceptsTimelineRefreshes else { return }
+            self.finishReadReceiptSend(pending, didSend: didSend)
+        }
     }
 
     private func finishReadReceiptSend(_ pending: PendingReadReceiptSend, didSend: Bool) {
@@ -3439,6 +3490,7 @@ final class ChatViewModel {
         if let pendingTarget = pendingReadReceiptSend?.target,
            !isReadReceiptTarget(pendingTarget, newerThan: target) {
             readReceiptWork?.cancel()
+            readReceiptWork = nil
             pendingReadReceiptSend = nil
         }
     }
@@ -5157,39 +5209,58 @@ final class ChatViewModel {
     // MARK: - Search
 
     func activateSearch() {
+        searchRevision &+= 1
+        pendingSearchRestorationEventID = nil
         searchState = ChatSearchState()
     }
 
     func deactivateSearch() {
+        searchRevision &+= 1
+        pendingSearchRestorationEventID = nil
         searchState = nil
     }
 
-    func updateSearchQuery(_ text: String) {
-        guard searchState != nil else { return }
-        searchState?.query = text
+    var navigationSearchState: ChatNavigationState.Search? {
+        searchState.map { .init(query: $0.query,
+            eventID: $0.currentResult?.eventId ?? pendingSearchRestorationEventID) }
+    }
 
-        guard !text.isEmpty else {
-            searchState?.results = []
-            searchState?.currentIndex = 0
-            return
-        }
+    func updateSearchQuery(_ text: String, restoringEventID: String? = nil) {
+        guard var state = searchState else { return }
+        searchRevision &+= 1
+        let revision = searchRevision
+        pendingSearchRestorationEventID = restoringEventID
+        state.query = text
+        state.results = []
+        state.currentIndex = 0
+        searchState = state
+        guard !text.isEmpty else { return }
 
         let rid = roomId
         let pattern = "%\(text)%"
-        let results: [ChatSearchResult] = (try? DatabaseService.shared.dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == rid)
-                .filter(Column("contentBody").like(pattern))
-                .order(Column("timestamp").desc)
-                .fetchAll(db)
-                .compactMap { msg -> ChatSearchResult? in
-                    guard let eventId = msg.eventId, let body = msg.contentBody else { return nil }
-                    return ChatSearchResult(eventId: eventId, body: body)
-                }
-        }) ?? []
+        let database = presentationDatabase
+        historyPageQueue.async { [weak self] in
+            let results: [ChatSearchResult] = (try? database.read { db in
+                try StoredMessage
+                    .filter(Column("roomId") == rid)
+                    .filter(Column("contentBody").like(pattern))
+                    .order(Column("timestamp").desc)
+                    .fetchAll(db)
+                    .compactMap { msg -> ChatSearchResult? in
+                        guard let eventId = msg.eventId, let body = msg.contentBody else { return nil }
+                        return ChatSearchResult(eventId: eventId, body: body)
+                    }
+            }) ?? []
 
-        searchState?.results = results
-        searchState?.currentIndex = 0
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.acceptsTimelineRefreshes, database.isActive,
+                      self.searchRevision == revision, var state = self.searchState, state.query == text else { return }
+                state.results = results
+                state.currentIndex = restoringEventID.flatMap { id in results.firstIndex { $0.eventId == id } } ?? 0
+                self.pendingSearchRestorationEventID = nil
+                self.searchState = state
+            }
+        }
     }
 
     func nextSearchResult() {
@@ -5204,7 +5275,31 @@ final class ChatViewModel {
         searchState = state
     }
 
+    func setNavigationPresentationActive(_ active: Bool) {
+        guard acceptsTimelineRefreshes, navigationPresentationActive != active else { return }
+        navigationPresentationActive = active
+        timelineRefreshQueue.setPaused(!active || initialNavigationAnchor != nil)
+        if active {
+            if pendingPresentationOrigin != nil { preparePresentationRefresh() }
+            checkSparseHistoryIfNeeded()
+        } else {
+            flushPendingReadReceipt()
+        }
+    }
+
+    func restoreNavigationComposer(_ state: ChatNavigationState) {
+        replyingTo = state.reply
+        editingMessage = state.editing
+        editingDraftOverride = state.editing == nil ? nil : state.text
+        pendingForwardContent = state.forward
+        if let search = state.search {
+            activateSearch()
+            updateSearchQuery(search.query, restoringEventID: search.eventID)
+        }
+    }
+
     func cleanup() {
+        flushPendingReadReceipt()
         #if DEBUG
         historyPerformance?.stop()
         #endif
@@ -5220,9 +5315,10 @@ final class ChatViewModel {
         historyPaginator.stop()
         pendingRedactionPlaceholderWork?.cancel()
         readReceiptWork?.cancel()
+        readReceiptWork = nil
         pendingReadReceiptSend = nil
         if !mode.isPreview {
-            PresenceTracker.shared.unregister(for: "chat")
+            PresenceTracker.shared.unregister(for: self.presenceRegistration)
         }
         roomResolutionTask?.cancel()
         roomResolutionTask = nil
@@ -5241,6 +5337,7 @@ final class ChatViewModel {
         diffBatcher.onFlush = nil
         diffBatcher.onDecryptionCandidatesChanged = nil
         timelineService?.stopListening()
+        cancellables.removeAll()
     }
 
     // MARK: - Background History Sync

@@ -10,6 +10,10 @@ import MatrixRustSDK
 private enum ChatScreenTarget {
     case live(Room)
     case cached(RoomModel)
+
+    var roomID: String {
+        switch self { case .live(let room): room.id(); case .cached(let room): room.id }
+    }
 }
 
 final class ChatsCoordinator {
@@ -170,9 +174,10 @@ final class ChatsCoordinator {
         }
     }
 
-    private func showChatScreen(_ target: ChatScreenTarget, animated: Bool) {
+    private func showChatScreen(_ target: ChatScreenTarget, animated: Bool, forward: ChatMessage? = nil) {
+        if navigationController.returnToChat(roomID: target.roomID, animated: animated, forward: forward) { return }
         #if DEBUG || CHAT_LIST_PLAYGROUND
-        if ChatListPlaygroundSettings.isEnabled {
+        if ChatListPlaygroundSettings.isEnabled, forward == nil {
             showChatListPlaygroundPicker(target, animated: animated)
             return
         }
@@ -182,7 +187,8 @@ final class ChatsCoordinator {
             LogConfig.enabled.insert(.attachments)
         }
         #endif
-        let (vc, _) = makeChatScreen(target: target)
+        let vc = makeChatRoute(target: target)
+        if let forward { vc.setPendingForward(forward) }
         navigationController.push(vc, animated: animated)
         #if DEBUG
         if AttachmentsResearchSettings.isAutoDiagnosticsEnabled {
@@ -535,27 +541,34 @@ final class ChatsCoordinator {
             self?.navigationController.dismiss(animated: true)
         }
         picker.onRoomSelected = { [weak self] selectedRoom in
-            self?.navigationController.dismiss(animated: true)
-            self?.openChatWithForward(
-                roomModel: selectedRoom,
-                forwardPreview: message
-            )
+            self?.navigationController.dismiss(animated: true) { [weak self] in
+                self?.openChatWithForward(roomModel: selectedRoom, forwardPreview: message)
+            }
         }
 
         navigationController.present(nav, animated: true)
     }
 
+    private func makeChatRoute(target: ChatScreenTarget) -> ChatRouteViewController {
+        let sessionID = MatrixClientService.shared.currentLocalSessionId
+        return ChatRouteViewController(roomID: target.roomID) { [weak self] restoration in
+            guard let self, MatrixClientService.shared.currentLocalSessionId == sessionID else { return nil }
+            return self.makeChatScreen(target: target, restoration: restoration).controller
+        }
+    }
+
     private func makeChatScreen(
-        target: ChatScreenTarget
+        target: ChatScreenTarget, restoration: ChatNavigationState? = nil
     ) -> (controller: ChatViewController, viewModel: ChatViewModel) {
         let viewModel: ChatViewModel
         switch target {
         case .live(let room):
-            viewModel = ChatViewModel(room: room)
+            viewModel = ChatViewModel(room: room, navigationAnchor: restoration?.anchor)
         case .cached(let room):
-            viewModel = ChatViewModel(cachedRoom: room)
+            viewModel = ChatViewModel(cachedRoom: room, navigationAnchor: restoration?.anchor)
         }
         let vc = ChatViewController(viewModel: viewModel, audioPlayer: audioPlayer)
+        vc.restoreNavigationState(restoration)
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
         }
@@ -565,7 +578,7 @@ final class ChatsCoordinator {
             self?.startCall(in: room, timelineService: timelineService, voiceOnly: true)
         }
         vc.onTitleTapped = { [weak self] userId in
-            self?.showProfile(userId: userId)
+            Task { @MainActor in self?.showProfile(userId: userId, room: viewModel.liveRoom) }
         }
         vc.onSecurityUserTapped = { [weak self] userId in
             guard let room = viewModel.liveRoom else { return }
@@ -599,9 +612,6 @@ final class ChatsCoordinator {
         roomModel: RoomModel,
         forwardPreview: ChatMessage
     ) {
-        // Pop back to root, then open the target chat
-        navigationController.popToRoot(animated: false)
-
         let target: ChatScreenTarget
         if let room = roomListService.room(for: roomModel.id)
             ?? (try? MatrixClientService.shared.client?.getRoom(roomId: roomModel.id)) {
@@ -610,20 +620,20 @@ final class ChatsCoordinator {
             target = .cached(roomModel)
         }
 
-        let (vc, viewModel) = makeChatScreen(target: target)
-        navigationController.push(vc)
-
-        // Set pending forward after push so the input bar shows it
-        viewModel.setPendingForward(forwardPreview)
+        showChatScreen(target, animated: true, forward: forwardPreview)
     }
 
-    private func showProfile(userId: String) {
-        let vc = ProfileViewController(mode: .other(userId: userId), audioPlayer: audioPlayer)
-        vc.onSearchTapped = { [weak self] in
-            self?.popAndActivateSearch()
+    @MainActor private func showProfile(userId: String, room: Room? = nil) {
+        guard let model = PersonProfileViewModel.make(userID: userId, room: room) else { return }
+        let vc = RoomProfileViewController(personModel: model, audioPlayer: audioPlayer)
+        vc.onBack = { [weak self] in self?.navigationController.pop() }
+        model.onRemovedFromGroup = { [weak self, weak vc] in
+            guard let self, let vc, self.navigationController.topViewController === vc else { return }
+            self.navigationController.pop()
         }
-        vc.onBack = { [weak self] in
-            self?.navigationController.pop()
+        model.onOpenChat = { [weak self, weak vc] room in
+            guard let self, let vc, self.navigationController.topViewController === vc else { return }
+            self.showChat(room)
         }
         navigationController.push(vc)
     }
@@ -664,9 +674,6 @@ final class ChatsCoordinator {
         }
         vc.onMembersTapped = { [weak self] in
             self?.showMembersList(room: room)
-        }
-        vc.onProfileTapped = { [weak self] userId in
-            self?.showProfile(userId: userId)
         }
         vc.onPinnedMessagesTapped = { [weak self] in
             self?.showPinnedMessages(room: room)
@@ -787,15 +794,15 @@ final class ChatsCoordinator {
             openPoll: { [weak self] eventId in
                 guard let self, self.activeAttachmentPresenter(presenter) != nil,
                       MatrixClientService.shared.currentLocalSessionId == sessionId,
-                      let chat = self.navigationController.stack.last(where: {
-                          ($0 as? ChatViewController)?.roomIdentifier == room.id()
-                      }) as? ChatViewController else { throw PollNavigationError.unavailable }
+                      let destination = self.navigationController.stack.last(where: {
+                          $0.chatRoomIdentifier == room.id()
+                      }), let chat = destination.materializedChat() else { throw PollNavigationError.unavailable }
                 let prepared = try await chat.preparePollNavigation(eventId: eventId)
-                return PreparedPollNavigation { [weak self, weak chat] in
-                    guard let self, let chat, self.activeAttachmentPresenter(presenter) != nil,
+                return PreparedPollNavigation { [weak self, weak chat, weak destination] in
+                    guard let self, let chat, let destination, self.activeAttachmentPresenter(presenter) != nil,
                           MatrixClientService.shared.currentLocalSessionId == sessionId,
-                          let index = self.navigationController.stack.firstIndex(where: { $0 === chat }),
-                          prepared.open() else { return false }
+                          let index = self.navigationController.stack.firstIndex(where: { $0 === destination }),
+                          destination.residentChat === chat, prepared.open() else { return false }
                     self.navigationController.setStack(Array(self.navigationController.stack.prefix(index + 1)), animated: true)
                     return true
                 }
@@ -832,9 +839,9 @@ final class ChatsCoordinator {
                 case .search: self.popAndActivateSearch()
                 case .call:
                     let chat = self.navigationController.stack.last {
-                        ($0 as? ChatViewController)?.roomIdentifier == room.id()
-                    } as? ChatViewController
-                    chat?.onCallTapped?()
+                        $0.chatRoomIdentifier == room.id()
+                    }
+                    chat?.materializedChat()?.onCallTapped?()
                 case .invite: self.showInviteMembers(room: room)
                 case .members: self.showMembersList(room: room)
                 case .edit:
@@ -856,8 +863,8 @@ final class ChatsCoordinator {
             vc.onShowInChat = { [weak self] eventId in
                 guard let self, self.activeAttachmentPresenter(presenter) != nil,
                       MatrixClientService.shared.currentLocalSessionId == sessionId,
-                      let chat = self.navigationController.stack.dropLast().last as? ChatViewController,
-                      chat.roomIdentifier == room.id() else { throw PollNavigationError.unavailable }
+                      let destination = self.navigationController.stack.dropLast().last,
+                      destination.chatRoomIdentifier == room.id(), let chat = destination.materializedChat() else { throw PollNavigationError.unavailable }
                 // Prepare the existing chat while the profile still covers
                 // it, then reveal the positioned list with the normal pop.
                 let prepared = try await chat.preparePollNavigation(eventId: eventId, targetKind: .attachment)
@@ -865,9 +872,10 @@ final class ChatsCoordinator {
                 guard self.activeAttachmentPresenter(presenter) != nil,
                       !self.navigationController.isTransitionInFlight,
                       MatrixClientService.shared.currentLocalSessionId == sessionId else { throw CancellationError() }
-                return PreparedPollNavigation { [weak self, weak chat] in
+                return PreparedPollNavigation { [weak self, weak chat, weak destination] in
                     guard let self, self.activeAttachmentPresenter(presenter) != nil,
-                          let chat, self.navigationController.stack.dropLast().last === chat,
+                          let chat, let destination, destination.residentChat === chat,
+                          self.navigationController.stack.dropLast().last === destination,
                           !self.navigationController.isTransitionInFlight,
                           MatrixClientService.shared.currentLocalSessionId == sessionId,
                           prepared.open() else { return false }
@@ -991,8 +999,8 @@ final class ChatsCoordinator {
     }
 
     private func openPinnedEvent(_ eventId: String) {
-        guard let index = navigationController.stack.lastIndex(where: { $0 is ChatViewController }),
-              let chatVC = navigationController.stack[index] as? ChatViewController
+        guard let index = navigationController.stack.lastIndex(where: { $0.chatRoomIdentifier != nil }),
+              let chatVC = navigationController.stack[index].materializedChat()
         else {
             navigationController.pop()
             return
@@ -1036,52 +1044,7 @@ final class ChatsCoordinator {
     }
 
     private func showMemberDetail(room: Room, userId: String) {
-        let vc = MemberDetailViewController(
-            room: room,
-            userId: userId,
-            audioPlayer: audioPlayer
-        )
-        vc.onBack = { [weak self] in
-            self?.navigationController.pop()
-        }
-        vc.onSendMessage = { [weak self] targetUserId in
-            self?.openDM(with: targetUserId)
-        }
-        vc.onDismiss = { [weak self] in
-            self?.navigationController.pop()
-        }
-        navigationController.push(vc)
-    }
-
-    private func openDM(with userId: String) {
-        Task { [weak self] in
-            guard let self,
-                  let client = MatrixClientService.shared.client else { return }
-            do {
-                if let existing = try client.getDmRoom(userId: userId) {
-                    await MainActor.run {
-                        self.navigationController.popToRoot(animated: false)
-                        self.showChat(existing)
-                    }
-                    return
-                }
-                let params = CreateRoomParameters(
-                    name: nil, topic: nil, isEncrypted: true, isDirect: true,
-                    visibility: .private, preset: .trustedPrivateChat,
-                    invite: [userId], avatar: nil, powerLevelContentOverride: nil,
-                    joinRuleOverride: nil, historyVisibilityOverride: nil,
-                    canonicalAlias: nil
-                )
-                let roomId = try await client.createRoom(request: params)
-                guard let dmRoom = roomListService.room(for: roomId) else { return }
-                await MainActor.run {
-                    self.navigationController.popToRoot(animated: false)
-                    self.showChat(dmRoom)
-                }
-            } catch {
-                ScopedLog(.rooms)("Failed to open DM: \(error)")
-            }
-        }
+        Task { @MainActor [weak self] in self?.showProfile(userId: userId, room: room) }
     }
 
     private func showInviteMembers(room: Room) {
@@ -1114,22 +1077,20 @@ final class ChatsCoordinator {
     }
 
     func popAndActivateSearch() {
-        guard let chatVC = navigationController.stack.last(where: { $0 is ChatViewController }) as? ChatViewController else { return }
-        navigationController.pop(to: chatVC) { [weak self, weak chatVC] in
-            guard let self, let chatVC,
-                  self.navigationController.topViewController === chatVC else { return }
-            chatVC.activateSearch()
+        guard let destination = navigationController.stack.last(where: { $0.chatRoomIdentifier != nil }) else { return }
+        navigationController.pop(to: destination) { [weak self, weak destination] in
+            guard let self, let destination,
+                  self.navigationController.topViewController === destination else { return }
+            destination.materializedChat()?.activateSearch()
         }
     }
 
     /// Opens a chat and immediately starts a call. Used by the Calls tab.
     func showChatAndCall(room: Room) {
         navigationController.popToRoot(animated: false)
-        let (vc, viewModel) = makeChatScreen(target: .live(room))
+        let vc = makeChatRoute(target: .live(room))
         navigationController.push(vc, animated: false)
-        if let timelineService = viewModel.liveTimelineService {
-            startCall(in: room, timelineService: timelineService, voiceOnly: true)
-        }
+        vc.materializedChat()?.onCallTapped?()
     }
 
     // MARK: - Calls

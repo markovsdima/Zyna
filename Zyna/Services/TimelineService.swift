@@ -185,9 +185,11 @@ final class TimelineService {
     var onRoomPinnedEventsChanged: (() -> Void)?
 
     private let room: Room
-    private var timeline: Timeline?
+    private var listeningTimeline: Timeline?
+    private var timeline: Timeline? { listenerGeneration.withValue { _ in listeningTimeline } }
     private var listenerHandle: TaskHandle?
     private var roomAccountDataHandle: TaskHandle?
+    private let listenerGeneration = Atomic(UInt64(0))
 
     init(room: Room) {
         self.room = room
@@ -229,6 +231,7 @@ final class TimelineService {
     // MARK: - Start
 
     func startListening(subscribeForSync: Bool = true) async {
+        let generation = resetListener()
         do {
             // Subscribe room for full sliding sync delivery (live events)
             if subscribeForSync {
@@ -236,22 +239,41 @@ final class TimelineService {
             }
 
             let timeline = try await room.timeline()
-            self.timeline = timeline
+            let accepts = listenerGeneration.withValue { current in
+                guard current == generation, !Task.isCancelled else { return false }
+                self.listeningTimeline = timeline
+                return true
+            }
+            guard accepts else { return }
 
             let listener = ZynaTimelineListener { [weak self] diffs in
+                guard self?.listenerGeneration.wrappedValue == generation else { return }
                 self?.handleDiffs(diffs)
             }
-            self.listenerHandle = await timeline.addListener(listener: listener)
+            let handle = await timeline.addListener(listener: listener)
+            let installed = listenerGeneration.withValue { current in
+                guard current == generation, !Task.isCancelled else { return false }
+                self.listenerHandle = handle
+                return true
+            }
+            guard installed else { handle.cancel(); return }
 
             if let client = MatrixClientService.shared.client {
                 let roomAccountDataListener = ZynaRoomAccountDataListener { [weak self] event, roomId in
+                    guard self?.listenerGeneration.wrappedValue == generation else { return }
                     self?.handleRoomAccountDataEvent(event, roomId: roomId)
                 }
-                self.roomAccountDataHandle = try client.observeRoomAccountDataEvent(
+                let accountHandle = try client.observeRoomAccountDataEvent(
                     roomId: room.id(),
                     eventType: .fullyRead,
                     listener: roomAccountDataListener
                 )
+                let installed = listenerGeneration.withValue { current in
+                    guard current == generation, !Task.isCancelled else { return false }
+                    self.roomAccountDataHandle = accountHandle
+                    return true
+                }
+                if !installed { accountHandle.cancel() }
             }
 
             logTimeline("Timeline listener started for room \(room.id())")
@@ -1330,31 +1352,52 @@ final class TimelineService {
         }
     }
 
-    @discardableResult
-    func sendReadReceipt(for eventId: String) async -> Bool {
-        do {
-            try await timeline?.sendReadReceipt(receiptType: .read, eventId: eventId)
-        } catch {
-            logTimeline("sendReadReceipt(.read) failed event=\(eventId): \(error)")
-        }
+    /// Capture the SDK timeline before navigation can release its listener.
+    /// The request outlives the screen without retaining its view model.
+    func readReceiptRequest(for eventId: String) -> ReadReceiptRequest? {
+        guard let timeline else { return nil }
+        return ReadReceiptRequest(timeline: timeline, eventId: eventId)
+    }
 
-        do {
-            try await timeline?.sendReadReceipt(receiptType: .fullyRead, eventId: eventId)
-            return true
-        } catch {
-            logTimeline("sendReadReceipt(.fullyRead) failed event=\(eventId): \(error)")
-            return false
+    struct ReadReceiptRequest {
+        fileprivate let timeline: Timeline
+        fileprivate let eventId: String
+
+        func send() async -> Bool {
+            do {
+                try await timeline.sendReadReceipt(receiptType: .read, eventId: eventId)
+            } catch {
+                logTimeline("sendReadReceipt(.read) failed event=\(eventId): \(error)")
+            }
+
+            do {
+                try await timeline.sendReadReceipt(receiptType: .fullyRead, eventId: eventId)
+                return true
+            } catch {
+                logTimeline("sendReadReceipt(.fullyRead) failed event=\(eventId): \(error)")
+                return false
+            }
         }
     }
 
     // MARK: - Cleanup
 
     func stopListening() {
-        listenerHandle?.cancel()
-        listenerHandle = nil
-        roomAccountDataHandle?.cancel()
-        roomAccountDataHandle = nil
-        timeline = nil
+        resetListener()
+    }
+
+    @discardableResult
+    private func resetListener() -> UInt64 {
+        let (generation, handles) = listenerGeneration.withValue { generation in
+            generation &+= 1
+            let handles = [listenerHandle, roomAccountDataHandle].compactMap { $0 }
+            listenerHandle = nil
+            roomAccountDataHandle = nil
+            listeningTimeline = nil
+            return (generation, handles)
+        }
+        handles.forEach { $0.cancel() }
+        return generation
     }
 
     private static func describe(_ mediaGroup: MediaGroupInfo?) -> String {

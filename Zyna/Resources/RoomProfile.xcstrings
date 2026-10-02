@@ -1,6 +1,16 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Accept the existing invitation in Chats first." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сначала примите существующее приглашение в разделе «Чаты»."
+          }
+        }
+      }
+    },
     "Account default: %@" : {
       "localizations" : {
         "ru" : {
@@ -41,6 +51,36 @@
         }
       }
     },
+    "Banned" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заблокирован в группе"
+          }
+        }
+      }
+    },
+    "Block" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заблокировать"
+          }
+        }
+      }
+    },
+    "Block this person?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Заблокировать этого пользователя?"
+          }
+        }
+      }
+    },
     "Call" : {
       "localizations" : {
         "ru" : {
@@ -57,6 +97,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Свернуть фото"
+          }
+        }
+      }
+    },
+    "Copy Matrix ID" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Скопировать Matrix ID"
           }
         }
       }
@@ -101,12 +151,32 @@
         }
       }
     },
+    "Invited" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Приглашён"
+          }
+        }
+      }
+    },
     "Larger thumbnails" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Увеличить миниатюры"
+          }
+        }
+      }
+    },
+    "Loading block status" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Загрузка статуса блокировки"
           }
         }
       }
@@ -151,6 +221,16 @@
         }
       }
     },
+    "Not a member" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не состоит в группе"
+          }
+        }
+      }
+    },
     "Notifications" : {
       "localizations" : {
         "ru" : {
@@ -167,6 +247,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Читать дальше"
+          }
+        }
+      }
+    },
+    "Reload block status" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обновить статус блокировки"
           }
         }
       }
@@ -241,12 +331,62 @@
         }
       }
     },
+    "The conversation is not available yet. Please try again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Переписка пока недоступна. Попробуйте ещё раз."
+          }
+        }
+      }
+    },
     "The message may have been deleted or its history is unavailable. Try again." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Возможно, сообщение удалено или его история недоступна. Попробуйте ещё раз."
+          }
+        }
+      }
+    },
+    "This action is no longer available. The profile has been refreshed." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Это действие больше недоступно. Профиль обновлён."
+          }
+        }
+      }
+    },
+    "Unban" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Снять запрет на вступление"
+          }
+        }
+      }
+    },
+    "Unblock" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Разблокировать"
+          }
+        }
+      }
+    },
+    "Unblock this person?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Разблокировать этого пользователя?"
           }
         }
       }
@@ -267,6 +407,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Видео"
+          }
+        }
+      }
+    },
+    "You can unblock them in Settings. This applies across your rooms." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Блокировка действует во всех ваших переписках. Разблокировать пользователя можно в настройках."
           }
         }
       }

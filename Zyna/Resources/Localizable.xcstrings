@@ -1461,36 +1461,6 @@
         }
       }
     },
-    "Ban from Group" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Забанить в группе"
-          }
-        }
-      }
-    },
-    "Ban from group?" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Забанить в группе?"
-          }
-        }
-      }
-    },
-    "Banned users can't re-join without being unbanned." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Забаненные не смогут вернуться без разбана."
-          }
-        }
-      }
-    },
     "Blocked Users" : {
       "localizations" : {
         "ru" : {
@@ -1681,16 +1651,6 @@
         }
       }
     },
-    "Cancel invite?" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Отменить приглашение?"
-          }
-        }
-      }
-    },
     "Cancel reply" : {
       "localizations" : {
         "ru" : {
@@ -1777,16 +1737,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Изменить роль?"
-          }
-        }
-      }
-    },
-    "Changes member role" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Меняет роль участника"
           }
         }
       }
@@ -3996,26 +3946,6 @@
         }
       }
     },
-    "Kick from Group" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Исключить из группы"
-          }
-        }
-      }
-    },
-    "Kick from group?" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Исключить из группы?"
-          }
-        }
-      }
-    },
     "Lagoon Teal" : {
       "localizations" : {
         "ru" : {
@@ -4488,16 +4418,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Участники этого сюжета или линии смогут войти без отдельного приглашения."
-          }
-        }
-      }
-    },
-    "Message" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Сообщение"
           }
         }
       }
@@ -6886,16 +6806,6 @@
         }
       }
     },
-    "Send Message" : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Написать"
-          }
-        }
-      }
-    },
     "Send Messages" : {
       "localizations" : {
         "ru" : {
@@ -7688,16 +7598,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Сервер не вернул сессию аутентификации."
-          }
-        }
-      }
-    },
-    "They can be re-invited later." : {
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Их можно пригласить снова позже."
           }
         }
       }

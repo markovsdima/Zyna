@@ -24,7 +24,6 @@ final class RoomDetailsNode: ScreenNode {
     var onSearchTapped: (() -> Void)?
     var onInviteTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
-    var onProfileTapped: (() -> Void)?
     var onPinnedMessagesTapped: (() -> Void)?
     var onAttachmentsTapped: (() -> Void)?
     var onStorylinesTapped: (() -> Void)?
@@ -62,7 +61,6 @@ final class RoomDetailsNode: ScreenNode {
     private let inviteQuickAction = RoomDetailsQuickActionNode()
     private let pinnedQuickAction = RoomDetailsQuickActionNode()
 
-    private let profileRow = ActionRowNode()
     private let pinnedMessagesRow = ActionRowNode()
     private let attachmentsRow = ActionRowNode()
     private let searchRow = ActionRowNode()
@@ -82,7 +80,6 @@ final class RoomDetailsNode: ScreenNode {
     private var canInvite: Bool?
     private var pinnedMessagesCount: Int?
     private var isDirectRoom = false
-    private var isDirectProfileAvailable = false
     private var isLeavingRoom = false
     private var hasAvatar = false
     private var storylinesTrailingText: String?
@@ -184,10 +181,6 @@ final class RoomDetailsNode: ScreenNode {
             accessibilityLabel: String(localized: "Pinned Messages"),
             accessibilityHint: String(localized: "Opens pinned messages")
         ))
-
-        profileRow.onTap = { [weak self] in self?.onProfileTapped?() }
-        profileRow.style.alignSelf = .stretch
-        applyProfileRowConfiguration()
 
         pinnedMessagesRow.onTap = { [weak self] in self?.onPinnedMessagesTapped?() }
         pinnedMessagesRow.style.alignSelf = .stretch
@@ -338,12 +331,6 @@ final class RoomDetailsNode: ScreenNode {
         setNeedsLayout()
     }
 
-    func setDirectProfileAvailable(_ available: Bool) {
-        guard isDirectProfileAvailable != available else { return }
-        isDirectProfileAvailable = available
-        applyProfileRowConfiguration()
-    }
-
     func setEditing(_ editing: Bool) {
         let effectiveEditing = editing && !isDirectRoom
         isEditing = effectiveEditing
@@ -401,15 +388,6 @@ final class RoomDetailsNode: ScreenNode {
         nameNode.attributedText = NSAttributedString(string: name, attributes: attrs)
         nameNode.accessibilityLabel = name
         nameEditNode.attributedText = NSAttributedString(string: name, attributes: attrs)
-    }
-
-    private func applyProfileRowConfiguration() {
-        profileRow.apply(ActionRowNode.Configuration(
-            title: String(localized: "Profile"),
-            leadingIcon: AppIcon.person.rendered(size: 17, weight: .medium, color: AppColor.accent),
-            isEnabled: isDirectProfileAvailable,
-            accessibilityHint: isDirectProfileAvailable ? String(localized: "Open Profile") : nil
-        ))
     }
 
     private func applyStorylinesRowConfiguration() {
@@ -553,7 +531,6 @@ final class RoomDetailsNode: ScreenNode {
         var buttonsChildren: [ASLayoutElement]
         if isDirectRoom {
             buttonsChildren = [
-                profileRow,
                 pinnedMessagesRow,
                 attachmentsRow,
                 searchRow,
@@ -689,7 +666,6 @@ final class RoomDetailsNode: ScreenNode {
         tagNodes.forEach { appendNodeView($0, to: &elements) }
 
         if isDirectRoom {
-            appendActionRow(profileRow, to: &elements)
             appendActionRow(pinnedMessagesRow, to: &elements)
             appendActionRow(attachmentsRow, to: &elements)
             appendActionRow(searchRow, to: &elements)

@@ -10,7 +10,7 @@ final class MemberCellNode: ZynaCellNode {
 
     // MARK: - Model
 
-    enum Role {
+    enum Role: Equatable, Sendable {
         case owner      // creator / infinite PL
         case admin      // finite PL 100+
         case moderator  // finite PL 1..<100

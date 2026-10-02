@@ -33,7 +33,6 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     var onSearchTapped: (() -> Void)?
     var onInviteMembersTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
-    var onProfileTapped: ((String) -> Void)?
     var onPinnedMessagesTapped: (() -> Void)?
     var onAttachmentsTapped: (() -> Void)?
     var onStorylinesTapped: (() -> Void)?
@@ -100,7 +99,6 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         self.wantsInitialEditing = initiallyEditing
         super.init(node: RoomDetailsNode())
         node.setDirectRoom(directState.isDirect)
-        node.setDirectProfileAvailable(directUserId != nil)
         self.voicePlayerHost = audioPlayer.map {
             EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
         }
@@ -135,11 +133,6 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
 
         node.onMembersTapped = { [weak self] in
             self?.onMembersTapped?()
-        }
-
-        node.onProfileTapped = { [weak self] in
-            guard let self, let userId = self.directState.userId else { return }
-            self.onProfileTapped?(userId)
         }
 
         node.onPinnedMessagesTapped = { [weak self] in
@@ -376,7 +369,6 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         directState.userId = userId
         directState.displayName = nil
         directState.avatarMxcUrl = nil
-        node.setDirectProfileAvailable(userId != nil)
         applyRoomState()
         loadDirectProfileIfNeeded()
     }

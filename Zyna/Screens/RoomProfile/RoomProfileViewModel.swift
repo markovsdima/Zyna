@@ -54,7 +54,7 @@ struct RoomProfileSnapshot: Equatable, Sendable {
 }
 
 enum RoomProfileAction: String, CaseIterable {
-    case call, invite, search, notifications, more, members, edit, information, attachments
+    case call, invite, search, notifications, more, members, edit, information, attachments, message
 
     static func primary(for snapshot: RoomProfileSnapshot) -> [Self] {
         // Keep the first slot stable as permissions arrive or change.
@@ -69,6 +69,7 @@ enum RoomProfileAction: String, CaseIterable {
         case .members: !snapshot.isDirect
         case .search, .notifications: snapshot.isJoined
         case .more, .information, .attachments: true
+        case .message: false
         }
     }
 }

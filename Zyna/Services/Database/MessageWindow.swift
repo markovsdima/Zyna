@@ -231,7 +231,7 @@ final class MessageWindow {
     // replacementRequest and prepares its snapshot on historyPageQueue.
     func loadInitial() { replaceSynchronously(.newest) }
 
-    enum Destination { case newest, oldest, live, event(String) }
+    enum Destination { case newest, oldest, live, event(String), restoration(eventID: String?, timestamp: TimeInterval) }
 
     struct ReplacementRequest {
         fileprivate let revision: UInt64
@@ -273,6 +273,23 @@ final class MessageWindow {
                         .limit(MessageWindow.windowSize / 2).fetchAll(db)
                     raw = before + [target] + after
                     origin = .jump; atLive = false
+                case .restoration(let eventID, let timestamp):
+                    let exact = try eventID.flatMap { try query.filter(Column("eventId") == $0).fetchOne(db) }
+                    let target = try exact
+                        ?? query.filter(Column("timestamp") <= timestamp)
+                            .order(Column("timestamp").desc, Column("id").desc).fetchOne(db)
+                        ?? query.order(Column("timestamp").asc, Column("id").asc).fetchOne(db)
+                    if let target {
+                        let cursor = Cursor(target)
+                        let before = try query.filter(cursor.olderPredicate)
+                            .order(Column("timestamp").desc, Column("id").desc)
+                            .limit(MessageWindow.windowSize / 2 - 1).fetchAll(db)
+                        let after = try query.filter(cursor.newerPredicate)
+                            .order(Column("timestamp").asc, Column("id").asc)
+                            .limit(MessageWindow.windowSize / 2).fetchAll(db)
+                        raw = before + [target] + after
+                    } else { raw = [] }
+                    origin = .initialLoad; atLive = raw.isEmpty
                 }
                 let oldest = raw.map(Cursor.init).min { $0.precedes($1) }
                 let newest = raw.map(Cursor.init).max { $0.precedes($1) }

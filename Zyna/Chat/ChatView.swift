@@ -217,6 +217,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     private var redactionAnimationsArmed = false
     private var redactionAnimationArmWork: DispatchWorkItem?
     private var didCleanupViewModel = false
+    private var navigationContentVisible = true
+    private var pendingNavigationAnchor: ChatNavigationAnchor?
+    private var pendingComposerRestoration: ChatNavigationState?
     private var prefetchedAppearanceUserIds = Set<String>()
     private var selectedPinnedMessageIndex = 0
     private var isPinnedMessagesBannerExpanded = false
@@ -228,6 +231,97 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     var roomIdentifier: String {
         viewModel.roomIdentifier
+    }
+
+    func setPendingForward(_ message: ChatMessage) {
+        viewModel.setPendingForward(message)
+    }
+
+    func restoreNavigationState(_ state: ChatNavigationState?) {
+        guard let state else { return }
+        pendingNavigationAnchor = state.anchor
+        pendingComposerRestoration = state
+        viewModel.restoreNavigationComposer(state)
+        composerController.restoreNavigationState(state.composer)
+    }
+
+    func captureNavigationState() -> ChatNavigationState {
+        var state = pendingComposerRestoration ?? ChatNavigationState()
+        state.anchor = pendingNavigationAnchor ?? captureNavigationAnchor()
+        state.reply = viewModel.replyingTo
+        state.editing = viewModel.editingMessage
+        state.forward = viewModel.pendingForwardContent
+        state.composer = composerController.state
+        state.search = viewModel.navigationSearchState
+        if isViewLoaded, pendingComposerRestoration == nil {
+            let input = glassInputBar.inputNode.textInputNode.textView
+            state.text = ComposerText(attributedText: input.textStorage)
+            state.selection = input.selectedRange
+        }
+        return state
+    }
+
+    func setNavigationContentVisible(_ visible: Bool) {
+        guard navigationContentVisible != visible else { return }
+        if !visible { flushVisibleReadReceipts() }
+        navigationContentVisible = visible
+        viewModel.setNavigationPresentationActive(visible)
+        guard isViewLoaded else { return }
+        if visible {
+            applyVoiceIslandState(state: audioPlayer.state, item: audioPlayer.nowPlaying, snapshot: audioPlayer.snapshot)
+            tryRestoreNavigationAnchor()
+            afterTableUpdates { [weak self] in self?.prefetchHistoryIfNeeded() }
+            scheduleRedactionAnimationArming()
+            scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
+            if shouldPresentAttachmentPreviewAfterDismiss { presentComposerPreviewIfNeeded() }
+        } else {
+            fpsBooster.stop()
+            visibleReadReceiptEvalWork?.cancel()
+            redactionAnimationArmWork?.cancel()
+            redactionAnimationsArmed = false
+        }
+    }
+
+    func finishNavigationSession() {
+        cleanupViewModelIfNeeded()
+        cancellables.removeAll()
+    }
+
+    private func captureNavigationAnchor() -> ChatNavigationAnchor? {
+        guard isViewLoaded, !isViewportPinnedToLiveEdge() else { return nil }
+        let geometry = node.list.layout.geometry
+        let visible = geometry.range(in: CGRect(x: 0,
+            y: node.list.contentOffset.y + node.list.contentInset.top, width: 1,
+            height: max(1, node.list.bounds.height - node.list.contentInset.top - node.list.contentInset.bottom)))
+        for index in visible {
+            let id = geometry.ids[index]
+            guard let row = viewModel.rows.first(where: { $0.listIdentifier == id }), let message = row.message else { continue }
+            return ChatNavigationAnchor(eventID: message.eventId, timestamp: message.timestamp.timeIntervalSince1970,
+                listID: id, distance: geometry.origins[index] - node.list.contentOffset.y - node.list.contentInset.top)
+        }
+        return nil
+    }
+
+    private func tryRestoreNavigationAnchor() {
+        guard let anchor = pendingNavigationAnchor, isViewLoaded,
+              node.list.bounds.width > 0, node.list.bounds.height > 0,
+              viewModel.historyGeneration > 0 else { return }
+        if viewModel.rows.isEmpty {
+            // A cached window may contain only events awaiting decryption.
+            // Keep its anchor until those rows become displayable.
+            if viewModel.isAtLiveEdge { pendingNavigationAnchor = nil }
+            return
+        }
+        let geometry = node.list.layout.geometry
+        let fallback = viewModel.rows.filter { $0.message != nil }.min {
+            abs($0.message!.timestamp.timeIntervalSince1970 - anchor.timestamp)
+                < abs($1.message!.timestamp.timeIntervalSince1970 - anchor.timestamp)
+        }?.listIdentifier
+        guard let index = geometry.indices[anchor.listID] ?? fallback.flatMap({ geometry.indices[$0] }) else { return }
+        let limits = geometry.limits(viewport: node.list.bounds.height, insets: node.list.contentInset)
+        let offset = geometry.origins[index] - node.list.contentInset.top - anchor.distance
+        pendingNavigationAnchor = nil
+        node.list.contentOffset = CGPoint(x: 0, y: min(limits.upperBound, max(limits.lowerBound, offset)))
     }
 
     var canPresentVoicePlaybackIsland: Bool {
@@ -249,6 +343,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             self.isTeleporting = true
             defer { self.isTeleporting = false }
             guard prepared.open() else { return false }
+            self.pendingNavigationAnchor = nil
             self.completeTeleportWithoutAnimation(swapData: {}, scrollAfter: {
                 if let index = self.viewModel.indexOfMessage(eventId: eventId) {
                     self.node.list.scrollToItem(at: IndexPath(row: index, section: 0),
@@ -499,6 +594,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        defer { tryRestoreNavigationAnchor() }
 
         if isPreviewMode {
             let inset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
@@ -568,6 +664,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        flushVisibleReadReceipts()
         #if DEBUG
         historyScrollSampler.stop()
         #endif
@@ -588,6 +685,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     private func cleanupViewModelIfNeeded() {
         guard !didCleanupViewModel else { return }
+        flushVisibleReadReceipts()
         didCleanupViewModel = true
         if let token = serverBatchFetch.currentToken {
             serverBatchFetch.finish(token)
@@ -997,7 +1095,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func scheduleVisibleReadReceiptEvaluation(delay: TimeInterval = ReadReceipts.scrollDebounce) {
-        guard !isPreviewMode else { return }
+        guard !isPreviewMode, navigationContentVisible else { return }
         visibleReadReceiptEvalWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.updateVisibleReadReceiptCandidate()
@@ -1006,11 +1104,24 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func updateVisibleReadReceiptCandidate() {
-        guard !isPreviewMode, !isTeleporting else { return }
+    private func flushVisibleReadReceipts() {
+        guard !isPreviewMode, navigationContentVisible, !didCleanupViewModel else { return }
+        visibleReadReceiptEvalWork?.cancel()
+        visibleReadReceiptEvalWork = nil
+        // Resolve the scroll debounce while this viewport is still on screen.
+        // If it is already detached, retain the previously computed target.
+        if isViewLoaded, view.window != nil {
+            updateVisibleReadReceiptCandidate(preservingPendingIfEmpty: true)
+        }
+        viewModel.flushPendingReadReceipt()
+    }
+
+    private func updateVisibleReadReceiptCandidate(preservingPendingIfEmpty: Bool = false) {
+        guard !isPreviewMode, !isTeleporting, navigationContentVisible else { return }
 
         node.list.view.layoutIfNeeded()
         let candidate = currentVisibleReadReceiptCandidate()
+        if preservingPendingIfEmpty, candidate == nil { return }
         let canEstablishBaseline = viewModel.isAtLiveEdge
             && tableDistanceToLiveEdge() <= ReadReceipts.baselineLiveTolerance
 
@@ -1338,7 +1449,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         item: AudioPlayerService.NowPlayingItem?,
         snapshot: AudioPlayerService.PlaybackSnapshot
     ) {
-        guard !isPreviewMode else { return }
+        guard !isPreviewMode, navigationContentVisible else { return }
         let shouldShow = state != .idle && item != nil
 
         guard shouldShow, let item else {
@@ -1522,6 +1633,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
                 self.glassInputBar.inputNode.setEditPreview(
                     body: message?.content.textPreview
                 )
+                if let restored = self.pendingComposerRestoration {
+                    self.pendingComposerRestoration = nil
+                    self.glassInputBar.inputNode.setCurrentText(restored.text)
+                    let input = self.glassInputBar.inputNode.textInputNode.textView
+                    if NSMaxRange(restored.selection) <= input.textStorage.length { input.selectedRange = restored.selection }
+                    if let search = restored.search {
+                        self.searchBar.isHidden = false
+                        self.searchBar.restoreQuery(search.query)
+                    }
+                    return
+                }
                 guard let message,
                       let body = self.viewModel.editingInputText(for: message) else {
                     if wasEditing {
@@ -1637,6 +1759,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func applyTableUpdate(_ update: TableUpdate, origin: MessageWindowChangeOrigin) {
+        defer {
+            if pendingNavigationAnchor != nil {
+                afterTableUpdates { [weak self] in self?.tryRestoreNavigationAnchor() }
+            }
+        }
         if isTeleporting {
 #if DEBUG
             historyScrollTrace.event("reload teleport origin=\(origin.compactDescription)", table: node.list)
@@ -2802,7 +2929,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func prefetchHistoryIfNeeded() {
-        guard !didCleanupViewModel, !isTeleporting,
+        guard navigationContentVisible, !didCleanupViewModel, !isTeleporting,
               !olderPageLoader.isLoading, !newerPageLoader.isLoading else { return }
         let table = node.list.view
         guard table.window != nil else { return }
@@ -2981,6 +3108,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             }
 
             if shouldJourneyToMessage(at: targetIP) {
+                pendingNavigationAnchor = nil
                 viewModel.cancelPendingHistoryReplacement()
                 scrollJourneyToMessage(at: targetIP, animated: true)
                 highlightMessage(eventId: eventId, delay: 0.3)
@@ -2999,6 +3127,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
         viewModel.prepareHistoryReplacement(.event(eventId)) { [weak self] apply in
             guard let self, !self.isTeleporting else { return }
+            self.pendingNavigationAnchor = nil
             self.teleport(direction: direction, swapData: apply) {
                 if let idx = self.viewModel.indexOfMessage(eventId: eventId) {
                     self.node.list.scrollToItem(at: IndexPath(row: idx, section: 0), at: .centeredVertically, animated: false)
@@ -3157,6 +3286,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func navigateToLive() {
+        pendingNavigationAnchor = nil
         if viewModel.isAtLiveEdge && !shouldTeleportToLive() {
             viewModel.cancelPendingHistoryReplacement()
             node.list.scrollToItem(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
@@ -3269,6 +3399,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        pendingNavigationAnchor = nil
         #if DEBUG
         historyScrollSampler.start(viewModel.historyPerformance)
         #endif
@@ -4012,6 +4143,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         let state = composerController.state
         guard !state.attachments.isEmpty else {
             shouldPresentAttachmentPreviewAfterDismiss = false
+            return
+        }
+        guard navigationContentVisible, isViewLoaded, view.window != nil,
+              zynaNavigationController?.isTransitionInFlight != true,
+              pendingComposerRestoration == nil else {
+            shouldPresentAttachmentPreviewAfterDismiss = true
             return
         }
 
