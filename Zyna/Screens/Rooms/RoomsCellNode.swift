@@ -18,6 +18,9 @@ class RoomsCellNode: ZynaCellNode {
     private let avatarImageNode = ASImageNode()
     private let avatarBackgroundNode = ASImageNode()
     private let nameNode = ASTextNode()
+    private let mutedIconNode = ASImageNode()
+    // First access is in didLoad on main; all muted cells share one symbol.
+    private static let mutedIcon = AppIcon.bellSlash.template(size: 12)
     private let messageNode = ASTextNode()
     private let lastOwnStatusIconNode: MessageStatusIconNode?
     private let timestampNode = ASTextNode()
@@ -93,6 +96,11 @@ class RoomsCellNode: ZynaCellNode {
         )
         nameNode.maximumNumberOfLines = 1
         nameNode.truncationMode = .byTruncatingTail
+        nameNode.style.flexShrink = 1
+        mutedIconNode.isLayerBacked = true
+        mutedIconNode.style.preferredSize = CGSize(width: 14, height: 14)
+        mutedIconNode.contentMode = .center
+        mutedIconNode.tintColor = .secondaryLabel
 
         // Message
         messageNode.attributedText = NSAttributedString(
@@ -223,13 +231,16 @@ class RoomsCellNode: ZynaCellNode {
             children: rightElements
         )
 
+        let nameRow = ASStackLayoutSpec(direction: .horizontal, spacing: 4,
+            justifyContent: .start, alignItems: .center,
+            children: chat.isMuted ? [nameNode, mutedIconNode] : [nameNode])
         // Text: name + message
         let textStack = ASStackLayoutSpec(
             direction: .vertical,
             spacing: 2,
             justifyContent: .start,
             alignItems: .start,
-            children: [nameNode, messageNode]
+            children: [nameRow, messageNode]
         )
         textStack.style.flexShrink = 1
         textStack.style.flexGrow = 1
@@ -265,6 +276,7 @@ class RoomsCellNode: ZynaCellNode {
         accessibilityTraits = .button
 
         var label = chat.name
+        if chat.isMuted { label += ", \(String(localized: "Notifications muted"))" }
         if !chat.lastMessage.isEmpty {
             label += ", \(chat.lastMessage)"
         }
@@ -298,6 +310,7 @@ class RoomsCellNode: ZynaCellNode {
         selectedBackgroundView = highlightedBackground
 
         updateOnlineIndicatorImage()
+        if chat.isMuted { mutedIconNode.image = Self.mutedIcon }
         // Border depends on trait; cells aren't re-created on flip.
         // didLoad is on main but not @MainActor in the bridge.
         if #available(iOS 17, *) {

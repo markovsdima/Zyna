@@ -18,7 +18,6 @@ final class GlassRenderer: UIView {
 
     override class var layerClass: AnyClass { CAMetalLayer.self }
 
-    // swiftlint:disable:next force_cast
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     private let gaussianBlur: MPSImageGaussianBlur
     private var blurTextures: [ReusableTextureKey: CachedTexture] = [:]

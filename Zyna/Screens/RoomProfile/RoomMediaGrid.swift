@@ -17,32 +17,35 @@ private final class RoomMediaAccessibilityElement: UIAccessibilityElement {
 /// layer pool owns pixels. No Texture cell exists for an offscreen record.
 @MainActor
 final class RoomMediaGrid: NSObject, RoomProfileContentPage, UIScrollViewDelegate, UIGestureRecognizerDelegate {
-    let node = ASDisplayNode(viewBlock: { UIScrollView() })
+    let node = ASDisplayNode(viewBlock: { RoomProfileMediaScrollView() })
     let catalog: RoomMediaCatalog
     var view: UIView { node.view }
     var scrollView: UIScrollView { node.view as! UIScrollView }
     var inset: CGFloat { headerHeight + tabsHeight }
     var normalizedOffset: CGFloat { scrollView.contentOffset.y + inset }
     private(set) var isAdjusting = false
+    private var isHandlingScroll = false
     var isActive = false {
         didSet {
             guard isActive != oldValue else { return }
             if !isActive {
                 finishZoomImmediately()
-                stopScrollingToBeginning()
-                fpsBooster.stop()
-                scrollView.setContentOffset(scrollView.contentOffset, animated: false)
+                stopScrolling()
             }
             updateNearEnd()
         }
     }
     var headerHeight: CGFloat = 220
+    var avatarExpansionHeight: CGFloat = 0
     var tabsHeight: CGFloat = 48
     var collapse: CGFloat = 0
     var restorationAnchor: RoomProfileAnchor?
     var forceLoadIds: Set<String> = []
     var fullFileThreshold = AttachmentThumbnailPlan.defaultFullFileThreshold
     var onScroll: (() -> Void)?
+    var onBeginDragging: (() -> Void)?
+    var onWillEndDragging: ((CGPoint, UnsafeMutablePointer<CGPoint>) -> Void)?
+    var onEndDragging: (() -> Void)?
     var onSelect: ((AttachmentItem, UIImage?, CGRect) -> Void)?
     var onShowInChat: ((AttachmentItem) -> Void)?
     var onLoad: (() -> Void)?
@@ -216,7 +219,7 @@ final class RoomMediaGrid: NSObject, RoomProfileContentPage, UIScrollViewDelegat
         if abs(scrollView.contentOffset.y - y) > 0.25 { scrollView.contentOffset.y = y }
         scrollView.verticalScrollIndicatorInsets.top = inset - collapse
         isAdjusting = adjusting
-        render()
+        if !isHandlingScroll { render() }
     }
 
     private func padContent() {
@@ -436,14 +439,25 @@ final class RoomMediaGrid: NSObject, RoomProfileContentPage, UIScrollViewDelegat
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !isAdjusting, !isZooming else { return }
+        // Header dragging may correct the offset; render that final position
+        // once instead of also rendering inside the nested setPosition call.
+        isHandlingScroll = true
+        defer { isHandlingScroll = false }
         onScroll?(); render(); updateNearEnd()
     }
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        onBeginDragging?()
         stopScrollingToBeginning()
         if isActive { fpsBooster.start() }
     }
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                  targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        onWillEndDragging?(velocity, targetContentOffset)
+    }
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if !decelerate { fpsBooster.stop() }
+        onEndDragging?()
     }
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { fpsBooster.stop() }
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
@@ -454,9 +468,10 @@ final class RoomMediaGrid: NSObject, RoomProfileContentPage, UIScrollViewDelegat
 
     func scrollToBeginning(animated: Bool) {
         guard !isLocked else { return }
-        scrollingToBeginning = animated && abs(scrollView.contentOffset.y + tabsHeight) > 0.25
+        let target = CGPoint(x: 0, y: avatarExpansionHeight - inset)
+        scrollingToBeginning = animated && abs(scrollView.contentOffset.y - target.y) > 0.25
         if scrollingToBeginning && isActive { fpsBooster.start() } else { fpsBooster.stop() }
-        scrollView.setContentOffset(CGPoint(x: 0, y: -tabsHeight), animated: scrollingToBeginning)
+        scrollView.setContentOffset(target, animated: scrollingToBeginning)
         if !scrollingToBeginning { onScroll?(); render(); flushPending() }
     }
     func stopScrollingToBeginning() {
@@ -465,6 +480,11 @@ final class RoomMediaGrid: NSObject, RoomProfileContentPage, UIScrollViewDelegat
         fpsBooster.stop()
         scrollView.setContentOffset(scrollView.contentOffset, animated: false)
         onScroll?(); flushPending()
+    }
+    func stopScrolling() {
+        stopScrollingToBeginning()
+        fpsBooster.stop()
+        scrollView.setContentOffset(scrollView.contentOffset, animated: false)
     }
     func updateNearEnd() {
         let near = isActive && !isZooming && scrollView.contentOffset.y + view.bounds.height > scrollView.contentSize.height - 300

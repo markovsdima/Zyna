@@ -1,12 +1,102 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Account default: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "По умолчанию: %@"
+          }
+        }
+      }
+    },
+    "Add" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить"
+          }
+        }
+      }
+    },
+    "All" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все"
+          }
+        }
+      }
+    },
+    "All messages" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все сообщения"
+          }
+        }
+      }
+    },
+    "Call" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Звонок"
+          }
+        }
+      }
+    },
+    "Collapse photo" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Свернуть фото"
+          }
+        }
+      }
+    },
+    "Couldn't change notifications" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось изменить уведомления"
+          }
+        }
+      }
+    },
     "Couldn't open message" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Не удалось открыть сообщение"
+          }
+        }
+      }
+    },
+    "Expand photo" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Увеличить фото"
+          }
+        }
+      }
+    },
+    "Invite" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Пригласить"
           }
         }
       }
@@ -21,12 +111,82 @@
         }
       }
     },
+    "Mentions" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Упоминания"
+          }
+        }
+      }
+    },
+    "Mentions and keywords" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Упоминания и ключевые слова"
+          }
+        }
+      }
+    },
     "More" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ещё"
+          }
+        }
+      }
+    },
+    "Muted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выключены"
+          }
+        }
+      }
+    },
+    "Notifications" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уведомления"
+          }
+        }
+      }
+    },
+    "Read more" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Читать дальше"
+          }
+        }
+      }
+    },
+    "Reload profile" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Обновить профиль"
+          }
+        }
+      }
+    },
+    "Saving" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сохранение"
           }
         }
       }
@@ -51,6 +211,16 @@
         }
       }
     },
+    "Show less" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Свернуть"
+          }
+        }
+      }
+    },
     "Smaller thumbnails" : {
       "localizations" : {
         "ru" : {
@@ -61,12 +231,32 @@
         }
       }
     },
+    "Sound" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Звук"
+          }
+        }
+      }
+    },
     "The message may have been deleted or its history is unavailable. Try again." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Возможно, сообщение удалено или его история недоступна. Попробуйте ещё раз."
+          }
+        }
+      }
+    },
+    "Use account settings" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "По настройкам аккаунта"
           }
         }
       }

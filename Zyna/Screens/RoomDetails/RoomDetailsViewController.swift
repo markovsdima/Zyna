@@ -57,20 +57,47 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private var pendingAvatarChange: PendingAvatarChange = .none
     private var latestRoomInfo: RoomInfo?
     private var roomInfoTask: Task<Void, Never>?
+    private var roomInfoRevision: UInt64 = 0
     private var spaceMembershipSummaryTask: Task<Void, Never>?
     private var roomInfoSubscription: TaskHandle?
+    private var wantsInitialEditing: Bool
+    private struct Identity: Equatable {
+        let name: String
+        let avatarURL: String?
+        let userID: String?
+        let memberCount: Int?
+    }
+    private struct BarState: Equatable {
+        let showsEdit: Bool
+        let editing: Bool
+    }
+    private var renderedIdentity: Identity?
+    private var renderedBar: BarState?
+    private var canEditName: Bool {
+        latestRoomInfo?.membership == .joined
+            && latestRoomInfo?.powerLevels?.canOwnUserSendState(stateEvent: .roomName) == true
+    }
+    private var canEditAvatar: Bool {
+        latestRoomInfo?.membership == .joined
+            && latestRoomInfo?.powerLevels?.canOwnUserSendState(stateEvent: .roomAvatar) == true
+    }
+    private var canInvite: Bool {
+        latestRoomInfo?.membership == .joined && latestRoomInfo?.powerLevels?.canOwnUserInvite() == true
+    }
 
     init(
         room: Room,
         memberCount: Int?,
         directUserId: String? = nil,
         roomListService: ZynaRoomListService,
-        audioPlayer: AudioPlayerService? = nil
+        audioPlayer: AudioPlayerService? = nil,
+        initiallyEditing: Bool = false
     ) {
         self.room = room
         self.spaceMembershipService = RoomSpaceMembershipService(roomListService: roomListService)
         self.memberCount = memberCount
         self.directState = DirectRoomState(userId: directUserId)
+        self.wantsInitialEditing = initiallyEditing
         super.init(node: RoomDetailsNode())
         node.setDirectRoom(directState.isDirect)
         node.setDirectProfileAvailable(directUserId != nil)
@@ -102,7 +129,8 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         }
 
         node.onInviteTapped = { [weak self] in
-            self?.onInviteMembersTapped?()
+            guard let self, self.canInvite else { return }
+            self.onInviteMembersTapped?()
         }
 
         node.onMembersTapped = { [weak self] in
@@ -139,6 +167,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         }
 
         node.setEditing(false)
+        node.setPermissions(editName: false, editAvatar: false, invite: false)
         applyRoomState()
         loadDirectProfileIfNeeded()
         loadRoomInfo()
@@ -194,6 +223,9 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func rebuildGlassItems(editing: Bool) {
+        let state = BarState(showsEdit: !directState.isDirect && (canEditName || canEditAvatar), editing: editing)
+        guard renderedBar != state else { return }
+        renderedBar = state
         let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
 
         var items: [GlassTopBar.Item] = [
@@ -205,7 +237,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
             .flexibleSpace
         ]
 
-        if !directState.isDirect {
+        if state.showsEdit {
             let trailingIcon: UIImage
             let trailingLabel: String
 
@@ -227,29 +259,33 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         glassTopBar.items = items
     }
 
-    private func applyRoomState() {
+    private func applyRoomState(force: Bool = false) {
         let name: String
         let avatarUrl: String?
         let fallbackUserId: String?
 
         if directState.isDirect {
-            name = room.displayName()?.nilIfEmpty
+            name = (latestRoomInfo?.displayName ?? room.displayName())?.nilIfEmpty
                 ?? directState.displayName?.nilIfEmpty
                 ?? directState.userId
                 ?? "Chat"
-            avatarUrl = room.avatarUrl() ?? directState.avatarMxcUrl
+            avatarUrl = (latestRoomInfo.map(\.avatarUrl) ?? room.avatarUrl()) ?? directState.avatarMxcUrl
             fallbackUserId = directState.userId
         } else {
-            name = room.displayName() ?? "Group"
-            avatarUrl = room.avatarUrl()
+            name = latestRoomInfo?.displayName ?? room.displayName() ?? "Group"
+            avatarUrl = latestRoomInfo.map(\.avatarUrl) ?? room.avatarUrl()
             fallbackUserId = nil
         }
 
+        let identity = Identity(name: name, avatarURL: avatarUrl, userID: fallbackUserId,
+            memberCount: directState.isDirect ? nil : latestRoomInfo.map { Int(clamping: $0.joinedMembersCount) } ?? memberCount)
+        guard force || renderedIdentity != identity else { return }
+        renderedIdentity = identity
         loadedRoomName = name
         loadedHasAvatar = avatarUrl != nil
         node.update(
             name: name,
-            memberCount: directState.isDirect ? nil : memberCount,
+            memberCount: identity.memberCount,
             avatarMxcUrl: avatarUrl,
             fallbackUserId: fallbackUserId
         )
@@ -258,11 +294,13 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private func loadRoomInfo() {
         node.updateTags(Self.tags(encryptionState: room.encryptionState()))
         roomInfoTask?.cancel()
+        let revision = roomInfoRevision
         roomInfoTask = Task { [weak self] in
             guard let self else { return }
             guard let info = try? await self.room.roomInfo() else { return }
             await MainActor.run { [weak self] in
-                self?.applyRoomInfo(info)
+                guard let self, !Task.isCancelled, self.roomInfoRevision == revision else { return }
+                self.applyRoomInfo(info)
             }
         }
     }
@@ -270,6 +308,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private func subscribeToRoomInfoUpdates() {
         let listener = RoomDetailsInfoListener { [weak self] info in
             DispatchQueue.main.async { [weak self] in
+                self?.roomInfoRevision &+= 1
                 self?.applyRoomInfo(info)
             }
         }
@@ -277,9 +316,21 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func applyRoomInfo(_ info: RoomInfo) {
+        let previousNamePermission = canEditName
+        let previousAvatarPermission = canEditAvatar
         latestRoomInfo = info
+        if isEditingDetails && ((previousNamePermission && !canEditName) || (previousAvatarPermission && !canEditAvatar)) {
+            cancelEditing()
+        }
+        node.setPermissions(editName: canEditName, editAvatar: canEditAvatar, invite: canInvite)
         setDirectRoom(info.isDirect)
         updateDirectUserId(info.isDirect ? info.heroes.first?.userId : nil)
+        if !isEditingDetails { applyRoomState() }
+        if wantsInitialEditing, info.powerLevels != nil {
+            wantsInitialEditing = false
+            if canEditName || canEditAvatar { setEditing(true) }
+        }
+        rebuildGlassItems(editing: isEditingDetails)
         node.updateTags(info.isDirect ? Self.directTags(from: info) : Self.tags(from: info))
         node.updatePinnedMessagesCount(info.pinnedEventIds.count)
     }
@@ -423,7 +474,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func setEditing(_ editing: Bool) {
-        let effectiveEditing = editing && !directState.isDirect
+        let effectiveEditing = editing && !directState.isDirect && (canEditName || canEditAvatar)
         isEditingDetails = effectiveEditing
         node.setEditing(effectiveEditing)
         rebuildGlassItems(editing: effectiveEditing)
@@ -439,7 +490,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func editTapped() {
-        guard !directState.isDirect, !isSavingChanges, !isLeavingRoom else { return }
+        guard !directState.isDirect, canEditName || canEditAvatar, !isSavingChanges, !isLeavingRoom else { return }
         if isEditingDetails {
             saveEdits()
         } else {
@@ -451,11 +502,11 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private func cancelEditing() {
         pendingAvatarChange = .none
         setEditing(false)
-        applyRoomState()
+        applyRoomState(force: true)
     }
 
     private func presentAvatarPicker() {
-        guard isEditingDetails, !isSavingChanges, !isLeavingRoom else { return }
+        guard isEditingDetails, canEditAvatar, !isSavingChanges, !isLeavingRoom else { return }
 
         var config = PHPickerConfiguration()
         config.selectionLimit = 1
@@ -467,7 +518,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func removeAvatarRequested() {
-        guard isEditingDetails, !isSavingChanges, !isLeavingRoom else { return }
+        guard isEditingDetails, canEditAvatar, !isSavingChanges, !isLeavingRoom else { return }
 
         switch pendingAvatarChange {
         case .remove:
@@ -483,8 +534,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func saveEdits() {
-        let newName = node.editingName?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? loadedRoomName
+        guard isEditingDetails, canEditName || canEditAvatar else { return }
+        let newName = canEditName ? (node.editingName?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? loadedRoomName) : loadedRoomName
+        if !canEditAvatar { pendingAvatarChange = .none }
 
         guard !newName.isEmpty else {
             showErrorAlert(
@@ -545,7 +598,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
                     guard let self else { return }
                     self.pendingAvatarChange = .none
                     self.isSavingChanges = false
-                    self.applyRoomState()
+                    self.applyRoomState(force: true)
                     self.showErrorAlert(
                         title: "Failed to save group changes",
                         message: error.localizedDescription
@@ -847,8 +900,9 @@ extension RoomDetailsViewController: PHPickerViewControllerDelegate {
             else { return }
 
             DispatchQueue.main.async {
-                self?.pendingAvatarChange = .set(jpeg)
-                self?.node.updateAvatarLocally(image: image)
+                guard let self, self.isEditingDetails, self.canEditAvatar else { return }
+                self.pendingAvatarChange = .set(jpeg)
+                self.node.updateAvatarLocally(image: image)
             }
         }
     }

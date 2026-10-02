@@ -44,6 +44,9 @@ enum AppIcon {
     case magnifyingGlass
     case settings
     case photoOnRectangle
+    case bell
+    case bellSlash
+    case ellipsis
 
     var systemName: String {
         switch self {
@@ -85,6 +88,9 @@ enum AppIcon {
         case .magnifyingGlass:  return "magnifyingglass"
         case .settings:         return "gearshape.fill"
         case .photoOnRectangle: return "photo.on.rectangle"
+        case .bell:             return "bell"
+        case .bellSlash:        return "bell.slash"
+        case .ellipsis:         return "ellipsis"
         }
     }
 

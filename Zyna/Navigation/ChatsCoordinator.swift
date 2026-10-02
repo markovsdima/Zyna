@@ -642,14 +642,16 @@ final class ChatsCoordinator {
         room: Room,
         memberCount: Int?,
         directUserId: String? = nil,
-        sharing viewModel: RoomAttachmentsViewModel
+        sharing viewModel: RoomAttachmentsViewModel,
+        editing: Bool = false
     ) {
         let vc = RoomDetailsViewController(
             room: room,
             memberCount: memberCount,
             directUserId: directUserId,
             roomListService: roomListService,
-            audioPlayer: audioPlayer
+            audioPlayer: audioPlayer,
+            initiallyEditing: editing
         )
         vc.onBack = { [weak self] in
             self?.navigationController.pop()
@@ -801,10 +803,16 @@ final class ChatsCoordinator {
         )
         if profile {
             let subtitle = directUserId ?? memberCount.map { String(localized: "\($0) members") } ?? String(localized: "Chat")
+            let profileModel = RoomProfileViewModel(snapshot: RoomProfileSnapshot(roomID: room.id(),
+                title: room.displayName() ?? String(localized: "Chat"), directUserID: directUserId, memberCount: memberCount),
+                source: SDKRoomProfileSource(room: room, fallbackUserID: directUserId),
+                notifications: MatrixClientService.shared.notificationSettingsService,
+                isCurrentSession: { MatrixClientService.shared.currentLocalSessionId == sessionId })
             let vc = RoomProfileViewController(room: room,
                 title: room.displayName() ?? String(localized: "Chat"), subtitle: subtitle,
                 model: viewModel, actions: actions, audioPlayer: audioPlayer,
-                mediaCatalog: RoomMediaCatalog(source: RoomMediaDatabase(database: DatabaseService.shared.dbQueue, roomID: room.id())))
+                mediaCatalog: RoomMediaCatalog(source: RoomMediaDatabase(database: DatabaseService.shared.dbQueue, roomID: room.id())),
+                profileModel: profileModel)
             presenter.viewController = vc
             vc.onOpenMediaImage = { [weak self] source, item, frame in
                 let page = try await source.galleryPage(item: item, frame: frame)
@@ -817,10 +825,29 @@ final class ChatsCoordinator {
                 host.present(viewer, animated: false) { viewer.animateIn(from: frame) }
             }
             vc.onBack = { [weak self] in self?.navigationController.pop() }
+            vc.onAction = { [weak self, weak viewModel] action in
+                guard let self, self.activeAttachmentPresenter(presenter) != nil,
+                      MatrixClientService.shared.currentLocalSessionId == sessionId else { return }
+                switch action {
+                case .search: self.popAndActivateSearch()
+                case .call:
+                    let chat = self.navigationController.stack.last {
+                        ($0 as? ChatViewController)?.roomIdentifier == room.id()
+                    } as? ChatViewController
+                    chat?.onCallTapped?()
+                case .invite: self.showInviteMembers(room: room)
+                case .members: self.showMembersList(room: room)
+                case .edit:
+                    guard let viewModel else { return }
+                    self.showRoomInformation(room: room, memberCount: profileModel.snapshot.memberCount,
+                        directUserId: profileModel.snapshot.directUserID, sharing: viewModel, editing: true)
+                default: break
+                }
+            }
             vc.onInformation = { [weak self, weak viewModel] in
                 guard let viewModel else { return }
-                self?.showRoomInformation(room: room, memberCount: memberCount,
-                                         directUserId: directUserId, sharing: viewModel)
+                self?.showRoomInformation(room: room, memberCount: profileModel.snapshot.memberCount,
+                                         directUserId: profileModel.snapshot.directUserID, sharing: viewModel)
             }
             vc.onLegacyAttachments = { [weak self, weak viewModel] in
                 guard let viewModel else { return }

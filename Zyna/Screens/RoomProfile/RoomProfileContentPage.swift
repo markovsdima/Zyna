@@ -12,12 +12,16 @@ protocol RoomProfileContentPage: AnyObject {
     var isAdjusting: Bool { get }
     var isActive: Bool { get set }
     var headerHeight: CGFloat { get set }
+    var avatarExpansionHeight: CGFloat { get set }
     var tabsHeight: CGFloat { get set }
     var collapse: CGFloat { get set }
     var restorationAnchor: RoomProfileAnchor? { get set }
     var forceLoadIds: Set<String> { get set }
     var fullFileThreshold: UInt64 { get set }
     var onScroll: (() -> Void)? { get set }
+    var onBeginDragging: (() -> Void)? { get set }
+    var onWillEndDragging: ((CGPoint, UnsafeMutablePointer<CGPoint>) -> Void)? { get set }
+    var onEndDragging: (() -> Void)? { get set }
     var onSelect: ((AttachmentItem, UIImage?, CGRect) -> Void)? { get set }
     var onShowInChat: ((AttachmentItem) -> Void)? { get set }
     var onLoad: (() -> Void)? { get set }
@@ -33,7 +37,7 @@ protocol RoomProfileContentPage: AnyObject {
     func refreshTypography()
     func refreshImagePlans()
     func scrollToBeginning(animated: Bool)
-    func stopScrollingToBeginning()
+    func stopScrolling()
     func dismissContextMenu()
     func updateNearEnd()
 }

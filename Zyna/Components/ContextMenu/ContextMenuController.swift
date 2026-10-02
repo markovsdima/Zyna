@@ -98,7 +98,7 @@ final class ContextMenuController: NSObject {
         window.isHidden = false
         self.overlayWindow = window
 
-        let container = window.rootViewController!.view! // swiftlint:disable:this force_unwrapping
+        let container = window.rootViewController!.view!
         let bounds = sourceWindow.bounds
         let safeTop = sourceWindow.safeAreaInsets.top + Self.screenPadding
         let maxBottom = bounds.height - sourceWindow.safeAreaInsets.bottom - Self.screenPadding

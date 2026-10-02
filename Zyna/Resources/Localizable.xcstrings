@@ -5121,6 +5121,16 @@
         }
       }
     },
+    "Notifications muted" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Уведомления выключены"
+          }
+        }
+      }
+    },
     "Notifications toggle will appear here" : {
       "localizations" : {
         "ru" : {

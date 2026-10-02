@@ -7,6 +7,20 @@ import Testing
 import UIKit
 @testable import Zyna
 
+/// UIKit's pan reports zero without real touches. Supply physical movement
+/// independently of the content offset that the controller corrects.
+@MainActor
+private final class ProfileDragInput {
+    private var translations: [ObjectIdentifier: CGFloat] = [:]
+    func translation(_ scrollView: UIScrollView) -> CGFloat {
+        translations[ObjectIdentifier(scrollView), default: 0]
+    }
+    func drag(_ scrollView: UIScrollView, down distance: CGFloat) {
+        translations[ObjectIdentifier(scrollView), default: 0] += distance
+        scrollView.contentOffset.y -= distance
+    }
+}
+
 private final class ProfileFixtureSource: AttachmentSource, @unchecked Sendable {
     var onSnapshot: ((AttachmentTimelineStore.Snapshot, AttachmentTimelineStore.ApplySummary) -> Void)?
     var onPaginationStatus: ((PaginationStatus) -> Void)?
@@ -65,6 +79,264 @@ struct RoomProfileLayoutTests {
         try #require(condition(), "\(diagnostics())", sourceLocation: sourceLocation)
     }
 
+    @Test("Avatar follows dragging, snaps on release and collapses continuously toward a deep page")
+    func avatarExpansion() async throws {
+        let input = ProfileDragInput()
+        let source = ProfileFixtureSource()
+        let attachments = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        var snapshot = ProfileTestSource.snapshot()
+        snapshot.avatarURL = "mxc://profile.invalid/avatar"
+        let profileSource = ProfileTestSource(snapshot)
+        let profile = RoomProfileViewModel(snapshot: snapshot, source: profileSource,
+            notifications: RoomNotificationSettingsService(settings: ProfileTestNotificationSettings()),
+            isCurrentSession: { true })
+        let photo = UIGraphicsImageRenderer(size: CGSize(width: 128, height: 128)).image { context in
+            UIColor.systemIndigo.setFill(); context.fill(CGRect(x: 0, y: 0, width: 128, height: 128))
+            UIColor.systemMint.setFill(); context.fill(CGRect(x: 48, y: 0, width: 32, height: 128))
+            UIColor.white.setFill(); context.fill(CGRect(x: 0, y: 48, width: 128, height: 32))
+        }
+        let controller = RoomProfileViewController(room: nil, title: snapshot.title, subtitle: "",
+            model: attachments, actions: .none, profileModel: profile, avatarLoader: { _, _ in photo },
+            avatarDragTranslation: { scrollView, _ in input.translation(scrollView) })
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { profile.stop(); attachments.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let avatar = try #require(find(RoomProfileAvatarView.self, in: controller.view, id: "profile.avatar"))
+        let grid = try #require(controller.mediaGrid)
+        let media = grid.scrollView
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let expansion = RoomProfileAvatarGeometry.expansionHeight(width: controller.view.bounds.width)
+        try await wait { controller.view.layoutIfNeeded(); return avatar.isAccessibilityElement && grid.geometry?.count == 120 }
+        #expect(avatar.bounds.width == 88)
+        #expect(avatar.layer.cornerRadius == 44)
+        #expect(abs(media.contentOffset.y + media.contentInset.top - expansion) < 1)
+        #expect(avatar.hitTest(CGPoint(x: avatar.bounds.midX, y: avatar.bounds.midY), with: nil) == nil)
+
+        func release(decelerate: Bool = false, velocity: CGFloat = 0) {
+            var target = media.contentOffset
+            grid.scrollViewWillEndDragging(media, withVelocity: CGPoint(x: 0, y: velocity), targetContentOffset: &target)
+            #expect(target == media.contentOffset)
+            grid.scrollViewDidEndDragging(media, willDecelerate: decelerate)
+        }
+        let circularOffset = media.contentOffset.y
+        let circularTabsY = tabs.superview!.frame.minY
+        let subscriptions = DisplayLinkDriver.shared.activeSubscriptionsCount
+        // A short pull returns to the circle; insets stay fixed while dragging.
+        grid.scrollViewWillBeginDragging(media)
+        let inset = media.contentInset.top
+        input.drag(media, down: 50)
+        #expect(avatar.bounds.width > 88 && avatar.bounds.width < controller.view.bounds.width)
+        #expect(abs(tabs.superview!.frame.minY - circularTabsY - 75) < 1)
+        #expect(media.contentInset.top == inset)
+        input.drag(media, down: -25)
+        #expect(abs(tabs.superview!.frame.minY - circularTabsY - 37.5) < 1)
+        input.drag(media, down: -25)
+        #expect(abs(media.contentOffset.y - circularOffset) < 1)
+        input.drag(media, down: 50)
+        release()
+        try await wait { avatar.bounds.width == 88 && DisplayLinkDriver.shared.activeSubscriptionsCount <= subscriptions }
+        #expect(abs(media.contentOffset.y - circularOffset) < 1)
+
+        // Speed alone must not turn a tiny accidental movement into a snap.
+        grid.scrollViewWillBeginDragging(media)
+        input.drag(media, down: 6)
+        release(decelerate: true, velocity: -1.5)
+        try await wait { avatar.bounds.width == 88 && DisplayLinkDriver.shared.activeSubscriptionsCount <= subscriptions }
+        grid.scrollViewWillBeginDragging(media)
+        input.drag(media, down: 20)
+        release(decelerate: true, velocity: -0.7)
+        try await wait { avatar.bounds.width == controller.view.bounds.width && DisplayLinkDriver.shared.activeSubscriptionsCount <= subscriptions }
+        grid.scrollViewWillBeginDragging(media)
+        input.drag(media, down: -20)
+        release(decelerate: true, velocity: 0.7)
+        try await wait { avatar.bounds.width == 88 && DisplayLinkDriver.shared.activeSubscriptionsCount <= subscriptions }
+
+        grid.scrollViewWillBeginDragging(media)
+        input.drag(media, down: 80)
+        #expect(abs(tabs.superview!.frame.minY - circularTabsY - 120) < 1)
+        release(decelerate: true)
+        try await wait { avatar.bounds.width == controller.view.bounds.width && DisplayLinkDriver.shared.activeSubscriptionsCount <= subscriptions }
+        #expect(avatar.frame.minY == pager.frame.minY)
+        #expect(avatar.layer.cornerRadius == 0)
+        #expect(abs(media.contentOffset.y + media.contentInset.top) < 1)
+
+        // A metadata update for the same image must not briefly remove its
+        // expansion geometry or reset the open square.
+        snapshot.title = "Renamed group"
+        profileSource.send(snapshot)
+        try await wait { profile.snapshot.title == snapshot.title }
+        controller.view.layoutIfNeeded()
+        #expect(avatar.bounds.width == controller.view.bounds.width)
+        #expect(avatar.accessibilityActivate())
+        try await wait { avatar.bounds.width == 88 }
+
+        media.contentOffset.y = 1152
+        let deepOffset = media.contentOffset.y
+        controller.scrollViewWillBeginDragging(pager)
+        pager.contentOffset.x = pager.bounds.width
+        controller.scrollViewDidEndDecelerating(pager)
+        let files = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.files"))
+        try await wait { itemCount(files) == 3 }
+        // The Texture file page must forward the same release velocity.
+        files.contentOffset.y = expansion - files.contentInset.top
+        files.delegate?.scrollViewWillBeginDragging?(files)
+        input.drag(files, down: 20)
+        var fileTarget = files.contentOffset
+        files.delegate?.scrollViewWillEndDragging?(files, withVelocity: CGPoint(x: 0, y: -0.7), targetContentOffset: &fileTarget)
+        files.delegate?.scrollViewDidEndDragging?(files, willDecelerate: true)
+        try await wait { avatar.bounds.width == controller.view.bounds.width && DisplayLinkDriver.shared.activeSubscriptionsCount <= subscriptions }
+        controller.scrollViewWillBeginDragging(pager)
+        pager.contentOffset.x = pager.bounds.width * 0.8
+        let intermediateSize = avatar.bounds.width
+        #expect(intermediateSize > 88 && intermediateSize < controller.view.bounds.width)
+        pager.contentOffset.x = pager.bounds.width * 0.9
+        #expect(avatar.bounds.width > intermediateSize)
+        pager.contentOffset.x = pager.bounds.width
+        controller.scrollViewDidEndDecelerating(pager)
+        #expect(avatar.bounds.width == controller.view.bounds.width)
+        controller.scrollViewWillBeginDragging(pager)
+        pager.contentOffset.x = 0
+        controller.scrollViewDidEndDecelerating(pager)
+        #expect(avatar.bounds.width == 88)
+        #expect(abs(media.contentOffset.y - deepOffset) < 1)
+        #expect(abs(tabs.superview!.frame.minY - pager.frame.minY) < 1)
+    }
+
+    @Test("Scroll to top opens the regular header and preserves the other page", arguments: [false, true])
+    func scrollToTopWithAvatar(filesSelected: Bool) async throws {
+        let source = ProfileFixtureSource()
+        source.files = (500..<560).map { ProfileFixtureSource.item($0, kind: .file) }
+        let model = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        var snapshot = ProfileTestSource.snapshot()
+        snapshot.avatarURL = "mxc://profile.invalid/avatar"
+        let profile = RoomProfileViewModel(snapshot: snapshot, source: ProfileTestSource(snapshot),
+            notifications: nil, isCurrentSession: { true })
+        let photo = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image {
+            $0.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+        let controller = RoomProfileViewController(room: nil, title: snapshot.title, subtitle: "",
+            model: model, actions: .none, profileModel: profile, avatarLoader: { _, _ in photo })
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { profile.stop(); model.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let avatar = try #require(find(RoomProfileAvatarView.self, in: controller.view, id: "profile.avatar"))
+        let grid = try #require(controller.mediaGrid)
+        let media = grid.scrollView
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let top = try #require(find(UIButton.self, in: controller.view, id: "profile.scrollToTop"))
+        try await wait { controller.view.layoutIfNeeded(); return avatar.isAccessibilityElement && grid.geometry?.count == 120 }
+        let circularTabsY = tabs.superview!.frame.minY
+        let expansion = grid.avatarExpansionHeight
+
+        // Give both pages a saved position before resetting just one of them.
+        media.contentOffset.y = 900
+        controller.scrollViewWillBeginDragging(pager)
+        pager.contentOffset.x = pager.bounds.width
+        controller.scrollViewDidEndDecelerating(pager)
+        let files = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.files"))
+        try await wait { itemCount(files) == source.files.count + 2 && files.contentSize.height > 1500 }
+        files.contentOffset.y = 700
+        if !filesSelected {
+            controller.scrollViewWillBeginDragging(pager)
+            pager.contentOffset.x = 0
+            controller.scrollViewDidEndDecelerating(pager)
+        }
+        let selected = filesSelected ? files : media
+        let other = filesSelected ? media : files
+        let otherDepth = other.contentOffset.y + other.contentInset.top - grid.headerHeight
+        let start = selected.contentOffset.y
+        #expect(!top.isHidden)
+        top.sendActions(for: .touchUpInside)
+        #expect(selected.contentOffset.y > expansion - selected.contentInset.top + 1)
+        try await wait { selected.contentOffset.y < start - 1 }
+        try await wait { abs(selected.contentOffset.y + selected.contentInset.top - expansion) < 0.1 }
+        #expect(abs(tabs.superview!.frame.minY - circularTabsY) < 1)
+        #expect(avatar.bounds.width == 88 && avatar.layer.cornerRadius == 44)
+        #expect(abs(other.contentOffset.y + other.contentInset.top - expansion - otherDepth) < 1)
+    }
+
+    @Test("Avatar animation and interrupted drag settle when leaving; initials never expand")
+    func avatarInterruption() async throws {
+        let input = ProfileDragInput()
+        let source = ProfileFixtureSource()
+        let attachments = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        var snapshot = ProfileTestSource.snapshot()
+        let profileSource = ProfileTestSource(snapshot)
+        let profile = RoomProfileViewModel(snapshot: snapshot, source: profileSource,
+            notifications: RoomNotificationSettingsService(settings: ProfileTestNotificationSettings()),
+            isCurrentSession: { true })
+        let photo = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { context in
+            UIColor.systemIndigo.setFill(); context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+        let controller = RoomProfileViewController(room: nil, title: snapshot.title, subtitle: "",
+            model: attachments, actions: .none, profileModel: profile, avatarLoader: { _, _ in photo },
+            avatarDragTranslation: { scrollView, _ in input.translation(scrollView) })
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 690))
+        window.rootViewController = controller; window.isHidden = false
+        defer { profile.stop(); attachments.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let avatar = try #require(find(RoomProfileAvatarView.self, in: controller.view, id: "profile.avatar"))
+        let grid = try #require(controller.mediaGrid)
+        let media = grid.scrollView
+        try await wait { profileSource.isObserving && grid.geometry?.count == 120 }
+        #expect(!avatar.accessibilityActivate())
+        grid.scrollViewWillBeginDragging(media)
+        media.contentOffset.y = -media.contentInset.top - 120
+        #expect(avatar.bounds.width == 88)
+        grid.scrollViewDidEndDragging(media, willDecelerate: false)
+        media.contentOffset.y = 600
+        let anchor = try #require(grid.captureAnchor())
+        snapshot.avatarURL = "mxc://profile.invalid/avatar"
+        profileSource.send(snapshot)
+        try await wait { controller.view.layoutIfNeeded(); return avatar.image === photo }
+        controller.view.layoutIfNeeded()
+        let loadedAnchor = try #require(grid.captureAnchor())
+        #expect(anchor.id == loadedAnchor.id && abs(anchor.offset - loadedAnchor.offset) < 1)
+
+        let extra = RoomProfileAvatarGeometry.expansionHeight(width: controller.view.bounds.width)
+        media.contentOffset.y = extra - media.contentInset.top
+        let subscriptions = DisplayLinkDriver.shared.activeSubscriptionsCount
+        // Cancellation can deliver didEndDragging without willEndDragging.
+        grid.scrollViewWillBeginDragging(media)
+        input.drag(media, down: 80)
+        grid.scrollViewDidEndDragging(media, willDecelerate: false)
+        try await wait { avatar.bounds.width == 88 }
+        #expect(abs(media.contentOffset.y + media.contentInset.top - extra) < 1)
+        grid.scrollViewWillBeginDragging(media)
+        input.drag(media, down: 80)
+        #expect(avatar.bounds.width > 88)
+        controller.viewWillDisappear(false)
+        #expect(avatar.bounds.width == 88)
+        #expect(abs(media.contentOffset.y + media.contentInset.top - extra) < 1)
+        controller.viewWillAppear(false)
+        #expect(avatar.accessibilityActivate())
+        controller.viewWillDisappear(false)
+        #expect(avatar.bounds.width == controller.view.bounds.width)
+        #expect(DisplayLinkDriver.shared.activeSubscriptionsCount <= subscriptions)
+        #expect(abs(media.contentOffset.y + media.contentInset.top) < 1)
+
+        controller.viewWillAppear(false)
+        #expect(avatar.accessibilityActivate())
+        try await wait { avatar.bounds.width == 88 }
+        grid.scrollViewWillBeginDragging(media)
+        input.drag(media, down: 80)
+        var target = media.contentOffset
+        grid.scrollViewWillEndDragging(media, withVelocity: .zero, targetContentOffset: &target)
+        grid.scrollViewDidEndDragging(media, willDecelerate: false)
+        // Leave before the deferred snap has obtained its first frame.
+        controller.viewWillDisappear(false)
+        #expect(avatar.bounds.width == controller.view.bounds.width)
+        #expect(abs(media.contentOffset.y + media.contentInset.top) < 1)
+        #expect(DisplayLinkDriver.shared.activeSubscriptionsCount <= subscriptions)
+    }
+
     @Test("Video opens with the displayed grid image even when the legacy cache has no matching size")
     func videoPreview() async throws {
         let source = ProfileFixtureSource()
@@ -89,6 +361,182 @@ struct RoomProfileLayoutTests {
         grid.activate(0)
         #expect(opened)
         #expect(preview === displayed)
+    }
+
+    @Test("Live header actions, menus and height changes preserve the media anchor")
+    func liveHeader() async throws {
+        let source = ProfileFixtureSource()
+        let attachments = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        var snapshot = ProfileTestSource.snapshot()
+        let profileSource = ProfileTestSource(snapshot)
+        let sdk = ProfileTestNotificationSettings()
+        let profile = RoomProfileViewModel(snapshot: snapshot, source: profileSource,
+            notifications: RoomNotificationSettingsService(settings: sdk), isCurrentSession: { true })
+        let controller = RoomProfileViewController(room: nil, title: snapshot.title, subtitle: "",
+            model: attachments, actions: .none, profileModel: profile)
+        var tapped: [RoomProfileAction] = []
+        controller.onAction = { tapped.append($0) }
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 690))
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { profile.stop(); attachments.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        try await wait { profile.canChangeNotifications && controller.mediaGrid?.geometry?.count == 120 }
+        controller.view.layoutIfNeeded()
+        let invite = try #require(find(UIButton.self, in: controller.view, id: "profile.action.invite"))
+        let search = try #require(find(UIButton.self, in: controller.view, id: "profile.action.search"))
+        let notifications = try #require(find(UIButton.self, in: controller.view, id: "profile.action.notifications"))
+        let more = try #require(find(UIButton.self, in: controller.view, id: "profile.action.more"))
+        for button in [invite, search, notifications, more] {
+            let rect = button.convert(button.bounds, to: controller.view)
+            #expect(rect.width > 50 && rect.height >= 44)
+            #expect(rect.minX >= 0 && rect.maxX <= controller.view.bounds.width)
+        }
+        invite.sendActions(for: .touchUpInside)
+        search.sendActions(for: .touchUpInside)
+        #expect(tapped == [.invite, .search])
+        #expect(notifications.showsMenuAsPrimaryAction && more.showsMenuAsPrimaryAction)
+        #expect(notifications.menu?.children.compactMap { $0 as? UIAction }.filter { $0.state == .on }.count == 1)
+        let header = try #require(controller.node.subnodes?.flatMap { [$0] + ($0.subnodes ?? []) }
+            .compactMap { $0 as? RoomProfileHeaderNode }.first)
+        #expect(header.hitTest(CGPoint(x: header.bounds.midX, y: 30), with: nil) == nil)
+
+        let grid = try #require(controller.mediaGrid)
+        let gestureHost = try #require(grid.scrollView.panGestureRecognizer.view)
+        #expect(gestureHost !== grid.scrollView)
+        for button in [invite, search, notifications, more] {
+            #expect(button.isDescendant(of: gestureHost))
+            #expect(grid.scrollView.touchesShouldCancel(in: button))
+        }
+        #expect(grid.scrollView.isDescendant(of: gestureHost))
+        grid.scrollView.contentOffset.y = 1200
+        let before = try #require(grid.captureAnchor())
+        snapshot.title = "Updated group"
+        snapshot.topic = String(repeating: "A long topic about the group and its shared media. ", count: 12)
+        snapshot.permissions = .init(invite: false, editName: false, editAvatar: false)
+        profileSource.send(snapshot)
+        try await wait { profile.snapshot == snapshot }
+        controller.view.layoutIfNeeded()
+        let after = try #require(grid.captureAnchor())
+        #expect(after.id == before.id)
+        #expect(abs(after.offset - before.offset) < 1)
+        #expect(!invite.isEnabled)
+        #expect(more.menu?.children.compactMap { $0 as? UIAction }.contains { $0.title == RoomProfileAction.edit.title } == false)
+
+        // Return to the header: members remain a direct action, not a page.
+        grid.scrollView.contentOffset.y = -grid.scrollView.contentInset.top
+        controller.view.layoutIfNeeded()
+        let members = try #require(find(UIView.self, in: controller.view, id: "profile.members"))
+        #expect(members.accessibilityTraits.contains(.button))
+
+        // Menu deduplication must use the incoming @Published snapshot when
+        // membership changes, rather than the model's previous stored value.
+        snapshot.isJoined = false
+        profileSource.send(snapshot)
+        try await wait { profile.snapshot == snapshot }
+        let choices = try #require(notifications.menu).children.compactMap { $0 as? UIAction }
+        #expect(!choices.isEmpty && choices.allSatisfy { $0.attributes.contains(.disabled) })
+        #expect(!notifications.isEnabled)
+    }
+
+    @Test("The native vertical pan follows the selected page and cancels with paging")
+    func sharedHeaderPan() async throws {
+        let source = ProfileFixtureSource()
+        let model = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        let controller = RoomProfileViewController(room: nil, title: "Group", subtitle: "", model: model, actions: .none)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { model.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let media = try #require(controller.mediaGrid?.scrollView)
+        let host = try #require(media.panGestureRecognizer.view)
+        let button = UIButton(type: .custom)
+        button.menu = UIMenu(children: [UIAction(title: "Choice") { _ in }])
+        button.showsMenuAsPrimaryAction = true
+        #expect(media is RoomProfileMediaScrollView)
+        #expect(media.touchesShouldCancel(in: button))
+        #expect(!media.touchesShouldCancel(in: UISlider()))
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        #expect(media.panGestureRecognizer.isEnabled && host !== media)
+        controller.scrollViewWillBeginDragging(pager)
+        #expect(!media.panGestureRecognizer.isEnabled)
+        pager.contentOffset.x = pager.bounds.width
+        controller.scrollViewDidEndDecelerating(pager)
+        let files = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.files"))
+        #expect(files is RoomProfileCollectionView)
+        #expect(files.touchesShouldCancel(in: button))
+        #expect(!files.touchesShouldCancel(in: UISlider()))
+        #expect(media.panGestureRecognizer.view === media)
+        #expect(files.panGestureRecognizer.view === host && files.panGestureRecognizer.isEnabled)
+        controller.scrollViewWillBeginDragging(pager)
+        pager.contentOffset.x = pager.bounds.width * 0.8
+        pager.contentOffset.x = pager.bounds.width
+        controller.scrollViewDidEndDecelerating(pager)
+        #expect(files.panGestureRecognizer.view === host && files.panGestureRecognizer.isEnabled)
+        controller.viewWillDisappear(false)
+        #expect(!files.panGestureRecognizer.isEnabled)
+        controller.viewWillAppear(false)
+        #expect(files.panGestureRecognizer.isEnabled)
+        controller.scrollViewWillBeginDragging(pager)
+        pager.contentOffset.x = 0
+        controller.scrollViewDidEndDecelerating(pager)
+        #expect(media.panGestureRecognizer.view === host && media.panGestureRecognizer.isEnabled)
+        #expect(files.panGestureRecognizer.view === files)
+    }
+
+    @Test("A failed large avatar retries on expansion, never on repeated layout")
+    func avatarRetry() async throws {
+        let source = ProfileFixtureSource()
+        let model = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        var snapshot = ProfileTestSource.snapshot()
+        snapshot.avatarURL = "mxc://profile.invalid/avatar"
+        let profile = RoomProfileViewModel(snapshot: snapshot, source: ProfileTestSource(snapshot),
+            notifications: nil, isCurrentSession: { true })
+        let preview = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { $0.fill(CGRect(x: 0, y: 0, width: 8, height: 8)) }
+        let full = UIGraphicsImageRenderer(size: CGSize(width: 16, height: 16)).image { $0.fill(CGRect(x: 0, y: 0, width: 16, height: 16)) }
+        let attempts = Atomic(0)
+        let controller = RoomProfileViewController(room: nil, title: "Group", subtitle: "", model: model,
+            actions: .none, profileModel: profile, avatarLoader: { _, pixels in
+                if pixels == 240 { return preview }
+                let attempt = attempts.withValue { $0 += 1; return $0 }
+                return attempt == 1 ? nil : full
+            })
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { profile.stop(); model.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let avatar = try #require(find(RoomProfileAvatarView.self, in: controller.view, id: "profile.avatar"))
+        try await wait { attempts.wrappedValue == 1 && avatar.isAccessibilityElement }
+        for _ in 0..<20 { controller.view.setNeedsLayout(); controller.view.layoutIfNeeded() }
+        #expect(attempts.wrappedValue == 1 && avatar.image === preview)
+        #expect(avatar.accessibilityActivate())
+        try await wait { avatar.image === full }
+        #expect(attempts.wrappedValue == 2)
+        for _ in 0..<20 { controller.view.setNeedsLayout(); controller.view.layoutIfNeeded() }
+        #expect(attempts.wrappedValue == 2)
+    }
+
+    @Test("Muted room rows keep the state through profile updates and expose it to VoiceOver")
+    func mutedRoomRow() {
+        let summary = RoomSummary(id: "!room:example.org", displayName: "Muted group", avatarURL: nil,
+            lastMessage: "A message", lastMessageSenderName: nil, lastMessageTimestamp: nil,
+            lastOwnMessageStatus: nil, unreadCount: 3, unreadMentionCount: 0, isMarkedUnread: false,
+            isEncrypted: true, isSpace: false, isMuted: true, directUserId: nil,
+            spaceChildRoomCount: 0, spaceChildSpaceCount: 0, spaceRecentRooms: [], spaceMetadata: nil)
+        let model = RoomModel(from: summary)
+        #expect(model.isMuted)
+        #expect(model.withSyntheticAvatarColor("#123456").isMuted)
+        #expect(model.withSpaceProfile(name: "Renamed", avatarURL: nil).isMuted)
+        #expect(model.withSpaceMetadata(nil).isMuted)
+        let node = RoomsCellNode(chat: model)
+        _ = node.view
+        node.frame = CGRect(x: 0, y: 0, width: 320, height: 90)
+        node.view.layoutIfNeeded()
+        #expect(node.accessibilityLabel?.contains(String(localized: "Notifications muted")) == true)
+        #expect(node.subnodes?.compactMap { $0 as? ASImageNode }.contains { $0.image?.renderingMode == .alwaysTemplate } == true)
     }
 
     @Test("Back owns right swipes across the first page, and only the leading edge elsewhere")
@@ -208,9 +656,8 @@ struct RoomProfileLayoutTests {
         controller.scrollViewDidEndDecelerating(pager)
         #expect(abs(restored.contentOffset.y - interrupted) < 1)
         top.sendActions(for: .touchUpInside)
-        try await wait { !grid.isScrollingToBeginning && abs(restored.contentOffset.y + 48) < 1 }
-        #expect(abs(restored.contentOffset.y + 48) < 1)
-        #expect(abs(tabs.superview!.frame.minY - pager.frame.minY) < 1)
+        try await wait { !grid.isScrollingToBeginning && abs(restored.contentOffset.y + restored.contentInset.top) < 1 }
+        #expect(abs(tabs.superview!.frame.minY - pager.frame.minY - height) < 1)
         source.files = []
         source.publish()
         controller.scrollViewWillBeginDragging(pager)
@@ -221,8 +668,8 @@ struct RoomProfileLayoutTests {
         try await wait(diagnostics: {
             "Empty files: count=\(itemCount(files)), offset=\(files.contentOffset), inset=\(files.contentInset), "
                 + "size=\(files.contentSize), tabsY=\(tabs.superview!.frame.minY), pagerY=\(pager.frame.minY)"
-        }) { itemCount(files) == 1 && abs(files.contentOffset.y + 48) < 1 }
-        #expect(abs(files.contentOffset.y + 48) < 1)
+        }) { itemCount(files) == 1 && abs(files.contentOffset.y + files.contentInset.top) < 1 }
+        #expect(abs(files.contentOffset.y + files.contentInset.top) < 1)
         files.contentOffset.y = -files.contentInset.top
         #expect(abs(tabs.superview!.frame.minY - pager.frame.minY - height) < 1)
     }

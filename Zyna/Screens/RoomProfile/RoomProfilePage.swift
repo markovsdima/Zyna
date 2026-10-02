@@ -28,6 +28,9 @@ struct RoomProfileRow: Equatable {
 final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionDelegate {
     let node: ASCollectionNode
     var onScroll: (() -> Void)?
+    var onBeginDragging: (() -> Void)?
+    var onWillEndDragging: ((CGPoint, UnsafeMutablePointer<CGPoint>) -> Void)?
+    var onEndDragging: (() -> Void)?
     var onSelect: ((AttachmentItem, UIImage?, CGRect) -> Void)?
     var onShowInChat: ((AttachmentItem) -> Void)?
     var onLoad: (() -> Void)?
@@ -50,14 +53,13 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
         didSet {
             guard isActive != oldValue else { return }
             if !isActive {
-                stopScrollingToBeginning()
-                fpsBooster.stop()
-                scrollView.setContentOffset(scrollView.contentOffset, animated: false)
+                stopScrolling()
             }
             updateNearEnd()
         }
     }
     var headerHeight: CGFloat = 220
+    var avatarExpansionHeight: CGFloat = 0
     var tabsHeight: CGFloat = 48
     var collapse: CGFloat = 0
     var restorationAnchor: RoomProfileAnchor?
@@ -77,6 +79,7 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
         flow.minimumLineSpacing = 2
         flow.minimumInteritemSpacing = 2
         node = ASCollectionNode(collectionViewLayout: flow)
+        node.collectionViewClass = RoomProfileCollectionView.self
         super.init()
         node.dataSource = self
         node.delegate = self
@@ -135,7 +138,7 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
         guard !updating else { pendingScrollToBeginning = animated; return }
         // The vertical delegate records each animated offset. Do not save
         // zero early: a swipe may interrupt the journey partway through.
-        let target = CGPoint(x: 0, y: -tabsHeight)
+        let target = CGPoint(x: 0, y: avatarExpansionHeight - inset)
         isScrollingToBeginning = animated && abs(scrollView.contentOffset.y - target.y) > 0.25
         if isScrollingToBeginning && isActive { fpsBooster.start() } else { fpsBooster.stop() }
         scrollView.setContentOffset(target, animated: isScrollingToBeginning)
@@ -150,6 +153,12 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
         scrollView.setContentOffset(scrollView.contentOffset, animated: false)
         onScroll?()
         finishUpdate()
+    }
+
+    func stopScrolling() {
+        stopScrollingToBeginning()
+        fpsBooster.stop()
+        scrollView.setContentOffset(scrollView.contentOffset, animated: false)
     }
 
     func captureAnchor() -> RoomProfileAnchor? {
@@ -313,12 +322,19 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
     func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool { false }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        onBeginDragging?()
         stopScrollingToBeginning()
         if isActive { fpsBooster.start() }
     }
 
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                  targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        onWillEndDragging?(velocity, targetContentOffset)
+    }
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if !decelerate { fpsBooster.stop() }
+        onEndDragging?()
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { fpsBooster.stop() }

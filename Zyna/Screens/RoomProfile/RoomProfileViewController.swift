@@ -5,12 +5,12 @@ import AsyncDisplayKit
 import Combine
 import MatrixRustSDK
 
-/// First Texture profile slice. Other profile actions still route to the
-/// existing room information screen until their planned migration.
-final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScrollViewDelegate {
+/// Room identity and actions above independently positioned content pages.
+final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     var onBack: (() -> Void)?
     var onInformation: (() -> Void)?
     var onLegacyAttachments: (() -> Void)?
+    var onAction: ((RoomProfileAction) -> Void)?
     var onShowInChat: ((String) async throws -> PreparedPollNavigation)?
     var onOpenMediaImage: ((RoomMediaDatabase, AttachmentItem, CGRect) async throws -> Void)?
 
@@ -18,7 +18,25 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private let actions: RoomAttachmentsActions
     private let room: Room?
     private let titleText: String
+    private let profileModel: RoomProfileViewModel?
     private let header: RoomProfileHeaderNode
+    private let contentNode = ASDisplayNode()
+    private weak var sharedPanScrollView: UIScrollView?
+    private let avatarView = RoomProfileAvatarView()
+    private let avatarLoader: @Sendable (String, Int) async -> UIImage?
+    private let avatarDragTranslation: (UIScrollView, UIView) -> CGFloat
+    private var hasAvatarPhoto = false
+    private var avatarDrag: RoomProfileAvatarDrag?
+    private var pendingAvatarSnap: CGFloat?
+    private var avatarAnimation: DisplayLinkToken?
+    private var avatarAnimationTarget: CGFloat?
+    private var pagingAvatarTarget: CGFloat?
+    private var avatarAnimationGeneration = 0
+    private var largeAvatarTask: Task<Void, Never>?
+    private var requestedAvatarPixels = 0
+    private var loadedAvatarPixels = 0
+    private lazy var avatarHaptic = UIImpactFeedbackGenerator(style: .soft)
+    private lazy var avatarTap = UITapGestureRecognizer(target: self, action: #selector(toggleAvatar))
     private let pager = RoomProfilePagerScrollView()
     private lazy var fpsBooster = ScrollFPSBooster(hostView: pager)
     private let bar = UIView()
@@ -42,6 +60,21 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private var cancellables = Set<AnyCancellable>()
     private var startTask: Task<Void, Never>?
     private var avatarTask: Task<Void, Never>?
+    private struct AvatarIdentity: Equatable {
+        let id: String
+        let title: String
+        let url: String?
+    }
+    private var avatarIdentity: AvatarIdentity?
+    private struct MenuState: Equatable {
+        let snapshot: RoomProfileSnapshot
+        let notifications: RoomNotificationSettings?
+        let loading: Bool
+        let saving: Bool
+        let hasNotificationError: Bool
+        let hasInformationError: Bool
+    }
+    private var renderedMenuState: MenuState?
     private var navigationTask: Task<Void, Never>?
     private var imageTask: Task<Void, Never>?
     private var playerHost: EmbeddedVoiceTopPlayerHost?
@@ -55,15 +88,26 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         let width: CGFloat
         let height: CGFloat
         let collapse: CGFloat
+        let expansion: CGFloat
     }
     private var renderedHeaderGeometry: HeaderGeometry?
 
     init(room: Room?, title: String, subtitle: String, model: RoomAttachmentsViewModel,
-         actions: RoomAttachmentsActions, audioPlayer: AudioPlayerService? = nil, mediaCatalog: RoomMediaCatalog? = nil) {
+         actions: RoomAttachmentsActions, audioPlayer: AudioPlayerService? = nil, mediaCatalog: RoomMediaCatalog? = nil,
+         profileModel: RoomProfileViewModel? = nil,
+         avatarLoader: @escaping @Sendable (String, Int) async -> UIImage? = { mxc, pixels in
+             await RoomProfileAvatarImageLoader.load(mxc, pixels)
+         },
+         avatarDragTranslation: @escaping (UIScrollView, UIView) -> CGFloat = { scrollView, view in
+             scrollView.panGestureRecognizer.translation(in: view).y
+         }) {
         self.room = room
         self.titleText = title
         self.model = model
         self.actions = actions
+        self.profileModel = profileModel
+        self.avatarLoader = avatarLoader
+        self.avatarDragTranslation = avatarDragTranslation
         self.mediaCatalog = mediaCatalog ?? RoomMediaCatalog()
         header = RoomProfileHeaderNode(title: title, subtitle: subtitle)
         super.init(node: ASDisplayNode())
@@ -74,18 +118,28 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    deinit { startTask?.cancel(); avatarTask?.cancel(); navigationTask?.cancel(); imageTask?.cancel() }
+    deinit {
+        startTask?.cancel(); avatarTask?.cancel(); largeAvatarTask?.cancel()
+        navigationTask?.cancel(); imageTask?.cancel(); avatarAnimation?.invalidate()
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.addSubview(pager)
-        node.addSubnode(header)
-        header.isUserInteractionEnabled = false
-        view.addSubview(tabBackground)
+        node.addSubnode(contentNode)
+        contentNode.view.addSubview(pager)
+        contentNode.addSubnode(header)
+        contentNode.view.addSubview(avatarView)
+        avatarView.onActivate = { [weak self] in self?.toggleAvatar() }
+        avatarTap.delegate = self
+        avatarTap.cancelsTouchesInView = false
+        view.addGestureRecognizer(avatarTap)
+        header.onAction = { [weak self] in self?.perform($0) }
+        header.onHeightChanged = { [weak self] in self?.view.setNeedsLayout() }
+        contentNode.view.addSubview(tabBackground)
         tabBackground.addSubview(tabs)
         view.addSubview(bar)
         [compactAvatar, compactTitle, backButton, moreButton, navigationProgress].forEach { bar.addSubview($0) }
-        view.addSubview(topButton)
+        contentNode.view.addSubview(topButton)
         bar.backgroundColor = .appBG
         tabBackground.backgroundColor = .appBG
         pager.delegate = self
@@ -113,7 +167,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         backButton.setImage(AppIcon.chevronBackward.rendered(color: .label), for: .normal)
         backButton.accessibilityLabel = String(localized: "Back")
         backButton.addTarget(self, action: #selector(goBack), for: .touchUpInside)
-        moreButton.setImage(UIImage(systemName: "ellipsis"), for: .normal)
+        moreButton.setImage(AppIcon.ellipsis.template(), for: .normal)
         moreButton.accessibilityLabel = String(localized: "More", table: "RoomProfile")
         moreButton.showsMenuAsPrimaryAction = true
         moreButton.menu = UIMenu(children: [
@@ -132,7 +186,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         playerHost?.onVisibilityChanged = { [weak self] in self?.view.setNeedsLayout() }
         ensurePage(.media)
         bind()
-        loadAvatar()
+        bindProfile()
         startTask = Task { [weak self] in await self?.model.start() }
         NotificationCenter.default.publisher(for: UIContentSizeCategory.didChangeNotification)
             .sink { [weak self] _ in
@@ -148,7 +202,10 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         else if attached {
             startTask?.cancel()
             avatarTask?.cancel()
+            largeAvatarTask?.cancel()
+            stopAvatarAnimation(finish: true)
             model.stop()
+            profileModel?.stop()
             mediaCatalog.stop()
             cancellables.removeAll()
         }
@@ -157,12 +214,23 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         pages[state.selected]?.isActive = true
+        updateSharedPan()
+        loadLargeAvatarIfNeeded(retry: true)
         playerHost?.refresh()
+        profileModel?.refreshNotifications()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        showProfileError()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        settleInterruptedAvatar()
+        stopAvatarAnimation(finish: true)
         pages.values.forEach { $0.dismissContextMenu(); $0.isActive = false }
+        sharedPanScrollView?.panGestureRecognizer.isEnabled = false
         fpsBooster.stop()
         navigationTask?.cancel()
         imageTask?.cancel()
@@ -186,15 +254,22 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         layingOut = true
         defer { layingOut = false }
         let width = view.bounds.width
+        contentNode.frame = view.bounds
         let top = view.safeAreaInsets.top + 48
         let measured = header.layoutThatFits(ASSizeRange(min: CGSize(width: width, height: 0),
             max: CGSize(width: width, height: .greatestFiniteMagnitude))).size.height
         let height = max(208, measured)
-        if state.headerHeight != height { state.resizeHeader(to: height) }
+        let expansion = hasAvatarPhoto ? RoomProfileAvatarGeometry.expansionHeight(width: width) : 0
+        if state.headerHeight != height + expansion || state.avatarExpansionHeight != expansion {
+            settleInterruptedAvatar()
+            stopAvatarAnimation(finish: true)
+            state.resizeHeader(to: height, avatarExpansionHeight: expansion)
+        }
         if width != previousWidth, state.transition != nil {
             fpsBooster.stop()
             state.finishTransition(at: state.selected)
             for (section, page) in pages { page.isActive = section == state.selected }
+            updateSharedPan()
         }
         pager.frame = CGRect(x: 0, y: top, width: width, height: max(0, view.bounds.height - top))
         pager.contentSize = CGSize(width: width * 2, height: pager.bounds.height)
@@ -208,12 +283,14 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         topButton.frame = CGRect(x: width - 64, y: view.bounds.height - view.safeAreaInsets.bottom - 64, width: 48, height: 48)
         for (section, page) in pages {
             page.headerHeight = state.headerHeight
+            page.avatarExpansionHeight = state.avatarExpansionHeight
             page.tabsHeight = tabHeight
             page.collapse = state.collapse
             page.layout(frame: CGRect(x: width * CGFloat(section.rawValue), y: 0, width: width, height: pager.bounds.height),
                         depth: state.depth(for: section), bottomInset: view.safeAreaInsets.bottom)
         }
         renderHeader()
+        loadLargeAvatarIfNeeded()
         playerHost?.layout()
     }
 
@@ -235,6 +312,111 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         model.$forceLoadIds.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] ids in
             self?.pages.values.forEach { $0.forceLoadIds = ids; $0.refreshImagePlans() }
         }.store(in: &cancellables)
+    }
+
+    private func bindProfile() {
+        guard let profileModel else {
+            loadAvatar(AvatarIdentity(id: model.roomId, title: titleText, url: room?.avatarUrl()))
+            return
+        }
+        profileModel.$snapshot.sink { [weak self] snapshot in
+            guard let self else { return }
+            self.header.apply(snapshot)
+            self.compactTitle.text = snapshot.title
+            self.loadAvatar(AvatarIdentity(id: snapshot.directUserID ?? snapshot.roomID,
+                title: snapshot.title, url: snapshot.avatarURL))
+            // @Published delivers before its property changes. Use this value
+            // for permissions so a revoked action cannot remain in the menu.
+            self.updateProfileMenus(snapshot: snapshot)
+            self.view.setNeedsLayout()
+        }.store(in: &cancellables)
+        profileModel.$notifications.combineLatest(profileModel.$isLoadingNotifications,
+            profileModel.$isSavingNotifications, profileModel.$notificationsError)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateProfileMenus() }.store(in: &cancellables)
+        profileModel.$informationError.receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateProfileMenus() }.store(in: &cancellables)
+        profileModel.$actionError.receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.showProfileError() }.store(in: &cancellables)
+        profileModel.start()
+    }
+
+    private func perform(_ action: RoomProfileAction) {
+        guard profileModel.map({ action.isEnabled(in: $0.snapshot) }) != false else { return }
+        switch action {
+        case .information: onInformation?()
+        case .attachments: onLegacyAttachments?()
+        default: onAction?(action)
+        }
+    }
+
+    private func updateProfileMenus(snapshot: RoomProfileSnapshot? = nil) {
+        guard let profileModel else { return }
+        let snapshot = snapshot ?? profileModel.snapshot
+        let menuState = MenuState(snapshot: snapshot, notifications: profileModel.notifications,
+            loading: profileModel.isLoadingNotifications, saving: profileModel.isSavingNotifications,
+            hasNotificationError: profileModel.notificationsError != nil,
+            hasInformationError: profileModel.informationError != nil)
+        guard renderedMenuState != menuState else { return }
+        renderedMenuState = menuState
+        let notificationMenu = makeNotificationMenu(snapshot: snapshot)
+        var entries: [UIMenuElement] = []
+        for action: RoomProfileAction in [.search, .members, .edit, .information, .attachments] {
+            if action == .members && snapshot.isDirect { continue }
+            if action == .edit && !action.isEnabled(in: snapshot) { continue }
+            entries.append(UIAction(title: action.title, image: action.icon.template(size: 18),
+                attributes: action.isEnabled(in: snapshot) ? [] : .disabled) { [weak self] _ in self?.perform(action) })
+        }
+        entries.insert(notificationMenu, at: min(1, entries.count))
+        if profileModel.informationError != nil {
+            entries.append(UIAction(title: String(localized: "Reload profile", table: "RoomProfile")) { [weak profileModel] _ in
+                profileModel?.reloadInformation()
+            })
+        }
+        let more = UIMenu(children: entries)
+        moreButton.menu = more
+        let notificationDetail: String
+        if profileModel.isSavingNotifications { notificationDetail = String(localized: "Saving", table: "RoomProfile") }
+        else if profileModel.notificationsError != nil { notificationDetail = String(localized: "Retry") }
+        else if let settings = profileModel.notifications {
+            switch settings.mode {
+            case .allMessages: notificationDetail = String(localized: "All", table: "RoomProfile")
+            case .mentionsAndKeywordsOnly: notificationDetail = String(localized: "Mentions", table: "RoomProfile")
+            case .mute: notificationDetail = String(localized: "Muted", table: "RoomProfile")
+            }
+        } else { notificationDetail = String(localized: "Loading") }
+        header.setMenus(more: more, notifications: notificationMenu, notificationDetail: notificationDetail,
+            isMuted: profileModel.notifications?.mode == .mute)
+    }
+
+    private func makeNotificationMenu(snapshot: RoomProfileSnapshot) -> UIMenu {
+        guard let profileModel else { return UIMenu(children: []) }
+        let selection = profileModel.notifications.map(RoomNotificationSelection.init)
+        var entries: [UIMenuElement] = RoomNotificationSelection.allCases.map { mode in
+            let action = UIAction(title: mode.title, attributes: profileModel.canChangeNotifications(for: snapshot) ? [] : .disabled,
+                state: selection == mode ? .on : .off) { [weak profileModel] _ in profileModel?.setNotifications(mode) }
+            if mode == .inherited, let settings = profileModel.notifications, settings.isDefault {
+                let effectiveMode = RoomNotificationSelection(.init(mode: settings.mode, isDefault: false)).title
+                action.subtitle = String(localized: "Account default: \(effectiveMode)", table: "RoomProfile")
+            }
+            return action
+        }
+        if profileModel.notificationsError != nil {
+            entries.append(UIAction(title: String(localized: "Try Again")) { [weak profileModel] _ in
+                profileModel?.refreshNotifications()
+            })
+        }
+        return UIMenu(title: RoomProfileAction.notifications.title,
+            image: AppIcon.bell.template(size: 18), children: entries)
+    }
+
+    private func showProfileError() {
+        guard let message = profileModel?.actionError, view.window != nil, presentedViewController == nil else { return }
+        profileModel?.actionError = nil
+        let alert = UIAlertController(title: String(localized: "Couldn't change notifications", table: "RoomProfile"),
+            message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+        present(alert, animated: true)
     }
 
     private func updatePages(catalogChanged: Bool = false) {
@@ -302,9 +484,45 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         page.onScroll = { [weak self, weak page] in
             guard let self, let page, self.pages[section] === page,
                   section == self.state.selected, self.state.transition == nil, !self.layingOut else { return }
-            self.state.scroll(to: page.normalizedOffset)
-            self.renderHeader()
+            self.scrolled(page)
         }
+        page.onBeginDragging = { [weak self, weak page] in
+            guard let self, let page, self.pages[section] === page,
+                  section == self.state.selected, self.state.transition == nil else { return }
+            self.stopAvatarAnimation(finish: false)
+            if self.state.regularCollapse == 0, self.state.depth(for: section) == 0 {
+                self.loadLargeAvatarIfNeeded(retry: true)
+            }
+            self.avatarDrag = RoomProfileAvatarDrag(progress: self.state.avatarProgress,
+                translation: self.avatarDragTranslation(page.scrollView, self.view))
+            self.pendingAvatarSnap = nil
+            if self.hasAvatarPhoto { self.avatarHaptic.prepare() }
+        }
+        page.onWillEndDragging = { [weak self, weak page] velocity, offset in
+            guard let self, let page, section == self.state.selected else { return }
+            self.willEndAvatarDrag(page, velocity: velocity, target: offset)
+        }
+        page.onEndDragging = { [weak self, weak page] in
+            guard let self, let page, section == self.state.selected else { return }
+            // A cancelled pan can end without willEndDragging, and UIKit's
+            // callback may run before our pan target receives .cancelled.
+            let drag = self.avatarDrag
+            self.avatarDrag = nil
+            let cancelledTarget = drag.flatMap { drag -> CGFloat? in
+                guard self.state.collapse < self.state.avatarExpansionHeight else { return nil }
+                return drag.initiallyExpanded ? 0 : self.state.avatarExpansionHeight
+            }
+            guard let target = self.pendingAvatarSnap ?? cancelledTarget else { return }
+            self.pendingAvatarSnap = target
+            // UIScrollView finishes its own drag bookkeeping first.
+            let generation = self.avatarAnimationGeneration
+            DispatchQueue.main.async { [weak self, weak page] in
+                guard let self, let page, generation == self.avatarAnimationGeneration,
+                      self.state.transition == nil, self.avatarDrag == nil, page.isActive else { return }
+                self.animateAvatar(to: target)
+            }
+        }
+        page.scrollView.panGestureRecognizer.addTarget(self, action: #selector(pagePanCancelled(_:)))
         page.onSelect = { [weak self] item, preview, frame in self?.open(item, preview: preview, from: frame) }
         page.onShowInChat = { [weak self] item in self?.showInChat(item.id) }
         page.onContextInteractionChanged = { [weak self] locked in
@@ -327,26 +545,49 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             if near { self?.model.sentinelAppeared(in: tab, from: .profile) }
             else { self?.model.sentinelDisappeared(in: tab, from: .profile) }
         }
+        if section == state.selected { updateSharedPan() }
         updatePages()
         view.setNeedsLayout()
         return page
     }
 
+    /// Keep UIKit's pan, inertia and delegate callbacks, while letting a drag
+    /// start on the sibling header's controls. Only the selected page owns the
+    /// shared surface; the navigation bar and player remain outside it.
+    private func updateSharedPan() {
+        guard let scrollView = pages[state.selected]?.scrollView else { return }
+        if sharedPanScrollView !== scrollView {
+            if let previous = sharedPanScrollView {
+                previous.addGestureRecognizer(previous.panGestureRecognizer)
+            }
+            contentNode.view.addGestureRecognizer(scrollView.panGestureRecognizer)
+            sharedPanScrollView = scrollView
+        }
+        scrollView.panGestureRecognizer.isEnabled = state.transition == nil && scrollView.isScrollEnabled
+    }
+
     private func renderHeader() {
         let top = pager.frame.minY
         let geometry = HeaderGeometry(top: top, width: view.bounds.width,
-            height: state.headerHeight, collapse: state.collapse)
+            height: state.headerHeight, collapse: state.collapse, expansion: state.avatarExpansionHeight)
         let geometryChanged = renderedHeaderGeometry != geometry
         let hideTopButton = state.depth(for: state.selected) < 100 || state.transition != nil
         if topButton.isHidden != hideTopButton { topButton.isHidden = hideTopButton }
         if geometryChanged {
             renderedHeaderGeometry = geometry
-            header.frame = CGRect(x: 0, y: top - state.collapse, width: view.bounds.width, height: state.headerHeight)
+            header.frame = CGRect(x: 0, y: top + state.avatarExpansionHeight - state.collapse,
+                width: view.bounds.width, height: state.headerHeight - state.avatarExpansionHeight)
+            avatarView.update(width: view.bounds.width, top: top, progress: state.avatarProgress,
+                collapse: state.regularCollapse, canExpand: hasAvatarPhoto)
             tabBackground.frame = CGRect(x: 0, y: top + state.headerHeight - state.collapse, width: view.bounds.width, height: tabHeight)
             tabs.frame = tabBackground.bounds.insetBy(dx: 16, dy: 7)
-            let alpha = state.collapse / state.headerHeight
+            let alpha = state.regularCollapseProgress
             compactTitle.alpha = alpha
             compactAvatar.alpha = alpha
+            if profileModel != nil {
+                moreButton.alpha = alpha
+                moreButton.accessibilityElementsHidden = alpha < 0.95
+            }
             header.accessibilityElementsHidden = alpha > 0.95
             compactTitle.accessibilityElementsHidden = alpha < 0.95
         }
@@ -360,6 +601,129 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             } else {
                 page.scrollView.verticalScrollIndicatorInsets.top = page.inset - state.collapse
             }
+        }
+    }
+
+    private func scrolled(_ page: any RoomProfileContentPage) {
+        let wasCircular = state.avatarProgress == 0
+        var offset = page.normalizedOffset
+        if state.avatarExpansionHeight > 0,
+           let delta = avatarDrag?.scrollDelta(translation: avatarDragTranslation(page.scrollView, view)) {
+            state.scroll(to: state.collapse + state.depth(for: state.selected) + delta,
+                avatarScrollSpeed: RoomProfileAvatarDrag.scrollSpeed)
+            offset = state.collapse + state.depth(for: state.selected)
+        } else {
+            // Momentum or a layout correction may reveal the ordinary header,
+            // but only a finger (or the explicit tap animation) opens the photo.
+            if state.avatarExpansionHeight > 0, avatarDrag == nil, avatarAnimation == nil, wasCircular {
+                offset = max(state.avatarExpansionHeight, offset)
+            }
+            if state.avatarExpansionHeight > 0 { offset = max(0, offset) }
+            state.scroll(to: offset)
+        }
+        if offset != page.normalizedOffset {
+            page.collapse = state.collapse
+            page.setPosition(depth: state.depth(for: state.selected))
+            // Keep the next physical delta relative to UIKit's origin after
+            // the correction, including any native pan rebasing.
+            avatarDrag?.rebaseTranslation(avatarDragTranslation(page.scrollView, view))
+        }
+        if avatarDrag?.update(collapse: state.collapse, expansion: state.avatarExpansionHeight) == true {
+            avatarHaptic.impactOccurred()
+        }
+        renderHeader()
+    }
+
+    private func willEndAvatarDrag(_ page: any RoomProfileContentPage, velocity: CGPoint,
+                                   target: UnsafeMutablePointer<CGPoint>) {
+        let expansion = state.avatarExpansionHeight
+        guard expansion > 0 else { return }
+        if state.collapse < expansion {
+            if avatarDrag?.finish(velocity: velocity.y) == true { avatarHaptic.impactOccurred() }
+            pendingAvatarSnap = (avatarDrag?.wantsExpanded ?? (state.avatarProgress >= 0.5)) ? 0 : expansion
+            target.pointee = page.scrollView.contentOffset
+        } else {
+            target.pointee.y = max(target.pointee.y, expansion - page.inset)
+        }
+    }
+
+    @objc private func pagePanCancelled(_ pan: UIPanGestureRecognizer) {
+        guard pan.state == .cancelled || pan.state == .failed else { return }
+        guard let drag = avatarDrag, state.transition == nil else { return }
+        avatarDrag = nil
+        pendingAvatarSnap = nil
+        if state.collapse < state.avatarExpansionHeight {
+            animateAvatar(to: drag.initiallyExpanded ? 0 : state.avatarExpansionHeight)
+        }
+    }
+
+    private func settleInterruptedAvatar() {
+        if let target = pendingAvatarSnap {
+            setAvatarCollapse(target)
+        } else if let drag = avatarDrag, state.collapse < state.avatarExpansionHeight {
+            setAvatarCollapse(drag.initiallyExpanded ? 0 : state.avatarExpansionHeight)
+        }
+        avatarDrag = nil
+        pendingAvatarSnap = nil
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === avatarTap else { return true }
+        let point = touch.location(in: view)
+        return hasAvatarPhoto && state.transition == nil && point.y >= pager.frame.minY
+            && avatarView.frame.contains(point)
+    }
+
+    @objc private func toggleAvatar() {
+        guard hasAvatarPhoto, state.transition == nil, pager.isScrollEnabled else { return }
+        if state.avatarProgress < 0.5 { loadLargeAvatarIfNeeded(retry: true) }
+        avatarHaptic.impactOccurred()
+        animateAvatar(to: state.avatarProgress >= 0.5 ? state.avatarExpansionHeight : 0)
+    }
+
+    private func setAvatarCollapse(_ value: CGFloat) {
+        state.setHeaderCollapse(value)
+        if let page = pages[state.selected] {
+            page.collapse = state.collapse
+            page.setPosition(depth: state.depth(for: state.selected))
+        }
+        renderHeader()
+    }
+
+    private func stopAvatarAnimation(finish: Bool) {
+        avatarAnimationGeneration += 1
+        avatarAnimation?.invalidate()
+        avatarAnimation = nil
+        let target = avatarAnimationTarget
+        avatarAnimationTarget = nil
+        if finish, let target { setAvatarCollapse(target) }
+    }
+
+    private func animateAvatar(to target: CGFloat) {
+        stopAvatarAnimation(finish: false)
+        pendingAvatarSnap = nil
+        guard state.transition == nil, let page = pages[state.selected] else { return }
+        // Stop native deceleration and its booster before the shared clock
+        // takes over; an interrupted scroll need not send didEndDecelerating.
+        page.stopScrolling()
+        let start = state.collapse
+        guard !UIAccessibility.isReduceMotionEnabled, abs(start - target) > 0.5 else {
+            setAvatarCollapse(target)
+            return
+        }
+        avatarAnimationTarget = target
+        let began = CACurrentMediaTime()
+        let duration = IOS26Spring.duration
+        avatarAnimation = DisplayLinkDriver.shared.subscribe(rate: .max) { [weak self] frame in
+            guard let self else { return }
+            let elapsed = max(0, frame.targetTimestamp - began)
+            // The app's spring is almost critically damped. Normalize its
+            // response so both geometry and scroll stop at the same endpoint.
+            let omega = 23.559
+            func response(_ time: Double) -> Double { 1 - (1 + omega * time) * exp(-omega * time) }
+            let progress = min(1, response(min(duration, elapsed)) / response(duration))
+            self.setAvatarCollapse(start + (target - start) * progress)
+            if elapsed >= duration { self.stopAvatarAnimation(finish: true) }
         }
     }
 
@@ -382,6 +746,10 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     }
 
     private func beginPaging() {
+        settleInterruptedAvatar()
+        pagingAvatarTarget = avatarAnimationTarget
+        stopAvatarAnimation(finish: false)
+        sharedPanScrollView?.panGestureRecognizer.isEnabled = false
         pages[state.selected]?.isActive = false
         fpsBooster.start()
         state.beginTransition()
@@ -411,6 +779,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         let index = min(1, max(0, Int((pager.contentOffset.x / pager.bounds.width).rounded())))
         guard let section = RoomProfileScrollState.Section(rawValue: index) else { return }
         state.finishTransition(at: section)
+        updateSharedPan()
         tabs.selectedSegmentIndex = index
         model.tab = section == .media ? .media : .files
         for (key, page) in pages {
@@ -421,6 +790,11 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             page.updateNearEnd()
         }
         renderHeader()
+        let target = pagingAvatarTarget
+        pagingAvatarTarget = nil
+        if state.avatarProgress > 0, state.avatarProgress < 1 {
+            animateAvatar(to: target ?? (state.avatarProgress >= 0.5 ? 0 : state.avatarExpansionHeight))
+        }
     }
 
     private func open(_ item: AttachmentItem, preview: UIImage?, from frame: CGRect) {
@@ -497,20 +871,58 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         present(alert, animated: true)
     }
 
-    private func loadAvatar() {
-        let avatar = AvatarViewModel(userId: model.roomId, displayName: titleText, mxcAvatarURL: room?.avatarUrl())
+    private func loadAvatar(_ identity: AvatarIdentity) {
+        guard avatarIdentity != identity else { return }
+        let keepsPhoto = hasAvatarPhoto && avatarIdentity?.url == identity.url
+        avatarIdentity = identity
+        if keepsPhoto { return }
+        avatarTask?.cancel(); largeAvatarTask?.cancel()
+        requestedAvatarPixels = 0
+        loadedAvatarPixels = 0
+        largeAvatarTask = nil
+        hasAvatarPhoto = false
+        avatarView.image = nil
+        compactAvatar.image = nil
+        renderedHeaderGeometry = nil
+        view.setNeedsLayout()
+        let loader = avatarLoader
+        let avatar = AvatarViewModel(userId: identity.id, displayName: identity.title, mxcAvatarURL: identity.url)
         avatarTask = Task { [weak self] in
             let placeholder = await Task.detached(priority: .userInitiated) { avatar.circleImage(diameter: 88, fontSize: 32) }.value
             guard !Task.isCancelled else { return }
-            self?.header.avatar.image = placeholder
+            self?.avatarView.image = placeholder
             self?.compactAvatar.image = placeholder
-            if let mxc = avatar.mxcAvatarURL, let image = await MediaCache.shared.loadThumbnail(mxcUrl: mxc, size: 240) {
-                guard !Task.isCancelled else { return }
-                self?.header.avatar.image = image
-                self?.compactAvatar.image = image
+            if let mxc = identity.url, let image = await loader(mxc, 240) {
+                guard !Task.isCancelled, let self else { return }
+                self.avatarView.image = image
+                self.compactAvatar.image = image
+                self.hasAvatarPhoto = true
+                self.renderedHeaderGeometry = nil
+                self.view.setNeedsLayout()
+                self.loadLargeAvatarIfNeeded()
             }
         }
     }
+
+    private func loadLargeAvatarIfNeeded(retry: Bool = false) {
+        guard hasAvatarPhoto, let mxc = avatarIdentity?.url, view.bounds.width > 0 else { return }
+        let pixels = min(1536, Int(ceil(view.bounds.width * view.traitCollection.displayScale)))
+        guard pixels > loadedAvatarPixels,
+              pixels > requestedAvatarPixels || (retry && largeAvatarTask == nil) else { return }
+        requestedAvatarPixels = pixels
+        largeAvatarTask?.cancel()
+        let loader = avatarLoader
+        largeAvatarTask = Task { [weak self] in
+            let image = await loader(mxc, pixels)
+            guard !Task.isCancelled, let self else { return }
+            self.largeAvatarTask = nil
+            if let image {
+                self.loadedAvatarPixels = pixels
+                self.avatarView.image = image
+            }
+        }
+    }
+
 }
 
 final class RoomProfilePagerScrollView: UIScrollView, InteractiveBackScrollPolicy {

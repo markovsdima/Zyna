@@ -96,6 +96,7 @@ final class MatrixClientService {
     private(set) var client: Client?
     private(set) var syncService: SyncService?
     private(set) var roomListService: RoomListService?
+    private(set) var notificationSettingsService: RoomNotificationSettingsService?
 
     // MARK: - Private
 
@@ -735,6 +736,9 @@ final class MatrixClientService {
         }
 
         await attachClientDelegates(to: client)
+        if notificationSettingsService == nil {
+            notificationSettingsService = await RoomNotificationSettingsService(settings: client.getNotificationSettings())
+        }
 
         // Attach encryption state listeners *before* sync starts so
         // we don't miss the first state delivery from the SDK.
@@ -956,6 +960,7 @@ final class MatrixClientService {
         detachClientDelegates()
 
         client = nil
+        notificationSettingsService = nil
         sessionRecoverySession = nil
         sessionRecoveryActive.tryToClearFlag()
         await clearLocalSession(userId: userId)
@@ -1032,6 +1037,7 @@ final class MatrixClientService {
         detachEncryptionListeners()
         detachClientDelegates()
         client = nil
+        notificationSettingsService = nil
         stateSubject.send(sessionRecoverySource.state)
     }
 

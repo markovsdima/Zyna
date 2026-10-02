@@ -77,13 +77,17 @@ final class RoomDetailsNode: ScreenNode {
     var bottomInset: CGFloat = 16
 
     private var isEditing = false
+    private var canEditName = false
+    private var canEditAvatar = false
+    private var canInvite: Bool?
+    private var pinnedMessagesCount: Int?
     private var isDirectRoom = false
     private var isDirectProfileAvailable = false
     private var isLeavingRoom = false
     private var hasAvatar = false
     private var storylinesTrailingText: String?
     private var storylinesNeedsAttention = false
-    private var avatarLoadRevision: UInt64 = 0
+    private(set) var avatarLoadRevision: UInt64 = 0
 
     var editingName: String? {
         nameEditNode.attributedText?.string
@@ -267,7 +271,7 @@ final class RoomDetailsNode: ScreenNode {
             setBackgroundVisible(true)
         }
 
-        removeAvatarButtonNode.isHidden = !(isEditing && hasAvatar)
+        removeAvatarButtonNode.isHidden = !(isEditing && canEditAvatar && hasAvatar)
         setNeedsLayout()
     }
 
@@ -278,7 +282,7 @@ final class RoomDetailsNode: ScreenNode {
             source: image, diameter: 100, cacheKey: UUID().uuidString
         )
         setBackgroundVisible(false)
-        removeAvatarButtonNode.isHidden = !isEditing
+        removeAvatarButtonNode.isHidden = !(isEditing && canEditAvatar)
         setNeedsLayout()
     }
 
@@ -304,6 +308,8 @@ final class RoomDetailsNode: ScreenNode {
     }
 
     func updatePinnedMessagesCount(_ count: Int) {
+        guard pinnedMessagesCount != count else { return }
+        pinnedMessagesCount = count
         pinnedMessagesRow.updateTrailingText("\(count)")
         pinnedQuickAction.updateSubtitle("\(count)")
         setNeedsLayout()
@@ -341,11 +347,20 @@ final class RoomDetailsNode: ScreenNode {
     func setEditing(_ editing: Bool) {
         let effectiveEditing = editing && !isDirectRoom
         isEditing = effectiveEditing
-        editAvatarOverlayNode.isHidden = !effectiveEditing
-        avatarTapNode.isAccessibilityElement = effectiveEditing
-        removeAvatarButtonNode.isHidden = !(effectiveEditing && hasAvatar)
+        editAvatarOverlayNode.isHidden = !(effectiveEditing && canEditAvatar)
+        avatarTapNode.isAccessibilityElement = effectiveEditing && canEditAvatar
+        removeAvatarButtonNode.isHidden = !(effectiveEditing && canEditAvatar && hasAvatar)
         applyLeaveRoomRowConfiguration()
         setNeedsLayout()
+    }
+
+    func setPermissions(editName: Bool, editAvatar: Bool, invite: Bool) {
+        guard canEditName != editName || canEditAvatar != editAvatar || canInvite != invite else { return }
+        canEditName = editName
+        canEditAvatar = editAvatar
+        canInvite = invite
+        inviteQuickAction.setEnabled(invite)
+        setEditing(isEditing)
     }
 
     func setLeavingRoom(_ leaving: Bool) {
@@ -480,7 +495,7 @@ final class RoomDetailsNode: ScreenNode {
         let withInitials = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: initialsCenter)
         var avatarSpec: ASLayoutSpec = ASOverlayLayoutSpec(child: withInitials, overlay: avatarImageNode)
 
-        if isEditing {
+        if isEditing && canEditAvatar {
             let iconCenter = ASCenterLayoutSpec(
                 centeringOptions: .XY,
                 sizingOptions: .minimumXY,
@@ -500,7 +515,7 @@ final class RoomDetailsNode: ScreenNode {
         }
 
         let nameSpec: ASLayoutSpec
-        if isEditing {
+        if isEditing && canEditName {
             nameEditNode.style.minWidth = ASDimension(unit: .points, value: 150)
             nameSpec = ASWrapperLayoutSpec(layoutElement: nameEditNode)
         } else {
@@ -662,9 +677,11 @@ final class RoomDetailsNode: ScreenNode {
 
     private func appendContentAccessibilityElements(to elements: inout [Any]) {
         if isEditing {
-            appendNodeView(avatarTapNode, to: &elements)
-            appendNodeView(removeAvatarButtonNode, to: &elements)
-            appendNodeView(nameEditNode, to: &elements)
+            if canEditAvatar {
+                appendNodeView(avatarTapNode, to: &elements)
+                appendNodeView(removeAvatarButtonNode, to: &elements)
+            }
+            appendNodeView(canEditName ? nameEditNode : nameNode, to: &elements)
         } else {
             appendNodeView(nameNode, to: &elements)
         }
@@ -843,6 +860,12 @@ private final class RoomDetailsQuickActionNode: ASDisplayNode {
     func updateSubtitle(_ subtitle: String?) {
         var next = configuration
         next.subtitle = subtitle
+        apply(next)
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        var next = configuration
+        next.isEnabled = enabled
         apply(next)
     }
 
