@@ -33,10 +33,10 @@ struct RoomMediaMigrationTests {
             try queue.write { db in
                 #expect(try Row.fetchAll(db, sql: "SELECT * FROM roomAttachment ORDER BY eventId") == before)
                 #expect(try migrator.appliedIdentifiers(db) == Set(migrator.migrations))
-                #expect(migrator.migrations.last == "v32_roomMediaCatalog")
+                #expect(migrator.migrations.last == "v35_ignoredContent")
                 #expect(try !migrator.hasBeenSuperseded(db))
                 let columns = try Row.fetchAll(db, sql: "PRAGMA index_info(idx_roomAttachment_visual_order)")
-                #expect(columns.map { $0["name"] as String } == ["roomId", "timestampMs", "eventId", "kind"])
+                #expect(columns.map { $0["name"] as String } == ["roomId", "timestampMs", "eventId", "kind", "senderId"])
                 // Fresh counters must track writes to the preserved catalog.
                 try db.execute(sql: """
                     INSERT INTO roomAttachment

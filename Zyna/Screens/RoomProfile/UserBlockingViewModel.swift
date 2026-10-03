@@ -98,6 +98,14 @@ final class UserBlockingViewModel {
             do {
                 if blocked { try await source.ignore(userId: userID) }
                 else { try await source.unignore(userId: userID) }
+                guard let self, !Task.isCancelled, self.accepts(generation) else { return }
+                self.isBlocked = blocked
+                self.loadError = nil
+                self.actionError = nil
+                self.isSaving = false
+                // The write is acknowledged. The sync subscription will
+                // reconcile later changes without a second account-data GET.
+                return
             } catch {
                 guard let self, !Task.isCancelled, self.accepts(generation) else { return }
                 self.actionError = error.localizedDescription

@@ -1481,6 +1481,16 @@
         }
       }
     },
+    "Blocking hides this person's past and future messages from you in all chats, including shared groups. You won't receive invitations from them." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Блокировка скроет для вас старые и новые сообщения этого пользователя во всех чатах, включая общие группы. Приглашения от него также перестанут приходить."
+          }
+        }
+      }
+    },
     "Blue" : {
       "localizations" : {
         "ru" : {

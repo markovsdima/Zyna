@@ -199,6 +199,9 @@ final class MessageWindow {
 
     private var previousStored: [StoredMessage]?
     private(set) var revision: UInt64 = 0
+
+    /// Reject reads prepared before the account's visibility rules changed.
+    func invalidatePendingReads() { revision &+= 1 }
     private(set) var generation: UInt64 = 0
     private var olderCursor: Cursor?
     private var newerCursor: Cursor?
@@ -243,7 +246,7 @@ final class MessageWindow {
 
         func fetch(includingLocalState: Bool = false) throws -> ReplacementPage? {
             try database.read { db in
-                let query = StoredMessage.filter(Column("roomId") == roomId && Column("contentType") != "call")
+                let query = StoredMessage.visible.filter(Column("roomId") == roomId && Column("contentType") != "call")
                 let raw: [StoredMessage]
                 let origin: MessageWindowChangeOrigin
                 let atLive: Bool
@@ -418,8 +421,9 @@ final class MessageWindow {
         fileprivate let live: Bool
 
         func fetch(includingLocalState: Bool = false) throws -> Page {
-            let (records, admitted, neighbors, localState) = try database.read { db in
-                let query = StoredMessage
+            let (records, admitted, previous, neighbors, localState) = try database.read { db in
+                let ignored = try IgnoredContentStore.userIDs(in: db)
+                let query = StoredMessage.visible
                     .filter(Column("roomId") == roomId && Column("contentType") != "call")
                 let fetched: [StoredMessage]
                 let older: StoredMessage?
@@ -444,11 +448,12 @@ final class MessageWindow {
                 let nextOldest = direction == .older ? records.last.map(Cursor.init) ?? cursor : oldest
                 let nextNewest = direction == .newer ? records.last.map(Cursor.init) ?? cursor : newest
                 return (records, try MessageDecryptionRepairStore.admitted(records, in: db),
+                        ignored.isEmpty ? stored : stored.filter { !ignored.contains($0.senderId) },
                         try MessageWindow.neighbors(in: db, roomId: roomId,
                             oldest: nextOldest, newest: nextNewest, rawOlder: older, rawNewer: newer),
                         includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, in: db) : ChatTimelineLocalState())
             }
-            let merged = admitted.isEmpty ? stored : MessageWindow.normalizedStored(stored + admitted)
+            let merged = admitted.isEmpty ? previous : MessageWindow.normalizedStored(previous + admitted)
             #if DEBUG
             let trace = HistoryPerformanceTrace.capture(database: database)
             trace?.count(.pageRaw, records.count)
@@ -543,7 +548,7 @@ final class MessageWindow {
         /// raw paging eligibility, leaving the retained messages untouched.
         func fetchBounds() throws -> BoundsPage {
             try database.read { db in
-                let room = StoredMessage.filter(Column("roomId") == roomId && Column("contentType") != "call")
+                let room = StoredMessage.visible.filter(Column("roomId") == roomId && Column("contentType") != "call")
                     .select(Column("id"))
                 let hasOlder = try oldest.map {
                     try room.filter($0.olderPredicate).limit(1).asRequest(of: String.self).fetchOne(db) != nil
@@ -557,7 +562,7 @@ final class MessageWindow {
 
         func fetch(historyRevision: TimelineHistoryRevision? = nil, includingLocalState: Bool = false) throws -> RefreshPage {
             let (records, nextOlder, nextNewer, neighbors, committedHistoryRevision, localState) = try database.read { db in
-                let room = StoredMessage
+                let room = StoredMessage.visible
                     .filter(Column("roomId") == roomId && Column("contentType") != "call")
                 var query = room.order(Column("timestamp").desc, Column("id").desc)
                 if let oldest {
@@ -751,7 +756,7 @@ final class MessageWindow {
         func admittedNeighbor(_ raw: StoredMessage?, cursor: Cursor?, older: Bool) throws -> ClusterNeighbor? {
             guard let raw, let cursor else { return nil }
             if try !MessageDecryptionRepairStore.admitted([raw], in: db).isEmpty { return clusterNeighbor(raw) }
-            let query = StoredMessage.filter(Column("roomId") == roomId && Column("contentType") != "call")
+            let query = StoredMessage.visible.filter(Column("roomId") == roomId && Column("contentType") != "call")
                 .filter(sql: MessageDecryptionRepairStore.admittedSQL)
             let record = try (older
                 ? query.filter(cursor.olderPredicate).order(Column("timestamp").desc, Column("id").desc)
@@ -791,7 +796,7 @@ final class MessageWindow {
 
     private func queryByEventId(_ eventId: String) -> StoredMessage? {
         try? dbQueue.read { db in
-            try StoredMessage
+            try StoredMessage.visible
                 .filter(Column("eventId") == eventId && Column("roomId") == self.roomId)
                 .filter(Column("contentType") != "call")
                 .fetchOne(db)
@@ -800,7 +805,7 @@ final class MessageWindow {
 
     private static func olderNeighbor(in db: Database, roomId: String, cursor: Cursor?) throws -> StoredMessage? {
         guard let cursor else { return nil }
-        return try StoredMessage
+        return try StoredMessage.visible
             .filter(Column("roomId") == roomId && Column("contentType") != "call")
             .filter(cursor.olderPredicate)
             .order(Column("timestamp").desc, Column("id").desc)
@@ -811,7 +816,7 @@ final class MessageWindow {
         in db: Database, roomId: String, cursor: Cursor?, live: Bool
     ) throws -> StoredMessage? {
         guard !live, let cursor else { return nil }
-        return try StoredMessage
+        return try StoredMessage.visible
             .filter(Column("roomId") == roomId && Column("contentType") != "call")
             .filter(cursor.newerPredicate)
             .order(Column("timestamp").asc, Column("id").asc)

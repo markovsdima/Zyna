@@ -55,6 +55,7 @@ enum TimelineWriteFixture {
             // Match the catalog's composite identity.
             let columns = Mirror(reflecting: attachment).children.compactMap(\.label).map { "\"\($0)\"" }
             try db.execute(sql: "CREATE TABLE roomAttachment (\(columns.joined(separator: ",")), PRIMARY KEY(roomId, eventId))")
+            try db.execute(sql: "CREATE TABLE ignoredUser (userId TEXT PRIMARY KEY NOT NULL)")
             try PollStore.migrate(db)
             for message in legacyMessages { try message.insert(db) }
             try MessageDecryptionRepairStore.migrate(db)

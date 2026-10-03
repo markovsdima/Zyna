@@ -411,12 +411,12 @@
         }
       }
     },
-    "You can unblock them in Settings. This applies across your rooms." : {
+    "You can unblock them in Settings." : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Блокировка действует во всех ваших переписках. Разблокировать пользователя можно в настройках."
+            "value" : "Разблокировать пользователя можно в настройках."
           }
         }
       }

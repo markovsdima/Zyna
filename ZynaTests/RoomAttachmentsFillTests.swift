@@ -84,7 +84,7 @@ struct RoomAttachmentsFillTests {
         return condition()
     }
 
-    @Test("Paged media readiness is independent of optimistic and durable file snapshots", arguments: [0, 300])
+    @Test("Paged media readiness is independent of durable file snapshots", arguments: [0, 300])
     func independentCounts(mediaCount: Int) async throws {
         let database = try TimelineWriteFixture.database()
         let gate = DispatchSemaphore(value: 0)
@@ -111,12 +111,13 @@ struct RoomAttachmentsFillTests {
         message.contentType = "file"; message.contentMediaJSON = "{\"url\":\"mxc://example.org/file\"}"
         let record = try #require(StoredRoomAttachment(storedMessage: message))
         source.onAttachmentsDiscovered?([record])
-        try #require(await waitUntil { !model.files.isEmpty })
+        #expect(model.files.isEmpty)
         #expect(model.currentCount(for: .media) == mediaCount)
         #expect(model.currentCount(for: .files) == 77)
-        // The durable empty snapshot makes file readiness authoritative.
+        // SDK discoveries cannot bypass the durable visibility filter.
         gate.signal()
         try await blocked.value
+        try await database.write { try record.save($0) }
         try #require(await waitUntil { model.currentCount(for: .files) == 1 })
         #expect(model.currentCount(for: .media) == mediaCount)
     }
@@ -147,8 +148,8 @@ struct RoomAttachmentsFillTests {
         #expect(source.stopCalls == 0)
     }
 
-    @Test("The shared research screen displays discoveries before persistence and drops visual optimistic rows on return")
-    func sharedOptimisticMedia() async throws {
+    @Test("The research screen publishes filtered committed discoveries and releases visual rows on return")
+    func sharedCommittedMedia() async throws {
         let database = try TimelineWriteFixture.database()
         let source = FakeAttachmentSource()
         source.emitSnapshotOnStart = true
@@ -164,14 +165,17 @@ struct RoomAttachmentsFillTests {
         message.contentType = "image"; message.contentMediaJSON = "{\"url\":\"mxc://example.org/photo\"}"
         let photo = try #require(StoredRoomAttachment(storedMessage: message))
         source.onAttachmentsDiscovered?([photo])
-        try #require(await waitUntil { model.media.first?.items.first?.id == photo.eventId })
+        #expect(model.media.isEmpty)
         #expect(try await database.read { try StoredRoomAttachment.fetchCount($0) } == 0)
+        try await database.write { try photo.save($0) }
+        try #require(await waitUntil { model.media.first?.items.first?.id == photo.eventId })
         model.setLegacyMediaPresentation(false)
         try #require(await waitUntil { model.media.isEmpty })
-        // A nonvisual publication acts as a barrier for the late callback.
+        // A nonvisual commit must not re-create the released media projection.
         message.eventId = "$file"; message.contentType = "file"
         let file = try #require(StoredRoomAttachment(storedMessage: message))
         source.onAttachmentsDiscovered?([photo, file])
+        try await database.write { try file.save($0) }
         try #require(await waitUntil { model.files.first?.items.first?.id == file.eventId })
         #expect(model.media.isEmpty)
         #expect(source.startCalls == 1)

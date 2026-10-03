@@ -17,6 +17,7 @@ enum OutgoingSendFailureReason: Equatable {
     case ownDeviceVerificationRequired
     case recipientIdentityVerificationRequired
     case roomSendNotAllowed
+    case recipientBlocked
 
     static func fromQueueWedgeError(_ error: QueueWedgeError) -> OutgoingSendFailureReason? {
         switch error {
@@ -66,6 +67,9 @@ struct OutgoingSendFailureContext: Equatable {
     }
 
     static func fromError(_ error: Error) -> OutgoingSendFailureContext? {
+        if case DirectChatBlockingError.blocked(let userID) = error {
+            return .init(reason: .recipientBlocked, affectedUserIds: [userID], insecureDevicesByUserId: [:])
+        }
         let errorText = [
             String(reflecting: error),
             String(describing: error),

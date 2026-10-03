@@ -147,6 +147,8 @@ final class OutgoingPollOutboxService {
     }
 
     private func send(_ operation: PendingPollOperation, room: Room, sessionId: String) async throws -> String {
+        // Blocking applies to queued retries too, even after admission.
+        try await DirectChatBlockingPolicy.requireUnblocked(room: room)
         // Decode persisted payloads off-main, then recheck the session on the
         // main actor immediately before invoking the SDK. UniFFI does not
         // propagate Swift task cancellation to these requests.

@@ -193,6 +193,8 @@ final class ChatViewModel {
     @Published private(set) var connectionStatusText: String?
     @Published private(set) var composerSendRestrictionReason: OutgoingSendFailureReason?
     @Published private(set) var isRoomEncrypted: Bool = true
+    private(set) var directBlocking: DirectChatBlockingModel?
+    private var blockingRoomInfoRevision = 0
     @Published private(set) var pinnedMessagesState = PinnedMessagesState()
     @Published private(set) var activeRoomCallState = ActiveRoomCallState()
     private var observedRoomCallState = ActiveRoomCallState()
@@ -279,6 +281,7 @@ final class ChatViewModel {
     private var pinnedEventIdSet = Set<String>()
 
     var onPinnedMessagesError: ((Error) -> Void)?
+    var onPinnedVisibilityChanged: (() -> Void)?
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
@@ -348,7 +351,8 @@ final class ChatViewModel {
     /// Exercises window-to-display transitions without attaching a live room.
     init(testingRoomId: String, dbQueue: AccountDatabase, window: MessageWindow,
          includesLocalState: Bool = false, mode: ChatPresentationMode = .preview,
-         navigationAnchor: ChatNavigationAnchor? = nil, timelineService: TimelineService? = nil) {
+         navigationAnchor: ChatNavigationAnchor? = nil, timelineService: TimelineService? = nil,
+         blocking: DirectChatBlockingModel? = nil, liveRoom: Room? = nil) {
         self.presentationDatabase = dbQueue
         self.includesLocalPresentationState = includesLocalState
         self.roomId = testingRoomId
@@ -357,10 +361,12 @@ final class ChatViewModel {
         self.diffBatcher = TimelineDiffBatcher(roomId: testingRoomId, dbQueue: dbQueue)
         self.window = window
         self.timelineService = timelineService
+        self.room = liveRoom
         initialNavigationAnchor = navigationAnchor
         if navigationAnchor != nil { timelineRefreshQueue.setPaused(true) }
         bindWindow()
         bindPollUpdates()
+        if let blocking { observeDirectBlocking(blocking) }
     }
     #endif
 
@@ -400,6 +406,7 @@ final class ChatViewModel {
     #endif
 
     private func bindCommonServices() {
+        bindDirectBlocking()
         #if DEBUG
         if !mode.isPreview { historyPerformance = diffBatcher.startHistoryPerformance() }
         #endif
@@ -436,6 +443,33 @@ final class ChatViewModel {
         bindWindow()
         bindMatrixRTCCallNotifications()
         refreshComposerSendPermission()
+    }
+
+    private func bindDirectBlocking() {
+        guard !mode.isPreview else { return }
+        let database = presentationDatabase
+        let sessionID = MatrixClientService.shared.currentLocalSessionId
+        let currentSession = {
+            database.isActive && DatabaseService.shared.dbQueue === database
+                && MatrixClientService.shared.currentLocalSessionId == sessionID
+        }
+        let blocking = DirectChatBlockingModel(database: database, ownID: presentationUserId ?? "",
+            isCurrentSession: currentSession,
+            unignore: { id in
+                guard currentSession(), let client = MatrixClientService.shared.client else {
+                    throw DirectChatBlockingError.staleSession
+                }
+                try await IgnoredUsersService(client: client).unignore(userId: id)
+            })
+        observeDirectBlocking(blocking)
+    }
+
+    private func observeDirectBlocking(_ blocking: DirectChatBlockingModel) {
+        directBlocking = blocking
+        blocking.$state.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            self?.refreshComposerSendPermission()
+        }.store(in: &cancellables)
+        blocking.start()
     }
 
     private func bindMatrixRTCCallNotifications() {
@@ -584,6 +618,19 @@ final class ChatViewModel {
     }
 
     private func bindWindow() {
+        NotificationCenter.default.publisher(for: IgnoredContentStore.didChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self, let database = notification.object as? AccountDatabase,
+                      database === self.presentationDatabase, database.isActive else { return }
+                self.presentationRevision &+= 1
+                self.window.invalidatePendingReads()
+                self.timelineRefreshQueue.enqueue(.init(resetCount: 1))
+                self.onPinnedVisibilityChanged?()
+                if let state = self.searchState {
+                    self.updateSearchQuery(state.query, restoringEventID: state.currentResult?.eventId)
+                }
+            }.store(in: &cancellables)
         window.onRecoveryFocusChange = { [weak self] focus in
             self?.decryptionRepair?.prioritize(focus)
         }
@@ -815,15 +862,21 @@ final class ChatViewModel {
     }
 
     private func applyRoomInfoUpdate(_ info: RoomInfo) {
+        blockingRoomInfoRevision += 1
+        directBlocking?.update(info)
         if let powers = info.powerLevels { updatePollPowerLevels(powers) }
         updateActiveRoomCallState(from: info)
         updatePinnedMessages(from: info)
     }
 
     private func resolveRoomInfo(_ room: Room) {
+        let blockingVersion = blockingRoomInfoRevision
         Task { [weak self] in
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
+            await MainActor.run {
+                if self.blockingRoomInfoRevision == blockingVersion { self.directBlocking?.update(info) }
+            }
             let activeRoomCallState = Self.activeRoomCallState(from: info)
             if let powerLevels = info.powerLevels {
                 let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
@@ -1142,19 +1195,20 @@ final class ChatViewModel {
         }
     }
 
-    func pinnedPreview(eventId: String) -> String {
-        if let message = messages.first(where: { $0.eventId == eventId }) {
-            return message.content.textPreview
-        }
-
-        let stored = try? DatabaseService.shared.dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == roomId)
-                .filter(Column("eventId") == eventId)
-                .fetchOne(db)
-        }
-        return stored?.toChatMessage()?.content.textPreview
-            ?? String(localized: "Pinned message")
+    func pinnedPreview(eventId: String) async -> String {
+        let database = presentationDatabase, roomId = roomId
+        // A hidden chat can retain a pre-block window. Use the account's
+        // current visibility instead, and keep decoding off the main thread.
+        return await Task.detached {
+            let stored = try? database.read { db in
+                try StoredMessage.visible
+                    .filter(Column("roomId") == roomId)
+                    .filter(Column("eventId") == eventId)
+                    .fetchOne(db)
+            }
+            return stored?.toChatMessage()?.content.textPreview
+                ?? String(localized: "Pinned message")
+        }.value
     }
 
     private func refreshRoomEncryptionState(_ room: Room) {
@@ -1628,8 +1682,9 @@ final class ChatViewModel {
         // already running. A window transition detects new deletions above.
         let visibleRedactedKeys = detectsRedactions ? newlyRedactedIdentityKeys
             : Set(input.messages.filter { $0.content.isRedacted }.flatMap(\.timelineIdentityKeys))
-        let rawMessages = newStored.compactMap { message in
-            displayChatMessage(for: message, pendingRedactionLookup: pendingLookup,
+        let rawMessages = newStored.compactMap { message -> ChatMessage? in
+            guard !local.ignoredUserIDs.contains(message.senderId) else { return nil }
+            return displayChatMessage(for: message.hidingIgnoredReply(local.ignoredUserIDs), pendingRedactionLookup: pendingLookup,
                 pendingReactionRemovalsByEventId: local.reactionRemovals, now: now,
                 visibleRedactedKeys: visibleRedactedKeys, state: &state)
         }
@@ -3896,12 +3951,14 @@ final class ChatViewModel {
 
     private func composerSendBlockedValue(reason: OutgoingSendFailureReason?) -> Bool {
         guard !mode.isPreview else { return false }
+        if directBlocking?.state == .loading { return true }
         guard room != nil else { return true }
         return reason != nil
     }
 
     private func composerSendBlockReason() -> OutgoingSendFailureReason? {
         guard !mode.isPreview else { return nil }
+        if directBlocking?.state.blockedUserID != nil { return .recipientBlocked }
         guard room != nil else { return nil }
         guard canSendRoomMessages else { return .roomSendNotAllowed }
         return requiresVerifiedDeviceForSending
@@ -3916,6 +3973,7 @@ final class ChatViewModel {
 
     private var canInteractWithPolls: Bool {
         !mode.isPreview && !isInvited && room != nil
+            && (directBlocking == nil || directBlocking?.state == .allowed)
             && (!requiresVerifiedDeviceForSending || SessionVerificationService.shared.canSendEncryptedMessages)
     }
 
@@ -3987,6 +4045,10 @@ final class ChatViewModel {
         }
         return true
     }
+
+    /// Check synchronously before the input node clears a draft. Published
+    /// permission changes may still be queued for delivery to the view.
+    func canSubmitComposer() -> Bool { guardCanCreateOutgoingEnvelope() }
 
     private func sendOutgoingText(
         body: String,
@@ -4510,14 +4572,14 @@ final class ChatViewModel {
         }
     }
 
+    @discardableResult
     func sendComposerAttachments(
         _ attachments: [ChatComposerAttachmentDraft],
         caption: String?,
         captionPlacement: CaptionPlacement = .bottom,
         layoutOverride: MediaGroupLayoutOverride? = nil
-    ) {
-        guard !attachments.isEmpty else { return }
-        guard guardCanCreateOutgoingEnvelope() else { return }
+    ) -> Bool {
+        guard !attachments.isEmpty, guardCanCreateOutgoingEnvelope() else { return false }
 
         let videoCount = attachments.filter(\.isVideo).count
         if videoCount > 0 {
@@ -4550,7 +4612,7 @@ final class ChatViewModel {
                     replyInfo: replyInfo
                 )
             }
-            return
+            return true
         }
 
         Task { [weak self] in
@@ -4587,6 +4649,7 @@ final class ChatViewModel {
                 }
             }
         }
+        return true
     }
 
     private func sendSingleImage(
@@ -4946,6 +5009,7 @@ final class ChatViewModel {
     }
 
     private func retryOutgoingEnvelopeNow(id envelopeId: String) async {
+        guard guardCanCreateOutgoingEnvelope() else { return }
         if let envelope = outgoingEnvelopes.envelope(id: envelopeId, roomId: roomId), envelope.kind == .poll {
             do {
                 guard envelope.payload != .invalid else { throw PollError.invalidContent }
@@ -4960,8 +5024,6 @@ final class ChatViewModel {
         else {
             return
         }
-        guard guardCanCreateOutgoingEnvelope() else { return }
-
         switch envelope.payload {
         case .text(let payload):
             await retryTextEnvelope(envelope, body: payload.body)
@@ -5241,7 +5303,7 @@ final class ChatViewModel {
         let database = presentationDatabase
         historyPageQueue.async { [weak self] in
             let results: [ChatSearchResult] = (try? database.read { db in
-                try StoredMessage
+                try StoredMessage.visible
                     .filter(Column("roomId") == rid)
                     .filter(Column("contentBody").like(pattern))
                     .order(Column("timestamp").desc)
@@ -5299,6 +5361,7 @@ final class ChatViewModel {
     }
 
     func cleanup() {
+        directBlocking?.stop()
         flushPendingReadReceipt()
         #if DEBUG
         historyPerformance?.stop()

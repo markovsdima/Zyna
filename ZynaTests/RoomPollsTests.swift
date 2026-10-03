@@ -17,6 +17,7 @@ enum RoomPollFixture {
         let queue = try path.map { try DatabaseQueue(path: $0) } ?? DatabaseQueue()
         try queue.write { db in
             try db.execute(sql: """
+                CREATE TABLE ignoredUser (userId TEXT PRIMARY KEY NOT NULL);
                 CREATE TABLE storedMessage (id TEXT PRIMARY KEY, roomId TEXT NOT NULL, eventId TEXT, contentType TEXT,
                     contentBody TEXT, isEdited BOOLEAN DEFAULT 0, latestEditEventId TEXT);
                 CREATE TABLE pendingMediaGroup (

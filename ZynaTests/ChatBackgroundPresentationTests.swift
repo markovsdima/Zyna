@@ -291,6 +291,50 @@ struct ChatBackgroundPresentationTests {
               expectedItemCount: 1, createdAt: 300, kind: "text", state: "sending")
     }
 
+    @Test("An ignored-list change refreshes a live chat and its search without an SDK message diff")
+    func ignoredListRefresh() async throws {
+        let (database, _, model) = try fixture(count: 2)
+        defer { model.cleanup() }
+        try await load(model)
+        #expect(model.messages.count == 2)
+        let sender = try #require(model.messages.first?.senderId)
+        model.activateSearch()
+        model.updateSearchQuery("Message")
+        try await Self.wait { model.searchState?.results.count == 2 }
+        try await database.write { db in
+            try db.execute(sql: "INSERT INTO ignoredUser VALUES (?)", arguments: [sender])
+        }
+        NotificationCenter.default.post(name: IgnoredContentStore.didChange, object: database)
+        try await Self.wait { model.messages.isEmpty && model.searchState?.results.isEmpty == true }
+        try await database.write { try $0.execute(sql: "DELETE FROM ignoredUser") }
+        NotificationCenter.default.post(name: IgnoredContentStore.didChange, object: database)
+        try await Self.wait { model.messages.count == 2 && model.searchState?.results.count == 2 }
+    }
+
+    @Test("Pinned previews respect blocking while a hidden chat retains its old message window")
+    func hiddenPinnedPreview() async throws {
+        let (database, _, model) = try fixture(count: 1)
+        defer { model.cleanup() }
+        try await load(model)
+        let message = try #require(model.messages.first)
+        let eventID = try #require(message.eventId)
+        #expect(await model.pinnedPreview(eventId: eventID) == message.content.textPreview)
+        model.setNavigationPresentationActive(false)
+        var invalidations = 0
+        model.onPinnedVisibilityChanged = { invalidations += 1 }
+        try await database.write { db in
+            try db.execute(sql: "INSERT INTO ignoredUser VALUES (?)", arguments: [message.senderId])
+        }
+        NotificationCenter.default.post(name: IgnoredContentStore.didChange, object: database)
+        try await Self.wait { invalidations == 1 }
+        #expect(model.messages.count == 1)
+        #expect(await model.pinnedPreview(eventId: eventID) == String(localized: "Pinned message"))
+        try await database.write { try $0.execute(sql: "DELETE FROM ignoredUser") }
+        NotificationCenter.default.post(name: IgnoredContentStore.didChange, object: database)
+        try await Self.wait { invalidations == 2 }
+        #expect(await model.pinnedPreview(eventId: eventID) == message.content.textPreview)
+    }
+
     private func load(_ model: ChatViewModel) async throws {
         var applied = false
         model.prepareHistoryReplacement(.newest) { apply in apply(); applied = true }
@@ -318,6 +362,7 @@ struct ChatBackgroundPresentationTests {
             try table("pendingMediaGroup", sample: Self.envelope(roomID: roomID), key: "id")
             try table("pendingMediaGroupItem", sample: OutgoingEnvelopeItemRecord(id: "", groupId: "", itemIndex: 0), key: "id")
             try db.execute(sql: """
+                CREATE TABLE ignoredUser (userId TEXT PRIMARY KEY NOT NULL);
                 CREATE TABLE pendingDirectImage (envelopeId TEXT);
                 CREATE TABLE pendingDirectVideo (envelopeId TEXT);
                 CREATE TABLE pendingDirectFile (envelopeId TEXT);

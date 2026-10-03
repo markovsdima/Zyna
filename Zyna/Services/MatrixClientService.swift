@@ -96,6 +96,7 @@ final class MatrixClientService {
     private(set) var client: Client?
     private(set) var syncService: SyncService?
     private(set) var roomListService: RoomListService?
+    private(set) var ignoredContentService: IgnoredContentService?
     private(set) var notificationSettingsService: RoomNotificationSettingsService?
 
     // MARK: - Private
@@ -740,6 +741,11 @@ final class MatrixClientService {
             notificationSettingsService = await RoomNotificationSettingsService(settings: client.getNotificationSettings())
         }
 
+        if ignoredContentService == nil {
+            ignoredContentService = IgnoredContentService(client: client, database: DatabaseService.shared.dbQueue)
+        }
+        ignoredContentService?.start()
+
         // Attach encryption state listeners *before* sync starts so
         // we don't miss the first state delivery from the SDK.
         attachEncryptionListeners()
@@ -960,6 +966,7 @@ final class MatrixClientService {
         detachClientDelegates()
 
         client = nil
+        ignoredContentService?.stop(); ignoredContentService = nil
         notificationSettingsService = nil
         sessionRecoverySession = nil
         sessionRecoveryActive.tryToClearFlag()
@@ -1037,6 +1044,7 @@ final class MatrixClientService {
         detachEncryptionListeners()
         detachClientDelegates()
         client = nil
+        ignoredContentService?.stop(); ignoredContentService = nil
         notificationSettingsService = nil
         stateSubject.send(sessionRecoverySource.state)
     }

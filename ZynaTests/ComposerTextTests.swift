@@ -1104,6 +1104,7 @@ struct ComposerTextTests {
         let columns = Mirror(reflecting: record).children.compactMap(\.label)
         try await db.write {
             let definitions = columns.map { "\"\($0)\"" + ($0 == "id" ? " TEXT PRIMARY KEY" : "") }
+            try $0.execute(sql: "CREATE TABLE ignoredUser (userId TEXT PRIMARY KEY NOT NULL)")
             try $0.execute(sql: "CREATE TABLE storedMessage (\(definitions.joined(separator: ",")))")
             try record.insert($0)
         }

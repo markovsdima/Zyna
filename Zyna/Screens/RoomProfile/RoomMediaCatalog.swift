@@ -56,13 +56,13 @@ final class RoomMediaDatabase: @unchecked Sendable {
     let roomID: String
     static let identityQuery = """
         SELECT eventId FROM roomAttachment INDEXED BY idx_roomAttachment_visual_order
-        WHERE roomId = ? AND kind IN ('image', 'video')
+        WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind IN ('image', 'video')
         ORDER BY timestampMs DESC, eventId DESC
         """
     static let monthCountQuery = """
         SELECT COUNT(*) AS count, MIN(timestampMs) AS oldest
         FROM roomAttachment INDEXED BY idx_roomAttachment_visual_order
-        WHERE roomId = ? AND kind IN ('image', 'video') AND timestampMs BETWEEN ? AND ?
+        WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind IN ('image', 'video') AND timestampMs BETWEEN ? AND ?
         """
     private struct MonthCounts {
         let id: String
@@ -143,7 +143,7 @@ final class RoomMediaDatabase: @unchecked Sendable {
             if let before { arguments += [before] }
             let newest = try Int64.fetchOne(db, sql: """
                 SELECT timestampMs FROM roomAttachment INDEXED BY idx_roomAttachment_visual_order
-                WHERE roomId = ? AND kind IN ('image', 'video') \(before == nil ? "" : "AND timestampMs < ?")
+                WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind IN ('image', 'video') \(before == nil ? "" : "AND timestampMs < ?")
                 ORDER BY timestampMs DESC, eventId DESC LIMIT 1
                 """, arguments: arguments)
             guard let newest else { return months }
@@ -226,7 +226,7 @@ final class RoomMediaDatabase: @unchecked Sendable {
                 // Paging is within a month, never through the whole room.
                 let records = try StoredRoomAttachment.fetchAll(db, sql: """
                     SELECT * FROM roomAttachment INDEXED BY idx_roomAttachment_visual_order
-                    WHERE roomId = ? AND kind IN ('image', 'video') AND timestampMs BETWEEN ? AND ?
+                    WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind IN ('image', 'video') AND timestampMs BETWEEN ? AND ?
                     ORDER BY timestampMs DESC, eventId DESC LIMIT ? OFFSET ?
                     """, arguments: [roomID, month.oldest, month.newest, upper - lower, lower - start])
                 for (offset, record) in records.enumerated() {
@@ -242,13 +242,13 @@ final class RoomMediaDatabase: @unchecked Sendable {
             guard try revision(in: db) == snapshot.revision else { throw CatalogError.stale }
             guard let timestamp = try Int64.fetchOne(db, sql: """
                 SELECT timestampMs FROM roomAttachment
-                WHERE roomId = ? AND eventId = ? AND kind IN ('image', 'video')
+                WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND eventId = ? AND kind IN ('image', 'video')
                 """, arguments: [roomID, id]) else { return nil }
             var start = 0
             for month in snapshot.months {
                 if timestamp >= month.oldest && timestamp <= month.newest {
                     let preceding = try Int.fetchOne(db, sql: """
-                        SELECT COUNT(*) FROM roomAttachment WHERE roomId = ? AND kind IN ('image', 'video')
+                        SELECT COUNT(*) FROM roomAttachment WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind IN ('image', 'video')
                         AND timestampMs BETWEEN ? AND ? AND (timestampMs > ? OR (timestampMs = ? AND eventId > ?))
                         """, arguments: [roomID, month.oldest, month.newest, timestamp, timestamp, id]) ?? 0
                     return start + preceding
@@ -265,10 +265,14 @@ final class RoomMediaDatabase: @unchecked Sendable {
 
     private func galleryPage(item: AttachmentItem, frame: CGRect, in db: Database,
                              position: (index: Int, count: Int)? = nil) throws -> ImageViewerController.Page {
+        guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM ignoredUser WHERE userId = ?)",
+                                arguments: [item.sender]) != true else {
+            throw CatalogError.stale
+        }
         let revision = try orderRevision(in: db)
-        let count = try position?.count ?? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM roomAttachment WHERE roomId = ? AND kind = 'image'", arguments: [roomID]) ?? 0
+        let count = try position?.count ?? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM roomAttachment WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind = 'image'", arguments: [roomID]) ?? 0
         let index = try position?.index ?? Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM roomAttachment WHERE roomId = ? AND kind = 'image'
+            SELECT COUNT(*) FROM roomAttachment WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind = 'image'
             AND (timestampMs > ? OR (timestampMs = ? AND eventId > ?))
             """, arguments: [roomID, Int64(clamping: item.timestampMs), Int64(clamping: item.timestampMs), item.id]) ?? 0
         let preview = [512, 768, 256, 128].lazy.compactMap {
@@ -284,7 +288,7 @@ final class RoomMediaDatabase: @unchecked Sendable {
             let comparison = older ? "<" : ">"
             let order = older ? "DESC" : "ASC"
             guard let record = try StoredRoomAttachment.fetchOne(db, sql: """
-                SELECT * FROM roomAttachment WHERE roomId = ? AND kind = 'image'
+                SELECT * FROM roomAttachment WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind = 'image'
                 AND (timestampMs \(comparison) ? OR (timestampMs = ? AND eventId \(comparison) ?))
                 ORDER BY timestampMs \(order), eventId \(order) LIMIT 1
                 """, arguments: [roomID, Int64(clamping: page.timestampMs), Int64(clamping: page.timestampMs), page.eventId]),

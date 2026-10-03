@@ -21,11 +21,13 @@ final class PersonTestBlockingSource: IgnoredUsersProviding, @unchecked Sendable
         var writes: [Bool] = []
         var fails = false
         var reads = 0
+        var failsReads = false
     }
     let state = Atomic(State())
     func ignoredUserIds() async throws -> [String] {
         state.modify { $0.reads += 1 }
         let value = state.wrappedValue
+        if value.failsReads { throw PersonProfileError.actionUnavailable }
         if let request = value.read { return try await request.wait() }
         return value.ids
     }
@@ -193,6 +195,25 @@ struct PersonProfileTests {
         try await wait { !model.isSaving && model.isBlocked == false }
         source.send([userID]) // e.g. another screen or device changes account data
         try await wait { model.isBlocked == true }
+    }
+
+    @Test("An acknowledged profile block stays usable when subsequent network reads would fail")
+    func acknowledgedBlock() async throws {
+        let source = PersonTestBlockingSource()
+        let model = blocking(source)
+        model.start()
+        defer { model.stop() }
+        try await wait { model.canChange }
+        let reads = source.state.wrappedValue.reads
+        source.state.modify { $0.failsReads = true }
+        model.setBlocked(true)
+        try await wait { !model.isSaving }
+        #expect(model.isBlocked == true && model.canChange)
+        #expect(model.actionError == nil && model.loadError == nil)
+        model.setBlocked(false)
+        try await wait { !model.isSaving }
+        #expect(model.isBlocked == false && model.canChange)
+        #expect(source.state.wrappedValue.reads == reads)
     }
 
     @Test("A failed block restores confirmed state; self and old-session writes are rejected")

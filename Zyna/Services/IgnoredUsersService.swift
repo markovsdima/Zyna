@@ -24,9 +24,17 @@ final class IgnoredUsersService: IgnoredUsersProviding, @unchecked Sendable {
     static let shared = IgnoredUsersService()
 
     private let fixedClient: Client?
+    private let visibility: ((Client) -> IgnoredContentService?)
 
-    private init() { fixedClient = nil }
-    init(client: Client) { fixedClient = client }
+    private init() { fixedClient = nil; visibility = Self.activeVisibility }
+    init(client: Client, visibility: @escaping (Client) -> IgnoredContentService? = IgnoredUsersService.activeVisibility) {
+        fixedClient = client; self.visibility = visibility
+    }
+
+    static func activeVisibility(for client: Client) -> IgnoredContentService? {
+        guard let service = MatrixClientService.shared.ignoredContentService, service.client === client else { return nil }
+        return service
+    }
 
     private var client: Client? { fixedClient ?? MatrixClientService.shared.client }
 
@@ -47,11 +55,13 @@ final class IgnoredUsersService: IgnoredUsersProviding, @unchecked Sendable {
     func ignore(userId: String) async throws {
         guard let client else { throw IgnoredUsersServiceError.noClient }
         try await client.ignoreUser(userId: userId)
+        await visibility(client)?.applyConfirmedChange(userID: userId, isIgnored: true)
     }
 
     func unignore(userId: String) async throws {
         guard let client else { throw IgnoredUsersServiceError.noClient }
         try await client.unignoreUser(userId: userId)
+        await visibility(client)?.applyConfirmedChange(userID: userId, isIgnored: false)
     }
 }
 

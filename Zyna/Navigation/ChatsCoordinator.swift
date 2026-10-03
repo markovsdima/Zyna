@@ -821,6 +821,17 @@ final class ChatsCoordinator {
                 mediaCatalog: RoomMediaCatalog(source: RoomMediaDatabase(database: DatabaseService.shared.dbQueue, roomID: room.id())),
                 profileModel: profileModel)
             presenter.viewController = vc
+            if let client = MatrixClientService.shared.client {
+                Task { @MainActor [weak vc] in
+                    guard (try? await client.isReportRoomApiSupported()) == true,
+                          MatrixClientService.shared.currentLocalSessionId == sessionId, let vc else { return }
+                    vc.onReportRoom = { [weak vc, weak self] in
+                        guard let vc else { return }
+                        ContentReportFlow.open(from: vc, room: room,
+                            target: .room(isDirect: profileModel.snapshot.isDirect), audioPlayer: self?.audioPlayer)
+                    }
+                }
+            }
             vc.onOpenMediaImage = { [weak self] source, item, frame in
                 let page = try await source.galleryPage(item: item, frame: frame)
                 try Task.checkCancellation()
@@ -1096,6 +1107,68 @@ final class ChatsCoordinator {
     // MARK: - Calls
 
     private func startCall(in room: Room, timelineService: TimelineService, voiceOnly: Bool) {
+        switch CallBackendPreferenceStore.shared.selectedBackend {
+        case .zynaDirect:
+            if CallService.shared.state.isActive, CallService.shared.state.roomId == room.id() {
+                presentCallScreen(roomName: room.displayName() ?? "Call")
+                return
+            }
+        case .elementCallWeb:
+            if ElementCallPresentationManager.shared.restoreIfActive(roomID: room.id()) { return }
+        case .nativeMatrixRTC:
+            if NativeMatrixRTCCallPresentationManager.shared.restoreIfActive(roomID: room.id()) { return }
+        }
+        let source = navigationController.topViewController
+        let sessionID = MatrixClientService.shared.currentLocalSessionId
+        let client = MatrixClientService.shared.client
+        Task { @MainActor [weak self, weak source] in
+            guard MatrixClientService.shared.client === client,
+                  MatrixClientService.shared.currentLocalSessionId == sessionID else { return }
+            do {
+                try await DirectChatBlockingPolicy.requireUnblocked(room: room)
+                guard let self, let source, self.navigationController.topViewController === source,
+                      MatrixClientService.shared.client === client,
+                      MatrixClientService.shared.currentLocalSessionId == sessionID else { return }
+                self.startUnblockedCall(in: room, timelineService: timelineService, voiceOnly: voiceOnly)
+            } catch DirectChatBlockingError.blocked(let userID) {
+                guard let self, let source, self.navigationController.topViewController === source else { return }
+                self.presentUnblockForCall(userID: userID, from: source, client: client, sessionID: sessionID)
+            } catch DirectChatBlockingError.staleSession { }
+            catch {
+                guard let self, let source, self.navigationController.topViewController === source else { return }
+                self.presentSimpleAlert(title: String(localized: "Something went wrong"), message: error.localizedDescription)
+            }
+        }
+    }
+
+    private func presentUnblockForCall(userID: String, from source: UIViewController,
+                                       client: Client?, sessionID: String?) {
+        guard source.presentedViewController == nil, let client,
+              MatrixClientService.shared.client === client,
+              MatrixClientService.shared.currentLocalSessionId == sessionID else { return }
+        let alert = UIAlertController(title: String(localized: "Person blocked", table: "Blocking"),
+            message: String(localized: "Unblock this person to send messages or call.", table: "Blocking"),
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: String(localized: "Unblock"), style: .default) { [weak self, weak source] _ in
+            Task { @MainActor in
+                guard MatrixClientService.shared.client === client,
+                      MatrixClientService.shared.currentLocalSessionId == sessionID else { return }
+                do {
+                    try await IgnoredUsersService(client: client).unignore(userId: userID)
+                } catch {
+                    guard let self, let source, self.navigationController.topViewController === source,
+                          source.presentedViewController == nil,
+                          MatrixClientService.shared.client === client,
+                          MatrixClientService.shared.currentLocalSessionId == sessionID else { return }
+                    self.presentSimpleAlert(title: String(localized: "Something went wrong"), message: error.localizedDescription)
+                }
+            }
+        })
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        source.present(alert, animated: true)
+    }
+
+    private func startUnblockedCall(in room: Room, timelineService: TimelineService, voiceOnly: Bool) {
         guard canSendEncryptedEvents(in: room) else {
             presentVerificationRequiredForCall()
             return

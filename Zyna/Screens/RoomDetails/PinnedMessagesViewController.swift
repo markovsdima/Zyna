@@ -4,6 +4,7 @@
 //
 
 import AsyncDisplayKit
+import Combine
 import GRDB
 import MatrixRustSDK
 
@@ -12,7 +13,7 @@ final class PinnedMessagesViewController: ASDKViewController<SettingsScreenNode>
     var onBack: (() -> Void)?
     var onSelectEvent: ((String) -> Void)?
 
-    private struct Item: Sendable {
+    struct Item: Sendable {
         let eventId: String
         let title: String
         let subtitle: String?
@@ -20,6 +21,8 @@ final class PinnedMessagesViewController: ASDKViewController<SettingsScreenNode>
     }
 
     private let room: Room
+    private let database = DatabaseService.shared.dbQueue
+    private var ignoredObservation: AnyCancellable?
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
     private let glassTopBar = GlassTopBar()
     private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
@@ -52,6 +55,13 @@ final class PinnedMessagesViewController: ASDKViewController<SettingsScreenNode>
         setupGlassTopBar()
         setupVoicePlayerHost()
         subscribeToRoomInfoUpdates()
+        ignoredObservation = NotificationCenter.default.publisher(for: IgnoredContentStore.didChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self, notification.object as? AccountDatabase === self.database,
+                      self.database.isActive else { return }
+                self.loadPinnedMessages()
+            }
         loadPinnedMessages()
     }
 
@@ -132,12 +142,13 @@ final class PinnedMessagesViewController: ASDKViewController<SettingsScreenNode>
         tableView.reloadData()
 
         let room = room
-        loadTask = Task { [weak self, room] in
+        let database = database
+        loadTask = Task { [weak self, room, database] in
             let info = try? await room.roomInfo()
             let eventIds = info?.pinnedEventIds ?? []
             let roomId = room.id()
             let loadedItems = await Task.detached {
-                Self.buildItems(eventIds: eventIds, roomId: roomId)
+                Self.buildItems(eventIds: eventIds, roomId: roomId, database: database)
             }.value
             await MainActor.run { [weak self] in
                 guard let self, !Task.isCancelled else { return }
@@ -151,9 +162,10 @@ final class PinnedMessagesViewController: ASDKViewController<SettingsScreenNode>
     private func applyPinnedEventIds(_ eventIds: [String]) {
         loadTask?.cancel()
         let roomId = room.id()
-        loadTask = Task { [weak self] in
+        let database = database
+        loadTask = Task { [weak self, database] in
             let loadedItems = await Task.detached {
-                Self.buildItems(eventIds: eventIds, roomId: roomId)
+                Self.buildItems(eventIds: eventIds, roomId: roomId, database: database)
             }.value
             await MainActor.run { [weak self] in
                 guard let self, !Task.isCancelled else { return }
@@ -164,19 +176,19 @@ final class PinnedMessagesViewController: ASDKViewController<SettingsScreenNode>
         }
     }
 
-    nonisolated private static func buildItems(eventIds: [String], roomId: String) -> [Item] {
+    nonisolated static func buildItems(eventIds: [String], roomId: String, database: AccountDatabase) -> [Item] {
         let uniqueEventIds = eventIds.reduce(into: [String]()) { result, eventId in
             guard !eventId.isEmpty, !result.contains(eventId) else { return }
             result.append(eventId)
         }
         guard !uniqueEventIds.isEmpty else { return [] }
 
-        let storedByEventId = loadStoredMessages(eventIds: uniqueEventIds, roomId: roomId)
+        let stored = loadStoredMessages(eventIds: uniqueEventIds, roomId: roomId, database: database)
         let dateFormatter = DateFormatter()
         dateFormatter.dateStyle = .medium
         dateFormatter.timeStyle = .short
-        return uniqueEventIds.map { eventId in
-            guard let stored = storedByEventId[eventId] else {
+        return uniqueEventIds.filter { !stored.ignored.contains($0) }.map { eventId in
+            guard let stored = stored.visible[eventId] else {
                 return Item(
                     eventId: eventId,
                     title: String(localized: "Pinned message"),
@@ -205,19 +217,27 @@ final class PinnedMessagesViewController: ASDKViewController<SettingsScreenNode>
 
     nonisolated private static func loadStoredMessages(
         eventIds: [String],
-        roomId: String
-    ) -> [String: StoredMessage] {
-        (try? DatabaseService.shared.dbQueue.read { db in
+        roomId: String,
+        database: AccountDatabase
+    ) -> (visible: [String: StoredMessage], ignored: Set<String>) {
+        (try? database.read { db in
+            let ignoredUsers = try IgnoredContentStore.userIDs(in: db)
             var result: [String: StoredMessage] = [:]
+            var ignoredEvents: Set<String> = []
             for eventId in eventIds {
+                // Distinguish hidden pins from events that have not loaded yet.
                 if let stored = try StoredMessage
                     .filter(Column("roomId") == roomId && Column("eventId") == eventId)
                     .fetchOne(db) {
-                    result[eventId] = stored
+                    if ignoredUsers.contains(stored.senderId) {
+                        ignoredEvents.insert(eventId)
+                    } else {
+                        result[eventId] = stored
+                    }
                 }
             }
-            return result
-        }) ?? [:]
+            return (result, ignoredEvents)
+        }) ?? ([:], [])
     }
 }
 

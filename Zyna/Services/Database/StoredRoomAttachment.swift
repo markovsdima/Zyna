@@ -241,7 +241,7 @@ struct StoredRoomAttachment: Codable, Equatable, FetchableRecord, PersistableRec
         roomId: String,
         kinds: Set<RoomAttachmentKind>? = nil
     ) throws -> [StoredRoomAttachment] {
-        var request = filter(Column("roomId") == roomId)
+        var request = filter(Column("roomId") == roomId).filter(sql: IgnoredContentStore.visibleSQL)
         if let kinds {
             guard !kinds.isEmpty else { return [] }
             request = request.filter(kinds.map(\.rawValue).contains(Column("kind")))

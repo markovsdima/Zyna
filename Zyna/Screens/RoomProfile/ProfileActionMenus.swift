@@ -20,7 +20,8 @@ enum ProfileActionMenus {
             let title = blocked ? String(localized: "Unblock this person?", table: "RoomProfile")
                 : String(localized: "Block this person?", table: "RoomProfile")
             let message = blocked ? model.userID
-                : String(localized: "You can unblock them in Settings. This applies across your rooms.", table: "RoomProfile")
+                : String(localized: "Blocking hides this person's past and future messages from you in all chats, including shared groups. You won't receive invitations from them.")
+                    + "\n\n" + String(localized: "You can unblock them in Settings.", table: "RoomProfile")
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
             alert.addAction(UIAlertAction(title: blocked ? String(localized: "Unblock", table: "RoomProfile")

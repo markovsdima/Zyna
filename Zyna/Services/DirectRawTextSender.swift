@@ -199,6 +199,7 @@ enum DirectRawTextSender {
         zynaAttributes: ZynaMessageAttributes,
         transactionId: String
     ) async throws -> String {
+        try await DirectChatBlockingPolicy.requireUnblocked(room: room)
         let content = try rawTextMessageContentJSON(
             roomId: room.id(),
             body: body,
@@ -232,6 +233,7 @@ enum DirectRawTextSender {
         zynaAttributes: ZynaMessageAttributes,
         transactionId: String
     ) async throws -> String {
+        try await DirectChatBlockingPolicy.requireUnblocked(room: room)
         let content = try rawTextEditContentJSON(
             body: body,
             formattedBody: formattedBody,
@@ -289,6 +291,7 @@ enum DirectRawTextSender {
         key: String,
         transactionId: String
     ) async throws -> String {
+        try await DirectChatBlockingPolicy.requireUnblocked(room: room)
         let content = try rawReactionContentJSON(
             targetEventId: targetEventId,
             key: key,
@@ -498,6 +501,12 @@ enum DirectRawTextSender {
     }
 
     static func isRetryableTransportError(_ error: Error) -> Bool {
+        if let error = error as? DirectChatBlockingError {
+            switch error {
+            case .blocked: return false
+            case .staleSession: return true
+            }
+        }
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain {
             switch nsError.code {

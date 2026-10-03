@@ -113,6 +113,7 @@ struct PollRedactionDisplayTests {
                 default: return "\"\(column)\""
                 }
             }
+            try db.execute(sql: "CREATE TABLE ignoredUser (userId TEXT PRIMARY KEY NOT NULL)")
             try db.execute(sql: "CREATE TABLE storedMessage (\(definitions.joined(separator: ",")))")
             try original.insert(db)
         }
@@ -183,6 +184,7 @@ struct PollStoreTests {
         let queue = try DatabaseQueue()
         try queue.write { db in
             try db.execute(sql: """
+                CREATE TABLE ignoredUser (userId TEXT PRIMARY KEY NOT NULL);
                 CREATE TABLE storedMessage (id TEXT PRIMARY KEY, roomId TEXT NOT NULL, eventId TEXT, contentType TEXT, contentBody TEXT);
                 CREATE TABLE pendingMediaGroup (
                     id TEXT PRIMARY KEY, roomId TEXT NOT NULL, caption TEXT, captionPlacement TEXT,

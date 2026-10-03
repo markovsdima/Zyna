@@ -46,6 +46,7 @@ struct ChatHistoryPaginationTests {
                 default: return "\"\(column)\""
                 }
             }
+            try db.execute(sql: "CREATE TABLE ignoredUser (userId TEXT PRIMARY KEY NOT NULL)")
             try db.execute(sql: "CREATE TABLE storedMessage (\(definitions.joined(separator: ",")))")
             for record in records { try record.insert(db) }
             try MessageDecryptionRepairStore.migrate(db)

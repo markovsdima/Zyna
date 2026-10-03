@@ -138,6 +138,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     private let readOnlyComposerView = ReadOnlyComposerPlaceholderView()
     private let unencryptedNoticeView = UnencryptedRoomNoticeView()
     private let pinnedMessagesBannerView = PinnedMessagesBannerView()
+    private var pinnedPreviewTask: Task<Void, Never>?
+    private var pinnedPreview: (eventID: String, text: String)?
     private let searchBar = SearchBarView()
     private let inviteBanner = InviteBannerView()
     private let activeCallBanner = ActiveCallBannerView()
@@ -486,6 +488,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         inviteBanner.onAccept = { [weak self] in
             self?.viewModel.acceptInvite()
         }
+        inviteBanner.onDecline = { [weak self] in
+            guard let self, let room = self.viewModel.liveRoom else { return }
+            ContentReportFlow.open(from: self, room: room, target: .invitation, audioPlayer: self.audioPlayer)
+        }
         if !isPreviewMode {
             view.addSubview(inviteBanner)
         }
@@ -508,6 +514,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             node.glassInputBar = glassInputBar
 
             readOnlyComposerView.isHidden = true
+            readOnlyComposerView.onUnblock = { [weak self] in self?.viewModel.directBlocking?.unblock() }
             view.addSubview(readOnlyComposerView)
             node.readOnlyComposerView = readOnlyComposerView
 
@@ -684,6 +691,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func cleanupViewModelIfNeeded() {
+        pinnedPreviewTask?.cancel()
         guard !didCleanupViewModel else { return }
         flushVisibleReadReceipts()
         didCleanupViewModel = true
@@ -906,6 +914,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     private func updatePinnedMessagesBanner(animated: Bool) {
         guard !isPreviewMode else { return }
+        pinnedPreviewTask?.cancel()
         let state = viewModel.pinnedMessagesState
         let shouldShow = shouldShowPinnedMessagesBanner()
 
@@ -922,12 +931,23 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         if shouldShow,
            state.eventIds.indices.contains(selectedPinnedMessageIndex) {
             let eventId = state.eventIds[selectedPinnedMessageIndex]
+            let index = selectedPinnedMessageIndex
+            let mode: PinnedMessagesBannerView.DisplayMode = isPinnedMessagesBannerExpanded ? .expanded : .collapsed
             pinnedMessagesBannerView.configure(
-                index: selectedPinnedMessageIndex,
+                index: index,
                 count: state.eventIds.count,
-                preview: viewModel.pinnedPreview(eventId: eventId),
-                mode: isPinnedMessagesBannerExpanded ? .expanded : .collapsed
+                preview: pinnedPreview.flatMap { $0.eventID == eventId ? $0.text : nil },
+                mode: mode
             )
+            pinnedPreviewTask = Task { @MainActor [weak self, viewModel] in
+                let preview = await viewModel.pinnedPreview(eventId: eventId)
+                guard let self, !Task.isCancelled else { return }
+                self.pinnedPreview = (eventId, preview)
+                self.pinnedMessagesBannerView.configure(index: index, count: state.eventIds.count,
+                                                       preview: preview, mode: mode)
+                self.pinnedMessagesBannerView.layoutIfNeeded()
+                GlassService.shared.setNeedsCapture()
+            }
         }
 
         let applyVisibility = {
@@ -1516,6 +1536,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func bindViewModel() {
+        viewModel.onPinnedVisibilityChanged = { [weak self] in
+            guard let self else { return }
+            self.pinnedPreview = nil
+            self.updatePinnedMessagesBanner(animated: false)
+        }
         viewModel.historyRecovery?.$isNoticeVisible.removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] visible in
@@ -1686,6 +1711,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
                 guard let self, !self.isPreviewMode else { return }
                 let isRoomSendRestricted = self.viewModel.composerSendRestrictionReason == .roomSendNotAllowed
                 self.glassInputBar.inputNode.setComposerLocked(blocked && !isRoomSendRestricted)
+                if !blocked, self.shouldPresentAttachmentPreviewAfterDismiss {
+                    self.presentComposerPreviewIfNeeded()
+                }
             }
             .store(in: &cancellables)
 
@@ -1693,7 +1721,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             .receive(on: DispatchQueue.main)
             .sink { [weak self] reason in
                 guard let self, !self.isPreviewMode else { return }
-                self.showsReadOnlyComposerPlaceholder = reason == .roomSendNotAllowed
+                self.showsReadOnlyComposerPlaceholder = reason == .roomSendNotAllowed || reason == .recipientBlocked
+                self.readOnlyComposerView.configure(
+                    blockedName: reason == .recipientBlocked ? (self.viewModel.directBlocking?.recipientName ?? self.viewModel.roomName) : nil,
+                    isUnblocking: self.viewModel.directBlocking?.isUnblocking ?? false)
+                self.readOnlyComposerView.updateLayout(in: self.view)
                 self.glassInputBar.inputNode.setComposerLocked(self.viewModel.isComposerSendBlocked && reason != .roomSendNotAllowed)
                 self.updateComposerChrome()
                 GlassService.shared.setNeedsCapture()
@@ -1701,6 +1733,30 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
                 self.updateDateHeaderOverlay()
             }
             .store(in: &cancellables)
+
+        if let blocking = viewModel.directBlocking {
+            blocking.$isUnblocking.combineLatest(blocking.$recipientName)
+                .receive(on: DispatchQueue.main).sink { [weak self] saving, name in
+                guard let self, !self.isPreviewMode else { return }
+                self.readOnlyComposerView.configure(
+                    blockedName: self.viewModel.composerSendRestrictionReason == .recipientBlocked ? (name ?? self.viewModel.roomName) : nil,
+                    isUnblocking: saving)
+                self.readOnlyComposerView.updateLayout(in: self.view)
+                self.updateTableInsetsForInputBar()
+            }.store(in: &cancellables)
+            blocking.$error.receive(on: DispatchQueue.main).sink { [weak self, weak blocking] error in
+                guard let self, let error, self.navigationContentVisible,
+                      self.presentedViewController == nil else { return }
+                blocking?.error = nil
+                let alert = UIAlertController(title: String(localized: "Something went wrong"),
+                    message: error, preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: String(localized: "Retry"), style: .default) { [weak blocking] _ in
+                    blocking?.retryLastFailure()
+                })
+                alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+                self.present(alert, animated: true)
+            }.store(in: &cancellables)
+        }
 
         viewModel.$isRoomEncrypted
             .receive(on: DispatchQueue.main)
@@ -1866,6 +1922,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             ComposerLinkPrompt.present(from: self, current: current, completion: completion)
         }
 
+        glassInputBar.inputNode.onShouldSend = { [weak self] in
+            self?.viewModel.canSubmitComposer() ?? false
+        }
         glassInputBar.inputNode.onSend = { [weak self] text, color in
             guard let self else { return }
             let wasEditing = self.viewModel.editingMessage != nil
@@ -2430,6 +2489,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             })
         }
 
+        if canReport(message, eventID: message.eventId) {
+            actions.append(UIAccessibilityCustomAction(name: String(localized: "Report message", table: "Reports")) { [weak self] _ in
+                self?.report(message, eventID: message.eventId); return true
+            })
+        }
         return actions
     }
 
@@ -2522,6 +2586,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
     #endif
 
+    private func canReport(_ message: ChatMessage, eventID: String?) -> Bool {
+        !isPreviewMode && viewModel.liveRoom != nil && !viewModel.isInvited
+            && !message.isOutgoing && !message.content.isRedacted
+            && !message.isSyntheticOutgoingEnvelope && !message.isSyntheticIncomingAssembly
+            && ContentReportTarget.isRemoteEventID(eventID)
+    }
+
+    private func report(_ message: ChatMessage, eventID: String?) {
+        guard canReport(message, eventID: eventID), let eventID, let room = viewModel.liveRoom else { return }
+        ContentReportFlow.open(from: self, room: room,
+            target: .message(eventID: eventID, senderID: message.senderId), audioPlayer: audioPlayer)
+    }
+
     private func presentContextMenu(
         for message: ChatMessage,
         from cellNode: ContextMenuCellNode,
@@ -2550,6 +2627,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         let canDiscardOutgoingEnvelope = canDiscardLocalOutgoingEnvelope(message)
 
         var actions: [ContextMenuAction] = []
+        var reportEventID = message.eventId
         if case .poll(let poll) = message.content, let pending = poll.pending, pending.failed {
             actions.append(ContextMenuAction(title: String(localized: "Dismiss failed action"), image: UIImage(systemName: "xmark.circle"),
                 handler: { [weak self] in self?.handlePollAction(.dismissFailure(pending.operationID), for: message) }))
@@ -2645,6 +2723,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
            !isPendingOutgoingMessage,
            !message.content.isRedacted {
             if let tappedItem = groupCell.prepareContextMenuSelection(at: activationPoint) {
+                reportEventID = tappedItem.eventId
                 let precomputedItemDeleteTarget = freezeSnapshotTarget(
                     groupCell.paintSplashTarget(
                         for: tappedItem.messageId,
@@ -2739,6 +2818,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
                     )
                 }
             ))
+        }
+
+        if canReport(message, eventID: reportEventID), let eventID = reportEventID {
+            actions.append(ContextMenuAction(title: String(localized: "Report message", table: "Reports"),
+                image: UIImage(systemName: "flag"), handler: { [weak self] in self?.report(message, eventID: eventID) }))
         }
 
         #if DEBUG
@@ -4146,6 +4230,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             return
         }
         guard navigationContentVisible, isViewLoaded, view.window != nil,
+              !viewModel.isComposerSendBlocked,
               zynaNavigationController?.isTransitionInFlight != true,
               pendingComposerRestoration == nil else {
             shouldPresentAttachmentPreviewAfterDismiss = true
@@ -4189,15 +4274,19 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             if self.photoPreviewController === controller {
                 self.photoPreviewController = nil
             }
-            self.composerController.clearAttachments()
-            self.glassInputBar.inputNode.setCurrentText("")
             let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.viewModel.sendComposerAttachments(
+            guard self.viewModel.sendComposerAttachments(
                 attachments,
                 caption: trimmedCaption.isEmpty ? nil : trimmedCaption,
                 captionPlacement: captionPlacement,
                 layoutOverride: layoutOverride
-            )
+            ) else {
+                self.glassInputBar.inputNode.setCurrentText(caption)
+                self.shouldPresentAttachmentPreviewAfterDismiss = true
+                return
+            }
+            self.composerController.clearAttachments()
+            self.glassInputBar.inputNode.setCurrentText("")
             self.scrollToLiveAfterUserSend()
         }
         photoPreviewController = controller
@@ -4234,14 +4323,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             if self.filePreviewController === controller {
                 self.filePreviewController = nil
             }
+            let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard self.viewModel.sendComposerAttachments(
+                attachments,
+                caption: trimmedCaption.isEmpty ? nil : trimmedCaption
+            ) else {
+                self.glassInputBar.inputNode.setCurrentText(caption)
+                self.shouldPresentAttachmentPreviewAfterDismiss = true
+                return
+            }
             let sentAttachmentIDs = Set(attachments.map(\.id))
             self.composerController.clearAttachments(preservingTemporaryResourcesFor: sentAttachmentIDs)
             self.glassInputBar.inputNode.setCurrentText("")
-            let trimmedCaption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.viewModel.sendComposerAttachments(
-                attachments,
-                caption: trimmedCaption.isEmpty ? nil : trimmedCaption
-            )
             self.scrollToLiveAfterUserSend()
         }
         filePreviewController = controller
@@ -4292,6 +4385,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         guard presentedViewController == nil else { return }
 
         switch notice.reason {
+        case .recipientBlocked:
+            presentBlockedRecipientNotice()
         case .ownDeviceVerificationRequired:
             let alert = UIAlertController(
                 title: String(localized: "Verify This Device"),
@@ -4316,6 +4411,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
             present(alert, animated: true)
         }
+    }
+
+    private func presentBlockedRecipientNotice() {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: String(localized: "Person blocked", table: "Blocking"),
+            message: String(localized: "Unblock this person to send messages or call.", table: "Blocking"),
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: String(localized: "Unblock"), style: .default) { [weak self] _ in
+            self?.viewModel.directBlocking?.unblock()
+        })
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        present(alert, animated: true)
     }
 
     private func presentRoomSendSecurityIssue(context: OutgoingSendFailureContext) {

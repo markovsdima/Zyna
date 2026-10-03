@@ -1153,6 +1153,8 @@ final class DatabaseService: @unchecked Sendable {
             merging: ["v32_roomMediaPaging", "v33_roomMediaOrderRevision", "v34_roomMediaCoveringIndex"],
             migrate: RoomMediaDatabase.migrate)
 
+        migrator.registerMigration("v35_ignoredContent", migrate: IgnoredContentStore.migrate)
+
         return migrator
     }
 

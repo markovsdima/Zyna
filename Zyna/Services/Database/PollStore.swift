@@ -533,6 +533,7 @@ final class PollStore {
         let began = ProcessInfo.processInfo.systemUptime
         #endif
         var query = StoredRoomPoll.filter(Column("roomId") == roomId && Column("isRedacted") == false)
+            .filter(sql: IgnoredContentStore.visibleSQL)
         if let cursor {
             query = query.filter(Column("timestamp") < cursor.timestamp
                 || (Column("timestamp") == cursor.timestamp && Column("eventId") < cursor.eventId))

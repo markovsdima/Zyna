@@ -444,9 +444,9 @@ final class RoomAttachmentsViewModel: ObservableObject {
             catalogProjection.setOnChange { [weak self] snapshot in
                 self?.handleCatalogSnapshot(snapshot)
             }
-            source.onAttachmentsDiscovered = { [weak catalogProjection] records in
-                catalogProjection?.upsertOptimistically(records)
-            }
+            // Publish committed catalog rows: its account-local visibility
+            // filter must also apply to newly discovered SDK records.
+            source.onAttachmentsDiscovered = nil
             source.onAttachmentsInvalidated = { [weak catalogProjection] eventIds in
                 catalogProjection?.invalidate(eventIds: eventIds)
             }

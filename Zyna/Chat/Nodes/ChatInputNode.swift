@@ -79,6 +79,7 @@ final class ChatInputNode: ASDisplayNode {
     private var lockedTapGesture: UITapGestureRecognizer?
 
     var onSend: ((ComposerText, UIColor?) -> Void)?
+    var onShouldSend: (() -> Bool)?
     var onVoiceRecordingFinished: ((URL, TimeInterval, [Float]) -> Void)?
     var onAttachTapped: (() -> Void)?
     var onLockedComposerTapped: (() -> Void)?
@@ -850,6 +851,7 @@ final class ChatInputNode: ASDisplayNode {
             onLockedComposerTapped?()
             return
         }
+        guard onShouldSend?() != false else { return }
         previewPlayer.stop()
         if let data = voicePreview {
             onVoiceRecordingFinished?(data.fileURL, data.duration, data.waveform)
@@ -906,6 +908,7 @@ final class ChatInputNode: ASDisplayNode {
             onLockedComposerTapped?()
             return
         }
+        guard onShouldSend?() != false else { return }
         let text = ComposerText(attributedText: textInputNode.textView.textStorage, trimming: true)
         // Allow empty text when forwarding — the content comes from
         // the forwarded message, not the text field.
@@ -1112,6 +1115,7 @@ extension ChatInputNode {
         dismissColorPalette()
         if locked {
             textInputNode.textView.resignFirstResponder()
+            if isRecording { cancelRecording() }
         }
         applyComposerLockedAppearance()
     }

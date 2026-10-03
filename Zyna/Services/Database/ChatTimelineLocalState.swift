@@ -9,6 +9,7 @@ import GRDB
 /// Read in the same transaction as the messages. Preparing a presentation
 /// never consumes an outbox confirmation or retires an envelope.
 struct ChatTimelineLocalState {
+    var ignoredUserIDs: Set<String> = []
     var redactions: [PendingRedactionRecord] = []
     var resolvedRedactions = PendingRedactionService.ResolvedPendingRedactions(messageIds: [], identityKeys: [])
     var reactionRemovals: [String: Set<String>] = [:]
@@ -31,7 +32,8 @@ struct ChatTimelineLocalState {
         let ids = envelopes.map(\.id)
         let items = ids.isEmpty ? [] : try OutgoingEnvelopeItemRecord
             .filter(ids.contains(Column("groupId"))).order(Column("itemIndex").asc).fetchAll(db)
-        return Self(redactions: redactions, resolvedRedactions: resolved,
+        return Self(ignoredUserIDs: try IgnoredContentStore.userIDs(in: db),
+                    redactions: redactions, resolvedRedactions: resolved,
                     reactionRemovals: try PendingReactionService.pendingRemovalKeysByEventId(roomId: roomId, in: db),
                     envelopeRecords: envelopes, envelopeItems: items)
     }

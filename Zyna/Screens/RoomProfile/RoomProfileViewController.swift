@@ -78,6 +78,9 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         let hasNotificationError: Bool
         let hasInformationError: Bool
     }
+    var onReportRoom: (() -> Void)? {
+        didSet { renderedMenuState = nil; if isViewLoaded { updateProfileMenus() } }
+    }
     private var renderedMenuState: MenuState?
     private struct PersonMenuState: Equatable {
         let snapshot: PersonProfileSnapshot
@@ -474,6 +477,10 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
                 attributes: action.isEnabled(in: snapshot) ? [] : .disabled) { [weak self] _ in self?.perform(action) })
         }
         entries.insert(notificationMenu, at: min(1, entries.count))
+        if let onReportRoom {
+            entries.append(UIAction(title: snapshot.isDirect ? String(localized: "Report conversation", table: "Reports")
+                : String(localized: "Report room", table: "Reports"), image: UIImage(systemName: "flag")) { _ in onReportRoom() })
+        }
         if let action = ProfileActionMenus.blocking(blocking, presenter: self) { entries.append(action) }
         if profileModel.informationError != nil {
             entries.append(UIAction(title: String(localized: "Reload profile", table: "RoomProfile")) { [weak profileModel] _ in

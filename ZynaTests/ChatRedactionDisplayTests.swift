@@ -167,6 +167,7 @@ struct ChatRedactionDisplayTests {
             let definitions = columns.map {
                 $0 == "id" ? "\"id\" TEXT PRIMARY KEY" : $0 == "timestamp" ? "\"timestamp\" REAL" : "\"\($0)\""
             }
+            try db.execute(sql: "CREATE TABLE ignoredUser (userId TEXT PRIMARY KEY NOT NULL)")
             try db.execute(sql: "CREATE TABLE storedMessage (\(definitions.joined(separator: ",")))")
             for var record in records { record.roomId = roomID; try record.insert(db) }
         }
