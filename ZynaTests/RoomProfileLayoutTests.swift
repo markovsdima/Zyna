@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import AsyncDisplayKit
+import GRDB
 import MatrixRustSDK
 import Testing
 import UIKit
@@ -28,6 +29,7 @@ private final class ProfileFixtureSource: AttachmentSource, @unchecked Sendable 
     var onAttachmentsInvalidated: (([String]) -> Void)?
     var media = (0..<120).map { item($0) }
     var files = [item(500, kind: .file)]
+    let starts = Atomic(0)
     private var generation = 0
 
     static func item(_ index: Int, kind: RoomAttachmentKind = .image) -> AttachmentItem {
@@ -51,7 +53,7 @@ private final class ProfileFixtureSource: AttachmentSource, @unchecked Sendable 
             voiceCount: 0, fileCount: files.count, pendingCount: 0, pendingSessionIds: []), .init())
     }
 
-    func start() async throws { await publish() }
+    func start() async throws { starts.modify { $0 += 1 }; await publish() }
     func stop() {}
     func loadMore(numEvents: UInt16) async throws -> Bool { true }
     func retryDecryption(sessionIds: [String]) {}
@@ -62,6 +64,215 @@ private final class ProfileFixtureSource: AttachmentSource, @unchecked Sendable 
 @Suite("Texture profile layout", .serialized)
 @MainActor
 struct RoomProfileLayoutTests {
+    @Test("An emptied Pinned tab stays after a tap or completed swipe, but not a cancelled swipe",
+          arguments: ["tap", "swipe", "cancelled swipe"])
+    func retainsVisitedPins(route: String) async throws {
+        let db = try await Task.detached {
+            let queue = try DatabaseQueue()
+            try DatabaseService.migrator.migrate(queue)
+            return AccountDatabase(queue)
+        }.value
+        let source = PinnedTestSource()
+        let pins = RoomPinnedMessagesModel(roomID: TimelineWriteFixture.roomID, database: db,
+            source: source, isCurrentSession: { true })
+        let controller = RoomProfileViewController(room: nil, title: "Pins", subtitle: "", model: nil,
+            actions: .none, pinnedModel: pins)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { pins.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        try await wait { !pins.isLoading && tabs.numberOfSegments == 3 }
+        controller.selectSection(.files, animated: false)
+        let visited = route != "cancelled swipe"
+        if route == "tap" {
+            controller.selectSection(.pinned, animated: false)
+        } else {
+            controller.scrollViewWillBeginDragging(pager)
+            pager.contentOffset.x = pager.bounds.width * 1.75
+            pager.contentOffset.x = pager.bounds.width * (visited ? 2 : 1)
+            controller.scrollViewDidEndDragging(pager, willDecelerate: false)
+        }
+        #expect(tabs.selectedSegmentIndex == (visited ? 2 : 1))
+        source.send(.init(eventIDs: [], canUnpin: true))
+        try await wait { pins.items.isEmpty }
+        controller.selectSection(.files, animated: false)
+        try await wait { tabs.numberOfSegments == (visited ? 3 : 2) }
+        #expect(tabs.selectedSegmentIndex == 1)
+    }
+
+    @Test("Known pins reserve their tab before loading, while a stale hint is removed", arguments: [false, true])
+    func initialPinnedHint(hasPins: Bool) async throws {
+        let db = try await Task.detached {
+            let queue = try DatabaseQueue()
+            try DatabaseService.migrator.migrate(queue)
+            return AccountDatabase(queue)
+        }.value
+        let source = PinnedTestSource(), gate = ProfileTestRequest<RoomPinnedSnapshot>()
+        source.state.modify { $0.read = gate }
+        let pins = RoomPinnedMessagesModel(roomID: TimelineWriteFixture.roomID, database: db,
+            source: source, isCurrentSession: { true })
+        let controller = RoomProfileViewController(room: nil, title: "Pins", subtitle: "", model: nil,
+            actions: .none, pinnedModel: pins, initiallyHasPinnedMessages: true)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { pins.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        #expect(tabs.numberOfSegments == 3 && tabs.selectedSegmentIndex == 0)
+        try await wait { await gate.isPending }
+        #expect(tabs.numberOfSegments == 3)
+        await gate.finish(.init(eventIDs: hasPins ? ["$event-0"] : [], canUnpin: true))
+        await pins.waitForOperationsForTesting()
+        try await wait { !pins.isLoading && tabs.numberOfSegments == (hasPins ? 3 : 2) }
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.pinned") == nil)
+    }
+
+    @Test("Unknown empty pins do not flash a tab; paging creates only nearby pages")
+    func lazyPinnedPage() async throws {
+        let db = try await Task.detached {
+            let queue = try DatabaseQueue()
+            try DatabaseService.migrator.migrate(queue)
+            return AccountDatabase(queue)
+        }.value
+        let source = PinnedTestSource(), gate = ProfileTestRequest<RoomPinnedSnapshot>()
+        source.state.modify { $0.read = gate }
+        let pins = RoomPinnedMessagesModel(roomID: TimelineWriteFixture.roomID, database: db,
+            source: source, isCurrentSession: { true })
+        let controller = RoomProfileViewController(room: nil, title: "Pins", subtitle: "", model: nil,
+            actions: .none, pinnedModel: pins)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { pins.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        #expect(tabs.numberOfSegments == 2)
+        try await wait { await gate.isPending }
+        await gate.finish(.init(eventIDs: [], canUnpin: true))
+        await pins.waitForOperationsForTesting()
+        #expect(!pins.isLoading && tabs.numberOfSegments == 2)
+        source.send(.init(eventIDs: ["$event-0"], canUnpin: true))
+        try await wait { tabs.numberOfSegments == 3 }
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.pinned") == nil)
+        controller.scrollViewWillBeginDragging(pager)
+        pager.contentOffset.x = pager.bounds.width * 0.5
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.files") != nil)
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.pinned") == nil)
+        pager.contentOffset.x = 0
+        controller.scrollViewDidEndDragging(pager, willDecelerate: false)
+        // A nonadjacent tab tap must still build its destination and the
+        // intermediate page before either becomes visible.
+        controller.selectSection(.pinned, animated: true)
+        try await wait { tabs.selectedSegmentIndex == 2 && pager.contentOffset.x == pager.bounds.width * 2 }
+        let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.pinned"))
+        #expect(!list.accessibilityElementsHidden && list.bounds.width == pager.bounds.width)
+    }
+
+    @Test("An unpin failure stays on its message when a sheet covers the profile")
+    func coveredUnpinFailure() async throws {
+        let db = try await Task.detached {
+            let queue = try DatabaseQueue()
+            try DatabaseService.migrator.migrate(queue)
+            try queue.write { try TimelineWriteFixture.message(0).insert($0) }
+            return AccountDatabase(queue)
+        }.value
+        let source = PinnedTestSource()
+        source.state.modify { $0.snapshot = .init(eventIDs: ["$event-0"], canUnpin: true); $0.failWrite = true }
+        let pins = RoomPinnedMessagesModel(roomID: TimelineWriteFixture.roomID, database: db,
+            source: source, isCurrentSession: { true })
+        let controller = RoomProfileViewController(room: nil, title: "Pins", subtitle: "", model: nil,
+            actions: .none, pinnedModel: pins, initialSection: .pinned)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { pins.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.pinned"))
+        let page = try #require(list.collectionNode?.delegate as? RoomProfileListPage)
+        try await wait { pins.items.count == 1 && itemCount(list) == 1 && !page.isAdjusting }
+        let sheet = UIViewController()
+        sheet.modalPresentationStyle = .pageSheet
+        await withCheckedContinuation { continuation in
+            controller.present(sheet, animated: false) { continuation.resume() }
+        }
+        pins.unpin("$event-0")
+        await pins.waitForOperationsForTesting()
+        let failure = try #require(pins.items.first?.unpinError)
+        let label = [try #require(pins.items.first?.title), failure].joined(separator: ", ")
+        try await wait {
+            page.node.nodeForItem(at: IndexPath(item: 0, section: 0))?.accessibilityLabel == label
+        }
+        #expect(controller.presentedViewController === sheet)
+        #expect(sheet.presentedViewController == nil && pins.items.first?.unpinError != nil)
+        await withCheckedContinuation { continuation in
+            controller.dismiss(animated: false) { continuation.resume() }
+        }
+        #expect(controller.presentedViewController == nil)
+        source.state.modify { $0.failWrite = false }
+        pins.unpin("$event-0")
+        await pins.waitForOperationsForTesting()
+        try await wait { pins.items.isEmpty && pins.actionError == nil }
+    }
+
+    @Test("Pinned entry opens the third page, preserves depth and keeps its empty result visible")
+    func pinnedPage() async throws {
+        let db = try await Task.detached {
+            let queue = try DatabaseQueue()
+            try DatabaseService.migrator.migrate(queue)
+            try queue.write { db in
+                for index in 0..<30 { try TimelineWriteFixture.message(index).insert(db) }
+            }
+            return AccountDatabase(queue)
+        }.value
+        let pinnedSource = PinnedTestSource()
+        pinnedSource.state.modify { $0.snapshot = .init(eventIDs: (0..<30).map { "$event-\($0)" }, canUnpin: true) }
+        let pins = RoomPinnedMessagesModel(roomID: TimelineWriteFixture.roomID, database: db,
+            source: pinnedSource, isCurrentSession: { true })
+        let source = ProfileFixtureSource()
+        let attachments = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        let controller = RoomProfileViewController(room: nil, title: "Pins", subtitle: "", model: attachments,
+            actions: .none, pinnedModel: pins, initialSection: .pinned)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { pins.stop(); attachments.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.pinned"))
+        let page = try #require(list.collectionNode?.delegate as? RoomProfileListPage)
+        try await wait { itemCount(list) == 30 && !page.isAdjusting }
+        #expect(source.starts.wrappedValue == 0)
+        #expect(tabs.numberOfSegments == 3 && tabs.selectedSegmentIndex == 2)
+        #expect(pager.contentOffset.x == pager.bounds.width * 2)
+        var openedID: String?
+        controller.onShowInChat = { id, kind in
+            #expect(kind.accepts("text"))
+            openedID = id
+            return PreparedPollNavigation { true }
+        }
+        try await wait { page.node.nodeForItem(at: IndexPath(item: 0, section: 0)) != nil }
+        let cell = try #require(page.node.nodeForItem(at: IndexPath(item: 0, section: 0)) as? ListContextMenuCellNode)
+        cell.onQuickTap?()
+        try await wait { openedID != nil }
+        #expect(openedID == "$event-0")
+        page.scrollView.contentOffset.y = 950
+        let offset = page.scrollView.contentOffset.y
+        controller.selectSection(.files, animated: false)
+        try await wait { source.starts.wrappedValue == 1 }
+        controller.selectSection(.pinned, animated: false)
+        #expect(abs(page.scrollView.contentOffset.y - offset) < 1)
+        #expect(!list.accessibilityElementsHidden)
+        pinnedSource.send(.init(eventIDs: [], canUnpin: true))
+        try await wait { itemCount(list) == 1 && !page.isAdjusting }
+        #expect(tabs.selectedSegmentIndex == 2 && tabs.numberOfSegments == 3)
+        controller.view.layoutIfNeeded()
+        #expect(abs(page.scrollView.contentOffset.y + 48) < 1)
+        controller.selectSection(.media, animated: false)
+        #expect(pager.canStartBackFromAnywhere?() == true)
+    }
+
     private func find<T: UIView>(_ type: T.Type, in root: UIView, id: String) -> T? {
         if root.accessibilityIdentifier == id { return root as? T }
         return root.subviews.lazy.compactMap { find(type, in: $0, id: id) }.first
@@ -73,10 +284,10 @@ struct RoomProfileLayoutTests {
 
     private func wait(sourceLocation: SourceLocation = #_sourceLocation,
                       diagnostics: () -> String = { "Condition did not become true" },
-                      _ condition: () -> Bool) async throws {
+                      _ condition: () async -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(8))
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        try #require(condition(), "\(diagnostics())", sourceLocation: sourceLocation)
+        while !(await condition()), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(await condition(), "\(diagnostics())", sourceLocation: sourceLocation)
     }
 
     @Test("Avatar follows dragging, snaps on release and collapses continuously toward a deep page")
@@ -680,7 +891,7 @@ struct RoomProfileLayoutTests {
         let window = UIWindow(windowScene: scene)
         let host = UIViewController()
         window.rootViewController = host; window.isHidden = false
-        let page = RoomProfileFilePage()
+        let page = RoomProfileListPage()
         defer { page.onScroll = nil; window.isHidden = true; window.rootViewController = nil }
         host.view.addSubview(page.view)
         page.install()
@@ -733,7 +944,7 @@ struct RoomProfileLayoutTests {
         let host = UIViewController()
         window.rootViewController = host
         window.isHidden = false
-        let page = RoomProfileFilePage()
+        let page = RoomProfileListPage()
         defer { page.dismissContextMenu(); window.isHidden = true; window.rootViewController = nil }
         host.view.addSubview(page.node.view)
         page.install()

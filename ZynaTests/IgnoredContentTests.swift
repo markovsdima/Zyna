@@ -94,24 +94,24 @@ struct IgnoredContentTests {
             try IgnoredContentStore.replace([blocked], in: db)
         }
         let eventIDs = ["$event-0", "$event-1", "$not-loaded"]
-        let items = await Task.detached {
-            PinnedMessagesViewController.buildItems(eventIds: eventIDs,
-                roomId: TimelineWriteFixture.roomID, database: db)
+        let items = try await Task.detached {
+            try db.read { database in try RoomPinnedRecords.read(eventIDs: eventIDs,
+                roomID: TimelineWriteFixture.roomID, db: database).items() }
         }.value
         #expect(items.map(\.eventId) == ["$event-1", "$not-loaded"])
-        #expect(items.map(\.isLoadedLocally) == [true, false])
-        let allHidden = await Task.detached {
-            PinnedMessagesViewController.buildItems(eventIds: ["$event-0"],
-                roomId: TimelineWriteFixture.roomID, database: db)
+        #expect(items.last?.subtitle == String(localized: "Message not loaded yet"))
+        let allHidden = try await Task.detached {
+            try db.read { database in try RoomPinnedRecords.read(eventIDs: ["$event-0"],
+                roomID: TimelineWriteFixture.roomID, db: database).items() }
         }.value
         #expect(allHidden.isEmpty)
         try await db.write { try IgnoredContentStore.replace([], in: $0) }
-        let restored = await Task.detached {
-            PinnedMessagesViewController.buildItems(eventIds: eventIDs,
-                roomId: TimelineWriteFixture.roomID, database: db)
+        let restored = try await Task.detached {
+            try db.read { database in try RoomPinnedRecords.read(eventIDs: eventIDs,
+                roomID: TimelineWriteFixture.roomID, db: database).items() }
         }.value
         #expect(restored.map(\.eventId) == eventIDs)
-        #expect(restored.map(\.isLoadedLocally) == [true, true, false])
+        #expect(restored.last?.subtitle == String(localized: "Message not loaded yet"))
     }
 
     @Test("Media counts, order and payload pages use the same filtered catalog; unblock restores the cache")

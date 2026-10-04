@@ -10,6 +10,8 @@ struct RoomProfileRow: Equatable {
     let item: AttachmentItem?
     let isHeader: Bool
     let isAction: Bool
+    var pinned: RoomPinnedItem? = nil
+    var hasContent: Bool { item != nil || pinned != nil }
 
     static func rows(groups: [AttachmentMonthGroup]) -> [Self] {
         groups.flatMap { group in
@@ -25,7 +27,7 @@ struct RoomProfileRow: Equatable {
 
 /// Each section owns exactly one vertical scroll view. No vertical parent
 /// scroll view competes with Texture's collection view.
-final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionDelegate {
+final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionDelegate {
     let node: ASCollectionNode
     var onScroll: (() -> Void)?
     var onBeginDragging: (() -> Void)?
@@ -33,6 +35,9 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
     var onEndDragging: (() -> Void)?
     var onSelect: ((AttachmentItem, UIImage?, CGRect) -> Void)?
     var onShowInChat: ((AttachmentItem) -> Void)?
+    var onOpenPinned: ((String) -> Void)?
+    var onUnpin: ((String) -> Void)?
+    var accessibilityID = "profile.files"
     var onLoad: (() -> Void)?
     var onRequestImage: ((AttachmentItem) -> Void)?
     var onAnchorRestored: ((CGFloat) -> Void)?
@@ -96,7 +101,7 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
         node.view.contentInsetAdjustmentBehavior = .never
         node.view.alwaysBounceVertical = true
         node.view.scrollsToTop = false
-        node.view.accessibilityIdentifier = "profile.files"
+        node.view.accessibilityIdentifier = accessibilityID
         node.view.keyboardDismissMode = .onDrag
     }
 
@@ -172,7 +177,7 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
             .sorted { $0.indexPath < $1.indexPath }
         guard let attributes = visible.first(where: {
             let index = $0.indexPath.item
-            return rows.indices.contains(index) && rows[index].item != nil && $0.frame.maxY > top
+            return rows.indices.contains(index) && rows[index].hasContent && $0.frame.maxY > top
         }) else { return nil }
         let path = attributes.indexPath
         return RoomProfileAnchor(id: rows[path.item].id, previousIndex: path.item, offset: top - attributes.frame.minY)
@@ -211,7 +216,7 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
             }
             let newByID = Dictionary(uniqueKeysWithValues: newRows.map { ($0.id, $0) })
             let newIndices = Dictionary(uniqueKeysWithValues: newIDs.enumerated().map { ($0.element, $0.offset) })
-            let hasItems = newRows.contains { $0.item != nil }
+            let hasItems = newRows.contains { $0.hasContent }
             let deleted = Set(deletes.map(\.item))
             let reloads = old.enumerated().compactMap { index, row -> IndexPath? in
                 guard !deleted.contains(index), let next = newByID[row.id], next != row else { return nil }
@@ -291,8 +296,10 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
     func collectionNode(_ collectionNode: ASCollectionNode, nodeBlockForItemAt indexPath: IndexPath) -> ASCellNodeBlock {
         let row = rows[indexPath.item]
         return { [weak self] in
-            let cell = RoomProfileTextCell(title: row.title, detail: row.detail, isHeader: row.isHeader, isAction: row.isAction)
+            let cell = RoomProfileTextCell(title: row.title, detail: row.detail, isHeader: row.isHeader,
+                isAction: row.isAction, isError: row.pinned?.unpinError != nil)
             if let item = row.item { return self?.contextCell(for: item, content: cell) ?? cell }
+            if let pinned = row.pinned { return self?.contextCell(for: pinned, content: cell) ?? cell }
             return cell
         }
     }
@@ -308,7 +315,7 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
     func collectionNode(_ collectionNode: ASCollectionNode, didSelectItemAt indexPath: IndexPath) {
         guard rows.indices.contains(indexPath.item) else { return }
         let row = rows[indexPath.item]
-        if row.item != nil {
+        if row.hasContent {
             (collectionNode.nodeForItem(at: indexPath) as? ListContextMenuCellNode)?.onQuickTap?()
         } else if row.isAction { onLoad?() }
     }
@@ -355,7 +362,47 @@ final class RoomProfileFilePage: NSObject, ASCollectionDataSource, ASCollectionD
     }
 }
 
-extension RoomProfileFilePage {
+extension RoomProfileListPage {
+    private func contextCell(for item: RoomPinnedItem, content: ASCellNode) -> ListContextMenuCellNode {
+        let cell = ListContextMenuCellNode(contentNode: content)
+        cell.isAccessibilityElement = true
+        cell.accessibilityLabel = content.accessibilityLabel
+        cell.accessibilityTraits = item.canOpen ? .button : .staticText
+        cell.onQuickTap = { [weak self] in
+            guard let self, !self.contextInteractionLocked, item.canOpen else { return }
+            self.onOpenPinned?(item.eventId)
+        }
+        cell.onContextMenuActivated = { [weak self, weak cell] point in
+            guard let self, let cell else { return }
+            var actions: [ContextMenuAction] = []
+            if item.canOpen {
+                actions.append(ContextMenuAction(title: String(localized: "Show in Chat", table: "RoomProfile"),
+                    image: AppIcon.bubbleLeft.template(size: 18)) { [weak self] in self?.onOpenPinned?(item.eventId) })
+            }
+            if item.canUnpin {
+                actions.append(ContextMenuAction(title: String(localized: "Unpin"),
+                    image: AppIcon.pinSlash.template(size: 18)) { [weak self] in self?.onUnpin?(item.eventId) })
+            }
+            self.presentContextMenu(id: item.eventId, cell: cell, point: point, actions: actions)
+        }
+        cell.onDragChanged = { [weak self] in self?.activeContextMenu?.trackFinger(at: $0) }
+        cell.onDragEnded = { [weak self] in self?.activeContextMenu?.releaseFinger(at: $0) }
+        cell.onInteractionLockChanged = { [weak self] in self?.setContextInteractionLocked($0) }
+        var actions: [UIAccessibilityCustomAction] = []
+        if item.canOpen {
+            actions.append(UIAccessibilityCustomAction(name: String(localized: "Show in Chat", table: "RoomProfile")) { [weak self] _ in
+                self?.onOpenPinned?(item.eventId); return self != nil
+            })
+        }
+        if item.canUnpin {
+            actions.append(UIAccessibilityCustomAction(name: String(localized: "Unpin")) { [weak self] _ in
+                self?.onUnpin?(item.eventId); return self != nil
+            })
+        }
+        cell.setContextAccessibilityActions(actions)
+        return cell
+    }
+
     private func contextCell(for item: AttachmentItem, content: ASCellNode) -> ListContextMenuCellNode {
         let cell = ListContextMenuCellNode(contentNode: content)
         cell.isAccessibilityElement = true
@@ -383,17 +430,21 @@ extension RoomProfileFilePage {
     }
 
     private func presentContextMenu(for item: AttachmentItem, cell: ListContextMenuCellNode, point: CGPoint) {
-        guard isActive, activeContextMenu == nil, !updating, indexByID[item.id] != nil,
+        let action = ContextMenuAction(title: String(localized: "Show in Chat", table: "RoomProfile"),
+            image: AppIcon.bubbleLeft.template(size: 18)) { [weak self] in self?.onShowInChat?(item) }
+        presentContextMenu(id: item.id, cell: cell, point: point, actions: [action])
+    }
+
+    private func presentContextMenu(id: String, cell: ListContextMenuCellNode, point: CGPoint, actions: [ContextMenuAction]) {
+        guard !actions.isEmpty, isActive, activeContextMenu == nil, !updating, indexByID[id] != nil,
               let window = node.view.window, window.windowScene != nil else {
             cell.cancelContextMenuActivation()
             return
         }
         setContextInteractionLocked(true)
         let source = cell.extractContentForMenu(in: window.coordinateSpace)
-        let action = ContextMenuAction(title: String(localized: "Show in Chat", table: "RoomProfile"),
-            image: UIImage(systemName: "bubble.left")) { [weak self] in self?.onShowInChat?(item) }
         let menu = ListContextMenuController(contentNode: source.node, sourceFrame: source.frame,
-            anchorPoint: cell.view.convert(point, to: window), actions: [action])
+            anchorPoint: cell.view.convert(point, to: window), actions: actions)
         // Keep this specific cell alive through extraction and restoration.
         // Catalog edits wait until its content is back in the collection.
         menu.onDismissComplete = { [weak self, cell] in

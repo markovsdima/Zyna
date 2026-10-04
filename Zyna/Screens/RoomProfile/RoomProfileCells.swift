@@ -4,7 +4,7 @@
 import AsyncDisplayKit
 
 final class RoomProfileTextCell: ASCellNode {
-    init(title: String, detail: String? = nil, isHeader: Bool = false, isAction: Bool = false) {
+    init(title: String, detail: String? = nil, isHeader: Bool = false, isAction: Bool = false, isError: Bool = false) {
         super.init()
         automaticallyManagesSubnodes = true
         backgroundColor = .appBG
@@ -16,7 +16,8 @@ final class RoomProfileTextCell: ASCellNode {
         titleNode.maximumNumberOfLines = isHeader ? 1 : 2
         let detailNode = ASTextNode()
         detailNode.attributedText = NSAttributedString(string: detail ?? "", attributes: [
-            .font: UIFont.preferredFont(forTextStyle: .caption1), .foregroundColor: UIColor.secondaryLabel
+            .font: UIFont.preferredFont(forTextStyle: .caption1),
+            .foregroundColor: isError ? UIColor.systemRed : UIColor.secondaryLabel
         ])
         detailNode.maximumNumberOfLines = 3
         layoutSpecBlock = { _, _ in

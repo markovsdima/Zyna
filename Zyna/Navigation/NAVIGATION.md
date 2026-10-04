@@ -72,6 +72,21 @@ Interactive cancellation preserves residency and route state. Stack mutations
 requested during a transition wait for its completion. Deep pops materialize
 the destination before the transition; afterward the preceding chat is warmed.
 
+### Pinned messages in the room profile
+
+The pinned banner's list button opens the room profile on its Pinned page.
+Room Details reuses a matching profile already in the stack and selects that
+page before the return animation. There is no separate pinned-message controller.
+Once visited by tap or swipe, the page stays available for the profile session,
+even after the last pin is removed. A cancelled swipe does not count as a visit.
+
+Selecting a pin prepares the existing chat with the `.message` target kind,
+then pops to its route. A pin absent from the local cache remains selectable;
+history loading and unavailable-event handling use the same navigation path.
+Unpinning rechecks live permissions and uses the resident chat's SDK timeline.
+Opening the list does not create another chat timeline or mark messages read.
+Direct entry also defers attachment discovery until Media or Files is selected.
+
 ### Matrix links from chat
 
 `MatrixLink` validates `matrix.to` URLs and `matrix:` URIs with the SDK.

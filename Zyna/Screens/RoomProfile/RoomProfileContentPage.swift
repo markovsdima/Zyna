@@ -42,6 +42,6 @@ protocol RoomProfileContentPage: AnyObject {
     func updateNearEnd()
 }
 
-extension RoomProfileFilePage: RoomProfileContentPage {
+extension RoomProfileListPage: RoomProfileContentPage {
     var view: UIView { node.view }
 }

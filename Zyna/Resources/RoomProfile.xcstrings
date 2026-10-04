@@ -1,6 +1,66 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Pinned" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закреплённые"
+          }
+        }
+      }
+    },
+    "Unpinning…" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открепление…"
+          }
+        }
+      }
+    },
+    "Unpin message?" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открепить сообщение?"
+          }
+        }
+      }
+    },
+    "This removes the pin for everyone in the room. The message stays in the chat." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Закрепление исчезнет у всех участников комнаты. Само сообщение останется в чате."
+          }
+        }
+      }
+    },
+    "Couldn't load pinned messages. Please try again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось загрузить закреплённые сообщения. Попробуйте ещё раз."
+          }
+        }
+      }
+    },
+    "Couldn't unpin the message. Please try again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось открепить сообщение. Попробуйте ещё раз."
+          }
+        }
+      }
+    },
     "Describe this group. Leave empty to remove the description." : {
       "localizations" : {
         "ru" : {

@@ -6,7 +6,7 @@ import Foundation
 /// Content depth is independent of the shared header's geometry.
 /// The controller owns this state for the lifetime of one open profile.
 struct RoomProfileScrollState {
-    enum Section: Int, CaseIterable { case media, files }
+    enum Section: Int, CaseIterable { case media, files, pinned }
 
     private(set) var selected: Section = .media
     private(set) var collapse: CGFloat = 0
@@ -28,6 +28,20 @@ struct RoomProfileScrollState {
     }
 
     func depth(for section: Section) -> CGFloat { depths[section, default: 0] }
+
+    /// Interpolate between each visible pair, including multi-page jumps.
+    /// Every endpoint is derived from the original gesture, so reversals
+    /// never accumulate rounding or overwrite an independently saved depth.
+    mutating func transition(at position: CGFloat, sections: [Section]) {
+        guard let transition, !sections.isEmpty else { return }
+        let position = min(CGFloat(sections.count - 1), max(0, position))
+        let lower = Int(position.rounded(.down)), upper = Int(position.rounded(.up))
+        func value(_ section: Section) -> CGFloat {
+            section == transition.source || depth(for: section) == 0 ? transition.collapse : headerHeight
+        }
+        let start = value(sections[lower]), end = value(sections[upper])
+        collapse = start + (end - start) * (position - CGFloat(lower))
+    }
 
     mutating func resizeHeader(to height: CGFloat, avatarExpansionHeight: CGFloat? = nil) {
         let height = max(1, height)
@@ -86,13 +100,6 @@ struct RoomProfileScrollState {
     mutating func beginTransition() {
         guard transition == nil else { return }
         transition = Transition(source: selected, collapse: collapse)
-    }
-
-    mutating func transition(to target: Section, progress: CGFloat) {
-        guard let transition else { return }
-        let targetCollapse = depth(for: target) > 0 ? headerHeight : transition.collapse
-        let fraction = min(1, max(0, progress))
-        collapse = transition.collapse + (targetCollapse - transition.collapse) * fraction
     }
 
     mutating func finishTransition(at section: Section) {

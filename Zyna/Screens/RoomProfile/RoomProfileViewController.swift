@@ -11,7 +11,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     var onInformation: (() -> Void)?
     var onLegacyAttachments: (() -> Void)?
     var onAction: ((RoomProfileAction) -> Void)?
-    var onShowInChat: ((String) async throws -> PreparedPollNavigation)?
+    var onShowInChat: ((String, ChatCatalogTarget) async throws -> PreparedPollNavigation)?
     var onOpenMediaImage: ((RoomMediaDatabase, AttachmentItem, CGRect) async throws -> Void)?
 
     private let model: RoomAttachmentsViewModel?
@@ -23,6 +23,8 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private let room: Room?
     private let titleText: String
     private let profileModel: RoomProfileViewModel?
+    private let pinnedModel: RoomPinnedMessagesModel?
+    var roomIdentifier: String? { profileModel?.snapshot.roomID }
     private let linkSharing = MatrixLinkSharing.forCurrentSession()
     private let header: RoomProfileHeaderNode
     private let contentNode = ASDisplayNode()
@@ -54,6 +56,8 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private let tabs = UISegmentedControl(items: [String(localized: "Media"), String(localized: "Files")])
     private let tabBackground = UIView()
     private var state = RoomProfileScrollState()
+    private var sections: [RoomProfileScrollState.Section] = [.media, .files]
+    private var keepsPinnedSection = false
     private var pages: [RoomProfileScrollState.Section: any RoomProfileContentPage] = [:]
     private let mediaCatalog: RoomMediaCatalog
     private var mediaColumns = 3
@@ -103,6 +107,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private var layingOut = false
     private var previousWidth: CGFloat = 0
     private var isPresentingError = false
+    private let initiallyHasPinnedMessages: Bool
     private var tabHeight: CGFloat { personModel == nil ? 48 : 0 }
     private struct HeaderGeometry: Equatable {
         let top: CGFloat
@@ -116,6 +121,9 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     init(room: Room?, title: String, subtitle: String, model: RoomAttachmentsViewModel?,
          actions: RoomAttachmentsActions, audioPlayer: AudioPlayerService? = nil, mediaCatalog: RoomMediaCatalog? = nil,
          profileModel: RoomProfileViewModel? = nil,
+         pinnedModel: RoomPinnedMessagesModel? = nil,
+         initiallyHasPinnedMessages: Bool = false,
+         initialSection: RoomProfileScrollState.Section = .media,
          personModel: PersonProfileViewModel? = nil,
          blockingFactory: ((String) -> UserBlockingViewModel?)? = nil,
          avatarLoader: @escaping @Sendable (String, Int) async -> UIImage? = { mxc, pixels in
@@ -131,6 +139,14 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         self.blockingFactory = blockingFactory ?? UserBlockingViewModel.currentSessionFactory()
         self.actions = actions
         self.profileModel = profileModel
+        self.pinnedModel = pinnedModel
+        self.initiallyHasPinnedMessages = initiallyHasPinnedMessages
+        if pinnedModel != nil, initialSection == .pinned || initiallyHasPinnedMessages { sections.append(.pinned) }
+        if sections.contains(initialSection) {
+            state.beginTransition()
+            state.finishTransition(at: initialSection)
+        }
+        keepsPinnedSection = initialSection == .pinned
         self.avatarLoader = avatarLoader
         self.avatarDragTranslation = avatarDragTranslation
         self.mediaCatalog = mediaCatalog ?? RoomMediaCatalog()
@@ -175,7 +191,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         pager.delegate = self
         pager.canStartBackFromAnywhere = { [weak self] in
             guard let self else { return false }
-            return self.state.selected == .media && self.state.transition == nil
+            return self.state.selected == self.sections.first && self.state.transition == nil
         }
         pager.isPagingEnabled = true
         pager.isDirectionalLockEnabled = true
@@ -186,7 +202,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         pager.accessibilityIdentifier = "profile.pager"
         pager.isScrollEnabled = personModel == nil
         tabBackground.isHidden = personModel != nil
-        tabs.selectedSegmentIndex = 0
+        rebuildTabs()
         tabs.accessibilityIdentifier = "profile.sections"
         tabs.addTarget(self, action: #selector(selectTab), for: .valueChanged)
         compactTitle.text = titleText
@@ -216,11 +232,12 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         topButton.addTarget(self, action: #selector(scrollToBeginning), for: .touchUpInside)
         playerHost?.install()
         playerHost?.onVisibilityChanged = { [weak self] in self?.view.setNeedsLayout() }
-        ensurePage(.media)
+        ensurePage(state.selected)
         bind()
         bindProfile()
         bindSharing()
-        startTask = Task { [weak self] in await self?.model?.start() }
+        bindPinned()
+        startAttachmentsIfNeeded()
         NotificationCenter.default.publisher(for: UIContentSizeCategory.didChangeNotification)
             .sink { [weak self] _ in
                 self?.header.updateTypography()
@@ -239,6 +256,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             stopAvatarAnimation(finish: true)
             model?.stop()
             profileModel?.stop()
+            pinnedModel?.stop()
             personModel?.stop()
             blocking?.stop()
             mediaCatalog.stop()
@@ -316,8 +334,8 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             updateSharedPan()
         }
         pager.frame = CGRect(x: 0, y: top, width: width, height: max(0, view.bounds.height - top))
-        pager.contentSize = CGSize(width: width * (personModel == nil ? 2 : 1), height: pager.bounds.height)
-        if width != previousWidth { pager.contentOffset.x = width * CGFloat(state.selected.rawValue); previousWidth = width }
+        pager.contentSize = CGSize(width: width * CGFloat(personModel == nil ? sections.count : 1), height: pager.bounds.height)
+        if width != previousWidth { pager.contentOffset.x = width * CGFloat(sections.firstIndex(of: state.selected) ?? 0); previousWidth = width }
         bar.frame = CGRect(x: 0, y: 0, width: width, height: top)
         backButton.frame = CGRect(x: 8, y: top - 48, width: 44, height: 44)
         moreButton.frame = CGRect(x: width - 52, y: top - 48, width: 44, height: 44)
@@ -326,11 +344,12 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         compactTitle.frame = CGRect(x: 100, y: top - 48, width: max(0, width - 158), height: 44)
         topButton.frame = CGRect(x: width - 64, y: view.bounds.height - view.safeAreaInsets.bottom - 64, width: 48, height: 48)
         for (section, page) in pages {
+            guard let index = sections.firstIndex(of: section) else { continue }
             page.headerHeight = state.headerHeight
             page.avatarExpansionHeight = state.avatarExpansionHeight
             page.tabsHeight = tabHeight
             page.collapse = state.collapse
-            page.layout(frame: CGRect(x: width * CGFloat(section.rawValue), y: 0, width: width, height: pager.bounds.height),
+            page.layout(frame: CGRect(x: width * CGFloat(index), y: 0, width: width, height: pager.bounds.height),
                         depth: state.depth(for: section), bottomInset: view.safeAreaInsets.bottom)
         }
         renderHeader()
@@ -357,6 +376,82 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         model.$forceLoadIds.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] ids in
             self?.pages.values.forEach { $0.forceLoadIds = ids; $0.refreshImagePlans() }
         }.store(in: &cancellables)
+    }
+
+    private func startAttachmentsIfNeeded() {
+        guard state.selected != .pinned, startTask == nil, let model else { return }
+        model.tab = state.selected == .media ? .media : .files
+        startTask = Task { await model.start() }
+    }
+
+    private func bindPinned() {
+        guard let pinnedModel else { return }
+        pinnedModel.objectWillChange.debounce(for: .milliseconds(20), scheduler: RunLoop.main).sink { [weak self] in
+            self?.updatePinnedPage()
+            self?.updatePinnedSection()
+        }.store(in: &cancellables)
+        pinnedModel.start()
+    }
+
+    private func rebuildTabs() {
+        tabs.removeAllSegments()
+        for (index, section) in sections.enumerated() {
+            let title: String
+            switch section {
+            case .media: title = String(localized: "Media")
+            case .files: title = String(localized: "Files")
+            case .pinned: title = String(localized: "Pinned", table: "RoomProfile")
+            }
+            tabs.insertSegment(withTitle: title, at: index, animated: false)
+        }
+        tabs.selectedSegmentIndex = sections.firstIndex(of: state.selected) ?? 0
+    }
+
+    private func updatePinnedSection() {
+        guard let pinnedModel, state.transition == nil, tabs.isEnabled else { return }
+        let visible = keepsPinnedSection || state.selected == .pinned
+            || (initiallyHasPinnedMessages && pinnedModel.isLoading)
+            || pinnedModel.loadError != nil || !pinnedModel.items.isEmpty
+        let next: [RoomProfileScrollState.Section] = visible ? [.media, .files, .pinned] : [.media, .files]
+        guard sections != next else { return }
+        sections = next
+        pages[.pinned]?.view.isHidden = !visible
+        rebuildTabs()
+        view.setNeedsLayout()
+    }
+
+    private func updatePinnedPage() {
+        guard let pinnedModel, let page = pages[.pinned] else { return }
+        let items = pinnedModel.items, loading = pinnedModel.isLoading, error = pinnedModel.loadError
+        projectionQueue.async { [weak page] in
+            var rows = items.map { item in
+                RoomProfileRow(id: item.eventId, title: item.title,
+                    detail: item.isUnpinning ? String(localized: "Unpinning…", table: "RoomProfile")
+                        : item.unpinError ?? item.subtitle,
+                    item: nil, isHeader: false, isAction: false, pinned: item)
+            }
+            if loading || error != nil || items.isEmpty {
+                rows.append(RoomProfileRow(id: "pinned.status",
+                    title: error != nil ? String(localized: "Try Again")
+                        : (loading ? String(localized: "Loading") : String(localized: "No pinned messages")),
+                    detail: error, item: nil, isHeader: false, isAction: error != nil))
+            }
+            let result = rows
+            DispatchQueue.main.async { page?.update(result) }
+        }
+    }
+
+    private func confirmUnpin(_ eventID: String) {
+        guard let pinnedModel, pinnedModel.items.contains(where: { $0.eventId == eventID && $0.canUnpin }),
+              presentedViewController == nil, view.window != nil else { return }
+        let alert = UIAlertController(title: String(localized: "Unpin message?", table: "RoomProfile"),
+            message: String(localized: "This removes the pin for everyone in the room. The message stays in the chat.", table: "RoomProfile"),
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+        alert.addAction(UIAlertAction(title: String(localized: "Unpin"), style: .destructive) { [weak pinnedModel] _ in
+            pinnedModel?.unpin(eventID)
+        })
+        present(alert, animated: true)
     }
 
     private func bindProfile() {
@@ -586,7 +681,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
 
     private func updatePages(catalogChanged: Bool = false) {
         guard model != nil else { return }
-        for (section, page) in pages {
+        for (section, page) in pages where section != .pinned {
             let base = catalog[section] ?? []
             let footer = footerRow(isEmpty: section == .media && mediaCatalog.source != nil ? mediaCatalog.count == 0 : base.isEmpty, section: section)
             guard catalogChanged || lastFooter[section] != footer else { continue }
@@ -637,7 +732,13 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             }
             page = grid
         } else {
-            page = RoomProfileFilePage()
+            let list = RoomProfileListPage()
+            if section == .pinned {
+                list.accessibilityID = "profile.pinned"
+                list.onOpenPinned = { [weak self] id in self?.showInChat(id, targetKind: .message) }
+                list.onUnpin = { [weak self] id in self?.confirmUnpin(id) }
+            }
+            page = list
         }
         pages[section] = page
         renderedHeaderGeometry = nil
@@ -645,6 +746,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         pager.addSubview(page.view)
         page.install()
         page.isActive = section == state.selected
+        page.view.accessibilityElementsHidden = section != state.selected
         page.forceLoadIds = model?.forceLoadIds ?? []
         page.fullFileThreshold = model?.fullFileThreshold ?? AttachmentThumbnailPlan.defaultFullFileThreshold
         page.restorationAnchor = anchors.removeValue(forKey: section)
@@ -697,9 +799,11 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             self.pager.isScrollEnabled = !locked && self.personModel == nil
             self.tabs.isEnabled = !locked
             self.topButton.isEnabled = !locked
+            if !locked { self.updatePinnedSection() }
         }
         page.onRequestImage = { [weak self] item in self?.model?.requestLoad(item) }
         page.onLoad = { [weak self] in
+            if section == .pinned { self?.pinnedModel?.reload(); return }
             guard let model = self?.model else { return }
             if model.pendingDecryptionCount > 0 { model.retryDecryption(reason: "profile") }
             model.loadMoreTapped()
@@ -709,12 +813,13 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             self.state.restoreDepth(depth, for: section)
         }
         page.onNearEnd = { [weak self] near in
+            guard section != .pinned else { return }
             let tab: RoomAttachmentsViewModel.Tab = section == .media ? .media : .files
             if near { self?.model?.sentinelAppeared(in: tab, from: .profile) }
             else { self?.model?.sentinelDisappeared(in: tab, from: .profile) }
         }
         if section == state.selected { updateSharedPan() }
-        updatePages()
+        if section == .pinned { updatePinnedPage() } else { updatePages() }
         view.setNeedsLayout()
         return page
     }
@@ -898,13 +1003,30 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     @objc private func goBack() { onBack?() }
 
     @objc private func selectTab() {
-        guard let target = RoomProfileScrollState.Section(rawValue: tabs.selectedSegmentIndex), target != state.selected else { return }
+        guard sections.indices.contains(tabs.selectedSegmentIndex) else { return }
+        selectSection(sections[tabs.selectedSegmentIndex], animated: true)
+    }
+
+    func selectSection(_ target: RoomProfileScrollState.Section, animated: Bool) {
+        loadViewIfNeeded()
+        // Stop the previous programmatic journey before starting a new one.
+        // Otherwise its later animation callback could commit the wrong page.
+        if state.transition != nil {
+            let width = pager.bounds.width
+            let index = width > 0 ? (pager.contentOffset.x / width).rounded() : 0
+            pager.setContentOffset(CGPoint(x: index * width, y: 0), animated: false)
+            finishPaging()
+        }
+        if target == .pinned { keepsPinnedSection = true; updatePinnedSection() }
+        guard let index = sections.firstIndex(of: target), target != state.selected else { return }
         beginPaging()
-        if UIAccessibility.isReduceMotionEnabled {
-            pager.setContentOffset(CGPoint(x: CGFloat(target.rawValue) * pager.bounds.width, y: 0), animated: false)
+        ensurePage(target)
+        view.layoutIfNeeded()
+        if !animated || UIAccessibility.isReduceMotionEnabled {
+            pager.setContentOffset(CGPoint(x: CGFloat(index) * pager.bounds.width, y: 0), animated: false)
             finishPaging()
         } else {
-            pager.setContentOffset(CGPoint(x: CGFloat(target.rawValue) * pager.bounds.width, y: 0), animated: true)
+            pager.setContentOffset(CGPoint(x: CGFloat(index) * pager.bounds.width, y: 0), animated: true)
         }
     }
 
@@ -922,17 +1044,28 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         pages[state.selected]?.isActive = false
         fpsBooster.start()
         state.beginTransition()
-        for section in RoomProfileScrollState.Section.allCases { ensurePage(section) }
+        if let index = sections.firstIndex(of: state.selected) {
+            for neighbor in max(0, index - 1)...min(sections.count - 1, index + 1) {
+                ensurePage(sections[neighbor])
+            }
+        }
         view.layoutIfNeeded()
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { beginPaging() }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !layingOut, let transition = state.transition, pager.bounds.width > 0 else { return }
+        guard !layingOut, state.transition != nil, pager.bounds.width > 0 else { return }
         let position = pager.contentOffset.x / pager.bounds.width
-        let target: RoomProfileScrollState.Section = transition.source == .media ? .files : .media
-        state.transition(to: target, progress: abs(position - CGFloat(transition.source.rawValue)))
+        // A tab tap can travel across several pages. Materialize only the
+        // pair currently crossing the viewport, also when the gesture reverses.
+        let clamped = min(CGFloat(sections.count - 1), max(0, position))
+        var addedPage = false
+        for index in Int(clamped.rounded(.down))...Int(clamped.rounded(.up)) where pages[sections[index]] == nil {
+            ensurePage(sections[index]); addedPage = true
+        }
+        if addedPage { view.layoutIfNeeded() }
+        state.transition(at: position, sections: sections)
         renderHeader()
     }
 
@@ -945,12 +1078,14 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private func finishPaging() {
         fpsBooster.stop()
         guard pager.bounds.width > 0 else { return }
-        let index = min(1, max(0, Int((pager.contentOffset.x / pager.bounds.width).rounded())))
-        guard let section = RoomProfileScrollState.Section(rawValue: index) else { return }
+        let index = min(sections.count - 1, max(0, Int((pager.contentOffset.x / pager.bounds.width).rounded())))
+        let section = sections[index]
         state.finishTransition(at: section)
+        if section == .pinned { keepsPinnedSection = true }
         updateSharedPan()
         tabs.selectedSegmentIndex = index
-        model?.tab = section == .media ? .media : .files
+        if section != .pinned { model?.tab = section == .media ? .media : .files }
+        startAttachmentsIfNeeded()
         for (key, page) in pages {
             page.isActive = key == section
             page.view.accessibilityElementsHidden = key != section
@@ -959,6 +1094,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             page.updateNearEnd()
         }
         renderHeader()
+        updatePinnedSection()
         let target = pagingAvatarTarget
         pagingAvatarTarget = nil
         if state.avatarProgress > 0, state.avatarProgress < 1 {
@@ -1005,7 +1141,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         }
     }
 
-    private func showInChat(_ eventId: String) {
+    private func showInChat(_ eventId: String, targetKind: ChatCatalogTarget = .attachment) {
         guard navigationTask == nil, let operation = onShowInChat else { return }
         moreButton.isHidden = true
         navigationProgress.startAnimating()
@@ -1016,7 +1152,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
                 self?.navigationProgress.stopAnimating()
             }
             do {
-                let prepared = try await operation(eventId)
+                let prepared = try await operation(eventId, targetKind)
                 try Task.checkCancellation()
                 guard prepared.open() else { throw PollNavigationError.unavailable }
             } catch is CancellationError {

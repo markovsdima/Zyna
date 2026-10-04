@@ -5,7 +5,7 @@ import Foundation
 import MatrixRustSDK
 
 enum MatrixActionFailure {
-    enum Action { case previewRoom, roomAction, loadTopic, saveTopic, createLink }
+    enum Action { case previewRoom, roomAction, loadTopic, saveTopic, createLink, loadPins, unpin }
 
     static func message(for error: Error, action: Action) -> String {
         if case ClientError.MatrixApi(_, let code, _, _) = error {
@@ -43,6 +43,8 @@ enum MatrixActionFailure {
         case .loadTopic: return String(localized: "Couldn't load the description. Please try again.")
         case .saveTopic: return String(localized: "Couldn't save the description. Please try again.")
         case .createLink: return String(localized: "Couldn't create the link. Please try again.")
+        case .loadPins: return String(localized: "Couldn't load pinned messages. Please try again.", table: "RoomProfile")
+        case .unpin: return String(localized: "Couldn't unpin the message. Please try again.", table: "RoomProfile")
         }
     }
 }

@@ -37,6 +37,7 @@ enum AppIcon {
     case bubbleLeft
     case pin
     case pinSlash
+    case listBullet
     case personBadgeMinus
     case personBadgePlus
     case personSlash
@@ -85,6 +86,7 @@ enum AppIcon {
         case .bubbleLeft:       return "bubble.left.fill"
         case .pin:              return "pin.fill"
         case .pinSlash:         return "pin.slash.fill"
+        case .listBullet:       return "list.bullet"
         case .personBadgeMinus: return "person.badge.minus"
         case .personBadgePlus:  return "person.badge.plus"
         case .personSlash:      return "person.slash"

@@ -117,6 +117,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     var onTitleTapped: ((String) -> Void)?
     var onSecurityUserTapped: ((String) -> Void)?
     var onRoomDetailsTapped: (() -> Void)?
+    var onAllPinnedMessagesTapped: (() -> Void)?
     var onMatrixLinkTapped: ((ChatLinkOpening) -> Void)?
     var onForwardMessage: ((ChatMessage) -> Void)?
 
@@ -335,6 +336,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     var canPresentVoicePlaybackIsland: Bool {
         !isPreviewMode
+    }
+
+    var hasPinnedMessages: Bool { !viewModel.pinnedMessagesState.eventIds.isEmpty }
+
+    func unpinMessage(eventId: String) async throws {
+        guard let timeline = viewModel.liveTimelineService else { throw RoomPinnedActionError.timelineUnavailable }
+        _ = try await timeline.unpinEvent(eventId: eventId)
     }
 
     func navigateToEvent(eventId: String) {
@@ -557,6 +565,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
             pinnedMessagesBannerView.isHidden = true
             pinnedMessagesBannerView.alpha = 0
+            pinnedMessagesBannerView.onShowAll = { [weak self] in self?.onAllPinnedMessagesTapped?() }
             pinnedMessagesBannerView.addTarget(
                 self,
                 action: #selector(pinnedMessagesBannerTapped),
