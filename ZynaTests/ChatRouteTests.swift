@@ -53,6 +53,13 @@ private final class RouteRoom: Room, @unchecked Sendable {
 @Suite("Bounded chat routes", .serialized)
 @MainActor
 struct ChatRouteTests {
+    private func datedMessage(_ index: Int) -> StoredMessage {
+        var record = TimelineWriteFixture.message(index)
+        // Two messages per day group, well apart across time zones/DST.
+        record.timestamp = 1_700_000_000 + Double(index / 2) * 172_800 + Double(index % 2) * 60
+        return record
+    }
+
     private func wait(_ condition: () async -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while !(await condition()), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
@@ -164,6 +171,151 @@ struct ChatRouteTests {
             return abs(distance - anchor.distance) < 1
         }
         #expect(route.chat?.captureNavigationState().anchor?.eventID == anchor.eventID)
+    }
+
+    @Test("A permalink positions a message before revealing a new or existing route", arguments: [false, true])
+    func preparedLinkViewport(existing: Bool) async throws {
+        let database = try TimelineWriteFixture.database(legacyMessages: (0..<600).map(TimelineWriteFixture.message))
+        let audio = AudioPlayerService(), root = UIViewController(), preview = UIViewController()
+        let navigation = ZynaNavigationController(rootViewController: root)
+        let window = try window(navigation)
+        defer { navigation.setStack([root], animated: false); window.isHidden = true; window.rootViewController = nil }
+        let model = ChatViewModel(testingRoomId: TimelineWriteFixture.roomID, dbQueue: database,
+            window: MessageWindow(roomId: TimelineWriteFixture.roomID, dbQueue: database), mode: .normal)
+        let route = ChatRouteViewController(roomID: TimelineWriteFixture.roomID) { _ in
+            let chat = ChatViewController(viewModel: model, audioPlayer: audio)
+            model.prepareInitialHistoryWindow()
+            return chat
+        }
+        if existing { navigation.push(route, animated: false) }
+        navigation.push(preview, animated: false)
+        let chat = try #require(route.materializedChat())
+        if !existing {
+            route.view.frame = navigation.view.bounds
+            route.view.layoutIfNeeded()
+        }
+        let prepared = try await chat.preparePollNavigation(eventId: "$event-42", targetKind: .message)
+        #expect(prepared.open())
+        if existing { navigation.pop(to: route, animated: false) }
+        else { navigation.setStack([root, route], animated: false) }
+        try await wait {
+            chat.view.layoutIfNeeded()
+            guard let index = model.indexOfMessage(eventId: "$event-42") else { return false }
+            let list = chat.node.list
+            let visible = CGRect(origin: list.contentOffset, size: list.bounds.size)
+            return visible.intersects(list.rectForItem(at: IndexPath(row: index, section: 0)))
+        }
+        #expect(navigation.stack.count == 2 && preview.parent == nil)
+    }
+
+    @Test("Same-chat links keep nearby cells and animate a prepared distant window", arguments: [false, true])
+    func visibleLinkViewport(distant: Bool) async throws {
+        let records = (0..<(distant ? 600 : 30)).map(datedMessage)
+        let database = try TimelineWriteFixture.database(legacyMessages: records)
+        let history = MessageWindow(roomId: TimelineWriteFixture.roomID, dbQueue: database)
+        let model = ChatViewModel(testingRoomId: TimelineWriteFixture.roomID, dbQueue: database,
+            window: history, mode: .normal)
+        let chat = ChatViewController(viewModel: model, audioPlayer: AudioPlayerService())
+        let root = UIViewController(), navigation = ZynaNavigationController(rootViewController: root)
+        let window = try window(navigation)
+        defer { navigation.setStack([root], animated: false); window.isHidden = true; window.rootViewController = nil }
+        navigation.push(chat, animated: false)
+        model.prepareInitialHistoryWindow()
+        try await wait { chat.node.list.layout.geometry.ids.count >= min(records.count, MessageWindow.windowSize) }
+        chat.view.layoutIfNeeded()
+        let rowIndex = try #require(model.indexOfMessage(eventId: distant ? "$event-597" : "$event-2"))
+        let visible = IndexPath(row: rowIndex, section: 0)
+        // This valid row is past the end of the messages-only array.
+        if !distant { try #require(rowIndex >= model.messages.count) }
+        try #require(model.rows.prefix(rowIndex).contains { $0.dateDivider != nil })
+        chat.node.list.scrollToItem(at: visible, at: .centeredVertically, animated: false)
+        try await wait { chat.node.list.nodeForItem(at: visible) != nil }
+        let eventID = distant ? "$event-42" : try #require(model.rows[visible.row].message?.eventId)
+        let cell = try #require(chat.node.list.nodeForItem(at: visible))
+        let generation = history.generation
+        let prepared = try await chat.preparePollNavigation(eventId: eventID, targetKind: .message, animated: true)
+        #expect(prepared.open())
+        if distant {
+            #expect(history.generation > generation)
+            if !UIAccessibility.isReduceMotionEnabled {
+                #expect(chat.node.list.view.layer.animation(forKey: "teleportIn") != nil)
+            }
+        } else {
+            #expect(history.generation == generation)
+            #expect(chat.node.list.nodeForItem(at: visible) === cell)
+            #expect(chat.node.list.view.layer.animation(forKey: "teleportIn") == nil)
+        }
+        try await wait {
+            guard let index = model.indexOfMessage(eventId: eventID) else { return false }
+            let list = chat.node.list
+            return CGRect(origin: list.contentOffset, size: list.bounds.size)
+                .intersects(list.rectForItem(at: IndexPath(row: index, section: 0)))
+        }
+    }
+
+    @Test("Navigation validates the target row's content, not a media neighbor shifted by a date divider")
+    func linkedRowContentType() async throws {
+        var records = (0..<30).map(datedMessage)
+        records[26].contentType = "image"
+        records[26].contentMediaJSON = "{\"url\":\"mxc://example.org/photo\"}"
+        let database = try TimelineWriteFixture.database(legacyMessages: records)
+        let model = ChatViewModel(testingRoomId: TimelineWriteFixture.roomID, dbQueue: database,
+            window: MessageWindow(roomId: TimelineWriteFixture.roomID, dbQueue: database), mode: .normal)
+        let chat = ChatViewController(viewModel: model, audioPlayer: AudioPlayerService())
+        let root = UIViewController(), navigation = ZynaNavigationController(rootViewController: root)
+        let window = try window(navigation)
+        defer { navigation.setStack([root], animated: false); window.isHidden = true; window.rootViewController = nil }
+        navigation.push(chat, animated: false)
+        model.prepareInitialHistoryWindow()
+        try await wait { chat.node.list.layout.geometry.ids.count >= records.count }
+        let rowIndex = try #require(model.indexOfMessage(eventId: "$event-27"))
+        try #require(model.rows.prefix(rowIndex).contains { $0.dateDivider != nil })
+        try #require(rowIndex == model.messages.firstIndex { $0.eventId == "$event-26" })
+        let path = IndexPath(row: rowIndex, section: 0)
+        chat.node.list.scrollToItem(at: path, at: .centeredVertically, animated: false)
+        try await wait { chat.node.list.nodeForItem(at: path) != nil }
+        // A text event is unavailable as an attachment, even when the old
+        // messages[rowIndex] access happens to point at an image.
+        await #expect(throws: PollNavigationError.unavailable) {
+            _ = try await chat.preparePollNavigation(eventId: "$event-27", targetKind: .attachment, animated: true)
+        }
+    }
+
+    @Test("Repeated bubble taps reuse the request; another chat navigation cancels it immediately", arguments: [false, true])
+    func inlineLinkInteraction(goToLive: Bool) async throws {
+        let url = URL(string: "https://matrix.to/#/!linked:example.org/$event")!
+        let records = (0..<30).map { index in
+            var record = datedMessage(index)
+            record.contentBody = url.absoluteString
+            return record
+        }
+        let database = try TimelineWriteFixture.database(legacyMessages: records)
+        let model = ChatViewModel(testingRoomId: TimelineWriteFixture.roomID, dbQueue: database,
+            window: MessageWindow(roomId: TimelineWriteFixture.roomID, dbQueue: database), mode: .normal)
+        let chat = ChatViewController(viewModel: model, audioPlayer: AudioPlayerService())
+        let root = UIViewController(), navigation = ZynaNavigationController(rootViewController: root)
+        let window = try window(navigation)
+        defer { navigation.setStack([root], animated: false); window.isHidden = true; window.rootViewController = nil }
+        var requests: [ChatLinkOpening] = []
+        chat.onMatrixLinkTapped = { requests.append($0) }
+        navigation.push(chat, animated: false)
+        model.prepareInitialHistoryWindow()
+        func visibleMessages() -> [IndexPath] {
+            chat.node.list.indexPathsForVisibleItems().sorted().filter { model.rows[$0.row].message != nil }
+        }
+        try await wait { visibleMessages().count >= 2 }
+        let visible = visibleMessages()
+        let first = try #require(chat.node.list.nodeForItem(at: visible[0]) as? TextMessageCellNode)
+        let second = try #require(chat.node.list.nodeForItem(at: visible[1]) as? TextMessageCellNode)
+        let tapFirst = try #require(first.onLinkTapped), tapSecond = try #require(second.onLinkTapped)
+        tapFirst(url); tapSecond(url)
+        #expect(requests.count == 1 && requests[0].isActive)
+        if goToLive { chat.perform(NSSelectorFromString("scrollToLiveTapped")) }
+        else { chat.navigateToEvent(eventId: try #require(model.rows[visible[0].row].message?.eventId)) }
+        #expect(!requests[0].isActive)
+        tapFirst(url)
+        #expect(requests.count == 2 && requests[1].isActive)
+        requests[1].cancel()
     }
 
     @Test("An evicted chat releases its controller and restores formatted input and forwarding")

@@ -13,6 +13,46 @@ import Testing
 struct ChatPollNavigationTests {
     private let roomId = TimelineWriteFixture.roomID
 
+    @Test("A message link waits for a new timeline before requesting missing history")
+    func permalinkStartup() async throws {
+        let database = try TimelineWriteFixture.database()
+        let record = TimelineWriteFixture.message(42)
+        var ready = false, readinessChecks = 0, calls = 0
+        let task = Task {
+            try await ChatPollNavigation.load(eventId: "$event-42", roomId: roomId, database: database,
+                targetKind: .message, isCurrent: { true },
+                isReadyForPagination: { readinessChecks += 1; return ready }, paginate: {
+                    calls += 1
+                    try? await database.write { try record.save($0) }
+                    return .page(reachedStart: false)
+                })
+        }
+        try await ChatBackgroundPresentationTests.wait { readinessChecks > 0 }
+        #expect(calls == 0)
+        ready = true
+        try await task.value
+        #expect(calls == 1)
+    }
+
+    @Test("A permalink prepares ordinary text, but never exposes a hidden or deleted message", arguments: [0, 1, 2])
+    func permalinkMessage(visibility: Int) async throws {
+        var record = TimelineWriteFixture.message(42)
+        if visibility == 2 { record.contentType = "redacted" }
+        let database = try TimelineWriteFixture.database(legacyMessages: [record])
+        let (_, model) = model(database)
+        defer { model.cleanup() }
+        if visibility == 1 { model.hideMessage(record.id) }
+        if visibility == 0 {
+            let prepared = try await model.preparePollNavigation(eventId: "$event-42", targetKind: .message)
+            #expect(prepared.open())
+            #expect(model.indexOfMessage(eventId: "$event-42") != nil)
+        } else {
+            await #expect(throws: PollNavigationError.self) {
+                _ = try await model.preparePollNavigation(eventId: "$event-42", targetKind: .message)
+            }
+        }
+    }
+
     @Test("Bootstrap survives an overlapping failed or cancelled catalog jump", arguments: [false, true])
     func bootstrapDuringJump(cancel: Bool) async throws {
         let database = try TimelineWriteFixture.database(legacyMessages: (0..<250).map(TimelineWriteFixture.message))

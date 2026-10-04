@@ -6,6 +6,13 @@
 import AsyncDisplayKit
 import Combine
 import MatrixRustSDK
+import SafariServices
+
+@MainActor
+private final class MatrixLinkRouteContext {
+    weak var preview: UIViewController?
+    weak var preparingChat: ChatViewController?
+}
 
 private enum ChatScreenTarget {
     case live(Room)
@@ -237,7 +244,8 @@ final class ChatsCoordinator {
     private func showSpace(
         _ space: RoomModel,
         animated: Bool,
-        presentation: SpacePresentationKind = .storyline
+        presentation: SpacePresentationKind = .storyline,
+        replacing preview: UIViewController? = nil
     ) {
         let vc = SpaceViewController(
             space: space,
@@ -275,7 +283,11 @@ final class ChatsCoordinator {
                 }
             )
         }
-        navigationController.push(vc, animated: animated)
+        if let preview, navigationController.topViewController === preview {
+            navigationController.setStack(Array(navigationController.stack.dropLast()) + [vc], animated: false)
+        } else {
+            navigationController.push(vc, animated: animated)
+        }
     }
 
     private func requiresSpaceJoinPreview(_ space: RoomModel) -> Bool {
@@ -605,8 +617,194 @@ final class ChatsCoordinator {
         vc.onForwardMessage = { [weak self] message in
             self?.showForwardPicker(message: message)
         }
+        vc.onMatrixLinkTapped = { [weak self, weak vc] request in
+            Task { @MainActor [weak self, weak vc] in
+                guard let vc, request.isActive else { return }
+                self?.openMatrixLink(request, from: vc)
+            }
+        }
         return (vc, viewModel)
     }
+
+    @MainActor
+    private func openMatrixLink(_ request: ChatLinkOpening, from origin: ChatViewController) {
+        guard let client = MatrixClientService.shared.client,
+              let session = MatrixClientService.shared.currentLocalSessionId else { request.finish(); return }
+        let isCurrent = {
+            MatrixClientService.shared.client === client
+                && MatrixClientService.shared.currentLocalSessionId == session
+        }
+        let task = Task { [weak self, weak origin, weak request] in
+            guard let request else { return }
+            let url = request.url
+            let link = await Task.detached { MatrixLink.parse(url) }.value
+            guard let self, request.isActive, !Task.isCancelled else { return }
+            self.navigationController.performWhenIdle { [weak self, weak origin, weak request] in
+                guard let self, let origin, let request, request.isActive, isCurrent(),
+                      self.navigationController.topViewController?.residentChat === origin,
+                      origin.presentedViewController == nil else { request?.cancel(); return }
+                switch link {
+                case .person(let id):
+                    request.finish()
+                    self.showProfile(userId: id)
+                case .room(let link):
+                    self.openMatrixRoomLink(link, source: SDKMatrixRoomLinkSource(client: client), isCurrent: isCurrent,
+                                            from: origin, request: request)
+                case .none:
+                    request.finish()
+                    let alert = UIAlertController(
+                        title: String(localized: "Couldn't open link", table: "MatrixLinks"),
+                        message: String(localized: "This Matrix link is invalid or unsupported.", table: "MatrixLinks"),
+                        preferredStyle: .alert)
+                    if let url = MatrixLink.browserFallback(request.url) {
+                        alert.addAction(UIAlertAction(title: String(localized: "Open in browser"), style: .default) { [weak self, weak origin, weak alert] _ in
+                            alert?.dismiss(animated: true) {
+                                guard let self, let origin, isCurrent(),
+                                      self.navigationController.topViewController?.residentChat === origin else { return }
+                                origin.present(SFSafariViewController(url: url), animated: true)
+                            }
+                        })
+                    }
+                    alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel))
+                    origin.present(alert, animated: true)
+                }
+            }
+        }
+        request.onCancel = { task.cancel() }
+    }
+
+    @MainActor
+    private func openMatrixRoomLink(_ link: MatrixRoomLink, source: any MatrixRoomLinkSource,
+                                    isCurrent: @escaping () -> Bool,
+                                    from origin: ChatViewController, request: ChatLinkOpening) {
+        let model = MatrixRoomLinkModel(link: link, source: source, isCurrentSession: isCurrent)
+        let context = MatrixLinkRouteContext()
+        let isVisible = { [weak self, weak origin, weak request] in
+            guard let self, isCurrent(), self.navigationController.presentedViewController == nil else { return false }
+            if let preview = context.preview {
+                return self.navigationController.topViewController === preview && preview.presentedViewController == nil
+            }
+            return request?.isActive == true && origin != nil
+                && self.navigationController.topViewController?.residentChat === origin
+                && origin?.presentedViewController == nil
+        }
+        request.onCancel = {
+            model.stop()
+            context.preparingChat?.finishNavigationSession()
+        }
+        model.onCancelled = { [weak request] in
+            context.preparingChat?.finishNavigationSession()
+            context.preparingChat = nil
+            request?.cancel()
+        }
+        model.onNeedsPreview = { [weak self, weak model, weak request] in
+            self?.navigationController.performWhenIdle { [weak self, weak model, weak request] in
+                guard let self, let model, isVisible(), context.preview == nil else { request?.cancel(); return }
+                let vc = GlassHostingController(title: String(localized: "Room preview", table: "MatrixLinks"),
+                    rootView: MatrixRoomLinkView(model: model), audioPlayer: self.audioPlayer,
+                    onBack: { [weak self] in self?.navigationController.pop() })
+                vc.onRemovedFromParent = { [weak model] in
+                    model?.stop()
+                    context.preparingChat?.finishNavigationSession()
+                }
+                context.preview = vc
+                request?.finish()
+                self.navigationController.push(vc)
+            }
+        }
+        model.onFailure = { [weak self, weak origin, weak model, weak request] in
+            context.preparingChat?.finishNavigationSession()
+            context.preparingChat = nil
+            self?.navigationController.performWhenIdle { [weak origin, weak model, weak request] in
+                guard context.preview == nil else { return }
+                guard let origin, let model, let request, isVisible(), let error = model.error else {
+                    request?.cancel(); return
+                }
+                request.setLoading(false)
+                let alert = UIAlertController(title: String(localized: "Couldn't open link", table: "MatrixLinks"),
+                                              message: error, preferredStyle: .alert)
+                let retry: (Bool) -> Void = { [weak alert] openRoom in
+                    alert?.dismiss(animated: true) {
+                        guard isVisible() else { request.cancel(); return }
+                        request.setLoading(true)
+                        if openRoom { model.openRoom() } else { model.retry() }
+                    }
+                }
+                alert.addAction(UIAlertAction(title: String(localized: "Try Again"), style: .default) { _ in retry(false) })
+                if link.eventID != nil, model.preview?.action == .open {
+                    alert.addAction(UIAlertAction(title: String(localized: "Open Room"), style: .default) { _ in retry(true) })
+                }
+                alert.addAction(UIAlertAction(title: String(localized: "Cancel"), style: .cancel) { _ in request.cancel() })
+                origin.present(alert, animated: true)
+            }
+        }
+        model.prepareOpen = { [weak self, weak origin, weak request] preview, eventID in
+            guard let self, isVisible(), let room = preview.room else {
+                request?.cancel(); throw CancellationError()
+            }
+            // Dispose of an unattached destination from an earlier failed attempt.
+            context.preparingChat?.finishNavigationSession()
+            context.preparingChat = nil
+            if preview.info.roomType == .space {
+                guard eventID == nil else { throw PollNavigationError.unavailable }
+                let space = await Task.detached { preview.spaceModel() }.value
+                return PreparedPollNavigation { [weak self, weak request] in
+                    guard let self, isVisible() else { return false }
+                    request?.finish()
+                    self.showSpace(space, animated: context.preview == nil, replacing: context.preview)
+                    return true
+                }
+            }
+            let existing = self.navigationController.stack.last { $0.chatRoomIdentifier == preview.info.roomId }
+            let destination = existing ?? self.makeChatRoute(target: .live(room))
+            var prepared: PreparedPollNavigation?
+            if let eventID {
+                guard let chat = destination.materializedChat() else { throw PollNavigationError.loadingFailed }
+                if existing == nil {
+                    context.preparingChat = chat
+                    destination.view.frame = self.navigationController.view.bounds
+                    destination.view.layoutIfNeeded()
+                }
+                prepared = try await chat.preparePollNavigation(eventId: eventID, targetKind: .message,
+                                                                animated: chat === origin)
+            }
+            try Task.checkCancellation()
+            return PreparedPollNavigation { [weak self, weak request] in
+                guard let self, isVisible(),
+                      existing == nil || self.navigationController.stack.contains(where: { $0 === destination }),
+                      prepared?.open() ?? true else { return false }
+                context.preparingChat = nil
+                request?.finish()
+                if existing != nil {
+                    if self.navigationController.topViewController !== destination {
+                        self.navigationController.pop(to: destination)
+                    }
+                } else if context.preview != nil {
+                    self.navigationController.setStack(
+                        Array(self.navigationController.stack.dropLast()) + [destination], animated: false)
+                } else {
+                    self.navigationController.push(destination)
+                }
+                return true
+            }
+        }
+        model.onReady = { [weak self, weak model, weak request] prepared in
+            self?.navigationController.performWhenIdle { [weak model, weak request] in
+                guard let model, model.isCurrent, isVisible() else { request?.cancel(); return }
+                if !prepared.open() { model.routingFailed() }
+                else if context.preview == nil { model.stop() }
+            }
+        }
+        model.start()
+    }
+
+    #if DEBUG
+    @MainActor
+    func openMatrixRoomLinkForTesting(_ link: MatrixRoomLink, source: any MatrixRoomLinkSource,
+                                     origin: ChatViewController, request: ChatLinkOpening) {
+        openMatrixRoomLink(link, source: source, isCurrent: { true }, from: origin, request: request)
+    }
+    #endif
 
     private func openChatWithForward(
         roomModel: RoomModel,

@@ -41,6 +41,9 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     var onRoomLeft: ((String) -> Void)?
 
     private let room: Room
+    private let roomClient = MatrixClientService.shared.client
+    private let roomSessionID = MatrixClientService.shared.currentLocalSessionId
+    private weak var audioPlayer: AudioPlayerService?
     private let spaceMembershipService: RoomSpaceMembershipService
     private let memberCount: Int?
     private var directState: DirectRoomState
@@ -80,6 +83,10 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         latestRoomInfo?.membership == .joined
             && latestRoomInfo?.powerLevels?.canOwnUserSendState(stateEvent: .roomAvatar) == true
     }
+    private var canEditTopic: Bool {
+        latestRoomInfo.map { RoomTopicSnapshot($0).canEdit } == true
+    }
+    private var canEditDetails: Bool { canEditName || canEditAvatar || canEditTopic }
     private var canInvite: Bool {
         latestRoomInfo?.membership == .joined && latestRoomInfo?.powerLevels?.canOwnUserInvite() == true
     }
@@ -93,6 +100,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         initiallyEditing: Bool = false
     ) {
         self.room = room
+        self.audioPlayer = audioPlayer
         self.spaceMembershipService = RoomSpaceMembershipService(roomListService: roomListService)
         self.memberCount = memberCount
         self.directState = DirectRoomState(userId: directUserId)
@@ -154,13 +162,14 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         node.onRolesPermissionsTapped = { [weak self] in
             self?.onRolesPermissionsTapped?()
         }
+        node.onTopicTapped = { [weak self] in self?.openTopicEditor() }
 
         node.onLeaveTapped = { [weak self] in
             self?.beginLeaveFlow()
         }
 
         node.setEditing(false)
-        node.setPermissions(editName: false, editAvatar: false, invite: false)
+        node.setPermissions(editName: false, editAvatar: false, invite: false, editTopic: false)
         applyRoomState()
         loadDirectProfileIfNeeded()
         loadRoomInfo()
@@ -216,7 +225,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func rebuildGlassItems(editing: Bool) {
-        let state = BarState(showsEdit: !directState.isDirect && (canEditName || canEditAvatar), editing: editing)
+        let state = BarState(showsEdit: !directState.isDirect && canEditDetails, editing: editing)
         guard renderedBar != state else { return }
         renderedBar = state
         let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
@@ -311,17 +320,20 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     private func applyRoomInfo(_ info: RoomInfo) {
         let previousNamePermission = canEditName
         let previousAvatarPermission = canEditAvatar
+        let previousTopicPermission = canEditTopic
         latestRoomInfo = info
-        if isEditingDetails && ((previousNamePermission && !canEditName) || (previousAvatarPermission && !canEditAvatar)) {
+        if isEditingDetails && ((previousNamePermission && !canEditName) || (previousAvatarPermission && !canEditAvatar)
+            || (previousTopicPermission && !canEditTopic)) {
             cancelEditing()
         }
-        node.setPermissions(editName: canEditName, editAvatar: canEditAvatar, invite: canInvite)
+        node.setPermissions(editName: canEditName, editAvatar: canEditAvatar, invite: canInvite, editTopic: canEditTopic)
+        node.updateTopic(info.topic ?? "")
         setDirectRoom(info.isDirect)
         updateDirectUserId(info.isDirect ? info.heroes.first?.userId : nil)
         if !isEditingDetails { applyRoomState() }
         if wantsInitialEditing, info.powerLevels != nil {
             wantsInitialEditing = false
-            if canEditName || canEditAvatar { setEditing(true) }
+            if canEditDetails { setEditing(true) }
         }
         rebuildGlassItems(editing: isEditingDetails)
         node.updateTags(info.isDirect ? Self.directTags(from: info) : Self.tags(from: info))
@@ -466,7 +478,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func setEditing(_ editing: Bool) {
-        let effectiveEditing = editing && !directState.isDirect && (canEditName || canEditAvatar)
+        let effectiveEditing = editing && !directState.isDirect && canEditDetails
         isEditingDetails = effectiveEditing
         node.setEditing(effectiveEditing)
         rebuildGlassItems(editing: effectiveEditing)
@@ -482,7 +494,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func editTapped() {
-        guard !directState.isDirect, canEditName || canEditAvatar, !isSavingChanges, !isLeavingRoom else { return }
+        guard !directState.isDirect, canEditDetails, !isSavingChanges, !isLeavingRoom else { return }
         if isEditingDetails {
             saveEdits()
         } else {
@@ -495,6 +507,27 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
         pendingAvatarChange = .none
         setEditing(false)
         applyRoomState(force: true)
+    }
+
+    private func openTopicEditor() {
+        guard isEditingDetails, canEditTopic, !isSavingChanges, !isLeavingRoom,
+              let navigation = zynaNavigationController, navigation.topViewController === self,
+              let client = roomClient, let session = roomSessionID,
+              MatrixClientService.shared.client === client,
+              MatrixClientService.shared.currentLocalSessionId == session else { return }
+        let model = RoomTopicEditorModel(source: SDKRoomTopicSource(room: room), isCurrentSession: {
+            MatrixClientService.shared.client === client && MatrixClientService.shared.currentLocalSessionId == session
+        })
+        let controller = GlassHostingController(title: String(localized: "Group description", table: "RoomProfile"),
+            rootView: RoomTopicEditorView(model: model), audioPlayer: audioPlayer,
+            onBack: { [weak navigation] in navigation?.pop() })
+        model.onSaved = { [weak self, weak controller, weak navigation] topic in
+            self?.latestRoomInfo?.topic = topic
+            self?.node.updateTopic(topic)
+            if let controller, navigation?.topViewController === controller { navigation?.pop() }
+        }
+        controller.onRemovedFromParent = { [weak model] in model?.stop() }
+        navigation.push(controller)
     }
 
     private func presentAvatarPicker() {
@@ -526,7 +559,7 @@ final class RoomDetailsViewController: ASDKViewController<RoomDetailsNode> {
     }
 
     private func saveEdits() {
-        guard isEditingDetails, canEditName || canEditAvatar else { return }
+        guard isEditingDetails, canEditDetails else { return }
         let newName = canEditName ? (node.editingName?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? loadedRoomName) : loadedRoomName
         if !canEditAvatar { pendingAvatarChange = .none }

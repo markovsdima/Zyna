@@ -10,7 +10,8 @@ struct RoomProfileSnapshot: Equatable, Sendable {
         var invite: Bool
         var editName: Bool
         var editAvatar: Bool
-        var canEdit: Bool { editName || editAvatar }
+        var editTopic = false
+        var canEdit: Bool { editName || editAvatar || editTopic }
     }
 
     var roomID: String
@@ -47,7 +48,8 @@ struct RoomProfileSnapshot: Equatable, Sendable {
         if let power = info.powerLevels {
             permissions = Permissions(invite: power.canOwnUserInvite(),
                 editName: power.canOwnUserSendState(stateEvent: .roomName),
-                editAvatar: power.canOwnUserSendState(stateEvent: .roomAvatar))
+                editAvatar: power.canOwnUserSendState(stateEvent: .roomAvatar),
+                editTopic: power.canOwnUserSendState(stateEvent: .roomTopic))
         }
         notificationContext = RoomNotificationContext(info)
     }

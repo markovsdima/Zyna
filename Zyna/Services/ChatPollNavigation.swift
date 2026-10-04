@@ -12,19 +12,23 @@ struct PreparedPollNavigation {
     let open: @MainActor () -> Bool
 }
 
-/// Catalog entries must resolve to a full, still-visible chat message.
+/// Catalog entries and permalinks resolve to full, still-visible messages.
 enum ChatCatalogTarget: Sendable {
-    case poll, attachment
+    case poll, attachment, message
 
     func accepts(_ contentType: String) -> Bool {
         switch self {
         case .poll: return contentType == "poll"
         case .attachment: return ["image", "video", "file", "audio", "voice"].contains(contentType)
+        case .message:
+            return !["redacted", "unableToDecrypt"].contains(contentType)
         }
     }
 
     func accepts(_ content: ChatMessageContent) -> Bool {
         switch (self, content) {
+        case (.message, .redacted), (.message, .unableToDecrypt): return false
+        case (.message, _): return true
         case (.poll, .poll), (.attachment, .image), (.attachment, .video),
              (.attachment, .file), (.attachment, .voice): return true
         default: return false
@@ -48,6 +52,7 @@ enum ChatPollNavigation {
         targetKind: ChatCatalogTarget = .poll,
         budget: Duration = .seconds(30), settle: Duration = .seconds(3),
         isCurrent: () -> Bool,
+        isReadyForPagination: () -> Bool = { true },
         paginate: () async -> HistoryPaginationResult
     ) async throws {
         let deadline = ContinuousClock.now.advanced(by: budget)
@@ -72,6 +77,12 @@ enum ChatPollNavigation {
             case .pending: break
             }
             guard ContinuousClock.now < deadline else { throw PollNavigationError.loadingFailed }
+            if !isReadyForPagination() {
+                // A permalink can create a chat before its SDK timeline is
+                // ready. Keep the preview cancellable while it starts.
+                try await Task.sleep(for: .milliseconds(100))
+                continue
+            }
             if let settledDeadline {
                 guard ContinuousClock.now < settledDeadline else { throw PollNavigationError.unavailable }
                 // SDK replies can precede listener delivery/decryption. Do not

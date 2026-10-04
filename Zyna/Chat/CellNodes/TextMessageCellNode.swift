@@ -8,6 +8,7 @@ import AsyncDisplayKit
 final class TextMessageCellNode: MessageCellNode {
 
     var onLinkTapped: ((URL) -> Void)?
+    private var linkActivity: BubbleLinkActivity?
 
     private struct AccessibleLink {
         let url: URL
@@ -198,6 +199,34 @@ final class TextMessageCellNode: MessageCellNode {
     override func didLoad() {
         super.didLoad()
         assignProbeName("textMessage.flatContent", to: flatContentNode)
+    }
+
+    func setLinkOpening(_ active: Bool) {
+        guard isNodeLoaded else { return }
+        if active {
+            if linkActivity == nil {
+                linkActivity = BubbleLinkActivity(parent: bubbleNode.layer, color: bubbleForegroundColor)
+            }
+            linkActivity?.update(bounds: bubbleNode.bounds, path: bubbleNode.currentPath().cgPath)
+        } else {
+            linkActivity?.remove()
+            linkActivity = nil
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        linkActivity?.update(bounds: bubbleNode.bounds, path: bubbleNode.currentPath().cgPath)
+    }
+
+    override func didEnterVisibleState() {
+        super.didEnterVisibleState()
+        linkActivity?.setVisible(true)
+    }
+
+    override func didExitVisibleState() {
+        super.didExitVisibleState()
+        linkActivity?.setVisible(false)
     }
 
     override func updateSendStatus(_ status: String) {

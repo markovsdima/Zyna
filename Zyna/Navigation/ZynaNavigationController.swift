@@ -84,6 +84,7 @@ public class ZynaNavigationController: UIViewController {
         case popToRoot(animated: Bool)
         case popTo(UIViewController, animated: Bool, completion: (() -> Void)?)
         case setStack([UIViewController], animated: Bool)
+        case whenIdle(() -> Void)
     }
 
     private var deferredStackMutations: [DeferredStackMutation] = []
@@ -92,6 +93,17 @@ public class ZynaNavigationController: UIViewController {
     /// back gesture or mutate the destination during a stack transition.
     var isTransitionInFlight: Bool {
         isInteractivePopActive || isAnimatingTransition
+    }
+
+    /// Async route results must recheck their origin after a transition,
+    /// including an interactive pop that may have completed or cancelled.
+    func performWhenIdle(_ action: @escaping () -> Void) {
+        if isTransitionInFlight {
+            deferredStackMutations.append(.whenIdle(action))
+        } else {
+            action()
+            flushDeferredStackMutationsIfPossible()
+        }
     }
 
     // MARK: - Lifecycle
@@ -730,6 +742,8 @@ public class ZynaNavigationController: UIViewController {
             _ = pop(to: destination, animated: animated, completion: completion)
         case .setStack(let controllers, let animated):
             setStack(controllers, animated: animated)
+        case .whenIdle(let action):
+            performWhenIdle(action)
         }
     }
 

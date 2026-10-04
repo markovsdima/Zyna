@@ -23,6 +23,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private let room: Room?
     private let titleText: String
     private let profileModel: RoomProfileViewModel?
+    private let linkSharing = MatrixLinkSharing.forCurrentSession()
     private let header: RoomProfileHeaderNode
     private let contentNode = ASDisplayNode()
     private weak var sharedPanScrollView: UIScrollView?
@@ -77,6 +78,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         let saving: Bool
         let hasNotificationError: Bool
         let hasInformationError: Bool
+        let preparingLink: Bool
     }
     var onReportRoom: (() -> Void)? {
         didSet { renderedMenuState = nil; if isViewLoaded { updateProfileMenus() } }
@@ -90,6 +92,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         let savingBlock: Bool
         let canChangeBlock: Bool
         let hasBlockError: Bool
+        let preparingLink: Bool
     }
     private var renderedPersonMenuState: PersonMenuState?
     private var navigationTask: Task<Void, Never>?
@@ -216,6 +219,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         ensurePage(.media)
         bind()
         bindProfile()
+        bindSharing()
         startTask = Task { [weak self] in await self?.model?.start() }
         NotificationCenter.default.publisher(for: UIContentSizeCategory.didChangeNotification)
             .sink { [weak self] _ in
@@ -266,6 +270,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        linkSharing.cancel()
         settleInterruptedAvatar()
         stopAvatarAnimation(finish: true)
         pages.values.forEach { $0.dismissContextMenu(); $0.isActive = false }
@@ -396,6 +401,50 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         }
     }
 
+    private var linkTarget: MatrixLinkTarget? {
+        if let personModel { return .person(personModel.snapshot.userID) }
+        if let snapshot = profileModel?.snapshot, snapshot.isDirect {
+            return snapshot.directUserID.map(MatrixLinkTarget.person)
+        }
+        // Wait until RoomInfo has identified the room before offering its
+        // link; a provisional profile may still turn out to be a DM.
+        guard profileModel?.snapshot.notificationContext != nil else { return nil }
+        return room.map { .room($0) }
+    }
+
+    private func sharingMenu() -> UIMenu {
+        ProfileActionMenus.sharing(isPreparing: linkSharing.isPreparing, isAvailable: linkTarget != nil) { [weak self] copy in
+            guard let self, let target = self.linkTarget, self.view.window != nil,
+                  self.presentedViewController == nil else { return }
+            self.linkSharing.prepare(target) { [weak self] url in
+                guard let self, self.view.window != nil, self.presentedViewController == nil,
+                      self.zynaNavigationController?.topViewController === self else { return }
+                if copy {
+                    MatrixLinkSharing.copyToPasteboard(url)
+                } else {
+                    let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+                    sheet.popoverPresentationController?.sourceView = self.moreButton
+                    sheet.popoverPresentationController?.sourceRect = self.moreButton.bounds
+                    self.present(sheet, animated: true)
+                }
+            }
+        }
+    }
+
+    private func bindSharing() {
+        linkSharing.$isPreparing.removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            guard let self else { return }
+            if self.personModel != nil { self.renderPerson() } else { self.updateProfileMenus() }
+        }.store(in: &cancellables)
+        linkSharing.$error.compactMap { $0 }.receive(on: DispatchQueue.main).sink { [weak self] error in
+            guard let self, self.view.window != nil, self.presentedViewController == nil else { return }
+            let alert = UIAlertController(title: String(localized: "Couldn't create link"),
+                                          message: error, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+            self.present(alert, animated: true)
+        }.store(in: &cancellables)
+    }
+
     private func bindPerson(_ person: PersonProfileViewModel) {
         person.$snapshot.combineLatest(person.$isPerformingAction, person.$presence, person.$loadError)
             .receive(on: DispatchQueue.main)
@@ -419,10 +468,11 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         let menuState = PersonMenuState(snapshot: snapshot,
             performingAction: person.isPerformingAction, hasProfileError: person.loadError != nil,
             isBlocked: person.blocking.isBlocked, savingBlock: person.blocking.isSaving,
-            canChangeBlock: person.blocking.canChange, hasBlockError: person.blocking.loadError != nil)
+            canChangeBlock: person.blocking.canChange, hasBlockError: person.blocking.loadError != nil,
+            preparingLink: linkSharing.isPreparing)
         if renderedPersonMenuState != menuState {
             renderedPersonMenuState = menuState
-            let menu = ProfileActionMenus.person(person, presenter: self)
+            let menu = ProfileActionMenus.person(person, presenter: self, sharing: sharingMenu())
             moreButton.menu = menu
             header.setMoreMenu(menu)
         }
@@ -465,7 +515,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         let menuState = MenuState(snapshot: snapshot, notifications: profileModel.notifications,
             loading: profileModel.isLoadingNotifications, saving: profileModel.isSavingNotifications,
             hasNotificationError: profileModel.notificationsError != nil,
-            hasInformationError: profileModel.informationError != nil)
+            hasInformationError: profileModel.informationError != nil, preparingLink: linkSharing.isPreparing)
         guard renderedMenuState != menuState else { return }
         renderedMenuState = menuState
         let notificationMenu = makeNotificationMenu(snapshot: snapshot)
@@ -477,6 +527,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
                 attributes: action.isEnabled(in: snapshot) ? [] : .disabled) { [weak self] _ in self?.perform(action) })
         }
         entries.insert(notificationMenu, at: min(1, entries.count))
+        entries.append(sharingMenu())
         if let onReportRoom {
             entries.append(UIAction(title: snapshot.isDirect ? String(localized: "Report conversation", table: "Reports")
                 : String(localized: "Report room", table: "Reports"), image: UIImage(systemName: "flag")) { _ in onReportRoom() })

@@ -117,9 +117,11 @@ for an HTML label merely because their lengths match.
 [ComposerLinkPrompt](Composer/ComposerLinkPrompt.swift) uses a placeholder for
 the scheme, so pasting a complete URL does not duplicate `https://`. Bare hosts,
 including `example.com:8443/path` and `localhost:8080`, receive `https://`.
-Explicit `http://` and `https://` are preserved. `RichTextURLPolicy` accepts only
-HTTP(S) destinations with a host. Automatically detected message links do not
-become authored links when reopening the message in the composer.
+Explicit `http://` and `https://` are preserved. `RichTextURLPolicy` accepts
+HTTP(S) destinations with a host and SDK-validated `matrix:` URIs. Chat links
+to `matrix.to` and Matrix URIs route inside Zyna; other web URLs open Safari.
+Automatically detected message links do not become authored links when
+reopening the message in the composer.
 
 ## Scope and Verification
 

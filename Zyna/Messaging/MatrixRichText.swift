@@ -110,6 +110,8 @@ enum MatrixRichTextParser {
     private static let linkDetector = try? NSDataDetector(
         types: NSTextCheckingResult.CheckingType.link.rawValue
     )
+    private static let matrixURIDetector = try? NSRegularExpression(
+        pattern: #"(?i)(?<![\p{L}\p{N}_:/])matrix:[^\s<>"\]\)\}]+"#)
 
     static func parse(body: String, metadata: ChatTextMetadata?) -> RichTextDocument {
         let parsed: RichTextDocument
@@ -204,6 +206,19 @@ enum MatrixRichTextParser {
 
         let fullRange = NSRange(location: 0, length: (document.text as NSString).length)
         var links = document.links
+        // NSDataDetector does not consistently recognize the Matrix URI
+        // scheme. Detect it first so a server name cannot become a web link
+        // inside an otherwise valid Matrix URI.
+        matrixURIDetector?.enumerateMatches(in: document.text, range: fullRange) { result, _, _ in
+            guard let result else { return }
+            let raw = (document.text as NSString).substring(with: result.range)
+            let value = raw.replacingOccurrences(of: #"[.,;!]+$"#, with: "", options: .regularExpression)
+            let range = NSRange(location: result.range.location, length: (value as NSString).length)
+            guard let url = URL(string: value), MatrixLink.parse(url) != nil,
+                  !links.contains(where: { NSIntersectionRange($0.range, range).length > 0 }) else { return }
+            links.append(RichTextLink(location: range.location, length: range.length,
+                                      destination: url.absoluteString, origin: .detected))
+        }
         detector.enumerateMatches(
             in: document.text,
             options: [],
@@ -237,6 +252,9 @@ enum RichTextURLPolicy {
 
     static func destination(from rawValue: String) -> String? {
         let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: value), url.scheme?.lowercased() == "matrix" {
+            return MatrixLink.parse(url) == nil ? nil : url.absoluteString
+        }
         guard !value.isEmpty,
               let components = URLComponents(string: value),
               let scheme = components.scheme?.lowercased(),

@@ -3253,8 +3253,8 @@ final class ChatViewModel {
 
     // MARK: - Jump
 
-    /// A catalog-only poll needs the ordinary timeline's full projection. Keep
-    /// attachments visible until both history and its presentation are ready.
+    /// Catalog entries and links need the ordinary timeline's full projection.
+    /// Keep the source screen visible until history and presentation are ready.
     @MainActor
     func preparePollNavigation(
         eventId: String, targetKind: ChatCatalogTarget = .poll,
@@ -3269,6 +3269,9 @@ final class ChatViewModel {
         }
         try await ChatPollNavigation.load(eventId: eventId, roomId: roomId,
             database: presentationDatabase, targetKind: targetKind, isCurrent: isCurrent,
+            isReadyForPagination: { [weak self] in
+                paginate != nil || self?.timelineService?.hasLiveTimeline == true
+            },
             paginate: { [weak self] in
                 if let paginate { return await paginate() }
                 guard let self else { return .cancelled }
@@ -3399,6 +3402,7 @@ final class ChatViewModel {
 
     func retryHistoryRecovery() { decryptionRepair?.retry() }
 
+    /// An index in `rows`, including date dividers, not in `messages`.
     func indexOfMessage(eventId: String) -> Int? {
         rowIndexByEventId[eventId]
     }

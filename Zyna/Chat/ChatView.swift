@@ -117,6 +117,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     var onTitleTapped: ((String) -> Void)?
     var onSecurityUserTapped: ((String) -> Void)?
     var onRoomDetailsTapped: (() -> Void)?
+    var onMatrixLinkTapped: ((ChatLinkOpening) -> Void)?
     var onForwardMessage: ((ChatMessage) -> Void)?
 
     private let viewModel: ChatViewModel
@@ -220,6 +221,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     private var redactionAnimationArmWork: DispatchWorkItem?
     private var didCleanupViewModel = false
     private var navigationContentVisible = true
+    private let messageLinkSharing = MatrixLinkSharing.forCurrentSession()
+    private var openingLink: ChatLinkOpening?
     private var pendingNavigationAnchor: ChatNavigationAnchor?
     private var pendingComposerRestoration: ChatNavigationState?
     private var prefetchedAppearanceUserIds = Set<String>()
@@ -265,7 +268,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     func setNavigationContentVisible(_ visible: Bool) {
         guard navigationContentVisible != visible else { return }
-        if !visible { flushVisibleReadReceipts() }
+        if !visible {
+            flushVisibleReadReceipts()
+            messageLinkSharing.cancel()
+            openingLink?.cancel()
+        }
         navigationContentVisible = visible
         viewModel.setNavigationPresentationActive(visible)
         guard isViewLoaded else { return }
@@ -335,26 +342,51 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         navigateToMessage(eventId: eventId)
     }
 
-    func preparePollNavigation(eventId: String, targetKind: ChatCatalogTarget = .poll) async throws -> PreparedPollNavigation {
+    func preparePollNavigation(eventId: String, targetKind: ChatCatalogTarget = .poll,
+                               animated: Bool = false) async throws -> PreparedPollNavigation {
         guard !isPreviewMode else { throw PollNavigationError.unavailable }
+        if animated, let index = loadedLinkIndex(eventId: eventId, targetKind: targetKind),
+           tableCanNavigate(to: IndexPath(row: index, section: 0)),
+           shouldJourneyToMessage(at: IndexPath(row: index, section: 0)) {
+            // Keep the current window and its cells for a nearby message.
+            return PreparedPollNavigation { [weak self] in
+                guard let self, self.navigationContentVisible,
+                      self.loadedLinkIndex(eventId: eventId, targetKind: targetKind) != nil else { return false }
+                return self.navigateToMessage(eventId: eventId, cancelsLinkOpening: false)
+            }
+        }
         let prepared = try await viewModel.preparePollNavigation(eventId: eventId, targetKind: targetKind)
         return PreparedPollNavigation { [weak self] in
             guard let self, !self.isTeleporting else { return false }
-            // Attachments still cover the chat. Swap without a second slide
-            // animation, then let the coordinator pop to the positioned list.
+            let direction = self.teleportDirectionToMessage(eventId: eventId,
+                targetIndex: self.viewModel.indexOfMessage(eventId: eventId))
+            let snapshot = animated && !UIAccessibility.isReduceMotionEnabled
+                ? self.node.list.view.snapshotView(afterScreenUpdates: false) : nil
             self.isTeleporting = true
-            defer { self.isTeleporting = false }
-            guard prepared.open() else { return false }
+            guard prepared.open() else { self.isTeleporting = false; return false }
             self.pendingNavigationAnchor = nil
-            self.completeTeleportWithoutAnimation(swapData: {}, scrollAfter: {
+            let scroll = {
                 if let index = self.viewModel.indexOfMessage(eventId: eventId) {
                     self.node.list.scrollToItem(at: IndexPath(row: index, section: 0),
                         at: .centeredVertically, animated: false)
                 }
-            })
+            }
+            if let snapshot {
+                self.teleport(direction: direction, snapshot: snapshot, swapData: {}, scrollAfter: scroll)
+            } else {
+                // Covered destinations are positioned before the push/pop.
+                self.completeTeleportWithoutAnimation(swapData: {}, scrollAfter: scroll)
+                self.isTeleporting = false
+            }
             self.highlightMessage(eventId: eventId, delay: 0.4)
             return true
         }
+    }
+
+    private func loadedLinkIndex(eventId: String, targetKind: ChatCatalogTarget) -> Int? {
+        guard let index = viewModel.indexOfMessage(eventId: eventId), viewModel.rows.indices.contains(index),
+              let message = viewModel.rows[index].message, targetKind.accepts(message.content) else { return nil }
+        return index
     }
 
     // MARK: - Init
@@ -417,6 +449,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         setupNavigationBar()
         bindViewModel()
         if !isPreviewMode {
+            bindMessageLinkSharing()
             bindInput()
             bindComposer()
         }
@@ -671,6 +704,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        messageLinkSharing.cancel()
+        openingLink?.cancel()
         flushVisibleReadReceipts()
         #if DEBUG
         historyScrollSampler.stop()
@@ -691,6 +726,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func cleanupViewModelIfNeeded() {
+        messageLinkSharing.cancel()
+        openingLink?.cancel()
         pinnedPreviewTask?.cancel()
         guard !didCleanupViewModel else { return }
         flushVisibleReadReceipts()
@@ -2074,8 +2111,8 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         let openReplyHeader: (String) -> Void = { [weak self] eventId in
             self?.navigateToMessage(eventId: eventId)
         }
-        let openLink: (URL) -> Void = { [weak self] url in
-            self?.presentMessageLink(url)
+        let openLink: (URL, TextMessageCellNode?) -> Void = { [weak self] url, cell in
+            self?.presentMessageLink(url, from: cell)
         }
 
         return {
@@ -2175,7 +2212,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
             if !isPreview {
                 cellNode.onReplyHeaderTapped = openReplyHeader
-                (cellNode as? TextMessageCellNode)?.onLinkTapped = openLink
+                if let textCell = cellNode as? TextMessageCellNode {
+                    textCell.onLinkTapped = { [weak textCell] url in openLink(url, textCell) }
+                }
             }
 
             return cellNode
@@ -2432,6 +2471,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             })
         }
 
+        if canCopyMessageLink {
+            for target in ChatMessageLink.targets(for: message) {
+                actions.append(UIAccessibilityCustomAction(name: target.accessibilityTitle) { [weak self] _ in
+                    self?.copyMessageLink(target)
+                    return true
+                })
+            }
+        }
+
         if message.isTextEditable {
             actions.append(UIAccessibilityCustomAction(name: "Edit") { [weak self] _ in
                 self?.viewModel.setEditingTarget(message)
@@ -2626,8 +2674,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         let isPendingOutgoingMessage = message.isSyntheticOutgoingEnvelope
         let canDiscardOutgoingEnvelope = canDiscardLocalOutgoingEnvelope(message)
 
+        let selectedGroupItem: MediaGroupItem?
+        if message.mediaGroupPresentation?.rendersCompositeBubble == true,
+           !isPendingOutgoingMessage, !message.content.isRedacted {
+            selectedGroupItem = (cellNode as? PhotoGroupMessageCellNode)?
+                .prepareContextMenuSelection(at: activationPoint)
+        } else {
+            selectedGroupItem = nil
+        }
+        let reportEventID: String?
+        if let selectedGroupItem {
+            reportEventID = selectedGroupItem.eventId
+        } else {
+            reportEventID = message.eventId
+        }
         var actions: [ContextMenuAction] = []
-        var reportEventID = message.eventId
         if case .poll(let poll) = message.content, let pending = poll.pending, pending.failed {
             actions.append(ContextMenuAction(title: String(localized: "Dismiss failed action"), image: UIImage(systemName: "xmark.circle"),
                 handler: { [weak self] in self?.handlePollAction(.dismissFailure(pending.operationID), for: message) }))
@@ -2658,6 +2719,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
                 title: copyable.actionTitle,
                 image: UIImage(systemName: "doc.on.doc"),
                 handler: { [weak self] in self?.copyMessageText(message) }
+            ))
+        }
+
+        if canCopyMessageLink,
+           let target = ChatMessageLink.target(for: message, selectedItem: selectedGroupItem) {
+            actions.append(ContextMenuAction(
+                title: String(localized: "Copy link"),
+                image: AppIcon.link.rendered(size: 17, weight: .medium, color: .label),
+                handler: { [weak self] in self?.copyMessageLink(target) }
             ))
         }
 
@@ -2722,8 +2792,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
            presentation.rendersCompositeBubble,
            !isPendingOutgoingMessage,
            !message.content.isRedacted {
-            if let tappedItem = groupCell.prepareContextMenuSelection(at: activationPoint) {
-                reportEventID = tappedItem.eventId
+            if let tappedItem = selectedGroupItem {
                 let precomputedItemDeleteTarget = freezeSnapshotTarget(
                     groupCell.paintSplashTarget(
                         for: tappedItem.messageId,
@@ -2910,6 +2979,34 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             .replacingOccurrences(of: "\u{200B}", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return visible.isEmpty ? nil : visible
+    }
+
+    private var canCopyMessageLink: Bool {
+        !isPreviewMode && !viewModel.isInvited && viewModel.liveRoom != nil
+    }
+
+    private var canDeliverMessageLink: Bool {
+        navigationContentVisible && !didCleanupViewModel && isViewLoaded
+            && view.window != nil && presentedViewController == nil
+    }
+
+    private func copyMessageLink(_ target: ChatMessageLink) {
+        guard canCopyMessageLink, canDeliverMessageLink, let room = viewModel.liveRoom else { return }
+        messageLinkSharing.prepare(.event(room: room, eventID: target.eventID), replacingPending: true) { [weak self] url in
+            guard let self, self.canDeliverMessageLink else { return }
+            MatrixLinkSharing.copyToPasteboard(url)
+        }
+    }
+
+    private func bindMessageLinkSharing() {
+        messageLinkSharing.$error.compactMap { $0 }.receive(on: DispatchQueue.main)
+            .sink { [weak self] error in
+                guard let self, self.canDeliverMessageLink else { return }
+                let alert = UIAlertController(title: String(localized: "Couldn't create link"),
+                                              message: error, preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: String(localized: "OK"), style: .default))
+                self.present(alert, animated: true)
+            }.store(in: &cancellables)
     }
 
     private func copyMessageText(_ message: ChatMessage) {
@@ -3174,7 +3271,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     // MARK: - Smart Navigation (Journey / Teleportation)
 
     @discardableResult
-    private func navigateToMessage(eventId: String, attempt: Int = 0) -> Bool {
+    private func navigateToMessage(eventId: String, attempt: Int = 0, cancelsLinkOpening: Bool = true) -> Bool {
 #if DEBUG
         if ChatHistoryScrollTrace.enabled {
             historyScrollTrace.event("navigate attempt=\(attempt)", table: node.list)
@@ -3183,6 +3280,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         guard !isTeleporting else {
             return false
         }
+        if cancelsLinkOpening { openingLink?.cancel() }
 
         if let idx = viewModel.indexOfMessage(eventId: eventId) {
             let targetIP = IndexPath(row: idx, section: 0)
@@ -3370,6 +3468,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func navigateToLive() {
+        openingLink?.cancel()
         pendingNavigationAnchor = nil
         if viewModel.isAtLiveEdge && !shouldTeleportToLive() {
             viewModel.cancelPendingHistoryReplacement()
@@ -3389,9 +3488,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     /// Direction: which way new content arrives FROM (visually).
     /// `.up` = jumping to older messages: snapshot slides down, new content enters from top.
     /// `.down` = jumping to newer messages: snapshot slides up, new content enters from bottom.
-    private func teleport(direction: TeleportDirection, swapData: () -> Void, scrollAfter: () -> Void) {
+    private func teleport(direction: TeleportDirection, snapshot: UIView? = nil,
+                          swapData: () -> Void, scrollAfter: () -> Void) {
         let tableView = node.list.view
-        guard let snapshot = tableView.snapshotView(afterScreenUpdates: false) else {
+        guard let snapshot = snapshot ?? tableView.snapshotView(afterScreenUpdates: false) else {
             completeTeleportWithoutAnimation(
                 swapData: swapData,
                 scrollAfter: scrollAfter
@@ -4697,7 +4797,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         present(ql, animated: true)
     }
 
-    private func presentMessageLink(_ url: URL) {
+    private func presentMessageLink(_ url: URL, from cell: TextMessageCellNode?) {
+        if MatrixLink.isCandidate(url) {
+            guard let onMatrixLinkTapped else { return }
+            if let openingLink, openingLink.isActive, openingLink.url == url {
+                openingLink.moveLoadingIndicator { [weak cell] in cell?.setLinkOpening($0) }
+                return
+            }
+            openingLink?.cancel()
+            let request = ChatLinkOpening(url: url, onLoading: { [weak cell] in
+                cell?.setLinkOpening($0)
+            }, onFinish: { [weak self] in self?.openingLink = nil })
+            openingLink = request
+            onMatrixLinkTapped(request)
+            return
+        }
         guard RichTextURLPolicy.destination(from: url.absoluteString) != nil else {
             return
         }

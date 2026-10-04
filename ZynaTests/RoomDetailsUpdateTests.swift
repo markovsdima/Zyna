@@ -9,10 +9,13 @@ import UIKit
 
 private final class DetailsTestPowerLevels: RoomPowerLevels, @unchecked Sendable {
     let allowed: Bool
-    init(_ allowed: Bool) { self.allowed = allowed; super.init(noHandle: .init()) }
+    let topicOnly: Bool
+    init(_ allowed: Bool, topicOnly: Bool = false) {
+        self.allowed = allowed; self.topicOnly = topicOnly; super.init(noHandle: .init())
+    }
     required init(unsafeFromHandle handle: UInt64) { fatalError() }
     override func canOwnUserInvite() -> Bool { allowed }
-    override func canOwnUserSendState(stateEvent: StateEventType) -> Bool { allowed }
+    override func canOwnUserSendState(stateEvent: StateEventType) -> Bool { allowed && (!topicOnly || stateEvent == .roomTopic) }
 }
 
 private final class DetailsTestHandle: TaskHandle, @unchecked Sendable {
@@ -105,5 +108,26 @@ struct RoomDetailsUpdateTests {
         room.info.modify { $0.powerLevels = nil }
         let snapshot = try await SDKRoomProfileSource(room: room, fallbackUserID: nil).load()
         #expect(snapshot.permissions == nil && room.powerReads.wrappedValue == 0)
+    }
+
+    @Test("Permission to edit only the description enables Edit without enabling name or avatar changes")
+    func topicOnlyPermission() async throws {
+        let room = DetailsTestRoom()
+        room.info.modify { $0.powerLevels = DetailsTestPowerLevels(true, topicOnly: true) }
+        let snapshot = try await SDKRoomProfileSource(room: room, fallbackUserID: nil).load()
+        #expect(snapshot.permissions?.editTopic == true)
+        #expect(snapshot.permissions?.editName == false && snapshot.permissions?.editAvatar == false)
+        #expect(RoomProfileAction.edit.isEnabled(in: snapshot))
+        let controller = RoomDetailsViewController(room: room, memberCount: 3,
+            roomListService: ZynaRoomListService(), initiallyEditing: true)
+        _ = controller.view
+        let bar = try #require(controller.node.glassTopBar)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+        while bar.items.count != 3, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(bar.items.count == 3)
+        #expect(RoomTopicSnapshot(room.info.wrappedValue).canEdit)
+        room.send { $0.membership = .left }
+        await flushUpdates()
+        #expect(bar.items.count == 2 && !RoomTopicSnapshot(room.info.wrappedValue).canEdit)
     }
 }

@@ -5,6 +5,17 @@ import UIKit
 
 @MainActor
 enum ProfileActionMenus {
+    static func sharing(isPreparing: Bool, isAvailable: Bool, action: @escaping (Bool) -> Void) -> UIMenu {
+        let attributes: UIMenuElement.Attributes = isPreparing || !isAvailable ? .disabled : []
+        return UIMenu(options: .displayInline, children: [
+            UIAction(title: isPreparing ? String(localized: "Preparing link…", table: "RoomProfile")
+                : String(localized: "Share link", table: "RoomProfile"),
+                image: AppIcon.share.template(size: 18), attributes: attributes) { _ in action(false) },
+            UIAction(title: String(localized: "Copy link"),
+                image: AppIcon.copy.template(size: 18), attributes: attributes) { _ in action(true) }
+        ])
+    }
+
     static func blocking(_ model: UserBlockingViewModel?, presenter: UIViewController) -> UIAction? {
         guard let model, !model.isSelf else { return nil }
         if model.loadError != nil {
@@ -32,10 +43,11 @@ enum ProfileActionMenus {
         }
     }
 
-    static func person(_ model: PersonProfileViewModel, presenter: UIViewController) -> UIMenu {
+    static func person(_ model: PersonProfileViewModel, presenter: UIViewController, sharing: UIMenu? = nil) -> UIMenu {
         let snapshot = model.snapshot
         var entries: [UIMenuElement] = [UIAction(title: String(localized: "Copy Matrix ID", table: "RoomProfile"),
             image: AppIcon.copy.template(size: 18)) { _ in UIPasteboard.general.string = snapshot.userID }]
+        if let sharing { entries.insert(sharing, at: 0) }
         if let action = blocking(model.blocking, presenter: presenter) { entries.append(action) }
         if let group = snapshot.group {
             let roles = group.availableRoles.map { role in

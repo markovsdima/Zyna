@@ -16,6 +16,8 @@ enum AppBannerActionResult {
     case keepVisible
 }
 
+enum AppBannerPriority: Int { case feedback, standard }
+
 struct AppBannerItem {
     static let defaultDuration: TimeInterval = 5
 
@@ -26,6 +28,7 @@ struct AppBannerItem {
     let tintColor: UIColor
     let primaryActionTitle: String?
     let duration: TimeInterval?
+    let priority: AppBannerPriority
     let suppressIn: ((BannerVisibilityContext) -> Bool)?
     let onPrimaryAction: () -> AppBannerActionResult
     let onDismiss: (() -> Void)?
@@ -38,6 +41,7 @@ struct AppBannerItem {
         tintColor: UIColor,
         primaryActionTitle: String? = nil,
         duration: TimeInterval? = AppBannerItem.defaultDuration,
+        priority: AppBannerPriority = .standard,
         suppressIn: ((BannerVisibilityContext) -> Bool)? = nil,
         onPrimaryAction: @escaping () -> AppBannerActionResult,
         onDismiss: (() -> Void)? = nil
@@ -49,6 +53,7 @@ struct AppBannerItem {
         self.tintColor = tintColor
         self.primaryActionTitle = primaryActionTitle
         self.duration = duration
+        self.priority = priority
         self.suppressIn = suppressIn
         self.onPrimaryAction = onPrimaryAction
         self.onDismiss = onDismiss
@@ -64,7 +69,7 @@ final class AppBannerCenter {
     private var autoDismissWorkItem: DispatchWorkItem?
     private var visibilityContext: BannerVisibilityContext = .empty
 
-    private init() {}
+    init() {}
 
     func attach(to window: UIWindow) {
         guard sourceWindow !== window else { return }
@@ -86,6 +91,8 @@ final class AppBannerCenter {
     func show(_ item: AppBannerItem) {
         dispatchPrecondition(condition: .onQueue(.main))
         if item.suppressIn?(visibilityContext) == true { return }
+        if let currentItem, currentItem.id != item.id,
+           currentItem.priority.rawValue > item.priority.rawValue { return }
         guard let window = sourceWindow,
               let windowScene = window.windowScene else { return }
 

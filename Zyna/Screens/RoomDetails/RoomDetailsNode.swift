@@ -29,6 +29,7 @@ final class RoomDetailsNode: ScreenNode {
     var onStorylinesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
+    var onTopicTapped: (() -> Void)?
     var onLeaveTapped: (() -> Void)?
 
     /// Set by the VC after the bar is configured. Lets us put the bar
@@ -67,6 +68,7 @@ final class RoomDetailsNode: ScreenNode {
     private let storylinesRow = ActionRowNode()
     private let securityRow = ActionRowNode()
     private let rolesPermissionsRow = ActionRowNode()
+    private let topicRow = ActionRowNode()
     private let leaveRoomRow = ActionRowNode()
 
     // MARK: - State
@@ -77,6 +79,8 @@ final class RoomDetailsNode: ScreenNode {
     private var isEditing = false
     private var canEditName = false
     private var canEditAvatar = false
+    private var canEditTopic = false
+    private var topic: String?
     private var canInvite: Bool?
     private var pinnedMessagesCount: Int?
     private var isDirectRoom = false
@@ -227,6 +231,13 @@ final class RoomDetailsNode: ScreenNode {
             accessibilityHint: String(localized: "Opens room roles and permissions settings")
         ))
 
+        topicRow.style.alignSelf = .stretch
+        topicRow.onTap = { [weak self] in
+            guard let self, self.isEditing, self.canEditTopic else { return }
+            self.onTopicTapped?()
+        }
+        updateTopic("")
+
         leaveRoomRow.onTap = { [weak self] in self?.onLeaveTapped?() }
         leaveRoomRow.style.alignSelf = .stretch
         applyLeaveRoomRowConfiguration()
@@ -293,6 +304,14 @@ final class RoomDetailsNode: ScreenNode {
         setNeedsLayout()
     }
 
+    func updateTopic(_ value: String) {
+        guard topic != value else { return }
+        topic = value
+        topicRow.apply(.init(title: String(localized: "Description", table: "RoomProfile"),
+            trailingText: value.isEmpty ? String(localized: "Not set", table: "RoomProfile") : value,
+            accessibilityHint: String(localized: "Edit the group description", table: "RoomProfile")))
+    }
+
     func updateTags(_ tags: [RoomDetailsTag]) {
         guard self.tags != tags else { return }
         self.tags = tags
@@ -341,10 +360,11 @@ final class RoomDetailsNode: ScreenNode {
         setNeedsLayout()
     }
 
-    func setPermissions(editName: Bool, editAvatar: Bool, invite: Bool) {
-        guard canEditName != editName || canEditAvatar != editAvatar || canInvite != invite else { return }
+    func setPermissions(editName: Bool, editAvatar: Bool, invite: Bool, editTopic: Bool) {
+        guard canEditName != editName || canEditAvatar != editAvatar || canInvite != invite || canEditTopic != editTopic else { return }
         canEditName = editName
         canEditAvatar = editAvatar
+        canEditTopic = editTopic
         canInvite = invite
         inviteQuickAction.setEnabled(invite)
         setEditing(isEditing)
@@ -552,7 +572,9 @@ final class RoomDetailsNode: ScreenNode {
         )
 
         let mainChildren: [ASLayoutElement]
-        if isDirectRoom {
+        if isEditing && !isDirectRoom {
+            mainChildren = [profileStack] + (canEditTopic ? [topicRow] : []) + [spacer]
+        } else if isDirectRoom {
             mainChildren = [profileStack, spacer, buttonsStack]
         } else {
             let quickActions = makeGroupQuickActionsGrid(
@@ -664,6 +686,11 @@ final class RoomDetailsNode: ScreenNode {
         }
 
         tagNodes.forEach { appendNodeView($0, to: &elements) }
+
+        if isEditing && !isDirectRoom {
+            if canEditTopic { appendActionRow(topicRow, to: &elements) }
+            return
+        }
 
         if isDirectRoom {
             appendActionRow(pinnedMessagesRow, to: &elements)
