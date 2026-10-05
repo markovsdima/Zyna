@@ -1,12 +1,32 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Paused: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "На паузе: %@"
+          }
+        }
+      }
+    },
     "Pinned" : {
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Закреплённые"
+          }
+        }
+      }
+    },
+    "Playing: %@" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Воспроизведение: %@"
           }
         }
       }
@@ -467,6 +487,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Звук"
+          }
+        }
+      }
+    },
+    "Stop playback" : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Остановить воспроизведение"
           }
         }
       }

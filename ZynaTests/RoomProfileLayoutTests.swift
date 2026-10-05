@@ -29,6 +29,7 @@ private final class ProfileFixtureSource: AttachmentSource, @unchecked Sendable 
     var onAttachmentsInvalidated: (([String]) -> Void)?
     var media = (0..<120).map { item($0) }
     var files = [item(500, kind: .file)]
+    var voice: [AttachmentItem] = []
     let starts = Atomic(0)
     private var generation = 0
 
@@ -48,9 +49,9 @@ private final class ProfileFixtureSource: AttachmentSource, @unchecked Sendable 
         func groups(_ items: [AttachmentItem]) -> [AttachmentMonthGroup] {
             items.isEmpty ? [] : [.init(id: "2026-09", title: "September 2026", items: items)]
         }
-        onSnapshot?(.init(generation: generation, rowCount: media.count + files.count,
-            media: groups(media), voice: [], files: groups(files), mediaCount: media.count,
-            voiceCount: 0, fileCount: files.count, pendingCount: 0, pendingSessionIds: []), .init())
+        onSnapshot?(.init(generation: generation, rowCount: media.count + files.count + voice.count,
+            media: groups(media), voice: groups(voice), files: groups(files), mediaCount: media.count,
+            voiceCount: voice.count, fileCount: files.count, pendingCount: 0, pendingSessionIds: []), .init())
     }
 
     func start() async throws { starts.modify { $0 += 1 }; await publish() }
@@ -64,6 +65,277 @@ private final class ProfileFixtureSource: AttachmentSource, @unchecked Sendable 
 @Suite("Texture profile layout", .serialized)
 @MainActor
 struct RoomProfileLayoutTests {
+    @Test("The Voice tab observes playback without a voice page and suspends updates while the profile is hidden")
+    func voiceTabProgress() async throws {
+        let audioURL = try await Task.detached { try ProfileVoiceAudioFixture.make() }.value
+        let source = ProfileFixtureSource(), player = AudioPlayerService()
+        let target = ProfileFixtureSource.item(1_000, kind: .voice)
+        source.voice = [target]
+        let model = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        let controller = RoomProfileViewController(room: nil, title: "Room", subtitle: "", model: model,
+            actions: .none, audioPlayer: player, initialSection: .files)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { player.stop(); model.stop(); window.isHidden = true; window.rootViewController = nil
+            try? FileManager.default.removeItem(at: audioURL) }
+        controller.view.layoutIfNeeded()
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.voice") == nil)
+        player.playLocal(url: audioURL, sourceKey: target.sourceMxc,
+            nowPlaying: .voice(.init(sourceURL: target.sourceMxc, title: "Alice", subtitle: "Room",
+                duration: 60, waveform: [], roomId: model.roomId, eventId: target.id)))
+        player.seek(to: 0.42)
+        player.pause()
+        try await wait { abs((tabs.voicePlayback?.progress ?? 0) - 0.42) < 0.01 && tabs.voicePlayback?.isPlaying == false }
+        controller.selectSection(.media, animated: false)
+        controller.didReceiveMemoryWarning()
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.voice") == nil)
+        player.seek(to: 0.6)
+        try await wait { abs((tabs.voicePlayback?.progress ?? 0) - 0.6) < 0.01 }
+        controller.beginAppearanceTransition(false, animated: false); controller.endAppearanceTransition()
+        player.seek(to: 0.8)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(abs((tabs.voicePlayback?.progress ?? 0) - 0.6) < 0.01)
+        controller.beginAppearanceTransition(true, animated: false); controller.endAppearanceTransition()
+        try await wait { abs((tabs.voicePlayback?.progress ?? 0) - 0.8) < 0.01 }
+        player.stop()
+        try await wait { tabs.voicePlayback == nil }
+    }
+
+    @Test("Recreated lists keep their anchor and accept a catalog seen before eviction",
+          arguments: [RoomProfileScrollState.Section.files, .voice])
+    func recreatedListCatalog(section: RoomProfileScrollState.Section) async throws {
+        let source = ProfileFixtureSource()
+        let kind: RoomAttachmentKind = section == .voice ? .voice : .file
+        let original = (1_000..<1_060).map { ProfileFixtureSource.item($0, kind: kind) }
+        if section == .voice { source.voice = original } else { source.files = original }
+        let model = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        let controller = RoomProfileViewController(room: nil, title: "Room", subtitle: "", model: model,
+            actions: .none, audioPlayer: AudioPlayerService(), initialSection: section)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { model.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let id = section == .voice ? "profile.voice" : "profile.files"
+        var list = try #require(find(ASCollectionView.self, in: controller.view, id: id))
+        var page = try #require(list.collectionNode?.delegate as? RoomProfileListPage)
+        try await wait { itemCount(list) == 62 && !page.isAdjusting }
+        list.contentOffset.y = 950
+        let anchor = try #require(page.captureAnchor())
+        controller.selectSection(.media, animated: false)
+        controller.didReceiveMemoryWarning()
+        #expect(find(ASCollectionView.self, in: controller.view, id: id) == nil)
+        let changed = [ProfileFixtureSource.item(1_100, kind: kind)] + original
+        if section == .voice { source.voice = changed } else { source.files = changed }
+        source.publish()
+        try await wait { (section == .voice ? model.voice : model.files).flatMap(\.items).count == 61 }
+        controller.selectSection(section, animated: false)
+        list = try #require(find(ASCollectionView.self, in: controller.view, id: id))
+        page = try #require(list.collectionNode?.delegate as? RoomProfileListPage)
+        try await wait { itemCount(list) == 63 && !page.isAdjusting }
+        let restored = try #require(page.captureAnchor())
+        #expect(restored.id == anchor.id && abs(restored.offset - anchor.offset) < 1)
+        // X -> evicted Y -> recreated Y -> X must not lose the final X
+        // to the deduplicator's memory from the old page.
+        if section == .voice { source.voice = original } else { source.files = original }
+        source.publish()
+        try await wait { itemCount(list) == 62 && !page.isAdjusting }
+        #expect(page.captureAnchor()?.id == anchor.id)
+    }
+
+    @Test("The same voice cell pins at both edges without moving content, and keeps pause, seek and speed controls")
+    func stickyVoicePlayer() async throws {
+        let audioURL = try await Task.detached { try ProfileVoiceAudioFixture.make() }.value
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        let source = ProfileFixtureSource(), player = AudioPlayerService()
+        source.voice = (1000..<1080).map { ProfileFixtureSource.item($0, kind: .voice) }
+        let model = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        let controller = RoomProfileViewController(room: nil, title: "Room", subtitle: "", model: model,
+            actions: .none, audioPlayer: player, initialSection: .voice)
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        window.rootViewController = controller; window.isHidden = false
+        defer { player.stop(); model.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.voice"))
+        let page = try #require(list.collectionNode?.delegate as? RoomProfileListPage)
+        let layout = try #require(list.collectionViewLayout as? RoomProfileListLayout)
+        try await wait { itemCount(list) == 82 && !page.isAdjusting }
+        let offset = list.contentOffset, contentSize = list.contentSize, inset = list.contentInset
+        let safeArea = controller.additionalSafeAreaInsets
+        let target = source.voice[10], path = IndexPath(item: 11, section: 0)
+        let natural = try #require(layout.naturalAttributes(at: path)).frame
+        player.playLocal(url: audioURL, sourceKey: target.sourceMxc,
+            nowPlaying: .voice(.init(sourceURL: target.sourceMxc, title: "Alice", subtitle: "Room",
+                duration: 60, waveform: [], roomId: model.roomId, eventId: target.id)))
+        try #require(player.state.isPlaying)
+        player.pause()
+        try await wait { layout.playingPath == path }
+        list.layoutIfNeeded()
+        try await wait { page.node.nodeForItem(at: path)?.isVisible == true }
+        let cell = try #require(page.node.nodeForItem(at: path) as? ListContextMenuCellNode)
+        let voiceCell = try #require(cell.subnodes?.first?.subnodes?.first as? RoomProfileVoiceCell)
+        try await wait { cell.accessibilityTraits.contains(.adjustable) }
+        #expect(voiceCell.dockEdge == .bottom)
+        #expect(list.contentOffset == offset && list.contentSize == contentSize && list.contentInset == inset)
+        #expect(controller.additionalSafeAreaInsets == safeArea)
+        let bottom = try #require(layout.layoutAttributesForItem(at: path)).frame
+        #expect(abs(bottom.maxY - (list.bounds.maxY - layout.visibleInsets.bottom)) < 1)
+        #expect(bottom.height == natural.height)
+        cell.accessibilityIncrement()
+        #expect(abs(player.state.progress - 0.05) < 0.01)
+        let speedAction = try #require(cell.accessibilityActionsProvider?().last)
+        #expect(speedAction.name == String(localized: "Playback speed"))
+        #expect(speedAction.actionHandler?(speedAction) == true && player.playbackRate == 1.5)
+        list.contentOffset.y = 150
+        list.layoutIfNeeded()
+        let topButton = try #require(find(UIButton.self, in: controller.view, id: "profile.scrollToTop"))
+        let normalButtonY = controller.view.bounds.height - controller.view.safeAreaInsets.bottom - 64
+        let playerFrame = try #require(layout.layoutAttributesForItem(at: path)).frame
+        #expect(!topButton.isHidden)
+        #expect(topButton.frame.minY < normalButtonY)
+        #expect(!topButton.frame.intersects(list.convert(playerFrame, to: topButton.superview)))
+        for y: CGFloat in [650, 1_500, 650, 150] {
+            if y == 150 {
+                // Let the button reach its lower position before testing
+                // a new ascent; same-frame reversal may need no motion.
+                try await wait { topButton.layer.animation(forKey: "profile.topButton.position") == nil }
+            }
+            list.contentOffset.y = y
+            list.layoutIfNeeded()
+            #expect(page.node.nodeForItem(at: path) === cell)
+            let frame = try #require(layout.layoutAttributesForItem(at: path)).frame
+            let viewport = list.bounds.inset(by: layout.visibleInsets)
+            #expect(frame == RoomProfileListLayout.pinnedFrame(natural, in: viewport))
+            #expect(layout.layoutAttributesForElements(in: list.bounds)?.filter { $0.indexPath == path }.count == 1)
+            #expect(layout.naturalAttributes(at: path)?.frame == natural)
+            #expect(voiceCell.dockEdge == (frame.minY > natural.minY ? .top : (frame.minY < natural.minY ? .bottom : .none)))
+            if voiceCell.dockEdge == .bottom {
+                #expect(page.bottomDockedPlayerHeight == frame.height)
+                #expect(topButton.frame.minY < normalButtonY)
+                #expect(!topButton.frame.intersects(list.convert(frame, to: topButton.superview)))
+                #expect((topButton.layer.animation(forKey: "profile.topButton.position") != nil)
+                    == !UIAccessibility.isReduceMotionEnabled)
+            } else {
+                #expect(page.bottomDockedPlayerHeight == nil)
+                #expect(topButton.frame.minY == normalButtonY)
+            }
+        }
+        list.contentOffset.y = 1_500
+        list.layoutIfNeeded()
+        #expect(page.captureAnchor()?.id != target.id)
+        let anchor = try #require(page.captureAnchor())
+        source.voice.insert(ProfileFixtureSource.item(1100, kind: .voice), at: 0)
+        source.publish()
+        let shiftedPath = IndexPath(item: 12, section: 0)
+        try await wait { itemCount(list) == 83 && !page.isAdjusting && layout.playingPath == shiftedPath }
+        #expect(page.node.nodeForItem(at: shiftedPath) === cell)
+        #expect(page.captureAnchor()?.id == anchor.id)
+        // The live content can still be extracted and restored by its menu.
+        let beforeMenu = list.contentOffset
+        cell.onContextMenuActivated?(CGPoint(x: 20, y: 20))
+        #expect(!list.isScrollEnabled)
+        page.dismissContextMenu()
+        try await wait { list.isScrollEnabled }
+        #expect(list.contentOffset == beforeMenu)
+        controller.selectSection(.files, animated: false)
+        #expect(!page.voicePlayback!.isActive && list.accessibilityElementsHidden)
+        #expect(player.state.sourceURL == target.sourceMxc)
+        controller.selectSection(.voice, animated: false)
+        #expect(page.voicePlayback!.isActive && !list.accessibilityElementsHidden)
+        #expect(list.contentOffset == beforeMenu)
+        let next = source.voice[25]
+        player.playLocal(url: audioURL, sourceKey: next.sourceMxc,
+            nowPlaying: .voice(.init(sourceURL: next.sourceMxc, title: "Alice", subtitle: "Room",
+                duration: 60, waveform: [], roomId: model.roomId, eventId: next.id)))
+        player.pause()
+        try await wait { layout.playingPath == IndexPath(item: 26, section: 0) }
+        #expect(!cell.accessibilityTraits.contains(.adjustable))
+        #expect(list.contentOffset == beforeMenu && cell.frame.height == natural.height)
+        let nextPath = IndexPath(item: 26, section: 0)
+        try await wait { page.node.nodeForItem(at: nextPath)?.isVisible == true }
+        let nextCell = try #require(page.node.nodeForItem(at: nextPath) as? ListContextMenuCellNode)
+        try await wait { nextCell.accessibilityTraits.contains(.adjustable) }
+        let stop = try #require(nextCell.accessibilityActionsProvider?().first {
+            $0.name == String(localized: "Stop playback", table: "RoomProfile")
+        })
+        #expect(stop.actionHandler?(stop) == true)
+        try await wait { layout.playingPath == nil }
+        #expect(player.state == .idle && list.contentOffset == beforeMenu)
+        #expect(topButton.frame.minY == normalButtonY)
+        player.playLocal(url: audioURL, sourceKey: next.sourceMxc,
+            nowPlaying: .voice(.init(sourceURL: next.sourceMxc, title: "Alice", subtitle: "Room",
+                duration: 60, waveform: [], roomId: model.roomId, eventId: next.id)))
+        player.pause()
+        try await wait { layout.playingPath == nextPath }
+        // A retained player can move beyond UIKit's old/new index boundary
+        // when filtering removes most of the catalog around it.
+        source.voice = [next]
+        source.publish()
+        try await wait { itemCount(list) == 3 && !page.isAdjusting && layout.playingPath == IndexPath(item: 1, section: 0) }
+        #expect(player.state.sourceURL == next.sourceMxc)
+        source.voice.removeAll()
+        source.publish()
+        try await wait { itemCount(list) == 1 && !page.isAdjusting && layout.playingPath == nil }
+    }
+
+    @Test("Voice uses shared discovery, preserves its anchor across inserts and opens the source message")
+    func voicePage() async throws {
+        let source = ProfileFixtureSource()
+        source.voice = (1000..<1060).map { ProfileFixtureSource.item($0, kind: .voice) }
+        let model = RoomAttachmentsViewModel(roomId: "!profile:example.org", source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        let controller = RoomProfileViewController(room: nil, title: "Room", subtitle: "", model: model,
+            actions: .none, audioPlayer: AudioPlayerService(), initialSection: .voice)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { model.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.voice"))
+        let page = try #require(list.collectionNode?.delegate as? RoomProfileListPage)
+        try await wait { itemCount(list) == 62 && !page.isAdjusting }
+        #expect(model.tab == .voice && source.starts.wrappedValue == 1)
+        #expect(page.voicePlayback?.isActive == true)
+        page.scrollView.contentOffset.y = 950
+        let anchor = try #require(page.captureAnchor())
+        let offset = page.scrollView.contentOffset.y
+        controller.selectSection(.files, animated: false)
+        #expect(page.voicePlayback?.isActive == false)
+        controller.selectSection(.voice, animated: false)
+        #expect(page.voicePlayback?.isActive == true)
+        #expect(abs(page.scrollView.contentOffset.y - offset) < 1)
+        source.voice.insert(ProfileFixtureSource.item(1100, kind: .voice), at: 0)
+        source.publish()
+        try await wait { itemCount(list) == 63 && !page.isAdjusting }
+        let restored = try #require(page.captureAnchor())
+        #expect(restored.id == anchor.id && abs(restored.offset - anchor.offset) < 1)
+        #expect(source.starts.wrappedValue == 1)
+        var openedID: String?
+        controller.onShowInChat = { id, kind in
+            #expect(kind.accepts("voice"))
+            openedID = id
+            return PreparedPollNavigation { true }
+        }
+        let path = IndexPath(item: restored.previousIndex, section: 0)
+        try await wait { page.node.nodeForItem(at: path) != nil }
+        let cell = try #require(page.node.nodeForItem(at: path) as? ListContextMenuCellNode)
+        let action = try #require(cell.accessibilityActionsProvider?().first)
+        #expect(action.actionHandler?(action) == true)
+        try await wait { openedID != nil }
+        #expect(openedID == restored.id)
+        // Removing a voice is a catalog change, independent of playback.
+        source.voice.removeAll()
+        source.publish()
+        try await wait { itemCount(list) == 1 && !page.isAdjusting }
+        #expect(model.tab == .voice)
+    }
+
     @Test("An emptied Pinned tab stays after a tap or completed swipe, but not a cancelled swipe",
           arguments: ["tap", "swipe", "cancelled swipe"])
     func retainsVisitedPins(route: String) async throws {
@@ -81,25 +353,25 @@ struct RoomProfileLayoutTests {
         window.rootViewController = controller; window.isHidden = false
         defer { pins.stop(); window.isHidden = true; window.rootViewController = nil }
         controller.view.layoutIfNeeded()
-        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
         let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
-        try await wait { !pins.isLoading && tabs.numberOfSegments == 3 }
-        controller.selectSection(.files, animated: false)
+        try await wait { !pins.isLoading && tabs.numberOfTabs == 4 }
+        controller.selectSection(.voice, animated: false)
         let visited = route != "cancelled swipe"
         if route == "tap" {
             controller.selectSection(.pinned, animated: false)
         } else {
             controller.scrollViewWillBeginDragging(pager)
-            pager.contentOffset.x = pager.bounds.width * 1.75
-            pager.contentOffset.x = pager.bounds.width * (visited ? 2 : 1)
+            pager.contentOffset.x = pager.bounds.width * 2.75
+            pager.contentOffset.x = pager.bounds.width * (visited ? 3 : 2)
             controller.scrollViewDidEndDragging(pager, willDecelerate: false)
         }
-        #expect(tabs.selectedSegmentIndex == (visited ? 2 : 1))
+        #expect(tabs.selectedIndex == (visited ? 3 : 2))
         source.send(.init(eventIDs: [], canUnpin: true))
         try await wait { pins.items.isEmpty }
         controller.selectSection(.files, animated: false)
-        try await wait { tabs.numberOfSegments == (visited ? 3 : 2) }
-        #expect(tabs.selectedSegmentIndex == 1)
+        try await wait { tabs.numberOfTabs == (visited ? 4 : 3) }
+        #expect(tabs.selectedIndex == 1)
     }
 
     @Test("Known pins reserve their tab before loading, while a stale hint is removed", arguments: [false, true])
@@ -119,13 +391,13 @@ struct RoomProfileLayoutTests {
         window.rootViewController = controller; window.isHidden = false
         defer { pins.stop(); window.isHidden = true; window.rootViewController = nil }
         controller.view.layoutIfNeeded()
-        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
-        #expect(tabs.numberOfSegments == 3 && tabs.selectedSegmentIndex == 0)
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
+        #expect(tabs.numberOfTabs == 4 && tabs.selectedIndex == 0)
         try await wait { await gate.isPending }
-        #expect(tabs.numberOfSegments == 3)
+        #expect(tabs.numberOfTabs == 4)
         await gate.finish(.init(eventIDs: hasPins ? ["$event-0"] : [], canUnpin: true))
         await pins.waitForOperationsForTesting()
-        try await wait { !pins.isLoading && tabs.numberOfSegments == (hasPins ? 3 : 2) }
+        try await wait { !pins.isLoading && tabs.numberOfTabs == (hasPins ? 4 : 3) }
         #expect(find(ASCollectionView.self, in: controller.view, id: "profile.pinned") == nil)
     }
 
@@ -146,15 +418,15 @@ struct RoomProfileLayoutTests {
         window.rootViewController = controller; window.isHidden = false
         defer { pins.stop(); window.isHidden = true; window.rootViewController = nil }
         controller.view.layoutIfNeeded()
-        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
         let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
-        #expect(tabs.numberOfSegments == 2)
+        #expect(tabs.numberOfTabs == 3)
         try await wait { await gate.isPending }
         await gate.finish(.init(eventIDs: [], canUnpin: true))
         await pins.waitForOperationsForTesting()
-        #expect(!pins.isLoading && tabs.numberOfSegments == 2)
+        #expect(!pins.isLoading && tabs.numberOfTabs == 3)
         source.send(.init(eventIDs: ["$event-0"], canUnpin: true))
-        try await wait { tabs.numberOfSegments == 3 }
+        try await wait { tabs.numberOfTabs == 4 }
         #expect(find(ASCollectionView.self, in: controller.view, id: "profile.pinned") == nil)
         controller.scrollViewWillBeginDragging(pager)
         pager.contentOffset.x = pager.bounds.width * 0.5
@@ -165,7 +437,7 @@ struct RoomProfileLayoutTests {
         // A nonadjacent tab tap must still build its destination and the
         // intermediate page before either becomes visible.
         controller.selectSection(.pinned, animated: true)
-        try await wait { tabs.selectedSegmentIndex == 2 && pager.contentOffset.x == pager.bounds.width * 2 }
+        try await wait { tabs.selectedIndex == 3 && pager.contentOffset.x == pager.bounds.width * 3 }
         let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.pinned"))
         #expect(!list.accessibilityElementsHidden && list.bounds.width == pager.bounds.width)
     }
@@ -238,14 +510,14 @@ struct RoomProfileLayoutTests {
         window.rootViewController = controller; window.isHidden = false
         defer { pins.stop(); attachments.stop(); window.isHidden = true; window.rootViewController = nil }
         controller.view.layoutIfNeeded()
-        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
         let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
         let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.pinned"))
         let page = try #require(list.collectionNode?.delegate as? RoomProfileListPage)
         try await wait { itemCount(list) == 30 && !page.isAdjusting }
         #expect(source.starts.wrappedValue == 0)
-        #expect(tabs.numberOfSegments == 3 && tabs.selectedSegmentIndex == 2)
-        #expect(pager.contentOffset.x == pager.bounds.width * 2)
+        #expect(tabs.numberOfTabs == 4 && tabs.selectedIndex == 3)
+        #expect(pager.contentOffset.x == pager.bounds.width * 3)
         var openedID: String?
         controller.onShowInChat = { id, kind in
             #expect(kind.accepts("text"))
@@ -266,7 +538,7 @@ struct RoomProfileLayoutTests {
         #expect(!list.accessibilityElementsHidden)
         pinnedSource.send(.init(eventIDs: [], canUnpin: true))
         try await wait { itemCount(list) == 1 && !page.isAdjusting }
-        #expect(tabs.selectedSegmentIndex == 2 && tabs.numberOfSegments == 3)
+        #expect(tabs.selectedIndex == 3 && tabs.numberOfTabs == 4)
         controller.view.layoutIfNeeded()
         #expect(abs(page.scrollView.contentOffset.y + 48) < 1)
         controller.selectSection(.media, animated: false)
@@ -318,7 +590,7 @@ struct RoomProfileLayoutTests {
         let grid = try #require(controller.mediaGrid)
         let media = grid.scrollView
         let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
-        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
         let expansion = RoomProfileAvatarGeometry.expansionHeight(width: controller.view.bounds.width)
         try await wait { controller.view.layoutIfNeeded(); return avatar.isAccessibilityElement && grid.geometry?.count == 120 }
         #expect(avatar.bounds.width == 88)
@@ -439,7 +711,7 @@ struct RoomProfileLayoutTests {
         let grid = try #require(controller.mediaGrid)
         let media = grid.scrollView
         let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
-        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
         let top = try #require(find(UIButton.self, in: controller.view, id: "profile.scrollToTop"))
         try await wait { controller.view.layoutIfNeeded(); return avatar.isAccessibilityElement && grid.geometry?.count == 120 }
         let circularTabsY = tabs.superview!.frame.minY
@@ -798,7 +1070,7 @@ struct RoomProfileLayoutTests {
         controller.view.layoutIfNeeded()
         let media = try #require(find(UIScrollView.self, in: controller.view, id: "profile.media"))
         let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
-        let tabs = try #require(find(UISegmentedControl.self, in: controller.view, id: "profile.sections"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
         func backFromCenter() -> Bool {
             pager.allowsInteractiveBack(at: CGPoint(x: pager.bounds.midX, y: pager.bounds.midY))
         }
@@ -822,10 +1094,12 @@ struct RoomProfileLayoutTests {
         #expect(abs(media.contentOffset.y - (deepOffset - height)) < 1)
         controller.scrollViewWillBeginDragging(pager)
         pager.contentOffset.x = pager.bounds.width * 0.5
+        #expect(abs(tabs.position - 0.5) < 0.001)
         #expect(!backFromCenter())
         #expect(abs(tabs.superview!.frame.minY - pager.frame.minY - height * 0.5) < 1)
         pager.contentOffset.x = pager.bounds.width
         controller.scrollViewDidEndDecelerating(pager)
+        #expect(tabs.position == 1 && tabs.selectedIndex == 1)
         #expect(!backFromCenter())
         #expect(abs(files.contentOffset.y + files.contentInset.top) < 1)
 

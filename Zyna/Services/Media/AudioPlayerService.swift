@@ -171,6 +171,7 @@ final class AudioPlayerService: NSObject {
     private var displayLink: DisplayLinkToken?
     private var loadTask: Task<Void, Never>?
     private var loadToken: UUID?
+    private enum PlaybackStartError: Error { case rejected }
 
     // MARK: - Public API
 
@@ -178,7 +179,9 @@ final class AudioPlayerService: NSObject {
     func play(
         source: MediaSource,
         mimeType: String = "audio/mp4",
-        nowPlaying item: NowPlayingItem? = nil
+        nowPlaying item: NowPlayingItem? = nil,
+        startProgress: Float = 0,
+        onStarted: (() -> Void)? = nil
     ) {
         let sourceKey = source.url()
 
@@ -187,7 +190,7 @@ final class AudioPlayerService: NSObject {
            url == sourceKey,
            representsCurrentItem(item) {
             if let item { nowPlaying = item }
-            resume()
+            if resume() { onStarted?() }
             return
         }
 
@@ -220,7 +223,9 @@ final class AudioPlayerService: NSObject {
                     self.completeLoading(
                         url: url,
                         sourceKey: sourceKey,
-                        token: token
+                        token: token,
+                        startProgress: startProgress,
+                        onStarted: onStarted
                     )
                 }
             } catch {
@@ -240,13 +245,15 @@ final class AudioPlayerService: NSObject {
     func playLocal(
         url: URL,
         sourceKey: String? = nil,
-        nowPlaying item: NowPlayingItem? = nil
+        nowPlaying item: NowPlayingItem? = nil,
+        startProgress: Float = 0,
+        onStarted: (() -> Void)? = nil
     ) {
         stopInternal()
         failure = nil
         let resolvedSourceKey = sourceKey ?? url.absoluteString
         nowPlaying = item
-        startPlayback(url: url, sourceKey: resolvedSourceKey)
+        startPlayback(url: url, sourceKey: resolvedSourceKey, startProgress: startProgress, onStarted: onStarted)
     }
 
     func pause() {
@@ -256,18 +263,22 @@ final class AudioPlayerService: NSObject {
         state = .paused(sourceURL: url, progress: progress)
     }
 
-    func resume() {
-        guard case .paused(let url, _) = state else { return }
+    @discardableResult
+    func resume() -> Bool {
+        guard case .paused(let url, _) = state, let player else { return false }
         applyPlaybackRate()
-        player?.play()
+        guard player.play() else { return false }
         displayLink?.resume()
         state = .playing(sourceURL: url, progress: currentProgress)
+        return true
     }
 
     func togglePlayPause(
         source: MediaSource,
         mimeType: String = "audio/mp4",
-        nowPlaying item: NowPlayingItem? = nil
+        nowPlaying item: NowPlayingItem? = nil,
+        startProgress: Float = 0,
+        onStarted: (() -> Void)? = nil
     ) {
         let sourceKey = source.url()
         let isCurrentItem = state.sourceURL == sourceKey
@@ -278,11 +289,11 @@ final class AudioPlayerService: NSObject {
             pause()
         case .paused where isCurrentItem:
             if let item { nowPlaying = item }
-            resume()
+            if resume() { onStarted?() }
         case .loading where isCurrentItem:
             stop()
         default:
-            play(source: source, mimeType: mimeType, nowPlaying: item)
+            play(source: source, mimeType: mimeType, nowPlaying: item, startProgress: startProgress, onStarted: onStarted)
         }
     }
 
@@ -326,7 +337,7 @@ final class AudioPlayerService: NSObject {
 
     // MARK: - Private
 
-    private func startPlayback(url: URL, sourceKey: String) {
+    private func startPlayback(url: URL, sourceKey: String, startProgress: Float = 0, onStarted: (() -> Void)? = nil) {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
@@ -335,11 +346,16 @@ final class AudioPlayerService: NSObject {
             audioPlayer.delegate = self
             audioPlayer.enableRate = true
             audioPlayer.rate = playbackRate
-            audioPlayer.play()
+            let progress = startProgress.isFinite ? max(0, min(startProgress, 1)) : 0
+            // Seek before producing sound; a resumed note must not play its
+            // beginning while the UI waits for the next playback snapshot.
+            audioPlayer.currentTime = audioPlayer.duration * Double(progress)
+            guard audioPlayer.play() else { throw PlaybackStartError.rejected }
             self.player = audioPlayer
 
-            state = .playing(sourceURL: sourceKey, progress: 0)
+            state = .playing(sourceURL: sourceKey, progress: progress)
             startProgressTracking(sourceKey: sourceKey)
+            onStarted?()
 
             log("playing \(url.lastPathComponent)")
         } catch {
@@ -446,12 +462,13 @@ final class AudioPlayerService: NSObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    private func completeLoading(url: URL, sourceKey: String, token: UUID) {
+    private func completeLoading(url: URL, sourceKey: String, token: UUID,
+                                 startProgress: Float, onStarted: (() -> Void)?) {
         guard loadToken == token,
               state == .loading(sourceURL: sourceKey) else { return }
         loadToken = nil
         loadTask = nil
-        startPlayback(url: url, sourceKey: sourceKey)
+        startPlayback(url: url, sourceKey: sourceKey, startProgress: startProgress, onStarted: onStarted)
     }
 
     private func failLoadingIfCurrent(sourceKey: String, token: UUID? = nil) {

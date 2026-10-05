@@ -17,6 +17,12 @@ struct RoomProfileRow: Equatable {
         groups.flatMap { group in
             [Self(id: "month:\(group.id)", title: group.title, detail: nil,
                   item: nil, isHeader: true, isAction: false)] + group.items.map { item in
+                if item.kind == .voice {
+                    let sender = item.isOwn ? String(localized: "You") : (item.senderName ?? item.sender)
+                    return Self(id: item.id, title: sender.isEmpty ? String(localized: "Voice message") : sender,
+                        detail: item.date.formatted(date: .abbreviated, time: .shortened),
+                        item: item, isHeader: false, isAction: true)
+                }
                 let size = item.sizeBytes.map { ByteCountFormatter.string(fromByteCount: Int64(clamping: $0), countStyle: .file) }
                 return Self(id: item.id, title: item.filename, detail: [size, item.senderName].compactMap { $0 }.joined(separator: " · "),
                             item: item, isHeader: false, isAction: true)
@@ -37,13 +43,24 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     var onShowInChat: ((AttachmentItem) -> Void)?
     var onOpenPinned: ((String) -> Void)?
     var onUnpin: ((String) -> Void)?
+    var onPlayerGeometryChanged: (() -> Void)?
+    private(set) var bottomDockedPlayerHeight: CGFloat?
+    var voicePlayback: RoomProfileVoicePlayback? {
+        didSet {
+            voicePlayback?.onCurrentEventChanged = { [weak self] in self?.updatePlayingPath() }
+            voicePlayback?.isActive = isActive
+            updatePlayingPath()
+        }
+    }
+    private let voiceImages: RoomProfileVoiceCell.Images?
     var accessibilityID = "profile.files"
     var onLoad: (() -> Void)?
     var onRequestImage: ((AttachmentItem) -> Void)?
     var onAnchorRestored: ((CGFloat) -> Void)?
     var onNearEnd: ((Bool) -> Void)?
     var onContextInteractionChanged: ((Bool) -> Void)?
-    private let flow: UICollectionViewFlowLayout
+    private let flow: RoomProfileListLayout
+    private var viewportBottomInset: CGFloat = 0
     private var rows: [RoomProfileRow] = []
     private var indexByID: [String: Int] = [:]
     private var pendingRows: [RoomProfileRow]?
@@ -57,16 +74,17 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     var isActive = false {
         didSet {
             guard isActive != oldValue else { return }
+            voicePlayback?.isActive = isActive
             if !isActive {
                 stopScrolling()
             }
             updateNearEnd()
         }
     }
-    var headerHeight: CGFloat = 220
+    var headerHeight: CGFloat = 220 { didSet { updatePlayingViewport() } }
     var avatarExpansionHeight: CGFloat = 0
-    var tabsHeight: CGFloat = 48
-    var collapse: CGFloat = 0
+    var tabsHeight: CGFloat = 48 { didSet { updatePlayingViewport() } }
+    var collapse: CGFloat = 0 { didSet { updatePlayingViewport() } }
     var restorationAnchor: RoomProfileAnchor?
     var forceLoadIds: Set<String> = []
     var fullFileThreshold = AttachmentThumbnailPlan.defaultFullFileThreshold
@@ -79,8 +97,9 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     private var needsTypographyRefresh = false
     private lazy var fpsBooster = ScrollFPSBooster(hostView: node.view)
 
-    override init() {
-        flow = UICollectionViewFlowLayout()
+    init(voice: Bool = false) {
+        voiceImages = voice ? RoomProfileVoiceCell.Images() : nil
+        flow = RoomProfileListLayout()
         flow.minimumLineSpacing = 2
         flow.minimumInteritemSpacing = 2
         node = ASCollectionNode(collectionViewLayout: flow)
@@ -106,6 +125,8 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     }
 
     func layout(frame: CGRect, depth: CGFloat, bottomInset: CGFloat) {
+        viewportBottomInset = bottomInset
+        updatePlayingViewport()
         let sizeChanged = node.frame.size != frame.size
         if sizeChanged {
             dismissContextMenu()
@@ -173,7 +194,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         // programmatic move. Layout geometry is already authoritative.
         let viewport = CGRect(x: 0, y: top, width: scrollView.bounds.width,
             height: max(1, scrollView.bounds.height - inset + collapse))
-        let visible = (flow.layoutAttributesForElements(in: viewport) ?? [])
+        let visible = flow.naturalAttributes(in: viewport)
             .sorted { $0.indexPath < $1.indexPath }
         guard let attributes = visible.first(where: {
             let index = $0.indexPath.item
@@ -187,7 +208,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         guard !rows.isEmpty else { return }
         let index = indexByID[anchor.id] ?? min(anchor.previousIndex, rows.count - 1)
         guard
-              let attributes = flow.layoutAttributesForItem(at: IndexPath(item: index, section: 0)) else { return }
+              let attributes = flow.naturalAttributes(at: IndexPath(item: index, section: 0)) else { return }
         let maxDepth = max(0, scrollView.contentSize.height + scrollView.contentInset.bottom - scrollView.bounds.height + tabsHeight)
         let depth = min(maxDepth, max(0, attributes.frame.minY + anchor.offset))
         setPosition(depth: depth)
@@ -226,6 +247,12 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
                 guard let self else { return }
                 let anchor = self.captureAnchor() ?? self.restorationAnchor
                 self.applyingBatch = true
+                // Unpin a removed player while its old index is still valid.
+                // UIKit can adjust bounds before the batch completes.
+                if let id = self.voicePlayback?.currentEventID, newIndices[id] == nil {
+                    self.flow.playingPath = nil
+                    self.setBottomDockedPlayerHeight(nil)
+                }
                 self.node.performBatch(animated: false, updates: {
                     self.rows = newRows
                     self.indexByID = newIndices
@@ -259,6 +286,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
             scrollView.setContentOffset(scrollView.contentOffset, animated: false)
         }
         applyingBatch = false
+        updatePlayingPath()
         updateNearEnd()
         finishUpdate()
     }
@@ -295,7 +323,41 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
 
     func collectionNode(_ collectionNode: ASCollectionNode, nodeBlockForItemAt indexPath: IndexPath) -> ASCellNodeBlock {
         let row = rows[indexPath.item]
+        let voiceImages = voiceImages
         return { [weak self] in
+            if let item = row.item, item.kind == .voice, let voiceImages {
+                let content = RoomProfileVoiceCell(item: item, title: row.title,
+                    subtitle: row.detail ?? "", images: voiceImages)
+                guard let self else { return content }
+                let cell = self.contextCell(for: item, content: content)
+                cell.onLayoutAttributesChanged = { [weak self, weak content] attributes in
+                    let edge = (attributes as? RoomProfileListAttributes)?.dockEdge ?? .none
+                    content?.setDockEdge(edge)
+                    guard let self, self.voicePlayback?.currentEventID == item.id,
+                          attributes.indexPath == self.flow.playingPath else { return }
+                    self.setBottomDockedPlayerHeight(edge == .bottom ? attributes.frame.height : nil)
+                }
+                cell.accessibilityValue = content.accessibilityValue
+                cell.accessibilityHint = content.accessibilityHint
+                content.onAccessibilityChanged = { [weak cell] value, hint in
+                    cell?.accessibilityValue = value
+                    cell?.accessibilityHint = hint
+                }
+                content.onControlsChanged = { [weak self, weak cell, weak content] enabled in
+                    guard let self, let cell, let content else { return }
+                    self.updateVoiceAccessibility(cell: cell, content: content, enabled: enabled)
+                }
+                content.onScrubbing = { [weak self] in self?.setContextInteractionLocked($0) }
+                cell.shouldBeginContextInteraction = { [weak cell, weak content] point in
+                    guard let cell, let content else { return false }
+                    return !content.containsControl(at: cell.view.convert(point, to: content.view))
+                }
+                content.onVisibilityChanged = { [weak self, weak content] visible in
+                    guard let content else { return }
+                    self?.voicePlayback?.setVisible(visible, cell: content)
+                }
+                return cell
+            }
             let cell = RoomProfileTextCell(title: row.title, detail: row.detail, isHeader: row.isHeader,
                 isAction: row.isAction, isError: row.pinned?.unpinError != nil)
             if let item = row.item { return self?.contextCell(for: item, content: cell) ?? cell }
@@ -308,7 +370,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         let width = max(1, collectionNode.bounds.width)
         let row = rows[indexPath.item]
         let base: CGFloat = row.isHeader ? 40 : (row.item == nil ? 104 : 76)
-        let height = UIFontMetrics.default.scaledValue(for: base)
+        let height = row.item?.kind == .voice ? RoomProfileVoiceCell.rowHeight(width: width) : UIFontMetrics.default.scaledValue(for: base)
         return ASSizeRange(min: CGSize(width: width, height: height), max: CGSize(width: width, height: height))
     }
 
@@ -318,6 +380,12 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         if row.hasContent {
             (collectionNode.nodeForItem(at: indexPath) as? ListContextMenuCellNode)?.onQuickTap?()
         } else if row.isAction { onLoad?() }
+    }
+
+    func collectionNode(_ collectionNode: ASCollectionNode, shouldSelectItemAt indexPath: IndexPath) -> Bool {
+        // Voice's context source and its controls own taps. Letting the
+        // collection select as well could toggle playback after seeking.
+        rows.indices.contains(indexPath.item) && rows[indexPath.item].item?.kind != .voice
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -359,6 +427,53 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         guard near != lastNearEnd else { return }
         lastNearEnd = near
         onNearEnd?(near)
+    }
+
+    private func updatePlayingPath() {
+        guard !contextInteractionLocked, !applyingBatch else { return }
+        let path = voicePlayback?.currentEventID.flatMap { id in
+            indexByID[id].map { IndexPath(item: $0, section: 0) }
+        }
+        guard path != flow.playingPath else { return }
+        flow.playingPath = path
+        if path == nil { setBottomDockedPlayerHeight(nil) }
+    }
+
+    private func setBottomDockedPlayerHeight(_ height: CGFloat?) {
+        guard bottomDockedPlayerHeight != height else { return }
+        bottomDockedPlayerHeight = height
+        onPlayerGeometryChanged?()
+    }
+
+    private func updatePlayingViewport() {
+        flow.visibleInsets = UIEdgeInsets(top: inset - collapse, left: 0, bottom: viewportBottomInset, right: 0)
+    }
+
+    private func updateVoiceAccessibility(cell: ListContextMenuCellNode, content: RoomProfileVoiceCell, enabled: Bool) {
+        cell.accessibilityTraits = enabled ? [.button, .adjustable] : .button
+        cell.onAccessibilityAdjust = { [weak content] forward in content?.adjustPlayback(forward: forward) }
+        var actions = [UIAccessibilityCustomAction(name: String(localized: "Show in Chat", table: "RoomProfile")) { [weak self, weak content] _ in
+            guard let self, let content else { return false }
+            self.onShowInChat?(content.item)
+            return true
+        }]
+        if enabled {
+            actions.append(UIAccessibilityCustomAction(name: String(localized: "Stop playback", table: "RoomProfile")) { [weak content] _ in
+                guard let content else { return false }
+                content.stopPlayback()
+                return true
+            })
+            actions.append(UIAccessibilityCustomAction(name: String(localized: "Playback speed")) { [weak content] _ in
+                guard let content else { return false }
+                content.changeSpeed()
+                if UIAccessibility.isVoiceOverRunning {
+                    UIAccessibility.post(notification: .announcement,
+                        argument: String(localized: "Playback speed") + ", " + content.rateTitle)
+                }
+                return true
+            })
+        }
+        cell.setContextAccessibilityActions(actions)
     }
 }
 
@@ -470,6 +585,7 @@ extension RoomProfileListPage {
             scrollView.isScrollEnabled = scrollWasEnabled
         }
         onContextInteractionChanged?(locked)
+        if !locked { updatePlayingPath() }
         if !locked, !updating { finishUpdate() }
     }
 }

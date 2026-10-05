@@ -6,7 +6,7 @@ import Foundation
 /// Content depth is independent of the shared header's geometry.
 /// The controller owns this state for the lifetime of one open profile.
 struct RoomProfileScrollState {
-    enum Section: Int, CaseIterable { case media, files, pinned }
+    enum Section: Int, CaseIterable { case media, files, voice, pinned }
 
     private(set) var selected: Section = .media
     private(set) var collapse: CGFloat = 0
