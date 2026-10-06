@@ -11,7 +11,7 @@ private extension RoomProfileScrollState.Section {
         case .media: return .media
         case .files: return .files
         case .voice: return .voice
-        case .pinned: return nil
+        case .polls, .pinned: return nil
         }
     }
 }
@@ -20,7 +20,6 @@ private extension RoomProfileScrollState.Section {
 final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     var onBack: (() -> Void)?
     var onInformation: (() -> Void)?
-    var onLegacyAttachments: (() -> Void)?
     var onAction: ((RoomProfileAction) -> Void)?
     var onShowInChat: ((String, ChatCatalogTarget) async throws -> PreparedPollNavigation)?
     var onOpenMediaImage: ((RoomMediaDatabase, AttachmentItem, CGRect) async throws -> Void)?
@@ -37,6 +36,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private let titleText: String
     private let profileModel: RoomProfileViewModel?
     private let pinnedModel: RoomPinnedMessagesModel?
+    private let pollsSection: RoomProfilePollsSection?
     var roomIdentifier: String? { profileModel?.snapshot.roomID }
     private let linkSharing = MatrixLinkSharing.forCurrentSession()
     private let header: RoomProfileHeaderNode
@@ -140,6 +140,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
          actions: RoomAttachmentsActions, audioPlayer: AudioPlayerService? = nil, mediaCatalog: RoomMediaCatalog? = nil,
          profileModel: RoomProfileViewModel? = nil,
          pinnedModel: RoomPinnedMessagesModel? = nil,
+         pollsModel: RoomPollsViewModel? = nil,
          initiallyHasPinnedMessages: Bool = false,
          initialSection: RoomProfileScrollState.Section = .media,
          personModel: PersonProfileViewModel? = nil,
@@ -159,7 +160,9 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         self.audioPlayer = audioPlayer
         self.profileModel = profileModel
         self.pinnedModel = pinnedModel
+        self.pollsSection = pollsModel.map(RoomProfilePollsSection.init)
         self.initiallyHasPinnedMessages = initiallyHasPinnedMessages
+        if pollsModel != nil { sections.append(.polls) }
         if pinnedModel != nil, initialSection == .pinned || initiallyHasPinnedMessages { sections.append(.pinned) }
         if sections.contains(initialSection) {
             state.beginTransition()
@@ -171,6 +174,10 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         self.mediaCatalog = mediaCatalog ?? RoomMediaCatalog()
         header = RoomProfileHeaderNode(title: title, subtitle: subtitle)
         super.init(node: ASDisplayNode())
+        pollsSection?.openPoll = { [weak self] eventID in
+            guard let self, let operation = self.onShowInChat else { throw PollNavigationError.unavailable }
+            return try await operation(eventID, .poll)
+        }
         node.backgroundColor = .appBG
         hidesBottomBarWhenPushed = true
     }
@@ -240,8 +247,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         moreButton.accessibilityLabel = String(localized: "More", table: "RoomProfile")
         moreButton.showsMenuAsPrimaryAction = true
         moreButton.menu = UIMenu(children: [
-            UIAction(title: String(localized: "Room Details")) { [weak self] _ in self?.onInformation?() },
-            UIAction(title: String(localized: "Attachments")) { [weak self] _ in self?.onLegacyAttachments?() }
+            UIAction(title: String(localized: "Room Details")) { [weak self] _ in self?.onInformation?() }
         ])
         topButton.setImage(AppIcon.chevronUp.rendered(color: .systemBlue), for: .normal)
         topButton.backgroundColor = .secondarySystemBackground
@@ -276,6 +282,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             model?.stop()
             profileModel?.stop()
             pinnedModel?.stop()
+            pollsSection?.stop()
             personModel?.stop()
             blocking?.stop()
             mediaCatalog.stop()
@@ -289,6 +296,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         super.viewWillAppear(animated)
         observeVoiceTab()
         pages[state.selected]?.isActive = true
+        pollsSection?.isActive = state.selected == .polls
         updateSharedPan()
         loadLargeAvatarIfNeeded(retry: true)
         profileModel?.refreshNotifications()
@@ -299,6 +307,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             blocking?.refresh()
         }
         hasBegunAppearance = true
+        if state.transition == nil { pollsSection?.isPaging = false }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -311,6 +320,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         super.viewWillDisappear(animated)
         voiceTabObservation = nil
         tabs.setPlaybackAnimationEnabled(false)
+        pollsSection?.isActive = false
         linkSharing.cancel()
         settleInterruptedAvatar()
         stopAvatarAnimation(finish: true)
@@ -341,6 +351,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         layingOut = true
         defer { layingOut = false }
         let width = view.bounds.width
+        var finishedPagingAfterResize = false
         contentNode.frame = view.bounds
         let top = view.safeAreaInsets.top + 48
         let measured = header.layoutThatFits(ASSizeRange(min: CGSize(width: width, height: 0),
@@ -356,6 +367,8 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             fpsBooster.stop()
             state.finishTransition(at: state.selected)
             for (section, page) in pages { page.isActive = section == state.selected }
+            pollsSection?.isActive = state.selected == .polls
+            finishedPagingAfterResize = true
             updateSharedPan()
         }
         pager.frame = CGRect(x: 0, y: top, width: width, height: max(0, view.bounds.height - top))
@@ -378,6 +391,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         }
         renderHeader()
         loadLargeAvatarIfNeeded()
+        if finishedPagingAfterResize { pollsSection?.isPaging = false }
     }
 
     private func bind() {
@@ -435,6 +449,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             case .media: return String(localized: "Media")
             case .files: return String(localized: "Files")
             case .voice: return String(localized: "Voice")
+            case .polls: return String(localized: "Polls")
             case .pinned: return String(localized: "Pinned", table: "RoomProfile")
             }
         }
@@ -464,7 +479,9 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         let visible = keepsPinnedSection || state.selected == .pinned
             || (initiallyHasPinnedMessages && pinnedModel.isLoading)
             || pinnedModel.loadError != nil || !pinnedModel.items.isEmpty
-        let next: [RoomProfileScrollState.Section] = visible ? [.media, .files, .voice, .pinned] : [.media, .files, .voice]
+        var next: [RoomProfileScrollState.Section] = [.media, .files, .voice]
+        if pollsSection != nil { next.append(.polls) }
+        if visible { next.append(.pinned) }
         guard sections != next else { return }
         sections = next
         pages[.pinned]?.view.isHidden = !visible
@@ -543,7 +560,6 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         guard profileModel.map({ action.isEnabled(in: $0.snapshot) }) != false else { return }
         switch action {
         case .information: onInformation?()
-        case .attachments: onLegacyAttachments?()
         default: onAction?(action)
         }
     }
@@ -667,7 +683,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         renderedMenuState = menuState
         let notificationMenu = makeNotificationMenu(snapshot: snapshot)
         var entries: [UIMenuElement] = []
-        for action: RoomProfileAction in [.search, .members, .edit, .information, .attachments] {
+        for action: RoomProfileAction in [.search, .members, .edit, .information] {
             if action == .members && snapshot.isDirect { continue }
             if action == .edit && !action.isEnabled(in: snapshot) { continue }
             entries.append(UIAction(title: action.title, image: action.icon.template(size: 18),
@@ -733,7 +749,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
 
     private func updatePages(changedSection: RoomProfileScrollState.Section? = nil) {
         guard model != nil else { return }
-        for (section, page) in pages where section != .pinned {
+        for (section, page) in pages where section != .pinned && section != .polls {
             // The paged media grid owns its catalog. List pages wait for
             // their initial projection instead of briefly showing empty.
             guard section == .media && model?.usesPagedMedia == true || catalog[section] != nil else { continue }
@@ -765,7 +781,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
                     switch section {
                     case .media: title = String(localized: "No photos or videos yet.")
                     case .voice: title = String(localized: "No voice messages yet.")
-                    case .files, .pinned: title = String(localized: "No files yet.")
+                    case .files, .pinned, .polls: title = String(localized: "No files yet.")
                     }
                 }
             case .idle: if isEmpty { title = String(localized: "Loading") }
@@ -794,6 +810,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             page = grid
         } else {
             let list = RoomProfileListPage(voice: section == .voice)
+            if section == .polls { list.accessibilityID = "profile.polls" }
             if section == .voice {
                 list.accessibilityID = "profile.voice"
                 list.onPlayerGeometryChanged = { [weak self] in self?.layoutTopButton() }
@@ -905,7 +922,9 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
                 }
             }
         }
-        if section == .pinned { updatePinnedPage() } else { updatePages() }
+        if section == .polls, let list = page as? RoomProfileListPage {
+            pollsSection?.attach(to: list)
+        } else if section == .pinned { updatePinnedPage() } else { updatePages() }
         view.setNeedsLayout()
         return page
     }
@@ -1153,6 +1172,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         stopAvatarAnimation(finish: false)
         sharedPanScrollView?.panGestureRecognizer.isEnabled = false
         pages[state.selected]?.isActive = false
+        pollsSection?.isPaging = true
         fpsBooster.start()
         state.beginTransition()
         if let index = sections.firstIndex(of: state.selected) {
@@ -1197,6 +1217,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         tabs.setSelectedIndex(index)
         if let tab = section.attachmentTab { model?.tab = tab }
         startAttachmentsIfNeeded()
+        pollsSection?.isActive = section == .polls
         for (key, page) in pages {
             page.isActive = key == section
             page.view.accessibilityElementsHidden = key != section
@@ -1211,6 +1232,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         if state.avatarProgress > 0, state.avatarProgress < 1 {
             animateAvatar(to: target ?? (state.avatarProgress >= 0.5 ? 0 : state.avatarExpansionHeight))
         }
+        pollsSection?.isPaging = false
     }
 
     private func open(_ item: AttachmentItem, preview: UIImage?, from frame: CGRect) {

@@ -848,7 +848,7 @@ final class ChatsCoordinator {
         directUserId: String? = nil
     ) {
         Task { @MainActor [weak self] in
-            self?.showRoomAttachments(room: room, profile: true, memberCount: memberCount, directUserId: directUserId)
+            self?.showRoomAttachments(room: room, memberCount: memberCount, directUserId: directUserId)
         }
     }
 
@@ -856,7 +856,6 @@ final class ChatsCoordinator {
         room: Room,
         memberCount: Int?,
         directUserId: String? = nil,
-        sharing viewModel: RoomAttachmentsViewModel,
         editing: Bool = false
     ) {
         let vc = RoomDetailsViewController(
@@ -882,11 +881,8 @@ final class ChatsCoordinator {
         vc.onPinnedMessagesTapped = { [weak self] in
             self?.showPinnedMessages(room: room, memberCount: memberCount, directUserId: directUserId)
         }
-        vc.onAttachmentsTapped = { [weak self, weak viewModel] in
-            Task { @MainActor in
-                guard let viewModel else { return }
-                self?.showRoomAttachments(room: room, sharing: viewModel)
-            }
+        vc.onAttachmentsTapped = { [weak self] in
+            self?.showRoomProfileSection(.media, room: room, memberCount: memberCount, directUserId: directUserId)
         }
         vc.onStorylinesTapped = { [weak self] in
             self?.showRoomSpaceMembership(room: room)
@@ -921,6 +917,11 @@ final class ChatsCoordinator {
     }
 
     private func showPinnedMessages(room: Room, memberCount: Int?, directUserId: String?) {
+        showRoomProfileSection(.pinned, room: room, memberCount: memberCount, directUserId: directUserId)
+    }
+
+    private func showRoomProfileSection(_ section: RoomProfileScrollState.Section, room: Room,
+                                        memberCount: Int?, directUserId: String?) {
         let sessionID = MatrixClientService.shared.currentLocalSessionId
         let origin = navigationController.topViewController
         Task { @MainActor [weak self, weak origin] in
@@ -929,11 +930,11 @@ final class ChatsCoordinator {
             if let profile = self.navigationController.stack.last(where: {
                 ($0 as? RoomProfileViewController)?.roomIdentifier == room.id()
             }) as? RoomProfileViewController {
-                profile.selectSection(.pinned, animated: false)
+                profile.selectSection(section, animated: false)
                 self.navigationController.pop(to: profile, animated: true)
             } else {
-                self.showRoomAttachments(room: room, profile: true, memberCount: memberCount,
-                                         directUserId: directUserId, initialSection: .pinned)
+                self.showRoomAttachments(room: room, memberCount: memberCount,
+                                         directUserId: directUserId, initialSection: section)
             }
         }
     }
@@ -965,20 +966,21 @@ final class ChatsCoordinator {
     }
 
     @MainActor
-    private func showRoomAttachments(room: Room, profile: Bool = false, memberCount: Int? = nil, directUserId: String? = nil,
-                                     sharing sharedModel: RoomAttachmentsViewModel? = nil,
+    private func showRoomAttachments(room: Room, memberCount: Int? = nil, directUserId: String? = nil,
                                      initialSection: RoomProfileScrollState.Section = .media) {
         let sessionId = MatrixClientService.shared.currentLocalSessionId
+        let client = MatrixClientService.shared.client
         let catalog = RoomPollCatalog(roomId: room.id(), database: DatabaseService.shared.dbQueue)
         let pollsViewModel = RoomPollsViewModel(catalog: catalog,
             source: SDKRoomPollHistorySource(room: room,
-                userID: (try? MatrixClientService.shared.client?.userId()) ?? "", catalog: catalog),
-            isCurrentSession: { MatrixClientService.shared.currentLocalSessionId == sessionId })
-        let viewModel = sharedModel ?? RoomAttachmentsViewModel(
+                userID: (try? client?.userId()) ?? "", catalog: catalog),
+            isCurrentSession: { MatrixClientService.shared.currentLocalSessionId == sessionId
+                && MatrixClientService.shared.client === client })
+        let viewModel = RoomAttachmentsViewModel(
             room: room,
             filterMode: AttachmentsResearchSettings.filterMode,
             tilePixelSize: RoomAttachmentsMetrics.tilePixelSize(),
-            usesPagedMedia: profile
+            usesPagedMedia: true
         )
         let presenter = AttachmentPresenterBox()
         let actions = RoomAttachmentsActions(
@@ -1002,154 +1004,100 @@ final class ChatsCoordinator {
                 Task { @MainActor in
                     self?.openAttachmentFile(item, presenter: presenter, onEvent: onEvent)
                 }
-            },
-            openPoll: { [weak self] eventId in
-                guard let self, self.activeAttachmentPresenter(presenter) != nil,
-                      MatrixClientService.shared.currentLocalSessionId == sessionId,
-                      let destination = self.navigationController.stack.last(where: {
-                          $0.chatRoomIdentifier == room.id()
-                      }), let chat = destination.materializedChat() else { throw PollNavigationError.unavailable }
-                let prepared = try await chat.preparePollNavigation(eventId: eventId)
-                return PreparedPollNavigation { [weak self, weak chat, weak destination] in
-                    guard let self, let chat, let destination, self.activeAttachmentPresenter(presenter) != nil,
-                          MatrixClientService.shared.currentLocalSessionId == sessionId,
-                          let index = self.navigationController.stack.firstIndex(where: { $0 === destination }),
-                          destination.residentChat === chat, prepared.open() else { return false }
-                    self.navigationController.setStack(Array(self.navigationController.stack.prefix(index + 1)), animated: true)
-                    return true
-                }
             }
         )
-        if profile {
-            let client = MatrixClientService.shared.client
-            let database = DatabaseService.shared.dbQueue
-            let initiallyHasPins = navigationController.stack.last(where: { $0.chatRoomIdentifier == room.id() })?
-                .residentChat?.hasPinnedMessages == true
-            let pinnedModel = RoomPinnedMessagesModel(roomID: room.id(), database: database,
-                source: SDKRoomPinnedSource(room: room, removePin: { [weak self] eventID in
-                    guard MatrixClientService.shared.currentLocalSessionId == sessionId,
-                          MatrixClientService.shared.client === client,
-                          let route = self?.navigationController.stack.last(where: { $0.chatRoomIdentifier == room.id() }),
-                          let chat = route.materializedChat() else { throw CancellationError() }
-                    try await chat.unpinMessage(eventId: eventID)
-                }), isCurrentSession: {
-                    MatrixClientService.shared.currentLocalSessionId == sessionId && MatrixClientService.shared.client === client
-                })
-            let subtitle = directUserId ?? memberCount.map { String(localized: "\($0) members") } ?? String(localized: "Chat")
-            let profileModel = RoomProfileViewModel(snapshot: RoomProfileSnapshot(roomID: room.id(),
-                title: room.displayName() ?? String(localized: "Chat"), directUserID: directUserId, memberCount: memberCount),
-                source: SDKRoomProfileSource(room: room, fallbackUserID: directUserId),
-                notifications: MatrixClientService.shared.notificationSettingsService,
-                isCurrentSession: { MatrixClientService.shared.currentLocalSessionId == sessionId })
-            let vc = RoomProfileViewController(room: room,
-                title: room.displayName() ?? String(localized: "Chat"), subtitle: subtitle,
-                model: viewModel, actions: actions, audioPlayer: audioPlayer,
-                mediaCatalog: RoomMediaCatalog(source: RoomMediaDatabase(database: DatabaseService.shared.dbQueue, roomID: room.id())),
-                profileModel: profileModel, pinnedModel: pinnedModel,
-                initiallyHasPinnedMessages: initiallyHasPins, initialSection: initialSection)
-            presenter.viewController = vc
-            if let client = MatrixClientService.shared.client {
-                Task { @MainActor [weak vc] in
-                    guard (try? await client.isReportRoomApiSupported()) == true,
-                          MatrixClientService.shared.currentLocalSessionId == sessionId, let vc else { return }
-                    vc.onReportRoom = { [weak vc, weak self] in
-                        guard let vc else { return }
-                        ContentReportFlow.open(from: vc, room: room,
-                            target: .room(isDirect: profileModel.snapshot.isDirect), audioPlayer: self?.audioPlayer)
-                    }
-                }
-            }
-            vc.onOpenMediaImage = { [weak self] source, item, frame in
-                let page = try await source.galleryPage(item: item, frame: frame)
-                try Task.checkCancellation()
-                guard let self, let host = self.activeAttachmentPresenter(presenter),
-                      MatrixClientService.shared.currentLocalSessionId == sessionId else { return }
-                let viewer = ImageViewerController(page: page, adjacentPage: { page, direction in
-                    try await source.adjacent(to: page, direction: direction)
-                })
-                host.present(viewer, animated: false) { viewer.animateIn(from: frame) }
-            }
-            vc.onBack = { [weak self] in self?.navigationController.pop() }
-            vc.onAction = { [weak self, weak viewModel] action in
-                guard let self, self.activeAttachmentPresenter(presenter) != nil,
-                      MatrixClientService.shared.currentLocalSessionId == sessionId else { return }
-                switch action {
-                case .search: self.popAndActivateSearch()
-                case .call:
-                    let chat = self.navigationController.stack.last {
-                        $0.chatRoomIdentifier == room.id()
-                    }
-                    chat?.materializedChat()?.onCallTapped?()
-                case .invite: self.showInviteMembers(room: room)
-                case .members: self.showMembersList(room: room)
-                case .edit:
-                    guard let viewModel else { return }
-                    self.showRoomInformation(room: room, memberCount: profileModel.snapshot.memberCount,
-                        directUserId: profileModel.snapshot.directUserID, sharing: viewModel, editing: true)
-                default: break
-                }
-            }
-            vc.onInformation = { [weak self, weak viewModel] in
-                guard let viewModel else { return }
-                self?.showRoomInformation(room: room, memberCount: profileModel.snapshot.memberCount,
-                                         directUserId: profileModel.snapshot.directUserID, sharing: viewModel)
-            }
-            vc.onLegacyAttachments = { [weak self, weak viewModel] in
-                guard let viewModel else { return }
-                self?.showRoomAttachments(room: room, sharing: viewModel)
-            }
-            vc.onShowInChat = { [weak self] eventId, targetKind in
-                guard let self, self.activeAttachmentPresenter(presenter) != nil,
-                      MatrixClientService.shared.currentLocalSessionId == sessionId,
-                      let destination = self.navigationController.stack.last(where: { $0.chatRoomIdentifier == room.id() }),
-                      let chat = destination.materializedChat() else { throw PollNavigationError.unavailable }
-                // Prepare the existing chat while the profile still covers
-                // it, then reveal the positioned list with the normal pop.
-                let prepared = try await chat.preparePollNavigation(eventId: eventId, targetKind: targetKind)
-                try Task.checkCancellation()
-                guard self.activeAttachmentPresenter(presenter) != nil,
-                      !self.navigationController.isTransitionInFlight,
-                      MatrixClientService.shared.currentLocalSessionId == sessionId else { throw CancellationError() }
-                return PreparedPollNavigation { [weak self, weak chat, weak destination] in
-                    guard let self, self.activeAttachmentPresenter(presenter) != nil,
-                          let chat, let destination, destination.residentChat === chat,
-                          self.navigationController.stack.contains(where: { $0 === destination }),
-                          !self.navigationController.isTransitionInFlight,
-                          MatrixClientService.shared.currentLocalSessionId == sessionId,
-                          prepared.open() else { return false }
-                    self.navigationController.pop(to: destination, animated: true)
-                    return true
-                }
-            }
-            navigationController.push(vc)
-            return
-        }
-        let previousTab = viewModel.tab
-        viewModel.tab = .media
-        viewModel.setLegacyMediaPresentation(true)
-        let vc = GlassHostingController(
-            title: String(localized: "Attachments"),
-            rootView: RoomAttachmentsView(
-                viewModel: viewModel,
-                pollsViewModel: pollsViewModel,
-                audioPlayer: audioPlayer,
-                roomName: room.displayName() ?? String(localized: "Chat"),
-                actions: actions
-            ),
-            audioPlayer: audioPlayer,
-            onBack: { [weak self] in
-                _ = self?.navigationController.pop()
-            }
-        )
+        let database = DatabaseService.shared.dbQueue
+        let initiallyHasPins = navigationController.stack.last(where: { $0.chatRoomIdentifier == room.id() })?
+            .residentChat?.hasPinnedMessages == true
+        let pinnedModel = RoomPinnedMessagesModel(roomID: room.id(), database: database,
+            source: SDKRoomPinnedSource(room: room, removePin: { [weak self] eventID in
+                guard MatrixClientService.shared.currentLocalSessionId == sessionId,
+                      MatrixClientService.shared.client === client,
+                      let route = self?.navigationController.stack.last(where: { $0.chatRoomIdentifier == room.id() }),
+                      let chat = route.materializedChat() else { throw CancellationError() }
+                try await chat.unpinMessage(eventId: eventID)
+            }), isCurrentSession: {
+                MatrixClientService.shared.currentLocalSessionId == sessionId && MatrixClientService.shared.client === client
+            })
+        let subtitle = directUserId ?? memberCount.map { String(localized: "\($0) members") } ?? String(localized: "Chat")
+        let profileModel = RoomProfileViewModel(snapshot: RoomProfileSnapshot(roomID: room.id(),
+            title: room.displayName() ?? String(localized: "Chat"), directUserID: directUserId, memberCount: memberCount),
+            source: SDKRoomProfileSource(room: room, fallbackUserID: directUserId),
+            notifications: MatrixClientService.shared.notificationSettingsService,
+            isCurrentSession: { MatrixClientService.shared.currentLocalSessionId == sessionId })
+        let vc = RoomProfileViewController(room: room,
+            title: room.displayName() ?? String(localized: "Chat"), subtitle: subtitle,
+            model: viewModel, actions: actions, audioPlayer: audioPlayer,
+            mediaCatalog: RoomMediaCatalog(source: RoomMediaDatabase(database: DatabaseService.shared.dbQueue, roomID: room.id())),
+            profileModel: profileModel, pinnedModel: pinnedModel, pollsModel: pollsViewModel,
+            initiallyHasPinnedMessages: initiallyHasPins, initialSection: initialSection)
         presenter.viewController = vc
-        vc.onRemovedFromParent = { [weak viewModel, weak pollsViewModel] in
-            if sharedModel != nil {
-                viewModel?.setLegacyMediaPresentation(false)
-                viewModel?.tab = previousTab
-            } else {
-                viewModel?.stop()
+        if let client = MatrixClientService.shared.client {
+            Task { @MainActor [weak vc] in
+                guard (try? await client.isReportRoomApiSupported()) == true,
+                      MatrixClientService.shared.currentLocalSessionId == sessionId, let vc else { return }
+                vc.onReportRoom = { [weak vc, weak self] in
+                    guard let vc else { return }
+                    ContentReportFlow.open(from: vc, room: room,
+                        target: .room(isDirect: profileModel.snapshot.isDirect), audioPlayer: self?.audioPlayer)
+                }
             }
-            pollsViewModel?.stop()
+        }
+        vc.onOpenMediaImage = { [weak self] source, item, frame in
+            let page = try await source.galleryPage(item: item, frame: frame)
+            try Task.checkCancellation()
+            guard let self, let host = self.activeAttachmentPresenter(presenter),
+                  MatrixClientService.shared.currentLocalSessionId == sessionId else { return }
+            let viewer = ImageViewerController(page: page, adjacentPage: { page, direction in
+                try await source.adjacent(to: page, direction: direction)
+            })
+            host.present(viewer, animated: false) { viewer.animateIn(from: frame) }
+        }
+        vc.onBack = { [weak self] in self?.navigationController.pop() }
+        vc.onAction = { [weak self] action in
+            guard let self, self.activeAttachmentPresenter(presenter) != nil,
+                  MatrixClientService.shared.currentLocalSessionId == sessionId else { return }
+            switch action {
+            case .search: self.popAndActivateSearch()
+            case .call:
+                let chat = self.navigationController.stack.last {
+                    $0.chatRoomIdentifier == room.id()
+                }
+                chat?.materializedChat()?.onCallTapped?()
+            case .invite: self.showInviteMembers(room: room)
+            case .members: self.showMembersList(room: room)
+            case .edit:
+                self.showRoomInformation(room: room, memberCount: profileModel.snapshot.memberCount,
+                    directUserId: profileModel.snapshot.directUserID, editing: true)
+            default: break
+            }
+        }
+        vc.onInformation = { [weak self] in
+            self?.showRoomInformation(room: room, memberCount: profileModel.snapshot.memberCount,
+                                     directUserId: profileModel.snapshot.directUserID)
+        }
+        vc.onShowInChat = { [weak self] eventId, targetKind in
+            guard let self, self.activeAttachmentPresenter(presenter) != nil,
+                  MatrixClientService.shared.currentLocalSessionId == sessionId,
+                  let destination = self.navigationController.stack.last(where: { $0.chatRoomIdentifier == room.id() }),
+                  let chat = destination.materializedChat() else { throw PollNavigationError.unavailable }
+            // Prepare the existing chat while the profile still covers
+            // it, then reveal the positioned list with the normal pop.
+            let prepared = try await chat.preparePollNavigation(eventId: eventId, targetKind: targetKind)
+            try Task.checkCancellation()
+            guard self.activeAttachmentPresenter(presenter) != nil,
+                  !self.navigationController.isTransitionInFlight,
+                  MatrixClientService.shared.currentLocalSessionId == sessionId else { throw CancellationError() }
+            return PreparedPollNavigation { [weak self, weak chat, weak destination] in
+                guard let self, self.activeAttachmentPresenter(presenter) != nil,
+                      let chat, let destination, destination.residentChat === chat,
+                      self.navigationController.stack.contains(where: { $0 === destination }),
+                      !self.navigationController.isTransitionInFlight,
+                      MatrixClientService.shared.currentLocalSessionId == sessionId,
+                      prepared.open() else { return false }
+                self.navigationController.pop(to: destination, animated: true)
+                return true
+            }
         }
         navigationController.push(vc)
     }

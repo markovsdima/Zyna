@@ -11,7 +11,9 @@ struct RoomProfileRow: Equatable {
     let isHeader: Bool
     let isAction: Bool
     var pinned: RoomPinnedItem? = nil
-    var hasContent: Bool { item != nil || pinned != nil }
+    var poll: RoomProfilePollRow? = nil
+    var pollAction: RoomProfilePollAction? = nil
+    var hasContent: Bool { item != nil || pinned != nil || poll != nil }
 
     static func rows(groups: [AttachmentMonthGroup]) -> [Self] {
         groups.flatMap { group in
@@ -43,6 +45,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     var onShowInChat: ((AttachmentItem) -> Void)?
     var onOpenPinned: ((String) -> Void)?
     var onUnpin: ((String) -> Void)?
+    var onPollAction: ((RoomProfilePollAction) -> Void)?
     var onPlayerGeometryChanged: (() -> Void)?
     private(set) var bottomDockedPlayerHeight: CGFloat?
     var voicePlayback: RoomProfileVoicePlayback? {
@@ -325,6 +328,10 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         let row = rows[indexPath.item]
         let voiceImages = voiceImages
         return { [weak self] in
+            if let poll = row.poll {
+                let content = RoomProfilePollCell(poll: poll)
+                return self?.contextCell(for: poll, content: content) ?? content
+            }
             if let item = row.item, item.kind == .voice, let voiceImages {
                 let content = RoomProfileVoiceCell(item: item, title: row.title,
                     subtitle: row.detail ?? "", images: voiceImages)
@@ -369,6 +376,11 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     func collectionNode(_ collectionNode: ASCollectionNode, constrainedSizeForItemAt indexPath: IndexPath) -> ASSizeRange {
         let width = max(1, collectionNode.bounds.width)
         let row = rows[indexPath.item]
+        if row.poll != nil {
+            // Texture measures the bounded text off-main and caches the size.
+            return ASSizeRange(min: CGSize(width: width, height: 1),
+                max: CGSize(width: width, height: .greatestFiniteMagnitude))
+        }
         let base: CGFloat = row.isHeader ? 40 : (row.item == nil ? 104 : 76)
         let height = row.item?.kind == .voice ? RoomProfileVoiceCell.rowHeight(width: width) : UIFontMetrics.default.scaledValue(for: base)
         return ASSizeRange(min: CGSize(width: width, height: height), max: CGSize(width: width, height: height))
@@ -379,7 +391,8 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         let row = rows[indexPath.item]
         if row.hasContent {
             (collectionNode.nodeForItem(at: indexPath) as? ListContextMenuCellNode)?.onQuickTap?()
-        } else if row.isAction { onLoad?() }
+        } else if let action = row.pollAction { onPollAction?(action) }
+        else if row.isAction { onLoad?() }
     }
 
     func collectionNode(_ collectionNode: ASCollectionNode, shouldSelectItemAt indexPath: IndexPath) -> Bool {
@@ -478,6 +491,38 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
 }
 
 extension RoomProfileListPage {
+    private func contextCell(for poll: RoomProfilePollRow, content: ASCellNode) -> ListContextMenuCellNode {
+        let cell = ListContextMenuCellNode(contentNode: content)
+        cell.isAccessibilityElement = true
+        cell.accessibilityLabel = content.accessibilityLabel
+        cell.accessibilityTraits = .button
+        cell.accessibilityHint = poll.isOpening
+            ? String(localized: "Cancel opening poll", table: "RoomProfile") : String(localized: "Open poll in chat")
+        let action: RoomProfilePollAction = poll.isOpening ? .cancelOpening(poll.eventID) : .open(poll.eventID)
+        cell.onQuickTap = { [weak self] in
+            guard let self, !self.contextInteractionLocked else { return }
+            self.onPollAction?(action)
+        }
+        let title = poll.isOpening ? String(localized: "Cancel") : String(localized: "Show in Chat", table: "RoomProfile")
+        cell.onContextMenuActivated = { [weak self, weak cell] point in
+            guard let self, let cell else { return }
+            self.presentContextMenu(id: poll.eventID, cell: cell, point: point, actions: [
+                ContextMenuAction(title: title, image: (poll.isOpening ? AppIcon.xmark : .bubbleLeft).template(size: 18)) { [weak self] in
+                    self?.onPollAction?(action)
+                }
+            ])
+        }
+        cell.onDragChanged = { [weak self] in self?.activeContextMenu?.trackFinger(at: $0) }
+        cell.onDragEnded = { [weak self] in self?.activeContextMenu?.releaseFinger(at: $0) }
+        cell.onInteractionLockChanged = { [weak self] in self?.setContextInteractionLocked($0) }
+        cell.setContextAccessibilityActions([UIAccessibilityCustomAction(name: title) { [weak self] _ in
+            guard let self else { return false }
+            self.onPollAction?(action)
+            return true
+        }])
+        return cell
+    }
+
     private func contextCell(for item: RoomPinnedItem, content: ASCellNode) -> ListContextMenuCellNode {
         let cell = ListContextMenuCellNode(contentNode: content)
         cell.isAccessibilityElement = true

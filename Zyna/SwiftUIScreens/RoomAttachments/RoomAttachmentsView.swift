@@ -21,7 +21,9 @@ enum RoomAttachmentsMetrics {
     }
 }
 
-/// Room attachments backed by the local catalog and filtered SDK pagination.
+/// Retired SDK research UI, kept as a reference. App navigation opens the
+/// Texture room profile; the underlying catalogs and services remain shared.
+#if DEBUG
 struct RoomAttachmentsView: View {
 
     @ObservedObject var viewModel: RoomAttachmentsViewModel
@@ -363,3 +365,4 @@ struct RoomAttachmentsView: View {
         }
     }
 }
+#endif

@@ -6,6 +6,8 @@
 import Combine
 import SwiftUI
 
+#if DEBUG
+
 @MainActor
 private final class AttachmentVoicePlaybackObserver: ObservableObject {
 
@@ -231,3 +233,4 @@ struct AttachmentVoiceRow: View {
         )
     }
 }
+#endif

@@ -6,6 +6,8 @@
 import SwiftUI
 
 #if DEBUG
+
+#if DEBUG
 private let logAttachmentTileTrace = ScopedLog(
     .attachments,
     prefix: "[Attachments][trace][tile-ui]"
@@ -216,3 +218,4 @@ struct AttachmentGridTile: View {
         }
     }
 }
+#endif

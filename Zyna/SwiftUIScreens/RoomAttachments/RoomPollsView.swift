@@ -5,6 +5,7 @@
 
 import SwiftUI
 
+#if DEBUG
 struct RoomPollsView: View {
     @ObservedObject var viewModel: RoomPollsViewModel
     let isActive: Bool
@@ -121,3 +122,4 @@ struct RoomPollsView: View {
         .padding()
     }
 }
+#endif

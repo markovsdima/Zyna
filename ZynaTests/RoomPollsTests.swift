@@ -92,6 +92,45 @@ struct RoomPollsTests {
         #expect(condition())
     }
 
+    @Test("Hidden polls suspend catalog observation and catch up without restarting SDK history")
+    func hiddenObservation() async throws {
+        let database = try RoomPollFixture.database()
+        let catalog = RoomPollCatalog(roomId: RoomPollFixture.roomID, database: database)
+        let source = FakePollHistory(catalog: catalog)
+        source.pages = [[.append([RoomPollFixture.poll("$poll")])]]
+        let model = RoomPollsViewModel(catalog: catalog, source: source, settleQuiet: 0)
+        defer { model.stop() }
+        model.activate()
+        try await wait { model.items.count == 1 && model.state == .exhausted }
+        model.activate()
+        try await database.write { try $0.execute(sql: "UPDATE roomPoll SET senderName = 'Profile'") }
+        try await wait { model.items.first?.senderName == "Profile" }
+        model.deactivate()
+        try await database.write { try $0.execute(sql: "UPDATE roomPoll SET senderName = 'Hidden'") }
+        #expect(model.items.first?.senderName == "Profile")
+        model.activate()
+        try await wait { model.items.first?.senderName == "Hidden" }
+        #expect(source.starts == 1)
+    }
+
+    @Test("Retry after a real database observation error restarts live catalog updates")
+    func observationRecovery() async throws {
+        let database = try RoomPollFixture.database()
+        let catalog = RoomPollCatalog(roomId: RoomPollFixture.roomID, database: database)
+        let source = FakePollHistory(catalog: catalog)
+        source.pages = [[.append([RoomPollFixture.poll("$poll")])]]
+        try await database.write { try $0.execute(sql: "ALTER TABLE ignoredUser RENAME COLUMN userId TO unavailable") }
+        let model = RoomPollsViewModel(catalog: catalog, source: source, settleQuiet: 0)
+        defer { model.stop() }
+        model.activate()
+        try await wait { if case .failed = model.state { return true }; return false }
+        try await database.write { try $0.execute(sql: "ALTER TABLE ignoredUser RENAME COLUMN unavailable TO userId") }
+        model.loadMore()
+        try await wait { model.items.count == 1 && model.state == .exhausted }
+        try await database.write { try $0.execute(sql: "UPDATE roomPoll SET senderName = 'After retry'") }
+        try await wait { model.items.first?.senderName == "After retry" }
+    }
+
     @Test("Leaving Polls or changing accounts cannot open a late navigation result", arguments: [0, 1, 2])
     func cancelledNavigation(action: Int) async throws {
         let database = try RoomPollFixture.database()

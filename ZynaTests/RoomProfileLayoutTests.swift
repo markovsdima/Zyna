@@ -65,6 +65,31 @@ private final class ProfileFixtureSource: AttachmentSource, @unchecked Sendable 
 @Suite("Texture profile layout", .serialized)
 @MainActor
 struct RoomProfileLayoutTests {
+    @Test("Direct poll entry does not start attachment discovery; switching to files starts it once")
+    func directPollEntry() async throws {
+        let database = try await Task.detached { try RoomPollFixture.database() }.value
+        let pollSource = ProfilePollHistory()
+        let polls = RoomPollsViewModel(catalog: RoomPollCatalog(roomId: RoomPollFixture.roomID, database: database),
+            source: pollSource, settleQuiet: 0)
+        let source = ProfileFixtureSource()
+        let attachments = RoomAttachmentsViewModel(roomId: RoomPollFixture.roomID, source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        let controller = RoomProfileViewController(room: nil, title: "Polls", subtitle: "", model: attachments,
+            actions: .none, pollsModel: polls, initialSection: .polls)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { polls.stop(); attachments.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        try await wait { polls.state == .exhausted }
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
+        #expect(tabs.selectedIndex == 3 && tabs.numberOfTabs == 4)
+        #expect(source.starts.wrappedValue == 0 && pollSource.starts == 1)
+        controller.selectSection(.files, animated: false)
+        try await wait { source.starts.wrappedValue == 1 }
+        controller.selectSection(.polls, animated: false)
+        #expect(source.starts.wrappedValue == 1 && pollSource.starts == 1)
+    }
+
     @Test("The Voice tab observes playback without a voice page and suspends updates while the profile is hidden")
     func voiceTabProgress() async throws {
         let audioURL = try await Task.detached { try ProfileVoiceAudioFixture.make() }.value

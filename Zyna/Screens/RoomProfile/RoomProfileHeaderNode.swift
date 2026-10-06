@@ -22,7 +22,6 @@ extension RoomProfileAction {
         case .members: String(localized: "Members")
         case .edit: String(localized: "Edit")
         case .information: String(localized: "Room Details")
-        case .attachments: String(localized: "Attachments")
         case .message: String(localized: "Chat")
         }
     }
@@ -37,7 +36,6 @@ extension RoomProfileAction {
         case .members: .person2
         case .edit: .pencil
         case .information: .settings
-        case .attachments: .attach
         case .message: .bubbleLeft
         }
     }

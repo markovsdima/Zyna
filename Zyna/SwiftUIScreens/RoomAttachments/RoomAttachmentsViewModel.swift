@@ -135,6 +135,7 @@ private final class RoomAttachmentCatalogProjection: @unchecked Sendable {
 
     init(excludingVisualMedia: Bool = false) { self.excludingVisualMedia = excludingVisualMedia }
 
+    #if DEBUG
     func setExcludingVisualMedia(_ exclude: Bool) {
         queue.async { [self] in
             guard !isStopped, excludingVisualMedia != exclude else { return }
@@ -143,6 +144,7 @@ private final class RoomAttachmentCatalogProjection: @unchecked Sendable {
             schedulePublish()
         }
     }
+    #endif
 
     private func included(_ records: [StoredRoomAttachment]) -> [StoredRoomAttachment] {
         excludingVisualMedia ? records.filter { $0.attachmentKind?.isVisual != true } : records
@@ -353,7 +355,9 @@ final class RoomAttachmentsViewModel: ObservableObject {
     private var foregroundObserver: NSObjectProtocol?
     private var researchObserver: NSObjectProtocol?
     private var attachmentObservation: AnyDatabaseCancellable?
+    #if DEBUG
     private var presentsLegacyMedia = false
+    #endif
     private var hasReceivedIndexSnapshot = false
     private var hasReceivedPagedMediaSnapshot = false
     private var indexedMediaCount = 0
@@ -507,21 +511,26 @@ final class RoomAttachmentsViewModel: ObservableObject {
         }
     }
 
-    /// The SDK research screen borrows this model. Only while it is open
-    /// do we decode the full visual projection required by its SwiftUI grid.
+    #if DEBUG
+    /// Retained for research fixtures; app navigation never enables this.
     func setLegacyMediaPresentation(_ visible: Bool) {
         guard usesPagedMedia, !isStopped, presentsLegacyMedia != visible else { return }
         presentsLegacyMedia = visible
         catalogProjection?.setExcludingVisualMedia(!visible)
         if hasStarted { observeCatalog() }
     }
+    #endif
 
     private func observeCatalog() {
         guard let attachmentIndex, let catalogProjection else { return }
         attachmentObservation?.cancel()
         let current = Atomic(true)
+        var excludingVisualMedia = usesPagedMedia
+        #if DEBUG
+        excludingVisualMedia = excludingVisualMedia && !presentsLegacyMedia
+        #endif
         let token = attachmentIndex.observe(
-            excludingVisualMedia: usesPagedMedia && !presentsLegacyMedia,
+            excludingVisualMedia: excludingVisualMedia,
             onError: { [weak self] error in
                 DispatchQueue.main.async { [weak self] in
                     guard current.wrappedValue, let self, !self.isStopped else { return }

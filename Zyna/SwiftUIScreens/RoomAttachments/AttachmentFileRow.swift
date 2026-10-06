@@ -4,6 +4,8 @@
 //
 
 import SwiftUI
+
+#if DEBUG
 import UniformTypeIdentifiers
 
 struct AttachmentFileRow: View {
@@ -89,3 +91,4 @@ struct AttachmentFileRow: View {
         return parts.joined(separator: " · ")
     }
 }
+#endif

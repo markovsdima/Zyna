@@ -1,6 +1,42 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Cancel opening poll" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancel opening poll"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отменить открытие опроса"
+          }
+        }
+      }
+    },
+    "Opening poll… Tap to cancel." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открываем опрос… Нажмите для отмены."
+          }
+        }
+      }
+    },
+    "Couldn't open poll. Tap to try again." : {
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось открыть опрос. Нажмите для повтора."
+          }
+        }
+      }
+    },
     "Paused: %@" : {
       "localizations" : {
         "ru" : {
