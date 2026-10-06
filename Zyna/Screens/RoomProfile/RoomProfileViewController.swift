@@ -71,6 +71,19 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     private let tabBackground = UIView()
     private var state = RoomProfileScrollState()
     private var sections: [RoomProfileScrollState.Section] = [.media, .files, .voice]
+    // A tab selection uses a two-page coordinate space until it settles.
+    // Logical tab order and each page's vertical state stay unchanged.
+    private var directPagingSections: [RoomProfileScrollState.Section]?
+    private var scrollingAnimationTarget: RoomProfileScrollState.Section?
+    private var needsPagerPositionReset = false
+    private var pagingSections: [RoomProfileScrollState.Section] { directPagingSections ?? sections }
+    private var nearestPagingSection: RoomProfileScrollState.Section {
+        guard pager.bounds.width > 0 else { return state.selected }
+        let visibleSections = pagingSections
+        let index = min(visibleSections.count - 1, max(0, Int((pager.contentOffset.x / pager.bounds.width).rounded())))
+        return visibleSections[index]
+    }
+    private enum PagingCompletion { case selected, retargeting, hidden }
     private var keepsPinnedSection = false
     private var pages: [RoomProfileScrollState.Section: any RoomProfileContentPage] = [:]
     private let mediaCatalog: RoomMediaCatalog
@@ -295,8 +308,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         observeVoiceTab()
-        pages[state.selected]?.isActive = true
-        pollsSection?.isActive = state.selected == .polls
+        updateContentActivity()
         updateSharedPan()
         loadLargeAvatarIfNeeded(retry: true)
         profileModel?.refreshNotifications()
@@ -321,6 +333,10 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         voiceTabObservation = nil
         tabs.setPlaybackAnimationEnabled(false)
         pollsSection?.isActive = false
+        if state.transition != nil {
+            stopPagingAnimation()
+            finishPaging(at: state.selected, completion: .hidden)
+        }
         linkSharing.cancel()
         settleInterruptedAvatar()
         stopAvatarAnimation(finish: true)
@@ -364,16 +380,24 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             state.resizeHeader(to: height, avatarExpansionHeight: expansion)
         }
         if width != previousWidth, state.transition != nil {
+            stopPagingAnimation()
+            directPagingSections = nil
+            needsPagerPositionReset = true
             fpsBooster.stop()
+            pagingAvatarTarget = nil
             state.finishTransition(at: state.selected)
-            for (section, page) in pages { page.isActive = section == state.selected }
-            pollsSection?.isActive = state.selected == .polls
+            updateContentActivity()
             finishedPagingAfterResize = true
             updateSharedPan()
         }
         pager.frame = CGRect(x: 0, y: top, width: width, height: max(0, view.bounds.height - top))
-        pager.contentSize = CGSize(width: width * CGFloat(personModel == nil ? sections.count : 1), height: pager.bounds.height)
-        if width != previousWidth { pager.contentOffset.x = width * CGFloat(sections.firstIndex(of: state.selected) ?? 0); previousWidth = width }
+        let visibleSections = pagingSections
+        pager.contentSize = CGSize(width: width * CGFloat(personModel == nil ? visibleSections.count : 1), height: pager.bounds.height)
+        if width != previousWidth || needsPagerPositionReset {
+            pager.setContentOffset(CGPoint(x: width * CGFloat(visibleSections.firstIndex(of: state.selected) ?? 0), y: 0), animated: false)
+            needsPagerPositionReset = false
+            previousWidth = width
+        }
         bar.frame = CGRect(x: 0, y: 0, width: width, height: top)
         backButton.frame = CGRect(x: 8, y: top - 48, width: 44, height: 44)
         moreButton.frame = CGRect(x: width - 52, y: top - 48, width: 44, height: 44)
@@ -381,7 +405,11 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         compactAvatar.frame = CGRect(x: 58, y: top - 42, width: 32, height: 32)
         compactTitle.frame = CGRect(x: 100, y: top - 48, width: max(0, width - 158), height: 44)
         for (section, page) in pages {
-            guard let index = sections.firstIndex(of: section) else { continue }
+            guard let index = visibleSections.firstIndex(of: section) else {
+                page.view.isHidden = true
+                continue
+            }
+            page.view.isHidden = false
             page.headerHeight = state.headerHeight
             page.avatarExpansionHeight = state.avatarExpansionHeight
             page.tabsHeight = tabHeight
@@ -430,8 +458,23 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
 
     private func startAttachmentsIfNeeded() {
         guard let tab = state.selected.attachmentTab, startTask == nil, let model else { return }
-        model.tab = tab
+        if model.tab != tab { model.tab = tab }
         startTask = Task { await model.start() }
+    }
+
+    private func updateContentActivity(_ completion: PagingCompletion = .selected) {
+        let active = completion == .selected
+        if active {
+            if let tab = state.selected.attachmentTab, let model, model.tab != tab { model.tab = tab }
+            startAttachmentsIfNeeded()
+        }
+        // Retargeting changes geometry synchronously, but must not briefly
+        // start discovery or release a prepared poll navigation in between.
+        if completion != .retargeting { pollsSection?.isActive = active && state.selected == .polls }
+        for (section, page) in pages {
+            page.isActive = active && section == state.selected
+            page.view.accessibilityElementsHidden = section != state.selected
+        }
     }
 
     private func bindPinned() {
@@ -946,7 +989,13 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
 
     private func renderHeader() {
         defer { layoutTopButton() }
-        if pager.bounds.width > 0 { tabs.setPosition(pager.contentOffset.x / pager.bounds.width) }
+        if pager.bounds.width > 0 {
+            let position = pager.contentOffset.x / pager.bounds.width
+            if let pair = directPagingSections,
+               let first = sections.firstIndex(of: pair[0]), let last = sections.firstIndex(of: pair[1]) {
+                tabs.setTransition(from: first, to: last, progress: position)
+            } else { tabs.setPosition(position) }
+        }
         let top = pager.frame.minY
         let geometry = HeaderGeometry(top: top, width: view.bounds.width,
             height: state.headerHeight, collapse: state.collapse, expansion: state.avatarExpansionHeight)
@@ -975,6 +1024,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         // Leave the compact header and inactive collections untouched.
         guard geometryChanged || state.transition != nil else { return }
         for (section, page) in pages {
+            if let pair = directPagingSections, !pair.contains(section) { continue }
             page.collapse = state.collapse
             if section != state.selected || state.transition != nil {
                 page.setPosition(depth: state.depth(for: section))
@@ -1139,24 +1189,50 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
 
     func selectSection(_ target: RoomProfileScrollState.Section, animated: Bool) {
         loadViewIfNeeded()
+        // A second finger can tap the sibling tab strip during a native pan.
+        // Let that pan settle before accepting a programmatic destination.
+        guard !pager.isTracking, !pager.isDragging else { return }
+        view.layoutIfNeeded()
+        guard personModel == nil, sections.contains(target) || (target == .pinned && pinnedModel != nil) else { return }
+        let animates = animated && !UIAccessibility.isReduceMotionEnabled && pager.bounds.width > 0
+        if state.transition != nil, let pair = directPagingSections, let index = pair.firstIndex(of: target) {
+            let offset = CGPoint(x: CGFloat(index) * pager.bounds.width, y: 0)
+            if animates, abs(pager.contentOffset.x - offset.x) >= 0.5 {
+                if scrollingAnimationTarget == target { return }
+                // Reuse the pair and its original header endpoints. UIKit
+                // reverses from the current offset without committing a page.
+                scrollingAnimationTarget = target
+                pager.setContentOffset(offset, animated: true)
+            } else {
+                stopPagingAnimation()
+                finishPaging(at: target)
+            }
+            return
+        }
         // Stop the previous programmatic journey before starting a new one.
         // Otherwise its later animation callback could commit the wrong page.
         if state.transition != nil {
-            let width = pager.bounds.width
-            let index = width > 0 ? (pager.contentOffset.x / width).rounded() : 0
-            pager.setContentOffset(CGPoint(x: index * width, y: 0), animated: false)
-            finishPaging()
+            stopPagingAnimation()
+            let destination = nearestPagingSection
+            finishPaging(at: destination, completion: destination == target ? .selected : .retargeting)
         }
         if target == .pinned { keepsPinnedSection = true; updatePinnedSection() }
         guard let index = sections.firstIndex(of: target), target != state.selected else { return }
-        beginPaging()
+        beginPaging(preparesNeighbors: false)
         ensurePage(target)
-        view.layoutIfNeeded()
-        if !animated || UIAccessibility.isReduceMotionEnabled {
-            pager.setContentOffset(CGPoint(x: CGFloat(index) * pager.bounds.width, y: 0), animated: false)
-            finishPaging()
+        if !animates {
+            view.layoutIfNeeded()
+            finishPaging(at: target)
         } else {
-            pager.setContentOffset(CGPoint(x: CGFloat(index) * pager.bounds.width, y: 0), animated: true)
+            let sourceIndex = sections.firstIndex(of: state.selected) ?? 0
+            let pair = sourceIndex < index ? [state.selected, target] : [target, state.selected]
+            directPagingSections = pair
+            needsPagerPositionReset = true
+            view.setNeedsLayout()
+            view.layoutIfNeeded()
+            scrollingAnimationTarget = target
+            let targetPageIndex = sourceIndex < index ? 1 : 0
+            pager.setContentOffset(CGPoint(x: CGFloat(targetPageIndex) * pager.bounds.width, y: 0), animated: true)
         }
     }
 
@@ -1165,62 +1241,97 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         pages[state.selected]?.scrollToBeginning(animated: !UIAccessibility.isReduceMotionEnabled)
     }
 
-    private func beginPaging() {
-        guard personModel == nil else { return }
+    private func beginPaging(preparesNeighbors: Bool = true) {
+        guard personModel == nil, state.transition == nil else { return }
         settleInterruptedAvatar()
-        pagingAvatarTarget = avatarAnimationTarget
+        pagingAvatarTarget = avatarAnimationTarget ?? pagingAvatarTarget
         stopAvatarAnimation(finish: false)
         sharedPanScrollView?.panGestureRecognizer.isEnabled = false
         pages[state.selected]?.isActive = false
         pollsSection?.isPaging = true
         fpsBooster.start()
         state.beginTransition()
-        if let index = sections.firstIndex(of: state.selected) {
+        if preparesNeighbors, let index = sections.firstIndex(of: state.selected) {
             for neighbor in max(0, index - 1)...min(sections.count - 1, index + 1) {
                 ensurePage(sections[neighbor])
             }
         }
-        view.layoutIfNeeded()
+        if preparesNeighbors { view.layoutIfNeeded() }
     }
 
-    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { beginPaging() }
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        guard scrollView === pager else { return }
+        // UIKit cancels its animation when the native pan takes over. Keep
+        // the pair in place so the gesture can finish or reverse continuously.
+        scrollingAnimationTarget = nil
+        beginPaging()
+    }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !layingOut, state.transition != nil, pager.bounds.width > 0 else { return }
+        guard scrollView === pager, !layingOut, state.transition != nil, pager.bounds.width > 0 else { return }
         let position = pager.contentOffset.x / pager.bounds.width
-        // A tab tap can travel across several pages. Materialize only the
-        // pair currently crossing the viewport, also when the gesture reverses.
-        let clamped = min(CGFloat(sections.count - 1), max(0, position))
+        let visibleSections = pagingSections
+        // Swipes materialize only the visible pair. A tab animation already
+        // owns both pages and never visits intermediate logical sections.
+        let clamped = min(CGFloat(visibleSections.count - 1), max(0, position))
         var addedPage = false
-        for index in Int(clamped.rounded(.down))...Int(clamped.rounded(.up)) where pages[sections[index]] == nil {
-            ensurePage(sections[index]); addedPage = true
+        for index in Int(clamped.rounded(.down))...Int(clamped.rounded(.up)) where pages[visibleSections[index]] == nil {
+            ensurePage(visibleSections[index]); addedPage = true
         }
         if addedPage { view.layoutIfNeeded() }
-        state.transition(at: position, sections: sections)
+        state.transition(at: position, sections: visibleSections)
         renderHeader()
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard scrollView === pager, scrollingAnimationTarget == nil else { return }
         if !decelerate { finishPaging() }
     }
-    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { finishPaging() }
-    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) { finishPaging() }
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        guard scrollView === pager, scrollingAnimationTarget == nil else { return }
+        finishPaging()
+    }
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        // A stopped animation may report completion after another tap or a
+        // pan. Only the current animation at its actual endpoint can commit.
+        guard scrollView === pager, !pager.isDragging, !pager.isDecelerating,
+              let target = scrollingAnimationTarget, let index = pagingSections.firstIndex(of: target),
+              abs(pager.contentOffset.x - CGFloat(index) * pager.bounds.width) < 0.5 else { return }
+        finishPaging(at: target)
+    }
 
-    private func finishPaging() {
+    private func stopPagingAnimation() {
+        scrollingAnimationTarget = nil
+        let wasLayingOut = layingOut
+        layingOut = true
+        pager.setContentOffset(pager.contentOffset, animated: false)
+        layingOut = wasLayingOut
+    }
+
+    private func finishPaging(at destination: RoomProfileScrollState.Section? = nil, completion: PagingCompletion = .selected) {
+        guard state.transition != nil else { return }
         fpsBooster.stop()
-        guard pager.bounds.width > 0 else { return }
-        let index = min(sections.count - 1, max(0, Int((pager.contentOffset.x / pager.bounds.width).rounded())))
-        let section = sections[index]
+        let section = destination ?? nearestPagingSection
+        let index = sections.firstIndex(of: section) ?? 0
+        scrollingAnimationTarget = nil
+        let restoresLayout = directPagingSections != nil
+        directPagingSections = nil
         state.finishTransition(at: section)
+        if restoresLayout {
+            needsPagerPositionReset = true
+            view.setNeedsLayout()
+            view.layoutIfNeeded()
+        } else {
+            let wasLayingOut = layingOut
+            layingOut = true
+            pager.setContentOffset(CGPoint(x: CGFloat(index) * pager.bounds.width, y: 0), animated: false)
+            layingOut = wasLayingOut
+        }
         if section == .pinned { keepsPinnedSection = true }
         updateSharedPan()
         tabs.setSelectedIndex(index)
-        if let tab = section.attachmentTab { model?.tab = tab }
-        startAttachmentsIfNeeded()
-        pollsSection?.isActive = section == .polls
+        updateContentActivity(completion)
         for (key, page) in pages {
-            page.isActive = key == section
-            page.view.accessibilityElementsHidden = key != section
             page.collapse = state.collapse
             page.setPosition(depth: state.depth(for: key))
             page.updateNearEnd()
@@ -1228,11 +1339,11 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         renderHeader()
         updatePinnedSection()
         let target = pagingAvatarTarget
-        pagingAvatarTarget = nil
-        if state.avatarProgress > 0, state.avatarProgress < 1 {
+        if completion != .retargeting { pagingAvatarTarget = nil }
+        if completion == .selected, state.avatarProgress > 0, state.avatarProgress < 1 {
             animateAvatar(to: target ?? (state.avatarProgress >= 0.5 ? 0 : state.avatarExpansionHeight))
         }
-        pollsSection?.isPaging = false
+        if completion != .retargeting { pollsSection?.isPaging = false }
     }
 
     private func open(_ item: AttachmentItem, preview: UIImage?, from frame: CGRect) {

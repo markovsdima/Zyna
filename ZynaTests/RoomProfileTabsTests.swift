@@ -47,6 +47,32 @@ struct RoomProfileTabsTests {
         #expect(requested == 2)
     }
 
+    @Test("A tab jump interpolates only its endpoint capsules and returns to ordinary swipe geometry", arguments: [false, true])
+    func directTransition(rtl: Bool) throws {
+        let tabs = makeTabs()
+        tabs.semanticContentAttribute = rtl ? .forceRightToLeft : .forceLeftToRight
+        tabs.setNeedsLayout(); tabs.layoutIfNeeded()
+        let selection = try #require(tabs.layer.sublayers?.first { $0.name == "profile.tabs.selection" })
+        let buttons = tabs.subviews.compactMap { $0 as? UIButton }
+        let start = buttons[0].frame.insetBy(dx: 1, dy: 3)
+        let end = buttons[3].frame.insetBy(dx: 1, dy: 3)
+        for progress: CGFloat in [0.25, 0.7, 0.4, 0] {
+            tabs.setTransition(from: 0, to: 3, progress: progress)
+            #expect(abs(selection.frame.minX - (start.minX + (end.minX - start.minX) * progress)) < 0.01)
+            #expect(abs(selection.frame.width - (start.width + (end.width - start.width) * progress)) < 0.01)
+            #expect(tabs.selectedIndex == 0 && tabs.position == 3 * progress)
+            #expect(selection.animationKeys()?.isEmpty != false)
+        }
+        tabs.setTransition(from: 0, to: 3, progress: 0.25)
+        // Reset even when the logical position happens to be identical.
+        tabs.setPosition(0.75)
+        let neighbor = buttons[1].frame.insetBy(dx: 1, dy: 3)
+        #expect(abs(selection.frame.width - (start.width + (neighbor.width - start.width) * 0.75)) < 0.01)
+        tabs.setTransition(from: 0, to: 3, progress: 1)
+        tabs.setSelectedIndex(3)
+        #expect(selection.frame == end && buttons[3].accessibilityTraits.contains(.selected))
+    }
+
     @Test("Voice progress remains in its own capsule, preserves paused position and reuses controls")
     func progress() throws {
         let tabs = makeTabs()

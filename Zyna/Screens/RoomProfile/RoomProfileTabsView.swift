@@ -39,6 +39,12 @@ final class RoomProfileTabsView: UIView {
     private let voiceFill = CALayer()
     private var buttons: [UIButton] = []
     private var titleWidths: [CGFloat] = []
+    private struct SelectionTransition: Equatable {
+        let from: Int
+        let to: Int
+        let progress: CGFloat
+    }
+    private var selectionTransition: SelectionTransition?
     private var voiceIndex: Int?
     private var spokenPercent: Int?
     private var spokenIsPlaying: Bool?
@@ -126,8 +132,20 @@ final class RoomProfileTabsView: UIView {
     func setPosition(_ value: CGFloat) {
         guard value.isFinite else { return }
         let next = max(0, min(CGFloat(max(0, buttons.count - 1)), value))
-        guard position != next else { return }
+        let hadTransition = selectionTransition != nil
+        selectionTransition = nil
+        guard position != next || hadTransition else { return }
         position = next
+        layoutSelection()
+    }
+
+    func setTransition(from: Int, to: Int, progress: CGFloat) {
+        guard buttons.indices.contains(from), buttons.indices.contains(to), progress.isFinite else { return }
+        let progress = max(0, min(1, progress))
+        let transition = SelectionTransition(from: from, to: to, progress: progress)
+        guard selectionTransition != transition else { return }
+        selectionTransition = transition
+        position = CGFloat(from) + CGFloat(to - from) * progress
         layoutSelection()
     }
 
@@ -167,13 +185,14 @@ final class RoomProfileTabsView: UIView {
 
     private func layoutSelection() {
         guard !buttons.isEmpty else { selection.isHidden = true; return }
-        let lower = Int(position.rounded(.down)), upper = Int(position.rounded(.up))
+        let lower = selectionTransition?.from ?? Int(position.rounded(.down))
+        let upper = selectionTransition?.to ?? Int(position.rounded(.up))
         guard buttons[lower].bounds.width > 2, buttons[lower].bounds.height > 6 else {
             selection.isHidden = true
             return
         }
         let start = capsuleFrame(at: lower), end = capsuleFrame(at: upper)
-        let fraction = position - CGFloat(lower)
+        let fraction = selectionTransition?.progress ?? (position - CGFloat(lower))
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         selection.isHidden = false

@@ -148,22 +148,28 @@ struct RoomProfileLayoutTests {
         let id = section == .voice ? "profile.voice" : "profile.files"
         var list = try #require(find(ASCollectionView.self, in: controller.view, id: id))
         var page = try #require(list.collectionNode?.delegate as? RoomProfileListPage)
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
         try await wait { itemCount(list) == 62 && !page.isAdjusting }
         list.contentOffset.y = 950
         let anchor = try #require(page.captureAnchor())
-        controller.selectSection(.media, animated: false)
+        controller.selectSection(.media, animated: true)
+        try await wait { tabs.selectedIndex == 0 && controller.mediaGrid?.geometry?.count == 120 }
+        let media = try #require(controller.mediaGrid)
+        media.scrollView.contentOffset.y = 1100
+        let mediaOffset = media.scrollView.contentOffset.y
         controller.didReceiveMemoryWarning()
         #expect(find(ASCollectionView.self, in: controller.view, id: id) == nil)
         let changed = [ProfileFixtureSource.item(1_100, kind: kind)] + original
         if section == .voice { source.voice = changed } else { source.files = changed }
         source.publish()
         try await wait { (section == .voice ? model.voice : model.files).flatMap(\.items).count == 61 }
-        controller.selectSection(section, animated: false)
+        controller.selectSection(section, animated: true)
         list = try #require(find(ASCollectionView.self, in: controller.view, id: id))
         page = try #require(list.collectionNode?.delegate as? RoomProfileListPage)
-        try await wait { itemCount(list) == 63 && !page.isAdjusting }
+        try await wait { tabs.selectedIndex == section.rawValue && itemCount(list) == 63 && !page.isAdjusting }
         let restored = try #require(page.captureAnchor())
         #expect(restored.id == anchor.id && abs(restored.offset - anchor.offset) < 1)
+        #expect(abs(media.scrollView.contentOffset.y - mediaOffset) < 1)
         // X -> evicted Y -> recreated Y -> X must not lose the final X
         // to the deduplicator's memory from the old page.
         if section == .voice { source.voice = original } else { source.files = original }
@@ -459,12 +465,224 @@ struct RoomProfileLayoutTests {
         #expect(find(ASCollectionView.self, in: controller.view, id: "profile.pinned") == nil)
         pager.contentOffset.x = 0
         controller.scrollViewDidEndDragging(pager, willDecelerate: false)
-        // A nonadjacent tab tap must still build its destination and the
-        // intermediate page before either becomes visible.
+        // A nonadjacent tab tap builds only its destination.
         controller.selectSection(.pinned, animated: true)
         try await wait { tabs.selectedIndex == 3 && pager.contentOffset.x == pager.bounds.width * 3 }
         let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.pinned"))
         #expect(!list.accessibilityElementsHidden && list.bounds.width == pager.bounds.width)
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.voice") == nil)
+    }
+
+    @Test("Distant tab taps travel one page in either direction; the next swipe follows normal tab order")
+    func directTabPaging() async throws {
+        let (controller, polls, source) = try await makePagingController()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { polls.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
+        let media = try #require(controller.mediaGrid)
+        let width = pager.bounds.width
+        controller.selectSection(.polls, animated: true)
+        let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.polls"))
+        #expect(pager.contentSize.width == 2 * width && list.frame.minX == width)
+        #expect(tabs.selectedIndex == 0 && source.starts == 0)
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.files") == nil)
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.voice") == nil)
+        try await wait { tabs.selectedIndex == 3 }
+        #expect(pager.contentSize.width == 4 * width && pager.contentOffset.x == 3 * width)
+        #expect(list.frame.minX - pager.contentOffset.x == 0 && !list.accessibilityElementsHidden)
+        #expect(controller.mediaGrid === media)
+        controller.selectSection(.media, animated: true)
+        #expect(pager.contentSize.width == 2 * width && pager.contentOffset.x == width)
+        #expect(list.frame.minX == width && media.view.frame.minX == 0)
+        try await wait { tabs.selectedIndex == 0 }
+        #expect(pager.contentSize.width == 4 * width && pager.contentOffset.x == 0)
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.files") == nil)
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.voice") == nil)
+        controller.selectSection(.polls, animated: false)
+        controller.scrollViewWillBeginDragging(pager)
+        pager.contentOffset.x = 2.5 * width
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.voice") != nil)
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.files") == nil)
+        pager.contentOffset.x = 2 * width
+        controller.scrollViewDidEndDragging(pager, willDecelerate: false)
+        #expect(tabs.selectedIndex == 2 && pager.contentSize.width == 4 * width)
+        controller.scrollViewWillBeginDragging(pager)
+        pager.contentOffset.x = width
+        controller.scrollViewDidEndDragging(pager, willDecelerate: false)
+        #expect(tabs.selectedIndex == 1)
+    }
+
+    @Test("An interrupted tab animation restores normal coordinates after reversal, completion, resizing or leaving",
+          arguments: ["cancel", "complete", "resize", "hide"])
+    func interruptedTabPaging(outcome: String) async throws {
+        let (controller, polls, source) = try await makePagingController()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { polls.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
+        controller.selectSection(.polls, animated: true)
+        pager.setContentOffset(CGPoint(x: 0.4 * pager.bounds.width, y: 0), animated: false)
+        if outcome == "resize" {
+            controller.view.frame.size.width = 320
+            controller.view.setNeedsLayout(); controller.view.layoutIfNeeded()
+        } else if outcome == "hide" {
+            controller.viewWillDisappear(false)
+            controller.viewWillAppear(false)
+        } else {
+            let before = pager.contentOffset
+            controller.scrollViewWillBeginDragging(pager)
+            #expect(pager.contentOffset == before && pager.contentSize.width == 2 * pager.bounds.width)
+            // A late animation callback must not commit the intercepted pan.
+            controller.scrollViewDidEndScrollingAnimation(pager)
+            #expect(tabs.selectedIndex == 0)
+            pager.contentOffset.x = pager.bounds.width * (outcome == "complete" ? 1 : 0)
+            controller.scrollViewDidEndDragging(pager, willDecelerate: true)
+            #expect(pager.contentSize.width == 2 * pager.bounds.width)
+            controller.scrollViewDidEndDecelerating(pager)
+        }
+        let selected = outcome == "complete" ? 3 : 0
+        #expect(tabs.selectedIndex == selected && pager.contentSize.width == 4 * pager.bounds.width)
+        #expect(pager.contentOffset.x == CGFloat(selected) * pager.bounds.width)
+        controller.scrollViewDidEndScrollingAnimation(pager)
+        #expect(tabs.selectedIndex == selected)
+        if selected == 0 { #expect(source.starts == 0) }
+        controller.selectSection(.voice, animated: false)
+        #expect(tabs.selectedIndex == 2 && pager.contentOffset.x == 2 * pager.bounds.width)
+        let voice = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.voice"))
+        #expect(!voice.isHidden && !voice.accessibilityElementsHidden)
+    }
+
+    @Test("Repeated destination taps and a return to the source preserve the current offset and header", arguments: [0.3, 0.7])
+    func continuousPairRetargeting(progress: CGFloat) async throws {
+        let (controller, polls, source) = try await makePagingController()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { polls.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
+        let media = try #require(controller.mediaGrid)
+        controller.selectSection(.polls, animated: true)
+        let list = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.polls"))
+        pager.setContentOffset(CGPoint(x: progress * pager.bounds.width, y: 0), animated: false)
+        let offset = pager.contentOffset
+        let position = tabs.position
+        let headerFrame = tabs.superview!.frame
+        let frames = [media.view.frame, list.frame]
+        controller.selectSection(.polls, animated: true)
+        #expect(pager.contentOffset == offset && tabs.position == position)
+        #expect(tabs.superview!.frame == headerFrame && [media.view.frame, list.frame] == frames)
+        #expect(pager.contentSize.width == 2 * pager.bounds.width && tabs.selectedIndex == 0)
+        controller.selectSection(.media, animated: true)
+        #expect(pager.contentOffset == offset && tabs.position == position)
+        #expect(tabs.superview!.frame == headerFrame && [media.view.frame, list.frame] == frames)
+        #expect(pager.contentSize.width == 2 * pager.bounds.width && !media.scrollView.panGestureRecognizer.isEnabled)
+        controller.scrollViewDidEndScrollingAnimation(pager)
+        #expect(pager.contentSize.width == 2 * pager.bounds.width && source.starts == 0)
+        try await wait { pager.contentSize.width == 4 * pager.bounds.width && media.scrollView.panGestureRecognizer.isEnabled }
+        #expect(tabs.selectedIndex == 0 && pager.contentOffset.x == 0 && source.starts == 0)
+        controller.didReceiveMemoryWarning()
+        #expect(find(ASCollectionView.self, in: controller.view, id: "profile.polls") == nil)
+    }
+
+    @Test("Requests at endpoints or without animation settle the existing pair even without a completion callback",
+          arguments: ["source endpoint", "nonanimated destination", "completed destination"])
+    func immediatePairSelection(request: String) async throws {
+        let (controller, polls, source) = try await makePagingController()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { polls.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
+        controller.selectSection(.polls, animated: true)
+        let atSource = request == "source endpoint"
+        let target: RoomProfileScrollState.Section = atSource ? .media : .polls
+        let progress: CGFloat = atSource ? 0 : (request == "completed destination" ? 1 : 0.3)
+        pager.setContentOffset(CGPoint(x: progress * pager.bounds.width, y: 0), animated: false)
+        // A zero-distance request gets no native animation callback. An
+        // explicitly nonanimated request must commit even the existing goal.
+        controller.selectSection(target, animated: request != "nonanimated destination")
+        let index = atSource ? 0 : 3
+        #expect(tabs.selectedIndex == index && pager.contentOffset.x == CGFloat(index) * pager.bounds.width)
+        #expect(pager.contentSize.width == 4 * pager.bounds.width)
+        let selected = try #require(find(UIScrollView.self, in: controller.view, id: atSource ? "profile.media" : "profile.polls"))
+        #expect(selected.panGestureRecognizer.isEnabled && !selected.accessibilityElementsHidden)
+        controller.scrollViewDidEndScrollingAnimation(pager)
+        #expect(tabs.selectedIndex == index)
+        if atSource { #expect(source.starts == 0) }
+    }
+
+    @Test("Repeated tab taps ignore old callbacks and do not start discovery while retargeting", arguments: [0.3, 0.7])
+    func repeatedTabPaging(progress: CGFloat) async throws {
+        let (controller, polls, source) = try await makePagingController()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { polls.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
+        controller.selectSection(.polls, animated: true)
+        pager.setContentOffset(CGPoint(x: progress * pager.bounds.width, y: 0), animated: false)
+        controller.selectSection(.voice, animated: true)
+        let pollList = try #require(find(ASCollectionView.self, in: controller.view, id: "profile.polls"))
+        let media = try #require(controller.mediaGrid)
+        let ignoredPage: UIView = progress < 0.5 ? pollList : media.view
+        #expect(ignoredPage.isHidden && source.starts == 0)
+        controller.scrollViewDidEndScrollingAnimation(pager)
+        #expect(tabs.selectedIndex == (progress < 0.5 ? 0 : 3) && pager.contentSize.width == 2 * pager.bounds.width)
+        pager.setContentOffset(CGPoint(x: progress < 0.5 ? pager.bounds.width : 0, y: 0), animated: false)
+        controller.scrollViewDidEndScrollingAnimation(pager)
+        #expect(tabs.selectedIndex == 2 && pager.contentOffset.x == 2 * pager.bounds.width)
+        #expect(!pollList.isHidden && pollList.accessibilityElementsHidden)
+        controller.selectSection(.polls, animated: true)
+        controller.selectSection(.files, animated: false)
+        controller.scrollViewDidEndScrollingAnimation(pager)
+        #expect(tabs.selectedIndex == 1 && pager.contentSize.width == 4 * pager.bounds.width)
+        #expect(source.starts == 0)
+    }
+
+    @Test("Resizing a retargeted poll-entry animation activates the settled attachment page exactly once")
+    func retargetingResize() async throws {
+        let source = ProfileFixtureSource()
+        let model = RoomAttachmentsViewModel(roomId: RoomPollFixture.roomID, source: source,
+            filterMode: .sdkOnlyMessage, tilePixelSize: 128)
+        let (controller, polls, pollSource) = try await makePagingController(attachments: model, initialSection: .polls)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.rootViewController = controller; window.isHidden = false
+        defer { model.stop(); polls.stop(); window.isHidden = true; window.rootViewController = nil }
+        controller.view.layoutIfNeeded()
+        let pager = try #require(find(RoomProfilePagerScrollView.self, in: controller.view, id: "profile.pager"))
+        let tabs = try #require(find(RoomProfileTabsView.self, in: controller.view, id: "profile.sections"))
+        try await wait { pollSource.starts == 1 && polls.state == .exhausted }
+        #expect(source.starts.wrappedValue == 0)
+        controller.selectSection(.voice, animated: true)
+        pager.setContentOffset(CGPoint(x: 0.3 * pager.bounds.width, y: 0), animated: false)
+        controller.selectSection(.files, animated: true)
+        #expect(source.starts.wrappedValue == 0)
+        controller.view.frame.size.width = 320
+        controller.view.setNeedsLayout(); controller.view.layoutIfNeeded()
+        #expect(tabs.selectedIndex == 2 && pager.contentOffset.x == 2 * pager.bounds.width)
+        try await wait { model.tab == .voice && source.starts.wrappedValue == 1 }
+        controller.selectSection(.files, animated: false)
+        #expect(model.tab == .files && source.starts.wrappedValue == 1)
+    }
+
+    private func makePagingController(attachments: RoomAttachmentsViewModel? = nil,
+                                      initialSection: RoomProfileScrollState.Section = .media) async throws
+        -> (RoomProfileViewController, RoomPollsViewModel, ProfilePollHistory) {
+        let database = try await Task.detached { try RoomPollFixture.database() }.value
+        let source = ProfilePollHistory()
+        let polls = RoomPollsViewModel(catalog: RoomPollCatalog(roomId: RoomPollFixture.roomID, database: database),
+            source: source, settleQuiet: 0)
+        let controller = RoomProfileViewController(room: nil, title: "Room", subtitle: "", model: attachments,
+            actions: .none, pollsModel: polls, initialSection: initialSection)
+        return (controller, polls, source)
     }
 
     @Test("An unpin failure stays on its message when a sheet covers the profile")
