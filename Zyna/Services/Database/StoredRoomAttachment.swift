@@ -280,6 +280,10 @@ final class RoomAttachmentIndex: @unchecked Sendable {
         self.dbQueue = dbQueue
     }
 
+    func catalogSource(scope: RoomAttachmentCatalogScope) -> RoomMediaDatabase {
+        RoomMediaDatabase(database: dbQueue, roomID: roomId, scope: scope)
+    }
+
     func upsert(_ records: [StoredRoomAttachment]) {
         guard !records.isEmpty else { return }
         #if DEBUG
@@ -402,6 +406,22 @@ final class RoomAttachmentIndex: @unchecked Sendable {
             onError: onError,
             onChange: onChange
         )
+    }
+
+    /// Trigger-maintained visible counts, independent of decoded list pages.
+    /// Backfill progress never requires reading all attachment payloads.
+    func observeListCounts(onError: @escaping @Sendable (Error) -> Void,
+                          onChange: @escaping @Sendable (Int, Int) -> Void) -> AnyDatabaseCancellable {
+        let roomId = roomId
+        let observation = ValueObservation.tracking { db in
+            let files = try Int.fetchOne(db, sql:
+                "SELECT count FROM roomAttachmentListRevision WHERE roomId = ? AND section = 'files'", arguments: [roomId]) ?? 0
+            let voice = try Int.fetchOne(db, sql:
+                "SELECT count FROM roomAttachmentListRevision WHERE roomId = ? AND section = 'voice'", arguments: [roomId]) ?? 0
+            return [files, voice]
+        }.removeDuplicates()
+        return dbQueue.observe(observation, on: observationQueue, onError: onError,
+            onChange: { onChange($0[0], $0[1]) })
     }
 
     #if DEBUG

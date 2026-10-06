@@ -4,6 +4,19 @@
 import UIKit
 import GRDB
 
+enum RoomAttachmentCatalogScope: String, CaseIterable, Sendable {
+    case media, files, voice
+
+    var predicate: String {
+        switch self {
+        case .media: return "kind IN ('image', 'video')"
+        case .files: return "kind IN ('file', 'audio')"
+        case .voice: return "kind = 'voice'"
+        }
+    }
+    var index: String { self == .media ? "idx_roomAttachment_visual_order" : "idx_roomAttachment_\(rawValue)_order" }
+}
+
 struct RoomMediaMonth: Equatable, Sendable {
     let id: String
     let title: String
@@ -33,11 +46,13 @@ struct RoomMediaOrder: Sendable {
 
 struct RoomMediaSnapshot: Equatable, Sendable {
     let revision: Int64
+    let orderRevision: Int64
     let months: [RoomMediaMonth]
     let count: Int
     let order: RoomMediaOrder
-    init(revision: Int64, months: [RoomMediaMonth], order: RoomMediaOrder = RoomMediaOrder()) {
+    init(revision: Int64, months: [RoomMediaMonth], order: RoomMediaOrder = RoomMediaOrder(), orderRevision: Int64? = nil) {
         self.revision = revision; self.months = months; self.order = order
+        self.orderRevision = orderRevision ?? revision
         count = months.reduce(0) { $0 + $1.count }
     }
 
@@ -54,6 +69,7 @@ final class RoomMediaDatabase: @unchecked Sendable {
     enum CatalogError: Error { case stale, invalidTimestamp }
     let database: AccountDatabase
     let roomID: String
+    let scope: RoomAttachmentCatalogScope
     static let identityQuery = """
         SELECT eventId FROM roomAttachment INDEXED BY idx_roomAttachment_visual_order
         WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind IN ('image', 'video')
@@ -75,10 +91,11 @@ final class RoomMediaDatabase: @unchecked Sendable {
     private var cachedOrder: (revision: Int64, value: RoomMediaOrder)?
     private var cachedMonths: (revision: Int64, timeZone: String, values: [MonthCounts])?
 
-    init(database: AccountDatabase, roomID: String,
+    init(database: AccountDatabase, roomID: String, scope: RoomAttachmentCatalogScope = .media,
          queue: DispatchQueue = DispatchQueue(label: "zyna.profile.media-catalog", qos: .userInitiated)) {
         self.database = database
         self.roomID = roomID
+        self.scope = scope
         self.queue = queue
     }
 
@@ -124,12 +141,20 @@ final class RoomMediaDatabase: @unchecked Sendable {
     }
 
     private func revision(in db: Database) throws -> Int64 {
-        try Int64.fetchOne(db, sql: "SELECT revision FROM roomAttachmentRevision WHERE roomId = ?",
+        if scope != .media {
+            return try Int64.fetchOne(db, sql: "SELECT revision FROM roomAttachmentListRevision WHERE roomId = ? AND section = ?",
+                arguments: [roomID, scope.rawValue]) ?? 0
+        }
+        return try Int64.fetchOne(db, sql: "SELECT revision FROM roomAttachmentRevision WHERE roomId = ?",
                           arguments: [roomID]) ?? 0
     }
 
     private func orderRevision(in db: Database) throws -> Int64 {
-        try Int64.fetchOne(db, sql: "SELECT orderRevision FROM roomAttachmentRevision WHERE roomId = ?",
+        if scope != .media {
+            return try Int64.fetchOne(db, sql: "SELECT orderRevision FROM roomAttachmentListRevision WHERE roomId = ? AND section = ?",
+                arguments: [roomID, scope.rawValue]) ?? 0
+        }
+        return try Int64.fetchOne(db, sql: "SELECT orderRevision FROM roomAttachmentRevision WHERE roomId = ?",
                           arguments: [roomID]) ?? 0
     }
 
@@ -142,8 +167,8 @@ final class RoomMediaDatabase: @unchecked Sendable {
             var arguments: StatementArguments = [roomID]
             if let before { arguments += [before] }
             let newest = try Int64.fetchOne(db, sql: """
-                SELECT timestampMs FROM roomAttachment INDEXED BY idx_roomAttachment_visual_order
-                WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind IN ('image', 'video') \(before == nil ? "" : "AND timestampMs < ?")
+                SELECT timestampMs FROM roomAttachment INDEXED BY \(scope.index)
+                WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND \(scope.predicate) \(before == nil ? "" : "AND timestampMs < ?")
                 ORDER BY timestampMs DESC, eventId DESC LIMIT 1
                 """, arguments: arguments)
             guard let newest else { return months }
@@ -157,7 +182,11 @@ final class RoomMediaDatabase: @unchecked Sendable {
             guard start <= newest else { throw CatalogError.invalidTimestamp }
             let components = calendar.dateComponents([.year, .month], from: date)
             guard let year = components.year, let month = components.month,
-                  let row = try Row.fetchOne(db, sql: Self.monthCountQuery, arguments: [roomID, start, newest]) else {
+                  let row = try Row.fetchOne(db, sql: """
+                    SELECT COUNT(*) AS count, MIN(timestampMs) AS oldest
+                    FROM roomAttachment INDEXED BY \(scope.index)
+                    WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND \(scope.predicate) AND timestampMs BETWEEN ? AND ?
+                    """, arguments: [roomID, start, newest]) else {
                 throw CatalogError.invalidTimestamp
             }
             months.append(MonthCounts(id: String(format: "%04d-%02d", year, month), count: row["count"],
@@ -193,11 +222,15 @@ final class RoomMediaDatabase: @unchecked Sendable {
             var order = RoomMediaOrder()
             // Covering index scan: no large payload, MediaSource or image is
             // read. The old buffer stays valid while a new grid is prepared.
-            let ids = try String.fetchCursor(db, sql: Self.identityQuery, arguments: [roomID])
+            let ids = try String.fetchCursor(db, sql: """
+                SELECT eventId FROM roomAttachment INDEXED BY \(scope.index)
+                WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND \(scope.predicate)
+                ORDER BY timestampMs DESC, eventId DESC
+                """, arguments: [roomID])
             while let id = try ids.next() { order.append(id) }
             cachedOrder = (orderRevision, order)
         }
-        return RoomMediaSnapshot(revision: revision, months: months, order: cachedOrder!.value)
+        return RoomMediaSnapshot(revision: revision, months: months, order: cachedOrder!.value, orderRevision: orderRevision)
     }
 
     func observe(onError: @escaping @Sendable (Error) -> Void,
@@ -212,6 +245,15 @@ final class RoomMediaDatabase: @unchecked Sendable {
         return AnyDatabaseCancellable { delivery.cancel(); token.cancel() }
     }
 
+    static func pageQuery(scope: RoomAttachmentCatalogScope) -> String {
+        let position = scope == .media ? "timestampMs BETWEEN ? AND ?" : "(timestampMs, eventId) <= (?, ?)"
+        return """
+            SELECT * FROM roomAttachment INDEXED BY \(scope.index)
+            WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND \(scope.predicate) AND \(position)
+            ORDER BY timestampMs DESC, eventId DESC LIMIT ? \(scope == .media ? "OFFSET ?" : "")
+            """
+    }
+
     func page(_ range: Range<Int>, snapshot: RoomMediaSnapshot) async throws -> [Int: AttachmentItem] {
         try await database.read { [self] db in
             guard try revision(in: db) == snapshot.revision else { throw CatalogError.stale }
@@ -222,13 +264,20 @@ final class RoomMediaDatabase: @unchecked Sendable {
                 let upper = min(start + month.count, range.upperBound)
                 defer { start += month.count }
                 guard lower < upper else { continue }
-                // SQLite skips index entries before reading the large payload.
-                // Paging is within a month, never through the whole room.
-                let records = try StoredRoomAttachment.fetchAll(db, sql: """
-                    SELECT * FROM roomAttachment INDEXED BY idx_roomAttachment_visual_order
-                    WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind IN ('image', 'video') AND timestampMs BETWEEN ? AND ?
-                    ORDER BY timestampMs DESC, eventId DESC LIMIT ? OFFSET ?
-                    """, arguments: [roomID, month.oldest, month.newest, upper - lower, lower - start])
+                let arguments: StatementArguments
+                if scope != .media {
+                    guard let id = snapshot.order.id(at: lower),
+                          let timestamp = try Int64.fetchOne(db, sql:
+                            "SELECT timestampMs FROM roomAttachment WHERE roomId = ? AND eventId = ?", arguments: [roomID, id]) else {
+                        throw CatalogError.stale
+                    }
+                    // Seek directly to a demanded row, including a very large
+                    // single month. No scan through preceding list payloads.
+                    // A month BETWEEN here would take precedence in SQLite's
+                    // plan and scan from the month boundary instead of seeking.
+                    arguments = [roomID, timestamp, id, upper - lower]
+                } else { arguments = [roomID, month.oldest, month.newest, upper - lower, lower - start] }
+                let records = try StoredRoomAttachment.fetchAll(db, sql: Self.pageQuery(scope: scope), arguments: arguments)
                 for (offset, record) in records.enumerated() {
                     if let item = record.makeAttachmentItem() { result[lower + offset] = item }
                 }
@@ -242,13 +291,13 @@ final class RoomMediaDatabase: @unchecked Sendable {
             guard try revision(in: db) == snapshot.revision else { throw CatalogError.stale }
             guard let timestamp = try Int64.fetchOne(db, sql: """
                 SELECT timestampMs FROM roomAttachment
-                WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND eventId = ? AND kind IN ('image', 'video')
+                WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND eventId = ? AND \(scope.predicate)
                 """, arguments: [roomID, id]) else { return nil }
             var start = 0
             for month in snapshot.months {
                 if timestamp >= month.oldest && timestamp <= month.newest {
                     let preceding = try Int.fetchOne(db, sql: """
-                        SELECT COUNT(*) FROM roomAttachment WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND kind IN ('image', 'video')
+                        SELECT COUNT(*) FROM roomAttachment INDEXED BY \(scope.index) WHERE roomId = ? AND \(IgnoredContentStore.visibleSQL) AND \(scope.predicate)
                         AND timestampMs BETWEEN ? AND ? AND (timestampMs > ? OR (timestampMs = ? AND eventId > ?))
                         """, arguments: [roomID, month.oldest, month.newest, timestamp, timestamp, id]) ?? 0
                     return start + preceding
@@ -353,6 +402,7 @@ final class RoomMediaCatalog {
     var onSnapshot: ((RoomMediaSnapshot) -> Void)?
     var onItemsChanged: (() -> Void)?
     private var observation: AnyDatabaseCancellable?
+    private var observationGeneration = 0
     private var pages: [Int: [Int: AttachmentItem]] = [:]
     private var accessOrder: [Int] = []
     private var tasks: [Int: Task<Void, Never>] = [:]
@@ -370,30 +420,39 @@ final class RoomMediaCatalog {
     }
     var count: Int { snapshot.count }
     var cachedItemCount: Int { pages.values.reduce(0) { $0 + $1.count } }
+    var isObserving: Bool { observation != nil }
 
     func start() {
         guard let source, observation == nil, !stopped else { return }
+        observationGeneration += 1
+        let generation = observationGeneration
         if calendarObservers.isEmpty {
             calendarObservers = [Notification.Name.NSCalendarDayChanged,
                 NSLocale.currentLocaleDidChangeNotification, .NSSystemTimeZoneDidChange,
                 UIApplication.significantTimeChangeNotification, UIApplication.willEnterForegroundNotification].map { name in
                 NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.refreshCalendar() }
+                    MainActor.assumeIsolated { self?.refresh() }
                 }
             }
         }
         observation = source.observe(onError: { [weak self] error in
             Task { @MainActor in
-                guard let self, !self.stopped else { return }
+                guard let self, !self.stopped, self.observationGeneration == generation else { return }
+                self.observationGeneration += 1
                 self.observation?.cancel(); self.observation = nil
                 self.error = error; self.onItemsChanged?()
             }
         }, onChange: { [weak self] snapshot in
-            Task { @MainActor in self?.accept(snapshot) }
+            Task { @MainActor in
+                guard let self, self.observationGeneration == generation else { return }
+                self.accept(snapshot)
+            }
         })
     }
 
-    func refreshCalendar(now: Date = Date()) {
+    /// Read one current snapshot, without starting continuous observation.
+    /// Calendar notifications also use this path to refresh relative labels.
+    func refresh(now: Date = Date()) {
         guard let source, !stopped else { return }
         calendarRefresh?.cancel()
         calendarRefresh = Task { [weak self] in
@@ -409,22 +468,35 @@ final class RoomMediaCatalog {
         }
     }
 
-    func stop() {
-        stopped = true
+    /// Keep the bounded preview, but release continuous reads while hidden.
+    /// A new observation reads current revision/order when the page returns.
+    func suspend() {
+        observationGeneration += 1
         calendarRefresh?.cancel(); calendarRefresh = nil
         calendarObservers.forEach { NotificationCenter.default.removeObserver($0) }; calendarObservers.removeAll()
         observation?.cancel(); observation = nil
         tasks.values.forEach { $0.cancel() }; tasks.removeAll()
+    }
+
+    func stop() {
+        stopped = true
+        suspend()
         pages.removeAll(); memoryItems.removeAll(); accessOrder.removeAll(); failedPages.removeAll()
     }
 
     private func accept(_ snapshot: RoomMediaSnapshot) {
-        guard !stopped, snapshot.revision >= self.snapshot.revision, snapshot != self.snapshot else { return }
+        guard !stopped, snapshot.revision >= self.snapshot.revision else { return }
+        let recovered = error != nil
+        error = nil
+        if recovered { failedPages.removeAll() }
+        guard snapshot != self.snapshot else {
+            if recovered { onItemsChanged?() }
+            return
+        }
         if snapshot.revision != self.snapshot.revision {
             tasks.values.forEach { $0.cancel() }; tasks.removeAll()
             pages.removeAll(); accessOrder.removeAll(); failedPages.removeAll()
         }
-        error = nil
         self.snapshot = snapshot
         onSnapshot?(snapshot)
     }
@@ -475,11 +547,14 @@ final class RoomMediaCatalog {
         trim()
     }
 
-    func ensure(_ range: Range<Int>) {
+    func ensure(_ range: Range<Int>, additionalIndex: Int? = nil) {
         guard let source, !stopped, !range.isEmpty, count > 0 else { return }
         let lower = max(0, min(count - 1, range.lowerBound)) / Self.pageSize
         let upper = max(lower, min(count - 1, range.upperBound - 1) / Self.pageSize)
-        let wanted = Set(lower...min(upper, lower + Self.maximumPages - 1))
+        var wanted = Set(lower...min(upper, lower + Self.maximumPages - (additionalIndex == nil ? 1 : 2)))
+        if let additionalIndex, additionalIndex >= 0, additionalIndex < count {
+            wanted.insert(additionalIndex / Self.pageSize)
+        }
         for key in Array(tasks.keys) where !wanted.contains(key) { tasks.removeValue(forKey: key)?.cancel() }
         for key in wanted.sorted() {
             accessOrder.removeAll { $0 == key }; accessOrder.append(key)

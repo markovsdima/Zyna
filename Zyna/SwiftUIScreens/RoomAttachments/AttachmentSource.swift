@@ -233,6 +233,7 @@ final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
         store.currentRows.first { $0.uniqueId == uniqueId }.map { row in
             switch row {
             case .attachment(let item): return "row attachment/\(item.kind.rawValue)"
+            case .indexed(_, _, let kind, _): return "row attachment/\(kind.rawValue)"
             case .pendingDecryption: return "row UTD"
             case .other: return "row other"
             }
@@ -244,6 +245,7 @@ final class SDKTimelineAttachmentSource: AttachmentSource, @unchecked Sendable {
         for row in store.currentRows {
             switch row {
             case .attachment(let item) where item.id == eventId: return "row attachment/\(item.kind.rawValue)"
+            case .indexed(_, let id, let kind, _) where id == eventId: return "row attachment/\(kind.rawValue)"
             case .pendingDecryption(let pending) where pending.eventId == eventId: return "row UTD"
             default: continue
             }

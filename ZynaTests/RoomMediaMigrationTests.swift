@@ -8,6 +8,48 @@ import Testing
 
 @Suite("Media catalog migration")
 struct RoomMediaMigrationTests {
+    @Test("List catalogs backfill visible counts from v35 without rewriting attachment payloads")
+    func listCatalogUpgrade() async throws {
+        try await Task.detached {
+            let queue = try DatabaseQueue()
+            defer { try? queue.close() }
+            let migrator = DatabaseService.migrator
+            try migrator.migrate(queue, upTo: "v35_ignoredContent")
+            try queue.write { db in
+                try db.execute(sql: """
+                    INSERT INTO roomAttachment
+                    (roomId, eventId, kind, timestampMs, senderId, isOutgoing, filename, sourceJSON)
+                    VALUES ('!lists:example.org', '$file', 'file', 1790784000000, '@alice:example.org', 0, 'preserve', '{}'),
+                           ('!lists:example.org', '$voice', 'voice', 1790784000001, '@bob:example.org', 0, 'voice', '{}');
+                    INSERT INTO ignoredUser VALUES ('@alice:example.org');
+                    """)
+            }
+            let rows = try queue.read { try Row.fetchAll($0, sql: "SELECT * FROM roomAttachment") }
+            try migrator.migrate(queue)
+            try queue.write { db in
+                #expect(try Row.fetchAll(db, sql: "SELECT * FROM roomAttachment") == rows)
+                #expect(try migrator.appliedIdentifiers(db) == Set(migrator.migrations))
+                #expect(migrator.migrations.last == "v36_roomAttachmentListCatalogs")
+                #expect(try !migrator.hasBeenSuperseded(db))
+                #expect(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'ignoredUser_attachmentLists_%'") == 0)
+                #expect(try Int.fetchOne(db, sql: "SELECT count FROM roomAttachmentListRevision WHERE section = 'files'") == 0)
+                #expect(try Int.fetchOne(db, sql: "SELECT count FROM roomAttachmentListRevision WHERE section = 'voice'") == 1)
+                let revision = try Int.fetchOne(db, sql: "SELECT revision FROM roomAttachmentListRevision WHERE section = 'files'")!
+                let voiceRevision = try Int.fetchOne(db, sql: "SELECT revision FROM roomAttachmentListRevision WHERE section = 'voice'")!
+                #expect(try IgnoredContentStore.replace(Set((0..<100).map { "@blocked\($0):example.org" }), in: db))
+                #expect(try Int.fetchOne(db, sql: "SELECT count FROM roomAttachmentListRevision WHERE section = 'files'") == 1)
+                #expect(try Int.fetchOne(db, sql: "SELECT revision FROM roomAttachmentListRevision WHERE section = 'files'") == revision + 1)
+                #expect(try Int.fetchOne(db, sql: "SELECT revision FROM roomAttachmentListRevision WHERE section = 'voice'") == voiceRevision + 1)
+            }
+            let after = try queue.read { try Row.fetchAll($0, sql: "SELECT * FROM roomAttachmentListRevision ORDER BY section") }
+            try migrator.migrate(queue)
+            try queue.read { db throws -> Void in
+                #expect(try Row.fetchAll(db, sql: "SELECT * FROM roomAttachment") == rows)
+                #expect(try Row.fetchAll(db, sql: "SELECT * FROM roomAttachmentListRevision ORDER BY section") == after)
+            }
+        }.value
+    }
+
     @Test("The merged migration preserves attachments from every development schema", arguments: [31, 32, 33, 34])
     func upgrade(from version: Int) async throws {
         try await Task.detached {
@@ -33,10 +75,12 @@ struct RoomMediaMigrationTests {
             try queue.write { db in
                 #expect(try Row.fetchAll(db, sql: "SELECT * FROM roomAttachment ORDER BY eventId") == before)
                 #expect(try migrator.appliedIdentifiers(db) == Set(migrator.migrations))
-                #expect(migrator.migrations.last == "v35_ignoredContent")
+                #expect(migrator.migrations.last == "v36_roomAttachmentListCatalogs")
                 #expect(try !migrator.hasBeenSuperseded(db))
                 let columns = try Row.fetchAll(db, sql: "PRAGMA index_info(idx_roomAttachment_visual_order)")
                 #expect(columns.map { $0["name"] as String } == ["roomId", "timestampMs", "eventId", "kind", "senderId"])
+                #expect(try Int.fetchOne(db, sql: "SELECT count FROM roomAttachmentListRevision WHERE section = 'files'") == 1)
+                #expect(try Int.fetchOne(db, sql: "SELECT count FROM roomAttachmentListRevision WHERE section = 'voice'") == nil)
                 // Fresh counters must track writes to the preserved catalog.
                 try db.execute(sql: """
                     INSERT INTO roomAttachment
@@ -60,6 +104,7 @@ struct RoomMediaMigrationTests {
             }
         }.value
     }
+
 
     // Frozen schemas from the unpublished development builds. Do not use the
     // current migration here: these fixtures must catch upgrade regressions.

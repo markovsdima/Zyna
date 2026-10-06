@@ -63,6 +63,11 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     var onNearEnd: ((Bool) -> Void)?
     var onContextInteractionChanged: ((Bool) -> Void)?
     private let flow: RoomProfileListLayout
+    private var paged: RoomProfilePagedList?
+    var contentNode: ASDisplayNode { paged?.node ?? node }
+    var pagedCatalog: RoomMediaCatalog? { paged?.catalog }
+    var renderedNodeCount: Int { paged?.renderedNodeCount ?? rows.count }
+    var onCatalogChanged: (() -> Void)?
     private var viewportBottomInset: CGFloat = 0
     private var rows: [RoomProfileRow] = []
     private var indexByID: [String: Int] = [:]
@@ -73,11 +78,12 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     // Its scope must not reenable scroll callbacks before the batch ends.
     private var layoutAdjustmentDepth = 0
     private var applyingBatch = false
-    var isAdjusting: Bool { applyingBatch || layoutAdjustmentDepth > 0 }
+    var isAdjusting: Bool { applyingBatch || layoutAdjustmentDepth > 0 || paged?.isAdjusting == true }
     var isActive = false {
         didSet {
             guard isActive != oldValue else { return }
             voicePlayback?.isActive = isActive
+            paged?.isActive = isActive
             if !isActive {
                 stopScrolling()
             }
@@ -88,7 +94,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     var avatarExpansionHeight: CGFloat = 0
     var tabsHeight: CGFloat = 48 { didSet { updatePlayingViewport() } }
     var collapse: CGFloat = 0 { didSet { updatePlayingViewport() } }
-    var restorationAnchor: RoomProfileAnchor?
+    var restorationAnchor: RoomProfileAnchor? { didSet { paged?.restorationAnchor = restorationAnchor } }
     var forceLoadIds: Set<String> = []
     var fullFileThreshold = AttachmentThumbnailPlan.defaultFullFileThreshold
     private var lastNearEnd = false
@@ -98,9 +104,9 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     private(set) var isScrollingToBeginning = false
     private var pendingScrollToBeginning: Bool?
     private var needsTypographyRefresh = false
-    private lazy var fpsBooster = ScrollFPSBooster(hostView: node.view)
+    private lazy var fpsBooster = ScrollFPSBooster(hostView: scrollView)
 
-    init(voice: Bool = false) {
+    init(voice: Bool = false, catalog: RoomMediaCatalog? = nil) {
         voiceImages = voice ? RoomProfileVoiceCell.Images() : nil
         flow = RoomProfileListLayout()
         flow.minimumLineSpacing = 2
@@ -111,26 +117,57 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         node.dataSource = self
         node.delegate = self
         node.backgroundColor = .appBG
+        if let catalog {
+            paged = RoomProfilePagedList(catalog: catalog, makeCell: { [weak self] content in
+                { [weak self] in self?.cellBlock(for: content.row)() ?? ASCellNode() }
+            })
+            paged?.scrollView.delegate = self
+            paged?.onRestoreDepth = { [weak self] depth in
+                self?.setPosition(depth: depth)
+                self?.onAnchorRestored?(depth)
+                self?.restorationAnchor = nil
+                self?.updateNearEnd()
+            }
+            paged?.onContentChanged = { [weak self] in
+                guard let self else { return }
+                self.padShortContent(bottomInset: self.viewportBottomInset)
+                self.updateNearEnd()
+                self.onCatalogChanged?()
+            }
+            paged?.onDockedHeight = { [weak self] in self?.setBottomDockedPlayerHeight($0) }
+            paged?.onLoad = { [weak self] in self?.onLoad?() }
+        }
     }
 
-    deinit { activeContextMenu?.dismiss(animated: false) }
+    deinit {
+        activeContextMenu?.dismiss(animated: false)
+        if let catalog = paged?.catalog { Task { @MainActor in catalog.stop() } }
+    }
 
-    var scrollView: UIScrollView { node.view }
+    var scrollView: UIScrollView { paged?.scrollView ?? node.view }
     var inset: CGFloat { headerHeight + tabsHeight }
     var normalizedOffset: CGFloat { scrollView.contentOffset.y + inset }
 
     func install() {
-        node.view.contentInsetAdjustmentBehavior = .never
-        node.view.alwaysBounceVertical = true
-        node.view.scrollsToTop = false
-        node.view.accessibilityIdentifier = accessibilityID
-        node.view.keyboardDismissMode = .onDrag
+        scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.alwaysBounceVertical = true
+        scrollView.scrollsToTop = false
+        scrollView.accessibilityIdentifier = accessibilityID
+        scrollView.keyboardDismissMode = .onDrag
+        paged?.install()
+    }
+
+    func stop() {
+        dismissContextMenu()
+        isActive = false
+        stopScrolling()
+        paged?.stop()
     }
 
     func layout(frame: CGRect, depth: CGFloat, bottomInset: CGFloat) {
         viewportBottomInset = bottomInset
         updatePlayingViewport()
-        let sizeChanged = node.frame.size != frame.size
+        let sizeChanged = contentNode.frame.size != frame.size
         if sizeChanged {
             dismissContextMenu()
             stopScrollingToBeginning()
@@ -138,9 +175,10 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         let anchor = sizeChanged ? captureAnchor() : nil
         layoutAdjustmentDepth += 1
         defer { layoutAdjustmentDepth -= 1 }
-        node.frame = frame
+        contentNode.frame = frame
         scrollView.contentInset = UIEdgeInsets(top: inset, left: 0, bottom: bottomInset, right: 0)
-        if sizeChanged { flow.invalidateLayout(); node.view.layoutIfNeeded() }
+        if paged != nil { updatePlayingViewport() }
+        else if sizeChanged { flow.invalidateLayout(); node.view.layoutIfNeeded() }
         padShortContent(bottomInset: bottomInset)
         setPosition(depth: depth)
         if let anchor { restore(anchor) }
@@ -160,6 +198,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         let y = collapse + max(0, depth) - inset
         if abs(scrollView.contentOffset.y - y) > 0.25 { scrollView.contentOffset.y = y }
         scrollView.verticalScrollIndicatorInsets.top = inset - collapse
+        paged?.render()
     }
 
     func scrollToBeginning(animated: Bool) {
@@ -169,6 +208,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         // zero early: a swipe may interrupt the journey partway through.
         let target = CGPoint(x: 0, y: avatarExpansionHeight - inset)
         isScrollingToBeginning = animated && abs(scrollView.contentOffset.y - target.y) > 0.25
+        paged?.isScrollingToBeginning = isScrollingToBeginning
         if isScrollingToBeginning && isActive { fpsBooster.start() } else { fpsBooster.stop() }
         scrollView.setContentOffset(target, animated: isScrollingToBeginning)
         if !isScrollingToBeginning { onScroll?(); finishUpdate() }
@@ -178,6 +218,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         pendingScrollToBeginning = nil
         guard isScrollingToBeginning else { return }
         isScrollingToBeginning = false
+        paged?.isScrollingToBeginning = false
         fpsBooster.stop()
         scrollView.setContentOffset(scrollView.contentOffset, animated: false)
         onScroll?()
@@ -191,6 +232,10 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     }
 
     func captureAnchor() -> RoomProfileAnchor? {
+        if let paged {
+            guard normalizedOffset > headerHeight + 0.5 else { return nil }
+            return paged.captureAnchor()
+        }
         guard !rows.isEmpty, normalizedOffset > headerHeight + 0.5 else { return nil }
         let top = scrollView.contentOffset.y + inset - collapse
         // Texture may not have mounted the new visible cells yet after a
@@ -208,6 +253,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     }
 
     private func restore(_ anchor: RoomProfileAnchor) {
+        if let paged { paged.restore(anchor); return }
         guard !rows.isEmpty else { return }
         let index = indexByID[anchor.id] ?? min(anchor.previousIndex, rows.count - 1)
         guard
@@ -219,6 +265,10 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     }
 
     func update(_ newRows: [RoomProfileRow]) {
+        if let paged {
+            if let footer = newRows.last(where: { $0.id == "footer" }) { paged.update(footer) }
+            return
+        }
         guard !updating, !contextInteractionLocked, !isScrollingToBeginning else { pendingRows = newRows; return }
         updating = true
         let old = rows
@@ -307,6 +357,13 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
 
     func refreshTypography() {
         guard !updating, !contextInteractionLocked, !isScrollingToBeginning else { needsTypographyRefresh = true; return }
+        if let paged {
+            let anchor = captureAnchor()
+            updatePlayingViewport()
+            paged.refreshTypography()
+            if let anchor { restore(anchor) }
+            return
+        }
         let paths = rows.indices.map { IndexPath(item: $0, section: 0) }
         let anchor = captureAnchor()
         updating = true
@@ -325,7 +382,10 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     func collectionNode(_ collectionNode: ASCollectionNode, numberOfItemsInSection section: Int) -> Int { rows.count }
 
     func collectionNode(_ collectionNode: ASCollectionNode, nodeBlockForItemAt indexPath: IndexPath) -> ASCellNodeBlock {
-        let row = rows[indexPath.item]
+        cellBlock(for: rows[indexPath.item])
+    }
+
+    private func cellBlock(for row: RoomProfileRow) -> ASCellNodeBlock {
         let voiceImages = voiceImages
         return { [weak self] in
             if let poll = row.poll {
@@ -363,6 +423,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
                     guard let content else { return }
                     self?.voicePlayback?.setVisible(visible, cell: content)
                 }
+                cell.onViewportVisibilityChanged = { [weak content] in content?.onVisibilityChanged?($0) }
                 return cell
             }
             let cell = RoomProfileTextCell(title: row.title, detail: row.detail, isHeader: row.isHeader,
@@ -403,6 +464,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !isAdjusting else { return }
+        paged?.render()
         onScroll?()
         updateNearEnd()
     }
@@ -431,6 +493,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
         fpsBooster.stop()
         guard isScrollingToBeginning else { return }
         isScrollingToBeginning = false
+        paged?.isScrollingToBeginning = false
         onScroll?()
         finishUpdate()
     }
@@ -444,6 +507,7 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
 
     private func updatePlayingPath() {
         guard !contextInteractionLocked, !applyingBatch else { return }
+        if let paged { paged.setPlaying(voicePlayback?.currentEventID); return }
         let path = voicePlayback?.currentEventID.flatMap { id in
             indexByID[id].map { IndexPath(item: $0, section: 0) }
         }
@@ -459,6 +523,13 @@ final class RoomProfileListPage: NSObject, ASCollectionDataSource, ASCollectionD
     }
 
     private func updatePlayingViewport() {
+        if let paged {
+            paged.layout(rowHeight: voiceImages == nil ? UIFontMetrics.default.scaledValue(for: 76)
+                : RoomProfileVoiceCell.rowHeight(width: max(1, scrollView.bounds.width)),
+                headerHeight: UIFontMetrics.default.scaledValue(for: 40),
+                visibleInsets: UIEdgeInsets(top: inset - collapse, left: 0, bottom: viewportBottomInset, right: 0))
+            return
+        }
         flow.visibleInsets = UIEdgeInsets(top: inset - collapse, left: 0, bottom: viewportBottomInset, right: 0)
     }
 
@@ -596,8 +667,9 @@ extension RoomProfileListPage {
     }
 
     private func presentContextMenu(id: String, cell: ListContextMenuCellNode, point: CGPoint, actions: [ContextMenuAction]) {
-        guard !actions.isEmpty, isActive, activeContextMenu == nil, !updating, indexByID[id] != nil,
-              let window = node.view.window, window.windowScene != nil else {
+        guard !actions.isEmpty, isActive, activeContextMenu == nil, !updating,
+              indexByID[id] != nil || paged?.contains(id) == true,
+              let window = view.window, window.windowScene != nil else {
             cell.cancelContextMenuActivation()
             return
         }
@@ -621,6 +693,7 @@ extension RoomProfileListPage {
     private func setContextInteractionLocked(_ locked: Bool) {
         guard locked != contextInteractionLocked else { return }
         contextInteractionLocked = locked
+        paged?.isLocked = locked
         if locked {
             stopScrollingToBeginning()
             fpsBooster.stop()

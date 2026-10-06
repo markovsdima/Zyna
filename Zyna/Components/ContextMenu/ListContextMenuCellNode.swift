@@ -13,6 +13,8 @@ final class ListContextMenuCellNode: ZynaCellNode {
     var shouldBeginContextInteraction: ((CGPoint) -> Bool)?
     var onAccessibilityAdjust: ((Bool) -> Void)?
     var onLayoutAttributesChanged: ((UICollectionViewLayoutAttributes) -> Void)?
+    /// Sparse scroll surfaces own visibility independently of Texture ranges.
+    var onViewportVisibilityChanged: ((Bool) -> Void)?
     var onDragChanged: ((CGPoint) -> Void)? {
         get { contextSourceNode.onDragChanged }
         set { contextSourceNode.onDragChanged = newValue }

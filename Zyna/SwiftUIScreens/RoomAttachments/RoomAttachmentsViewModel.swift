@@ -337,6 +337,7 @@ final class RoomAttachmentsViewModel: ObservableObject {
     let filterMode: AttachmentSourceFilterMode
     let fillTimeBudgetSeconds: CFTimeInterval
     let usesPagedMedia: Bool
+    let usesPagedLists: Bool
 
     private let source: AttachmentSource
     private let attachmentIndex: RoomAttachmentIndex?
@@ -381,22 +382,25 @@ final class RoomAttachmentsViewModel: ObservableObject {
         attachmentIndex: RoomAttachmentIndex? = nil,
         room: Room? = nil,
         fillTimeBudgetSeconds: CFTimeInterval = RoomAttachmentsViewModel.defaultFillTimeBudgetSeconds,
-        usesPagedMedia: Bool = false
+        usesPagedMedia: Bool = false,
+        usesPagedLists: Bool = false
     ) {
         self.roomId = roomId
         self.source = source
         self.attachmentIndex = attachmentIndex
-        self.usesPagedMedia = usesPagedMedia
-        catalogProjection = attachmentIndex == nil
+        self.usesPagedLists = usesPagedLists && attachmentIndex != nil
+        self.usesPagedMedia = usesPagedMedia || self.usesPagedLists
+        catalogProjection = attachmentIndex == nil || self.usesPagedLists
             ? nil
-            : RoomAttachmentCatalogProjection(excludingVisualMedia: usesPagedMedia)
+            : RoomAttachmentCatalogProjection(excludingVisualMedia: self.usesPagedMedia)
         self.filterMode = filterMode
         self.tilePixelSize = tilePixelSize
         self.room = room
         self.fillTimeBudgetSeconds = fillTimeBudgetSeconds
     }
 
-    convenience init(room: Room, filterMode: AttachmentSourceFilterMode, tilePixelSize: Int, usesPagedMedia: Bool = false) {
+    convenience init(room: Room, filterMode: AttachmentSourceFilterMode, tilePixelSize: Int,
+                     usesPagedMedia: Bool = false, usesPagedLists: Bool = false) {
         let attachmentIndex = RoomAttachmentIndex(
             roomId: room.id(),
             dbQueue: DatabaseService.shared.dbQueue
@@ -406,15 +410,28 @@ final class RoomAttachmentsViewModel: ObservableObject {
             source: SDKTimelineAttachmentSource(
                 room: room,
                 filterMode: filterMode,
-                store: AttachmentTimelineStore(projectsMedia: !usesPagedMedia),
+                store: AttachmentTimelineStore(projectsMedia: !usesPagedMedia && !usesPagedLists, metadataOnly: usesPagedLists),
                 attachmentIndex: attachmentIndex
             ),
             filterMode: filterMode,
             tilePixelSize: tilePixelSize,
             attachmentIndex: attachmentIndex,
             room: room,
-            usesPagedMedia: usesPagedMedia
+            usesPagedMedia: usesPagedMedia,
+            usesPagedLists: usesPagedLists
         )
+    }
+
+    func makePagedCatalog(for tab: Tab) -> RoomMediaCatalog? {
+        guard let attachmentIndex else { return nil }
+        let scope: RoomAttachmentCatalogScope
+        switch tab {
+        case .media: guard usesPagedMedia else { return nil }; scope = .media
+        case .files: guard usesPagedLists else { return nil }; scope = .files
+        case .voice: guard usesPagedLists else { return nil }; scope = .voice
+        case .polls: return nil
+        }
+        return RoomMediaCatalog(source: attachmentIndex.catalogSource(scope: scope))
     }
 
     deinit {
@@ -444,7 +461,11 @@ final class RoomAttachmentsViewModel: ObservableObject {
         source.onPaginationStatus = { [weak self] status in
             self?.handlePaginationStatus(status)
         }
-        if attachmentIndex != nil, let catalogProjection {
+        if usesPagedLists, attachmentIndex != nil {
+            source.onAttachmentsDiscovered = nil
+            source.onAttachmentsInvalidated = nil
+            observeCatalog()
+        } else if attachmentIndex != nil, let catalogProjection {
             catalogProjection.setOnChange { [weak self] snapshot in
                 self?.handleCatalogSnapshot(snapshot)
             }
@@ -522,6 +543,27 @@ final class RoomAttachmentsViewModel: ObservableObject {
     #endif
 
     private func observeCatalog() {
+        if usesPagedLists, let attachmentIndex {
+            attachmentObservation?.cancel()
+            let current = Atomic(true)
+            let token = attachmentIndex.observeListCounts(onError: { [weak self] error in
+                Task { @MainActor in
+                    guard current.wrappedValue, let self, !self.isStopped else { return }
+                    self.startError = error.localizedDescription; self.isInitialLoading = false
+                }
+            }, onChange: { [weak self] files, voice in
+                Task { @MainActor in
+                    guard current.wrappedValue, let self, !self.isStopped else { return }
+                    self.objectWillChange.send()
+                    self.indexedFileCount = files; self.indexedVoiceCount = voice
+                    self.hasReceivedIndexSnapshot = true
+                    self.isInitialLoading = false
+                    if self.sentinelVisible { self.fillIfNeeded(reason: "list-counts") }
+                }
+            })
+            attachmentObservation = AnyDatabaseCancellable { current.wrappedValue = false; token.cancel() }
+            return
+        }
         guard let attachmentIndex, let catalogProjection else { return }
         attachmentObservation?.cancel()
         let current = Atomic(true)

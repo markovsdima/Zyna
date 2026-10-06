@@ -379,7 +379,7 @@ struct RoomMediaGridTests {
         let label = try #require(grid.node.subnodes?.compactMap { $0 as? ASTextNode }.first { $0.attributedText?.string == String(localized: "This Month") })
         let revision = catalog.snapshot.revision
         let cached = catalog.cachedItemCount
-        catalog.refreshCalendar(now: now.addingTimeInterval(40 * 86400))
+        catalog.refresh(now: now.addingTimeInterval(40 * 86400))
         try await wait { label.attributedText?.string != String(localized: "This Month") }
         #expect(catalog.snapshot.revision == revision)
         #expect(catalog.cachedItemCount == cached)

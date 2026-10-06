@@ -184,7 +184,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         keepsPinnedSection = initialSection == .pinned
         self.avatarLoader = avatarLoader
         self.avatarDragTranslation = avatarDragTranslation
-        self.mediaCatalog = mediaCatalog ?? RoomMediaCatalog()
+        self.mediaCatalog = mediaCatalog ?? model?.makePagedCatalog(for: .media) ?? RoomMediaCatalog()
         header = RoomProfileHeaderNode(title: title, subtitle: subtitle)
         super.init(node: ASDisplayNode())
         pollsSection?.openPoll = { [weak self] eventID in
@@ -299,6 +299,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             personModel?.stop()
             blocking?.stop()
             mediaCatalog.stop()
+            pages.values.compactMap { $0 as? RoomProfileListPage }.forEach { $0.stop() }
             cancellables.removeAll()
             voiceTabObservation = nil
             tabs.setPlaybackAnimationEnabled(false)
@@ -427,6 +428,7 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         var catalogs: [(RoomProfileScrollState.Section, AnyPublisher<[AttachmentMonthGroup], Never>)] = [
             (.files, model.$files.eraseToAnyPublisher()), (.voice, model.$voice.eraseToAnyPublisher())
         ]
+        if model.usesPagedLists { catalogs.removeAll() }
         if !model.usesPagedMedia { catalogs.append((.media, model.$media.eraseToAnyPublisher())) }
         for (section, publisher) in catalogs {
             let inputs = publisher.map { [weak self] groups in
@@ -795,9 +797,12 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         for (section, page) in pages where section != .pinned && section != .polls {
             // The paged media grid owns its catalog. List pages wait for
             // their initial projection instead of briefly showing empty.
-            guard section == .media && model?.usesPagedMedia == true || catalog[section] != nil else { continue }
+            let pagedList = (page as? RoomProfileListPage)?.pagedCatalog
+            guard section == .media && model?.usesPagedMedia == true || pagedList != nil || catalog[section] != nil else { continue }
             let base = catalog[section] ?? []
-            let footer = footerRow(isEmpty: section == .media && mediaCatalog.source != nil ? mediaCatalog.count == 0 : base.isEmpty, section: section)
+            let isEmpty = pagedList.map { $0.count == 0 }
+                ?? (section == .media && mediaCatalog.source != nil ? mediaCatalog.count == 0 : base.isEmpty)
+            let footer = footerRow(isEmpty: isEmpty, section: section)
             guard changedSection == section || lastFooter[section] != footer else { continue }
             lastFooter[section] = footer
             projectionQueue.async { [weak page] in
@@ -852,7 +857,9 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
             }
             page = grid
         } else {
-            let list = RoomProfileListPage(voice: section == .voice)
+            let listCatalog = section.attachmentTab.flatMap { model?.makePagedCatalog(for: $0) }
+            let list = RoomProfileListPage(voice: section == .voice, catalog: listCatalog)
+            list.onCatalogChanged = { [weak self] in self?.updatePages(changedSection: section) }
             if section == .polls { list.accessibilityID = "profile.polls" }
             if section == .voice {
                 list.accessibilityID = "profile.voice"
@@ -948,7 +955,8 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
         if section == state.selected { updateSharedPan() }
         // A page created later starts with the latest groups. Until then
         // the binding skips formatting its entire known catalog.
-        if let model, let tab = section.attachmentTab, !(section == .media && model.usesPagedMedia) {
+        if let model, let tab = section.attachmentTab, !(section == .media && model.usesPagedMedia),
+           !((section == .files || section == .voice) && model.usesPagedLists) {
             let groups: [AttachmentMonthGroup]
             switch tab {
             case .media: groups = model.media

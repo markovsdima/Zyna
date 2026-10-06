@@ -53,6 +53,83 @@ struct AttachmentTimelineStoreTests {
         ))
     }
 
+    @Test("Count-only snapshots match presentation counts through every SDK vector mutation")
+    func metadataCounts() throws {
+        let legacy = AttachmentTimelineStore(), light = AttachmentTimelineStore(metadataOnly: true)
+        let seed: [AttachmentRow] = [
+            try attachment("image"), try attachment("file", kind: .file), try attachment("voice", kind: .voice),
+            pending("first"), pending("second"), pending("third", sessionId: nil), .other(uniqueId: "text")
+        ]
+        func apply(_ diffs: [AttachmentRowDiff]) {
+            legacy.apply(diffs); light.apply(diffs)
+            let expected = legacy.currentSnapshot(), actual = light.currentSnapshot()
+            #expect(actual.rowCount == expected.rowCount)
+            #expect(actual.mediaCount == expected.mediaCount)
+            #expect(actual.fileCount == expected.fileCount)
+            #expect(actual.voiceCount == expected.voiceCount)
+            #expect(actual.pendingCount == expected.pendingCount)
+            #expect(actual.pendingSessionIds == expected.pendingSessionIds)
+            #expect(actual.media.isEmpty && actual.files.isEmpty && actual.voice.isEmpty)
+        }
+        for _ in 0..<30 {
+            apply([.reset(seed)])
+            apply([.set(3, seed[2]), .set(4, pending("new", sessionId: "session-2"))])
+            apply([.append(seed), .pushFront(seed[4]), .pushBack(seed[1])])
+            apply([.insert(2, seed[5]), .set(1, seed[6]), .remove(4), .popFront, .popBack])
+            apply([.truncate(4)])
+            apply([.clear])
+        }
+    }
+
+    @Test("Count-only discovery skips repeated SDK sets but persists changed metadata")
+    func metadataDeduplication() throws {
+        let item = try #require(try attachment("stable", kind: .file).attachment)
+        let base = StoredRoomAttachment(roomId: "!dedup:example.org", item: item)
+        let original = try #require(base.makeAttachmentItem())
+        let store = AttachmentTimelineStore(metadataOnly: true)
+        var discoveries: [AttachmentItem] = []
+        store.onAttachmentsDiscovered = { discoveries += $0 }
+        store.apply([.reset([.attachment(original)])])
+        discoveries.removeAll()
+        store.apply((0..<100).map { _ in .set(0, .attachment(base.makeAttachmentItem()!)) })
+        #expect(discoveries.isEmpty)
+        let changes: [(inout StoredRoomAttachment) -> Void] = [
+            { $0.filename = "Renamed" }, { $0.caption = "Caption" },
+            { $0.senderId = "@bob:example.org" }, { $0.senderDisplayName = "Bob" },
+            { $0.isOutgoing = true }, { $0.kind = "voice" }, { $0.timestampMs += 1 },
+            { $0.mimetype = "audio/ogg" }, { $0.sizeBytes = 42 },
+            { $0.pixelWidth = 300 }, { $0.pixelHeight = 200 }, { $0.durationSeconds = 12 },
+            { $0.blurhash = "hash" }, { $0.isAnimated = true }, { $0.isSourceEncrypted = false },
+            { $0.sourceJSON = try! MediaSource.fromUrl(url: "mxc://example.org/replacement").toJson() }
+        ]
+        for change in changes {
+            store.apply([.set(0, .attachment(original))])
+            discoveries.removeAll()
+            var record = base; change(&record)
+            let changed = try #require(record.makeAttachmentItem())
+            #expect(changed != original)
+            store.apply([.set(0, .attachment(changed)), .set(0, .attachment(changed))])
+            #expect(discoveries == [changed])
+        }
+        var thumbnail = base
+        thumbnail.thumbnailSourceJSON = try MediaSource.fromUrl(url: "mxc://example.org/preview").toJson()
+        let withThumbnail = try #require(thumbnail.makeAttachmentItem())
+        let thumbnailChanges: [(inout StoredRoomAttachment) -> Void] = [
+            { $0.thumbnailWidth = 100 }, { $0.thumbnailHeight = 50 },
+            { $0.thumbnailSizeBytes = 1000 }, { $0.thumbnailMimetype = "image/png" },
+            { $0.thumbnailIsEncrypted = true }
+        ]
+        for change in thumbnailChanges {
+            store.apply([.set(0, .attachment(withThumbnail))])
+            discoveries.removeAll()
+            var record = thumbnail; change(&record)
+            let changed = try #require(record.makeAttachmentItem())
+            store.apply([.set(0, .attachment(changed)), .set(0, .attachment(changed))])
+            #expect(discoveries == [changed])
+        }
+        #expect(store.currentRows.first?.attachment == nil)
+    }
+
     @Test("Snapshot lists media newest first and splits voice from files")
     func snapshotOrderAndSplit() throws {
         let store = AttachmentTimelineStore(publishDelay: 0)

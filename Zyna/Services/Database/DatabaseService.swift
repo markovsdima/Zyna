@@ -1154,6 +1154,7 @@ final class DatabaseService: @unchecked Sendable {
             migrate: RoomMediaDatabase.migrate)
 
         migrator.registerMigration("v35_ignoredContent", migrate: IgnoredContentStore.migrate)
+        migrator.registerMigration("v36_roomAttachmentListCatalogs", migrate: RoomAttachmentListStore.migrate)
 
         return migrator
     }

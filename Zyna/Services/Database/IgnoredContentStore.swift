@@ -48,6 +48,7 @@ enum IgnoredContentStore {
         // Invalidate both payload pages and compact order/count snapshots.
         // Only per-room metadata is touched; no media payload scan or rewrite.
         try db.execute(sql: "UPDATE roomAttachmentRevision SET revision = revision + 1, orderRevision = orderRevision + 1")
+        try RoomAttachmentListStore.refreshVisibility(db)
         return true
     }
 }

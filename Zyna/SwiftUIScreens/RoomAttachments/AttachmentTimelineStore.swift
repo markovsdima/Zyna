@@ -11,12 +11,14 @@ import QuartzCore
 /// `VectorDiff` indices stay aligned. Non-media rows survive as `.other`.
 enum AttachmentRow: Equatable {
     case attachment(AttachmentItem)
+    case indexed(uniqueId: String, eventId: String, kind: RoomAttachmentKind, fingerprint: Int)
     case pendingDecryption(PendingDecryption)
     case other(uniqueId: String)
 
     var uniqueId: String {
         switch self {
         case .attachment(let item): return item.uniqueId
+        case .indexed(let uniqueId, _, _, _): return uniqueId
         case .pendingDecryption(let pending): return pending.uniqueId
         case .other(let uniqueId): return uniqueId
         }
@@ -31,6 +33,22 @@ enum AttachmentRow: Equatable {
         if case .pendingDecryption(let pending) = self { return pending }
         return nil
     }
+
+    var eventId: String? {
+        switch self {
+        case .attachment(let item): return item.id
+        case .indexed(_, let id, _, _): return id
+        default: return nil
+        }
+    }
+    var kind: RoomAttachmentKind? {
+        switch self {
+        case .attachment(let item): return item.kind
+        case .indexed(_, _, let kind, _): return kind
+        default: return nil
+        }
+    }
+
 }
 
 /// `TimelineDiff` with items already mapped to rows. Tests feed these
@@ -126,15 +144,22 @@ final class AttachmentTimelineStore {
     private let queue = DispatchQueue(label: "com.zyna.attachments.store", qos: .userInitiated)
     private let publishDelay: TimeInterval
     private let projectsMedia: Bool
+    private let metadataOnly: Bool
+    private var mediaRows = 0
+    private var voiceRows = 0
+    private var fileRows = 0
+    private var pendingRows = 0
+    private var sessionCounts: [String: Int] = [:]
     private var rows: [AttachmentRow] = []
     private var generation = 0
     private var pendingSummary = ApplySummary()
     private var publishWorkItem: DispatchWorkItem?
     private var lastPublishTime: CFTimeInterval = 0
 
-    init(publishDelay: TimeInterval = 0.05, projectsMedia: Bool = true) {
+    init(publishDelay: TimeInterval = 0.05, projectsMedia: Bool = true, metadataOnly: Bool = false) {
         self.publishDelay = publishDelay
         self.projectsMedia = projectsMedia
+        self.metadataOnly = metadataOnly
     }
 
     // MARK: - Input
@@ -206,6 +231,25 @@ final class AttachmentTimelineStore {
 
     // MARK: - Apply (queue only)
 
+    private func retained(_ row: AttachmentRow) -> AttachmentRow {
+        guard metadataOnly, let item = row.attachment else { return row }
+        return .indexed(uniqueId: item.uniqueId, eventId: item.id, kind: item.kind, fingerprint: item.contentFingerprint)
+    }
+
+    private func account(_ row: AttachmentRow, delta: Int) {
+        if let kind = row.kind {
+            if kind.isVisual { mediaRows += delta }
+            else if kind == .voice { voiceRows += delta }
+            else { fileRows += delta }
+        } else if let pending = row.pendingDecryption {
+            pendingRows += delta
+            if let id = pending.sessionId {
+                let count = (sessionCounts[id] ?? 0) + delta
+                sessionCounts[id] = count == 0 ? nil : count
+            }
+        }
+    }
+
     private func applyOnQueue(_ diffs: [AttachmentRowDiff]) -> ApplySummary {
         enum IndexMutation {
             case upsert(AttachmentItem)
@@ -226,7 +270,8 @@ final class AttachmentTimelineStore {
         for diff in diffs {
             switch diff {
             case .append(let newRows):
-                rows.append(contentsOf: newRows)
+                rows.append(contentsOf: newRows.map(retained))
+                newRows.forEach { account($0, delta: 1) }
                 noteDiscoveries(in: newRows)
                 summary.appended += newRows.count
 
@@ -236,12 +281,14 @@ final class AttachmentTimelineStore {
                 summary.clears += 1
 
             case .pushFront(let row):
-                rows.insert(row, at: 0)
+                rows.insert(retained(row), at: 0)
+                account(row, delta: 1)
                 noteDiscoveries(in: [row])
                 summary.inserted += 1
 
             case .pushBack(let row):
-                rows.append(row)
+                rows.append(retained(row))
+                account(row, delta: 1)
                 noteDiscoveries(in: [row])
                 summary.appended += 1
 
@@ -255,13 +302,15 @@ final class AttachmentTimelineStore {
 
             case .insert(let index, let row):
                 guard index >= 0, index <= rows.count else { summary.indexErrors += 1; continue }
-                rows.insert(row, at: index)
+                rows.insert(retained(row), at: index)
+                account(row, delta: 1)
                 noteDiscoveries(in: [row])
                 summary.inserted += 1
 
             case .set(let index, let row):
                 guard rows.indices.contains(index) else { summary.indexErrors += 1; continue }
                 let previous = rows[index]
+                let retainedRow = retained(row)
                 if previous.pendingDecryption != nil {
                     if let item = row.attachment {
                         summary.utdResolvedToMedia.append(item.id)
@@ -269,14 +318,16 @@ final class AttachmentTimelineStore {
                         summary.utdResolvedToOther += 1
                     }
                 }
-                if let previousItem = previous.attachment, row.attachment == nil {
-                    summary.mediaRemoved.append(previousItem.id)
-                    indexMutations[previousItem.id] = .invalidate
+                if let previousId = previous.eventId, row.kind == nil {
+                    summary.mediaRemoved.append(previousId)
+                    indexMutations[previousId] = .invalidate
                 } else if let item = row.attachment,
-                          previous.attachment != item {
+                          previous != retainedRow {
                     indexMutations[item.id] = .upsert(item)
                 }
-                rows[index] = row
+                account(previous, delta: -1)
+                account(row, delta: 1)
+                rows[index] = retainedRow
                 summary.set += 1
 
             case .remove(let index):
@@ -289,7 +340,9 @@ final class AttachmentTimelineStore {
                 rows.removeSubrange(length...)
 
             case .reset(let newRows):
-                rows = newRows
+                mediaRows = 0; voiceRows = 0; fileRows = 0; pendingRows = 0; sessionCounts.removeAll()
+                newRows.forEach { account($0, delta: 1) }
+                rows = newRows.map(retained)
                 noteDiscoveries(in: newRows)
                 summary.resets += 1
             }
@@ -317,8 +370,9 @@ final class AttachmentTimelineStore {
     private func noteRemoval(of removed: [AttachmentRow], in summary: inout ApplySummary) {
         summary.removed += removed.count
         for row in removed {
-            if let item = row.attachment {
-                summary.mediaRemoved.append(item.id)
+            account(row, delta: -1)
+            if let id = row.eventId {
+                summary.mediaRemoved.append(id)
             } else if row.pendingDecryption != nil {
                 summary.utdResolvedToOther += 1
             }
@@ -328,6 +382,11 @@ final class AttachmentTimelineStore {
     // MARK: - Snapshot
 
     private func makeSnapshot() -> Snapshot {
+        if metadataOnly {
+            return Snapshot(generation: generation, rowCount: rows.count, media: [], voice: [], files: [],
+                mediaCount: mediaRows, voiceCount: voiceRows, fileCount: fileRows,
+                pendingCount: pendingRows, pendingSessionIds: sessionCounts.keys.sorted())
+        }
         var mediaItems: [AttachmentItem] = []
         var mediaCount = 0
         var voiceItems: [AttachmentItem] = []
@@ -351,7 +410,7 @@ final class AttachmentTimelineStore {
                 if let sessionId = pending.sessionId {
                     sessionIds.insert(sessionId)
                 }
-            case .other:
+            case .other, .indexed:
                 break
             }
         }

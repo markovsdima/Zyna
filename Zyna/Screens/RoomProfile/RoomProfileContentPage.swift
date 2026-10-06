@@ -43,5 +43,5 @@ protocol RoomProfileContentPage: AnyObject {
 }
 
 extension RoomProfileListPage: RoomProfileContentPage {
-    var view: UIView { node.view }
+    var view: UIView { contentNode.view }
 }

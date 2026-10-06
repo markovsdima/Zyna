@@ -980,7 +980,8 @@ final class ChatsCoordinator {
             room: room,
             filterMode: AttachmentsResearchSettings.filterMode,
             tilePixelSize: RoomAttachmentsMetrics.tilePixelSize(),
-            usesPagedMedia: true
+            usesPagedMedia: true,
+            usesPagedLists: true
         )
         let presenter = AttachmentPresenterBox()
         let actions = RoomAttachmentsActions(

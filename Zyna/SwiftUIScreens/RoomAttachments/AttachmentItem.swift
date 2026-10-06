@@ -82,6 +82,26 @@ struct AttachmentItem: Identifiable, Equatable {
             && lhs.isSourceEncrypted == rhs.isSourceEncrypted
             && lhs.thumbnail == rhs.thumbnail
     }
+
+    /// Process-local deduplication of SDK updates without retaining presentation
+    /// payloads or FFI objects. Hash exactly the value fields compared by ==.
+    var contentFingerprint: Int {
+        var hash = Hasher()
+        hash.combine(id); hash.combine(uniqueId); hash.combine(kind.rawValue)
+        hash.combine(timestampMs); hash.combine(sender); hash.combine(senderName)
+        hash.combine(isOwn); hash.combine(filename); hash.combine(caption)
+        hash.combine(mimetype); hash.combine(sizeBytes)
+        hash.combine(pixelWidth); hash.combine(pixelHeight); hash.combine(durationSeconds)
+        hash.combine(blurhash); hash.combine(isAnimated); hash.combine(sourceMxc)
+        hash.combine(isSourceEncrypted)
+        hash.combine(thumbnail != nil)
+        if let thumbnail {
+            hash.combine(thumbnail.mxc); hash.combine(thumbnail.isEncrypted)
+            hash.combine(thumbnail.width); hash.combine(thumbnail.height)
+            hash.combine(thumbnail.sizeBytes); hash.combine(thumbnail.mimetype)
+        }
+        return hash.finalize()
+    }
 }
 
 // MARK: - Mapping from the SDK
