@@ -168,6 +168,7 @@ final class ChatViewModel {
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate, MessageWindowChangeOrigin) -> Void)?
     var onOlderHistoryAvailable: (() -> Void)?
+    var onIncomingMessages: ((Int) -> Void)?
 
     /// Called for lightweight in-place cell updates (e.g. send-status change)
     /// that don't require cell recreation. Index path → updated message.
@@ -638,7 +639,7 @@ final class ChatViewModel {
             self?.onOlderHistoryAvailable?()
         }
         diffBatcher.onFlush = { [weak self] summary in
-            self?.timelineRefreshQueue.enqueue(summary)
+            self?.acceptTimelineFlush(summary)
         }
         diffBatcher.onDecryptionCandidatesChanged = { [weak self] in
             self?.decryptionRepair?.wake()
@@ -1884,10 +1885,15 @@ final class ChatViewModel {
         }
     }
 
+    private func acceptTimelineFlush(_ summary: TimelineFlushSummary) {
+        onIncomingMessages?(summary.incomingMessageCount)
+        timelineRefreshQueue.enqueue(summary)
+    }
+
     #if DEBUG
     func refreshPresentationForTesting(_ summary: TimelineFlushSummary) {
         if summary.requiresPresentationRefresh { presentationRevision &+= 1 }
-        timelineRefreshQueue.enqueue(summary)
+        acceptTimelineFlush(summary)
     }
     var isTimelineRefreshIdleForTesting: Bool { timelineRefreshQueue.isIdle }
     @MainActor
@@ -3159,6 +3165,72 @@ final class ChatViewModel {
 
     // MARK: - Pagination
 
+    var retainedHistoryMessageCount: Int { window.retainedMessageCount }
+
+    /// Revalidate the viewport on main after preparation. Scrolling itself
+    /// does not invalidate ordinary history reads or stall their worker.
+    func retainHistoryWindow(
+        policy: ChatHistoryRetentionPolicy,
+        protectedRowIDs: Set<String>,
+        currentProtectedRowIDs: @escaping () -> Set<String>?,
+        completion: @escaping (ChatHistoryPageLoader.Result) -> Void
+    ) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let protectedMessages = rows.filter { protectedRowIDs.contains($0.listIdentifier) }.compactMap(\.message)
+        let keys = protectedMessages.reduce(into: Set<String>()) { result, message in
+            result.formUnion(message.timelineIdentityKeys)
+            for item in message.mediaGroupPresentation?.items ?? [] { result.formUnion(item.timelineIdentityKeys) }
+        }
+        guard acceptsTimelineRefreshes, navigationPresentationActive,
+              let request = window.retentionRequest(protecting: keys, policy: policy) else {
+            completion(.exhausted); return
+        }
+        let input = renderInput()
+        let includesLocalState = includesLocalPresentationState
+        #if DEBUG
+        let trace = historyPerformance
+        trace?.count(.retentionAttempts)
+        #endif
+        historyPageQueue.async { [weak self] in
+            do {
+                guard let page = try request.fetch(includingLocalState: includesLocalState) else {
+                    #if DEBUG
+                    trace?.count(.retentionExhausted)
+                    #endif
+                    DispatchQueue.main.async { completion(.exhausted) }
+                    return
+                }
+                let prepared = Self.prepareRender(input, stored: page.stored, origin: .databasePagination,
+                    olderBoundary: page.olderNeighbor, newerBoundary: page.newerNeighbor, local: page.localState)
+                let retainedIDs = Set(prepared.rows.map(\.listIdentifier))
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.acceptsTimelineRefreshes, self.navigationPresentationActive,
+                          self.window.canApply(page), self.canApplyRender(prepared),
+                          let current = currentProtectedRowIDs(), !current.isEmpty,
+                          current.isSubset(of: retainedIDs) else {
+                        #if DEBUG
+                        trace?.count(.retentionStale)
+                        #endif
+                        completion(.superseded); return
+                    }
+                    self.preparedWindowRender = prepared
+                    self.window.applyRetention(page)
+                    self.preparedWindowRender = nil
+                    #if DEBUG
+                    trace?.count(.retentionApplied)
+                    #endif
+                    completion(.applied)
+                }
+            } catch {
+                ScopedLog(.database)("History window retention failed: \(error)")
+                #if DEBUG
+                trace?.count(.retentionError)
+                #endif
+                DispatchQueue.main.async { completion(.failed) }
+            }
+        }
+    }
+
     /// Only snapshots and the final commit touch the mutable window on
     /// main. Queries, normalization and message decoding run on the worker.
     func loadHistoryPage(
@@ -4059,12 +4131,14 @@ final class ChatViewModel {
         formattedBody: String? = nil,
         replyEventId: String? = nil,
         replyInfo: ReplyInfo? = nil,
-        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        envelopeId: String = UUID().uuidString,
+        transactionId: String? = nil
     ) async {
         guard let timelineService else { return }
-        let envelopeId = UUID().uuidString
         let transactionId = timelineService.prepareDirectRawTextTransactionId(
-            replyEventId: replyEventId
+            replyEventId: replyEventId,
+            existingTransactionId: transactionId
         )
         outgoingEnvelopes.createOutgoingText(
             roomId: roomId,
@@ -4661,10 +4735,11 @@ final class ChatViewModel {
         caption: String?,
         replyEventId: String?,
         replyInfo: ReplyInfo?,
-        zynaAttributes: ZynaMessageAttributes
+        zynaAttributes: ZynaMessageAttributes,
+        envelopeId: String = UUID().uuidString,
+        transactionId: String? = nil
     ) async {
-        let envelopeId = UUID().uuidString
-        let transactionId = DirectRawMediaSender.prepareImageTransactionId()
+        let transactionId = DirectRawMediaSender.prepareImageTransactionId(existingTransactionId: transactionId)
         outgoingEnvelopes.createOutgoingImage(
             roomId: roomId,
             envelopeId: envelopeId,
@@ -5406,6 +5481,42 @@ final class ChatViewModel {
         timelineService?.stopListening()
         cancellables.removeAll()
     }
+
+    #if DEBUG || CHAT_LIST_PLAYGROUND
+    // MARK: - Chat Load Generator
+
+    @MainActor
+    func makeLoadGenerator(image: @escaping () -> ProcessedImage?) -> ChatLoadGenerator {
+        let sessionID = MatrixClientService.shared.currentLocalSessionId
+        let database = presentationDatabase
+        return ChatLoadGenerator(validate: { [weak self] in
+            guard let self, self.acceptsTimelineRefreshes, !self.mode.isPreview,
+                  database.isActive, let sessionID,
+                  MatrixClientService.shared.currentLocalSessionId == sessionID,
+                  self.timelineService != nil else {
+                throw ChatLoadGenerator.Failure("Чат или аккаунт закрыт. Откройте генератор заново.")
+            }
+            guard self.canSubmitComposer() else {
+                throw ChatLoadGenerator.Failure("Сейчас нельзя отправлять сообщения в этот чат.")
+            }
+        }, enqueue: { [weak self] item in
+            guard let self else { throw ChatLoadGenerator.Failure("Чат закрыт.") }
+            if item.isPhoto {
+                guard let image = image() else { throw ChatLoadGenerator.Failure("Выберите фото.") }
+                await self.sendSingleImage(image, caption: item.body, replyEventId: nil,
+                                           replyInfo: nil, zynaAttributes: ZynaMessageAttributes(),
+                                           envelopeId: item.envelopeID, transactionId: item.envelopeID)
+            } else {
+                await self.sendOutgoingText(body: item.body, envelopeId: item.envelopeID,
+                                            transactionId: item.envelopeID)
+            }
+        }, delivery: { [roomId] id in
+            try await database.read { db in
+                try ChatLoadGeneratorDelivery.read(envelopeID: id, roomID: roomId, in: db)
+            }
+        })
+    }
+    #endif
 
     // MARK: - Background History Sync
 

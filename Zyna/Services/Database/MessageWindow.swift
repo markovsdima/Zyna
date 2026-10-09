@@ -26,6 +26,9 @@ struct TimelineFlushSummary: Equatable {
     var upsertCount = 0
     var deleteCount = 0
     var redactedUpsertCount = 0
+    /// Newly persisted incoming messages at the SDK's live edge. Independent
+    /// of the evictable UI window; replay, history and repairs do not count.
+    var incomingMessageCount = 0
     var committedHistoryRevision: UInt64 = 0
     var includesUnreportedHistory = false
     var recoveredEventIDs: Set<String> = []
@@ -56,6 +59,7 @@ struct TimelineFlushSummary: Equatable {
         result.upsertCount += other.upsertCount
         result.deleteCount += other.deleteCount
         result.redactedUpsertCount += other.redactedUpsertCount
+        result.incomingMessageCount += other.incomingMessageCount
         result.committedHistoryRevision = max(committedHistoryRevision, other.committedHistoryRevision)
         result.includesUnreportedHistory = includesUnreportedHistory || other.includesUnreportedHistory
         result.recoveredEventIDs.formUnion(other.recoveredEventIDs)
@@ -153,7 +157,7 @@ enum MessageWindowPosition {
     case missing
 }
 
-/// Manages the session-retained messages for one room. Mutations and
+/// Manages the retained presentation range for one room. Mutations and
 /// callbacks run on main; immutable requests can be fetched on a worker.
 final class MessageWindow {
 
@@ -170,9 +174,8 @@ final class MessageWindow {
 
     // MARK: - Configuration
 
-    /// Initial bootstrapping / jump window size. Once older pages are
-    /// loaded during the session, they remain retained until an
-    /// explicit reset path such as `jumpTo`.
+    /// Initial bootstrapping / jump size. Paging grows the current range;
+    /// the full chat's retention policy evicts rows outside its viewport.
     static let windowSize = 200
     static let pageSize = 50
 
@@ -525,6 +528,98 @@ final class MessageWindow {
         previousStored = page.merged
         onChange?(page.merged, previous, .databasePagination)
         log("load \(page.direction): +\(page.fetchedCount), window=\(page.merged.count)")
+        return true
+    }
+
+    // MARK: - Retention
+
+    /// Shrinks only the in-memory window. Raw cursors outside an unchanged
+    /// edge survive, including pages of hidden/undecryptable records.
+    struct RetentionRequest {
+        fileprivate let revision: UInt64
+        fileprivate let stored: [StoredMessage]
+        fileprivate let oldest: Cursor?
+        fileprivate let newest: Cursor?
+        fileprivate let live: Bool
+        fileprivate let protectedKeys: Set<String>
+        fileprivate let policy: ChatHistoryRetentionPolicy
+        fileprivate let roomId: String
+        fileprivate let database: AccountDatabase
+
+        func fetch(includingLocalState: Bool = false) throws -> RetentionPage? {
+            let protected = stored.indices.filter { !stored[$0].timelineIdentityKeys.isDisjoint(with: protectedKeys) }
+            guard let first = protected.first, let last = protected.last,
+                  var range = policy.retainedRange(count: stored.count, protected: first..<(last + 1)) else { return nil }
+            // Keep a group whole at either boundary. This makes the count a
+            // soft bound for unusually large groups, rather than splitting one.
+            func sameGroup(_ a: StoredMessage, _ b: StoredMessage) -> Bool {
+                guard a.senderId == b.senderId,
+                      let group = StoredMessage.decodeZynaAttributes(a.zynaAttributesJSON).mediaGroup?.id else { return false }
+                return group == StoredMessage.decodeZynaAttributes(b.zynaAttributesJSON).mediaGroup?.id
+            }
+            while range.lowerBound > 0, sameGroup(stored[range.lowerBound - 1], stored[range.lowerBound]) {
+                range = (range.lowerBound - 1)..<range.upperBound
+            }
+            while range.upperBound < stored.count, sameGroup(stored[range.upperBound - 1], stored[range.upperBound]) {
+                range = range.lowerBound..<(range.upperBound + 1)
+            }
+            guard range.count < stored.count else { return nil }
+            let retained = Array(stored[range])
+            let nextOldest = range.upperBound == stored.count ? oldest : retained.last.map(Cursor.init)
+            let nextNewest = range.lowerBound == 0 ? newest : retained.first.map(Cursor.init)
+            return try database.read { db in
+                let neighbors = try MessageWindow.neighbors(in: db, roomId: roomId,
+                    oldest: nextOldest, newest: nextNewest,
+                    rawOlder: MessageWindow.olderNeighbor(in: db, roomId: roomId, cursor: nextOldest),
+                    rawNewer: MessageWindow.newerNeighbor(in: db, roomId: roomId,
+                        cursor: nextNewest, live: live && range.lowerBound == 0))
+                return RetentionPage(revision: revision, stored: retained,
+                    oldest: nextOldest, newest: nextNewest, neighbors: neighbors,
+                    localState: includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, in: db) : ChatTimelineLocalState())
+            }
+        }
+    }
+
+    struct RetentionPage {
+        fileprivate let revision: UInt64
+        let stored: [StoredMessage]
+        fileprivate let oldest: Cursor?
+        fileprivate let newest: Cursor?
+        fileprivate let neighbors: Neighbors
+        let localState: ChatTimelineLocalState
+        var olderNeighbor: ClusterNeighbor? { neighbors.older }
+        var newerNeighbor: ClusterNeighbor? { neighbors.newer }
+    }
+
+    var retainedMessageCount: Int { previousStored?.count ?? 0 }
+
+    func retentionRequest(protecting keys: Set<String>, policy: ChatHistoryRetentionPolicy) -> RetentionRequest? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let stored = previousStored, stored.count > policy.maximumCount, !keys.isEmpty else { return nil }
+        return RetentionRequest(revision: revision, stored: stored, oldest: olderCursor,
+            newest: newerCursor, live: isAtLiveEdge, protectedKeys: keys, policy: policy,
+            roomId: roomId, database: dbQueue)
+    }
+
+    func canApply(_ page: RetentionPage) -> Bool {
+        dbQueue.isActive && page.revision == revision
+    }
+
+    @discardableResult
+    func applyRetention(_ page: RetentionPage) -> Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard canApply(page) else { return false }
+        let previous = previousStored
+        let wasAvailable = hasOlderInDB
+        previousStored = page.stored
+        olderCursor = page.oldest; newerCursor = page.newest
+        cachedNeighbors = page.neighbors
+        hasOlderInDB = page.neighbors.hasOlder; hasNewerInDB = page.neighbors.hasNewer
+        revision &+= 1
+        // Keep navigation generation and recovery focus: this is ordinary
+        // browsing, not a jump or newly discovered history.
+        onChange?(page.stored, previous, .databasePagination)
+        notifyOlderHistoryAvailable(wasAvailable: wasAvailable)
         return true
     }
 

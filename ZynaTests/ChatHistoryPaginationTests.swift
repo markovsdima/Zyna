@@ -849,63 +849,6 @@ struct ChatHistoryPaginationTests {
         ) == nil)
     }
 
-    @Test("History pages, jumps and local rebuilds never increment the incoming badge")
-    func badgeIgnoresHistory() throws {
-        let rows: [ChatTimelineRow] = try (0..<50).map { .message(try #require(message($0).toChatMessage())) }
-        let update = TableUpdate.batch(
-            deletions: [], insertions: (0..<50).map { IndexPath(row: $0, section: 0) },
-            moves: [], updates: [], animated: false
-        )
-        let origins: [MessageWindowChangeOrigin] = [
-            .databasePagination, .jump, .initialLoad, .localMutation
-        ]
-        for origin in origins {
-            #expect(update.unseenIncomingCount(
-                rows: rows, origin: origin, minimumVisibleRowBeforeUpdate: 30
-            ) == 0)
-        }
-        #expect(update.unseenIncomingCount(
-            rows: rows, origin: .timelineFlush(TimelineFlushSummary(pushBackCount: 50)),
-            minimumVisibleRowBeforeUpdate: 30
-        ) == 30)
-        #expect(update.unseenIncomingCount(
-            rows: rows, origin: .timelineFlush(TimelineFlushSummary(pushBackCount: 50,
-                includesUnreportedHistory: true, recoveredEventIDs: ["$0000", "$0001"])),
-            minimumVisibleRowBeforeUpdate: 30
-        ) == 28)
-        // SDK summaries can combine live arrivals with a history flush;
-        // the history/reset flag is an animation policy, not a read count.
-        #expect(update.unseenIncomingCount(
-            rows: rows, origin: .timelineFlush(TimelineFlushSummary(pushBackCount: 50, pushFrontCount: 1)),
-            minimumVisibleRowBeforeUpdate: 30
-        ) == 30)
-    }
-
-    @Test("The incoming badge uses the submitted rows and excludes outgoing messages")
-    func badgeSnapshot() throws {
-        var outgoingRecord = message(1)
-        outgoingRecord.isOutgoing = true
-        let outgoing = try #require(outgoingRecord.toChatMessage())
-        var rows: [ChatTimelineRow] = [
-            .message(try #require(message(0).toChatMessage())), .message(outgoing)
-        ]
-        let update = TableUpdate.batch(
-            deletions: [], insertions: [IndexPath(row: 0, section: 0), IndexPath(row: 1, section: 0)],
-            moves: [], updates: [], animated: false
-        )
-        let count = update.unseenIncomingCount(
-            rows: rows, origin: .timelineFlush(TimelineFlushSummary(pushBackCount: 2)),
-            minimumVisibleRowBeforeUpdate: 5
-        )
-        // A subsequent datasource update must not affect the captured count.
-        rows = [.message(outgoing)]
-        #expect(count == 1)
-        #expect(update.unseenIncomingCount(
-            rows: rows, origin: .timelineFlush(TimelineFlushSummary(pushBackCount: 2)),
-            minimumVisibleRowBeforeUpdate: 5
-        ) == 0)
-    }
-
     @Test("A newer page advances past a normalized-away pending duplicate")
     func deduplicatedNewerPage() throws {
         var records = (0..<202).map { message($0) }

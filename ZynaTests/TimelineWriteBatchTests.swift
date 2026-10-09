@@ -71,6 +71,59 @@ enum TimelineWriteFixture {
 
 @Suite("Bounded timeline persistence")
 struct TimelineWriteBatchTests {
+    @Test("Incoming counts survive mixed history/live batches and exclude replay, repair, outgoing and hidden rows")
+    func incomingMessages() async throws {
+        let database = try TimelineWriteFixture.database(legacyMessages: [TimelineWriteFixture.message(0)])
+        let events = (0..<130).map { index -> [TimelineDiffBatcher.DiffOp] in
+            var record = TimelineWriteFixture.message(index)
+            if index == 2 { record.isOutgoing = true }
+            if index == 3 { record.contentType = "redacted" }
+            if index == 4 { record.contentType = "unableToDecrypt" }
+            if index == 5 { record.senderId = "@ignored:example.org" }
+            if index == 6 { record.contentType = "call" }
+            // 1 is historical; 0 is already stored (a replay or update).
+            return TimelineWriteFixture.event(record) + (index == 1 ? [] : [.liveArrival])
+        }
+        try await database.write { try $0.execute(sql: "INSERT INTO ignoredUser VALUES ('@ignored:example.org')") }
+        let counts = try await Task.detached {
+            var counts: [Int] = []
+            for _ in 0..<2 {
+                try TimelineDiffBatcher.writeMappedEvents(events, roomId: TimelineWriteFixture.roomID,
+                    database: database, currentUserId: "", summary: .init(pushBackCount: 129, pushFrontCount: 1),
+                    historyRevision: TimelineHistoryRevision(),
+                    limits: .init(maximumCount: 8, maximumDuration: 60)) {
+                        counts.append($0.incomingMessageCount)
+                    }
+            }
+            return counts
+        }.value
+        #expect(counts == [123, 0])
+    }
+
+    @Test("The incoming count includes only committed chunks after a later write fails")
+    func incomingRollback() async throws {
+        let database = try TimelineWriteFixture.database()
+        try await database.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER reject_message BEFORE INSERT ON storedMessage
+                WHEN NEW.id = 'row-3' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+                """)
+        }
+        let count = await Task.detached {
+            var count = 0
+            let events = (0..<5).map { TimelineWriteFixture.event(TimelineWriteFixture.message($0)) + [.liveArrival] }
+            #expect(throws: DatabaseError.self) {
+                try TimelineDiffBatcher.writeMappedEvents(events, roomId: TimelineWriteFixture.roomID,
+                    database: database, currentUserId: "", summary: .init(pushBackCount: 5),
+                    historyRevision: TimelineHistoryRevision(),
+                    limits: .init(maximumCount: 2, maximumDuration: 60)) { count += $0.incomingMessageCount }
+            }
+            return count
+        }.value
+        #expect(count == 2)
+        #expect(try await database.read { try StoredMessage.fetchCount($0) } == 2)
+    }
+
     @Test("A cache read queued during a large write runs between chunks, before the batch completes")
     func cachedReadInterleaves() async throws {
         let database = try TimelineWriteFixture.database()

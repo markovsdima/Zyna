@@ -380,7 +380,9 @@ final class PresenceTitleNode: ASDisplayNode, AccessibilityElementsOrderProvidin
         onVoiceModeTapped?()
     }
 
-    private func isPointInsideVoiceControl(_ point: CGPoint) -> Bool {
+    /// Coordinates are local to the title view; includes the controls' touch margin.
+    func isPointInsideVoiceControl(_ point: CGPoint) -> Bool {
+        guard hasVoiceState else { return false }
         let hitSlop: CGFloat = 8
         let controlNodes = [
             voicePlayButtonNode,

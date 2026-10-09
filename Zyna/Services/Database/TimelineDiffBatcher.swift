@@ -60,6 +60,9 @@ final class TimelineDiffBatcher: @unchecked Sendable {
     // MARK: - Pending ops
 
     enum DiffOp {
+        /// Provenance of this mapped event, retained even in a mixed
+        /// history/live flush. Count only after inserting a new visible row.
+        case liveArrival
         case upsert(StoredMessage, isPollStart: Bool, senderProfile: PollSenderProfile)
         case deleteAttachment(eventId: String)
         case upsertMatrixRTCCall(StoredMatrixRTCCall)
@@ -288,16 +291,21 @@ final class TimelineDiffBatcher: @unchecked Sendable {
         var detachedIdentityCount = 0
         var admissionChanged = false
         var recoveredEventIDs = Set<String>()
+        var incomingMessageCount = 0
         try DatabaseWriteBatch.write(events, to: database, source: "timeline", limits: limits,
             prepare: { db in
                 internalDeleteCount = 0
                 detachedIdentityCount = 0
                 admissionChanged = false
                 recoveredEventIDs.removeAll(keepingCapacity: true)
+                incomingMessageCount = 0
                 historyRevision.observeCommit(summary, in: db)
             }, apply: { db, event in
+                let isLiveArrival = event.contains { if case .liveArrival = $0 { return true }; return false }
                 for op in event {
                     switch op {
+                    case .liveArrival:
+                        break
                     case .upsert(var record, let isPollStart, let senderProfile):
                         if try MessageDecryptionRepairStore.suppresses(record, in: db) { continue }
                         var existing = try Self.existingStoredMessage(for: record, in: db)
@@ -382,6 +390,12 @@ final class TimelineDiffBatcher: @unchecked Sendable {
                             try MessageDecryptionRepairStore.didProject(record, in: db)
                         }
                         if record != existing { try record.save(db) }
+                        if isLiveArrival, existing == nil, !record.isOutgoing,
+                           record.eventId != nil, record.contentType != "redacted", record.contentType != "call",
+                           try !IgnoredContentStore.contains(record.senderId, in: db),
+                           try !MessageDecryptionRepairStore.admitted([record], in: db).isEmpty {
+                            incomingMessageCount += 1
+                        }
                         if let attachment = StoredRoomAttachment(storedMessage: record) {
                             try attachment.saveIfChanged(in: db)
                         }
@@ -442,6 +456,7 @@ final class TimelineDiffBatcher: @unchecked Sendable {
                 // Keep the source's live/history shape for every chunk;
                 // row counts describe only this committed range.
                 chunkSummary = summary
+                chunkSummary.incomingMessageCount = incomingMessageCount
                 chunkSummary.includesUnreportedHistory = summary.includesUnreportedHistory || admissionChanged
                 chunkSummary.recoveredEventIDs.formUnion(recoveredEventIDs)
                 chunkSummary.readReceiptCount = range.upperBound == events.count ? summary.readReceiptCount : 0
@@ -461,6 +476,7 @@ final class TimelineDiffBatcher: @unchecked Sendable {
                     committed.upsertCount += chunkSummary.upsertCount
                     committed.deleteCount += chunkSummary.deleteCount
                     committed.redactedUpsertCount += chunkSummary.redactedUpsertCount
+                    committed.incomingMessageCount += chunkSummary.incomingMessageCount
                     committed.readReceiptCount += chunkSummary.readReceiptCount
                     committed.committedHistoryRevision = chunkSummary.committedHistoryRevision
                     committed.includesUnreportedHistory = committed.includesUnreportedHistory || chunkSummary.includesUnreportedHistory
@@ -506,12 +522,13 @@ final class TimelineDiffBatcher: @unchecked Sendable {
         switch diff {
 
         case .append(let items):
+            let isLiveArrival = !shadowPositions.isEmpty
             for item in items {
-                appendItem(item)
+                appendItem(item, isLiveArrival: isLiveArrival)
             }
 
         case .pushBack(let item):
-            appendItem(item)
+            appendItem(item, isLiveArrival: !shadowPositions.isEmpty)
 
         case .pushFront(let item):
             let msg = TimelineService.mapTimelineItem(item)
@@ -521,9 +538,10 @@ final class TimelineDiffBatcher: @unchecked Sendable {
         case .insert(let index, let item):
             let idx = Int(index)
             guard idx <= shadowPositions.count else { return }
+            let isLiveArrival = !shadowPositions.isEmpty && idx == shadowPositions.count
             let msg = TimelineService.mapTimelineItem(item)
             shadowPositions.insert(shadowPosition(for: item), at: idx)
-            enqueueSidecarEvents(for: item, message: msg)
+            enqueueSidecarEvents(for: item, message: msg, isLiveArrival: isLiveArrival)
 
         case .set(let index, let item):
             let idx = Int(index)
@@ -594,13 +612,13 @@ final class TimelineDiffBatcher: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    private func appendItem(_ item: TimelineItem) {
+    private func appendItem(_ item: TimelineItem, isLiveArrival: Bool = false) {
         let msg = TimelineService.mapTimelineItem(item)
         shadowPositions.append(shadowPosition(for: item))
-        enqueueSidecarEvents(for: item, message: msg)
+        enqueueSidecarEvents(for: item, message: msg, isLiveArrival: isLiveArrival)
     }
 
-    private func enqueueSidecarEvents(for item: TimelineItem, message: ChatMessage?) {
+    private func enqueueSidecarEvents(for item: TimelineItem, message: ChatMessage?, isLiveArrival: Bool = false) {
         var operations: [DiffOp] = []
         defer { if !operations.isEmpty { pendingEvents.append(operations) } }
         if let message {
@@ -614,6 +632,7 @@ final class TimelineDiffBatcher: @unchecked Sendable {
                 senderProfile = .unavailable
             }
             operations.append(.upsert(record, isPollStart: isPollStart, senderProfile: senderProfile))
+            if isLiveArrival { operations.append(.liveArrival) }
 
             if let call = StoredMatrixRTCCall(from: message, roomId: roomId) {
                 operations.append(.upsertMatrixRTCCall(call))

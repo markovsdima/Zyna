@@ -63,6 +63,7 @@ enum HistoryPerformanceTrace {
         case pageRaw, pageShown, pageRedacted, pageEmpty, pageStale, pageStaleWindow, pageStalePresentation, pageError
         case refreshes, unchanged, refreshStale, refreshError, reloads, batches, inserted, deleted
         case boundsRefreshes, boundsStale
+        case retentionAttempts, retentionApplied, retentionStale, retentionExhausted, retentionError
         case hidden, visible, utd, unknown, inspectError, repairChanges, repairWake, overflow
         case visibleText, visibleMedia, visiblePoll, visibleZynaCall, visibleCall, visibleOther
         case visibleEmptyText, visibleCallInvite, visibleRTC

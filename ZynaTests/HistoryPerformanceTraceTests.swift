@@ -27,6 +27,10 @@ struct HistoryPerformanceTraceTests {
         operation?.finish() // Completion callbacks may race cleanup.
         trace.count(.pageRaw, 50)
         trace.count(.pageShown, 2)
+        trace.count(.retentionAttempts, 4)
+        trace.count(.retentionApplied)
+        trace.count(.retentionStale, 2)
+        trace.count(.retentionExhausted)
         trace.gauge(.rows, 200)
         trace.scrolling(frames: 100, gaps32: 5, gaps100: 1, maximum: 0.2)
         trace.flush()
@@ -34,6 +38,7 @@ struct HistoryPerformanceTraceTests {
         #expect(reports.count == 2)
         #expect(reports[0].contains("viewAgeMs=3000"))
         #expect(reports[0].contains("pageRaw=50 pageShown=2"))
+        #expect(reports[0].contains("retentionAttempts=4 retentionApplied=1 retentionStale=2 retentionExhausted=1"))
         #expect(reports[1].contains("sdk=1/2000/2000/0"))
         #expect(reports[1].contains("inspect=1/1000/1000/1"))
         #expect(reports[1].contains("gap32=5 gap100=1 maxMs=200"))

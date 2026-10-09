@@ -18,12 +18,10 @@ extension ChatViewModel {
 @Suite("Background chat presentation", .serialized)
 @MainActor
 struct ChatBackgroundPresentationTests {
-    private enum Failure: Error { case timeout }
-
-    static func wait(_ predicate: () -> Bool) async throws {
+    static func wait(_ predicate: () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         let deadline = Date().addingTimeInterval(5)
         while !predicate() {
-            guard Date() < deadline else { throw Failure.timeout }
+            try #require(Date() < deadline, "Timed out waiting for presentation", sourceLocation: sourceLocation)
             try await Task.sleep(for: .milliseconds(2))
         }
     }
@@ -339,6 +337,60 @@ struct ChatBackgroundPresentationTests {
         var applied = false
         model.prepareHistoryReplacement(.newest) { apply in apply(); applied = true }
         try await Self.wait { applied }
+    }
+
+    @Test("Retention rejects a moved viewport, a hidden screen and an intervening mutation", arguments: [0, 1, 2])
+    func retentionRaces(scenario: Int) async throws {
+        let (_, _, model) = try fixture(count: 240)
+        defer { model.cleanup() }
+        try await load(model)
+        #expect(await page(model) == .applied)
+        let policy = ChatHistoryRetentionPolicy(maximumCount: 220, retainedCount: 100)
+        let protected = Set(model.rows.filter { $0.message?.id == "row-20" }.map(\.listIdentifier))
+        let far = Set(model.rows.filter { $0.message?.id == "row-239" }.map(\.listIdentifier))
+        let gate = Gate()
+        defer { gate.release() }
+        model.onRenderPreparedForTesting = { gate.holdOnce() }
+        var current: Set<String>? = protected
+        var result: ChatHistoryPageLoader.Result?
+        model.retainHistoryWindow(policy: policy, protectedRowIDs: protected,
+            currentProtectedRowIDs: { current }) { result = $0 }
+        try await Self.wait { gate.entered.wrappedValue }
+        switch scenario {
+        case 0: current = far
+        case 1: model.setNavigationPresentationActive(false)
+        default: model.hideMessage("row-10")
+        }
+        gate.release()
+        try await Self.wait { result != nil }
+        #expect(result == .superseded)
+        #expect(model.retainedHistoryMessageCount == 240)
+    }
+
+    @Test("Retention commits a bounded presentation and remains ordinary history browsing")
+    func retentionPresentation() async throws {
+        let (database, window, model) = try fixture(count: 240)
+        defer { model.cleanup() }
+        try await load(model)
+        #expect(await page(model) == .applied)
+        let protected = Set(model.rows.filter { $0.message?.id == "row-20" }.map(\.listIdentifier))
+        let generation = window.generation
+        var origin: MessageWindowChangeOrigin?
+        model.onTableUpdate = { _, value in origin = value }
+        model.onRedactedDetected = { _ in Issue.record("Retention must not animate a deletion") }
+        let result = await withCheckedContinuation { continuation in
+            model.retainHistoryWindow(policy: .init(maximumCount: 220, retainedCount: 100),
+                protectedRowIDs: protected, currentProtectedRowIDs: { protected }) {
+                continuation.resume(returning: $0)
+            }
+        }
+        #expect(result == .applied)
+        #expect(model.messages.count == 100)
+        #expect(model.retainedHistoryMessageCount == 100)
+        #expect(protected.isSubset(of: Set(model.rows.map(\.listIdentifier))))
+        #expect(origin == .databasePagination)
+        #expect(window.generation == generation)
+        #expect(try await database.read { try StoredMessage.fetchCount($0) } == 240)
     }
 
     private func page(_ model: ChatViewModel) async -> ChatHistoryPageLoader.Result {

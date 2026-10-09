@@ -123,6 +123,17 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     private let viewModel: ChatViewModel
     private let composerController = ChatComposerController()
+    #if DEBUG || CHAT_LIST_PLAYGROUND
+    private var loadGeneratorPanel: ChatLoadGeneratorViewController?
+    private var loadGeneratorPress: UILongPressGestureRecognizer?
+    private var historyWindowTrimCount = 0
+    #endif
+    private let historyRetentionPolicy = ChatHistoryRetentionPolicy()
+    private var historyWindowMaintenancePending = false
+    private var historyWindowRetryAfter: CFTimeInterval = 0
+    // At most one coalesced request per direction waits for retention.
+    private var historyWindowPageWaiters: [() -> Void] = []
+
     private let documentScanFlow = DocumentScanFlow()
     private var cancellables = Set<AnyCancellable>()
     private let serverBatchFetch = ChatServerBatchFetch()
@@ -475,6 +486,13 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             glassNavBar.onTitleTapped = { [weak self] in
                 self?.onRoomDetailsTapped?()
             }
+            #if DEBUG || CHAT_LIST_PLAYGROUND
+            let loadGeneratorPress = UILongPressGestureRecognizer(target: self, action: #selector(showLoadGenerator(_:)))
+            loadGeneratorPress.minimumPressDuration = 0.7
+            loadGeneratorPress.delegate = self
+            self.loadGeneratorPress = loadGeneratorPress
+            glassNavBar.titleNode.view.addGestureRecognizer(loadGeneratorPress)
+            #endif
             glassNavBar.onVoicePlayPause = { [weak self] in
                 guard let self else { return }
                 if self.audioPlayer.state.isPlaying {
@@ -732,21 +750,56 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             navigationController?.setNavigationBarHidden(false, animated: animated)
             cleanupViewModelIfNeeded()
         }
+        #if DEBUG || CHAT_LIST_PLAYGROUND
+        if let panel = loadGeneratorPanel {
+            let showingGenerator = panel.navigationController != nil
+                && presentedViewController === panel.navigationController
+            if !showingGenerator { panel.pause() }
+        }
+        #endif
     }
 
     private func cleanupViewModelIfNeeded() {
+        #if DEBUG || CHAT_LIST_PLAYGROUND
+        loadGeneratorPanel?.pause()
+        #endif
         messageLinkSharing.cancel()
         openingLink?.cancel()
         pinnedPreviewTask?.cancel()
         guard !didCleanupViewModel else { return }
         flushVisibleReadReceipts()
         didCleanupViewModel = true
+        finishHistoryWindowMaintenance()
         if let token = serverBatchFetch.currentToken {
             serverBatchFetch.finish(token)
         }
         cancelPinnedMessagesAutoCollapseTimer()
         viewModel.cleanup()
     }
+
+    #if DEBUG || CHAT_LIST_PLAYGROUND
+    @objc private func showLoadGenerator(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began, presentedViewController == nil, !isPreviewMode else { return }
+        view.endEditing(true)
+        let status = UIAlertController(title: "Chat history",
+            message: "Retained messages: \(viewModel.retainedHistoryMessageCount)\nRows: \(viewModel.rows.count)\nCompleted trims: \(historyWindowTrimCount)",
+            preferredStyle: .alert)
+        status.addAction(UIAlertAction(title: "Close", style: .cancel))
+        status.addAction(UIAlertAction(title: "Message generator", style: .default) { [weak self] _ in
+            self?.presentLoadGenerator()
+        })
+        present(status, animated: true)
+    }
+
+    private func presentLoadGenerator() {
+        let panel = loadGeneratorPanel ?? ChatLoadGeneratorViewController(chat: viewModel)
+        loadGeneratorPanel = panel
+        let navigation = UINavigationController(rootViewController: panel)
+        navigation.modalPresentationStyle = .pageSheet
+        navigation.sheetPresentationController?.detents = [.large()]
+        present(navigation, animated: true)
+    }
+    #endif
 
     // MARK: - Navigation
 
@@ -1382,7 +1435,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         }
 
         let scrolledFar = shouldTeleportToLive()
-        let shouldShow = unseenIncomingMessageCount > 0
+        let shouldShow = unseenIncomingMessageCount > 0 || !viewModel.isAtLiveEdge
             || (scrolledFar && viewModel.messages.count > 20)
         glassInputBar.scrollButtonVisible = shouldShow
         updateScrollButtonBadgeLayout(
@@ -1623,6 +1676,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         }
         viewModel.onTableUpdate = { [weak self] update, origin in
             self?.applyTableUpdate(update, origin: origin)
+        }
+        viewModel.onIncomingMessages = { [weak self] count in
+            guard let self, count > 0, !self.isViewportPinnedToLiveEdge(),
+                  !self.pendingPostSendPinToLive else { return }
+            self.noteUnseenIncomingMessages(count)
+            self.updateScrollToLiveVisibility()
         }
 
         ProfileAppearanceService.shared.appearanceDidChange
@@ -1865,6 +1924,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             if pendingNavigationAnchor != nil {
                 afterTableUpdates { [weak self] in self?.tryRestoreNavigationAnchor() }
             }
+            scheduleHistoryWindowMaintenance()
         }
         if isTeleporting {
 #if DEBUG
@@ -1894,20 +1954,12 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
         case .batch(let deletions, let insertions, let moves, let updates, let animated):
             if deletions.isEmpty && insertions.isEmpty && moves.isEmpty && updates.isEmpty { return }
-            let minimumVisibleRowBeforeUpdate = node.list.indexPathsForVisibleItems().map(\.row).min()
             // A final newer page can mark the window live before its rows
             // reach Texture. Preserve the viewport across that transition.
             let wasPinnedToLiveEdge = !origin.preservesHistoryViewport && isViewportPinnedToLiveEdge()
             let shouldForcePostSendPin = pendingPostSendPinToLive
             let shouldPreserveViewport = !wasPinnedToLiveEdge && !shouldForcePostSendPin
 
-            // Resolve indices against this update's rows, never against a
-            // later datasource snapshot from the asynchronous completion.
-            let unseenIncoming = shouldPreserveViewport ? update.unseenIncomingCount(
-                rows: viewModel.rows, origin: origin,
-                minimumVisibleRowBeforeUpdate: minimumVisibleRowBeforeUpdate
-            ) : 0
-            let historyGeneration = viewModel.historyGeneration
             let effectiveAnimated = animated && !shouldPreserveViewport
             #if DEBUG
             let performance = viewModel.historyPerformance
@@ -1941,9 +1993,6 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
                     }
                 }
 #endif
-                if self?.viewModel.historyGeneration == historyGeneration {
-                    self?.noteUnseenIncomingMessages(unseenIncoming)
-                }
                 if shouldForcePostSendPin {
                     self?.finishPostSendPinToLive()
                 } else if wasPinnedToLiveEdge {
@@ -3039,12 +3088,15 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         if interactionLocks.isEmpty {
             node.list.view.isScrollEnabled = true
             navigationController?.interactivePopGestureRecognizer?.isEnabled = true
+            DispatchQueue.main.async { [weak self] in self?.prefetchHistoryIfNeeded() }
         }
     }
 
     // MARK: - Texture batch fetching (pagination)
 
     private func shouldBatchFetchHistory() -> Bool {
+        // Let Texture establish its waiting context during retention too.
+        // The shared request path defers the read and resumes cache/server demand.
         guard !didCleanupViewModel, !isTeleporting,
               !olderPageLoader.isLoading, !newerPageLoader.isLoading,
               olderPageRetryAfter.map({ CACurrentMediaTime() >= $0 }) ?? true else { return false }
@@ -3085,13 +3137,25 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         completion: @escaping (ChatHistoryPageLoader.Result) -> Void
     ) {
         let loader = direction == .older ? olderPageLoader : newerPageLoader
+        let generation = viewModel.historyGeneration
 #if DEBUG
         if ChatHistoryScrollTrace.enabled {
             historyScrollTrace.event("request \(direction) coalesced=\(loader.isLoading) live=\(viewModel.isAtLiveEdge)", table: node.list)
         }
 #endif
         loader.load(
-            fetch: { self.viewModel.loadHistoryPage(direction, completion: $0) },
+            fetch: { done in
+                let fetch = { [weak self] in
+                    guard let self, !self.didCleanupViewModel, !self.isTeleporting,
+                          self.viewModel.historyGeneration == generation else { done(.superseded); return }
+                    self.viewModel.loadHistoryPage(direction, completion: done)
+                }
+                if self.historyWindowMaintenancePending {
+                    // Covers a Texture callback already dispatched to main,
+                    // or a server page finishing after retention was scheduled.
+                    self.historyWindowPageWaiters.append(fetch)
+                } else { fetch() }
+            },
             waitForUpdates: { [weak self] done in
                 guard let self else { done(); return }
                 self.afterTableUpdates(done)
@@ -3121,6 +3185,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     private func prefetchHistoryIfNeeded() {
         guard navigationContentVisible, !didCleanupViewModel, !isTeleporting,
               !olderPageLoader.isLoading, !newerPageLoader.isLoading else { return }
+        if scheduleHistoryWindowMaintenance() { return }
         let table = node.list.view
         guard table.window != nil else { return }
         let bounds = tableOffsetBounds(for: table)
@@ -3136,6 +3201,73 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         // Prefetch in either direction while the finger is down, with enough
         // distance for Texture to prepare the page before it becomes visible.
         requestHistoryPage(direction) { _ in }
+    }
+
+    /// Reuse the collection's commit-time anchor; retention never writes an
+    /// offset, reloads the list or changes UIKit's drag/deceleration state.
+    @discardableResult
+    private func scheduleHistoryWindowMaintenance() -> Bool {
+        let policy = historyRetentionPolicy
+        if historyWindowMaintenancePending { return true }
+        guard viewModel.retainedHistoryMessageCount > policy.maximumCount,
+              CACurrentMediaTime() >= historyWindowRetryAfter,
+              historyWindowProtectedRows() != nil,
+              !olderPageLoader.isLoading, !newerPageLoader.isLoading else { return false }
+        historyWindowMaintenancePending = true
+        afterTableUpdates { [weak self] in
+            guard let self else { return }
+            guard let protected = self.historyWindowProtectedRows() else {
+                self.finishHistoryWindowMaintenance()
+                self.prefetchHistoryIfNeeded()
+                return
+            }
+            self.viewModel.retainHistoryWindow(policy: policy, protectedRowIDs: protected,
+                currentProtectedRowIDs: { [weak self] in self?.historyWindowProtectedRows() }) { [weak self] result in
+                guard let self else { return }
+                self.afterTableUpdates { [weak self] in
+                    guard let self else { return }
+                    #if DEBUG || CHAT_LIST_PLAYGROUND
+                    if result == .applied { self.historyWindowTrimCount += 1 }
+                    #endif
+                    // No tight retry loop for an oversized group, a moving
+                    // viewport, SQLite failure or an intervening live update.
+                    let delay: TimeInterval = result == .applied ? 0 : 0.5
+                    self.historyWindowRetryAfter = CACurrentMediaTime() + delay
+                    self.finishHistoryWindowMaintenance()
+                    if result == .applied || result == .superseded {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            self?.prefetchHistoryIfNeeded()
+                        }
+                    } else {
+                        // An indivisible group or a failed read waits for
+                        // another scroll/content change, not an idle timer.
+                        self.prefetchHistoryIfNeeded()
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    private func finishHistoryWindowMaintenance() {
+        historyWindowMaintenancePending = false
+        let waiters = historyWindowPageWaiters
+        historyWindowPageWaiters.removeAll()
+        for resume in waiters { resume() }
+    }
+
+    private func historyWindowProtectedRows() -> Set<String>? {
+        guard navigationContentVisible, !didCleanupViewModel, isViewLoaded, view.window != nil,
+              !isPreviewMode, !isTeleporting, pendingNavigationAnchor == nil,
+              interactionLocks.isEmpty, activeContextMenu == nil, !isReplySwipeInteractionActive else { return nil }
+        let list = node.list
+        // One additional screen on each side protects a reversal while the
+        // background snapshot and Texture's deletion batch are being applied.
+        let height = list.bounds.height
+        let range = list.layout.geometry.range(in: CGRect(x: 0,
+            y: list.contentOffset.y - height, width: 1, height: height * 3))
+        let ids = Set(list.layout.geometry.ids[range])
+        return ids.isEmpty ? nil : ids
     }
 
     private func runServerBatchFetch(context: ASBatchContext, generation: UInt64) {
@@ -4982,6 +5114,19 @@ private enum TeleportDirection {
 // MARK: - UIGestureRecognizerDelegate
 
 extension ChatViewController: UIGestureRecognizerDelegate {
+    #if DEBUG || CHAT_LIST_PLAYGROUND
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        gestureRecognizer !== loadGeneratorPress || !glassNavBar.titleNode.voiceExpanded
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === loadGeneratorPress else { return true }
+        let title = glassNavBar.titleNode
+        guard !title.voiceExpanded else { return false }
+        return !title.isPointInsideVoiceControl(touch.location(in: title.view))
+    }
+    #endif
+
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         other is UILongPressGestureRecognizer

@@ -258,6 +258,34 @@ struct ChatMessageListTests {
         #expect(fixture.list.layout.targetContentOffset(forProposedContentOffset: proposed) == proposed)
     }
 
+    @Test("Window eviction releases Texture nodes and preserves a moving anchor on both edges")
+    func windowEviction() async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        try await fixture.load()
+        fixture.list.contentOffset.y = 3_500
+        fixture.list.view.layoutIfNeeded()
+        let y = try fixture.screenY(id: 60)
+        weak var evicted = fixture.list.nodeForItem(at: IndexPath(row: 5, section: 0))
+        try #require(evicted != nil)
+        fixture.items = Array(fixture.items[40..<90])
+        fixture.list.performBatch(animated: false, preservingViewport: true,
+            deletions: (Array(0..<40) + Array(90..<100)).map { IndexPath(row: $0, section: 0) })
+        fixture.list.contentOffset.y += 37
+        try await fixture.ready()
+        #expect(abs(try fixture.screenY(id: 60) - y - 37) < 1)
+        #expect(fixture.list.layout.geometry.ids.count == 50)
+        // The editing queue and UIKit may release their old maps on the
+        // next run loop, after the batch completion has fired.
+        try await ChatBackgroundPresentationTests.wait { evicted == nil }
+        let retainedY = try fixture.screenY(id: 60)
+        fixture.insert(0..<40)
+        try await fixture.ready()
+        #expect(abs(try fixture.screenY(id: 60) - retainedY) < 1)
+        #expect(fixture.list.layout.geometry.ids.count == 90)
+        #expect(fixture.list.nodeForItem(at: IndexPath(row: 5, section: 0)) != nil)
+    }
+
     @Test("Replacing the anchor node retains its stable message identity")
     func anchorReload() async throws {
         let fixture = try Fixture()
