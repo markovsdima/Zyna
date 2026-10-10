@@ -82,12 +82,28 @@ public class ZynaNavigationController: UIViewController {
         case push(UIViewController, animated: Bool)
         case pop(animated: Bool)
         case popToRoot(animated: Bool)
+        case popTo(UIViewController, animated: Bool, completion: (() -> Void)?)
+        case setStack([UIViewController], animated: Bool)
+        case whenIdle(() -> Void)
     }
 
     private var deferredStackMutations: [DeferredStackMutation] = []
 
-    private var isTransitionInFlight: Bool {
+    /// Prepared navigation commits must not queue another pop behind a
+    /// back gesture or mutate the destination during a stack transition.
+    var isTransitionInFlight: Bool {
         isInteractivePopActive || isAnimatingTransition
+    }
+
+    /// Async route results must recheck their origin after a transition,
+    /// including an interactive pop that may have completed or cancelled.
+    func performWhenIdle(_ action: @escaping () -> Void) {
+        if isTransitionInFlight {
+            deferredStackMutations.append(.whenIdle(action))
+        } else {
+            action()
+            flushDeferredStackMutationsIfPossible()
+        }
     }
 
     // MARK: - Lifecycle
@@ -204,6 +220,7 @@ public class ZynaNavigationController: UIViewController {
         guard stack.count > 1, isViewLoaded else { return }
         let topVC = stack[stack.count - 1]
         let revealedVC = stack[stack.count - 2]
+        (revealedVC as? any NavigationResidentScreen)?.materializeContent()
 
         isInteractivePopActive = true
 
@@ -249,7 +266,7 @@ public class ZynaNavigationController: UIViewController {
             self.fpsBoostToken?.invalidate()
             self.fpsBoostToken = nil
             self.setNeedsStatusBarAppearanceUpdate()
-            self.onStackChanged?()
+            self.notifyStackChanged()
             self.flushDeferredStackMutationsIfPossible()
             UIAccessibility.post(
                 notification: .screenChanged,
@@ -289,6 +306,7 @@ public class ZynaNavigationController: UIViewController {
         let previousTop = topViewController
         addChild(viewController)
         stack.append(viewController)
+        updateResidentScreens(transitioning: true)
 
         if isViewLoaded, animated, let previousTop {
             // Direct kick so glass tracks the slide from frame 0
@@ -305,7 +323,7 @@ public class ZynaNavigationController: UIViewController {
                 }
             }
             viewController.didMove(toParent: self)
-            onStackChanged?()
+            notifyStackChanged()
             flushDeferredStackMutationsIfPossible()
         }
     }
@@ -336,7 +354,7 @@ public class ZynaNavigationController: UIViewController {
                 detachView(of: popped)
             }
             popped.removeFromParent()
-            onStackChanged?()
+            notifyStackChanged()
             flushDeferredStackMutationsIfPossible()
         }
 
@@ -353,11 +371,32 @@ public class ZynaNavigationController: UIViewController {
             return []
         }
 
-        let root = stack[0]
+        return pop(to: stack[0], animated: animated)
+    }
+
+    /// Reveal an existing controller with one transition, removing every
+    /// screen above it. Completion runs after containment is finalized.
+    @discardableResult
+    public func pop(to destination: UIViewController, animated: Bool = true,
+                    completion: (() -> Void)? = nil) -> [UIViewController] {
+        guard !isTransitionInFlight else {
+            deferredStackMutations.append(.popTo(destination, animated: animated, completion: completion))
+            return []
+        }
+        guard let index = stack.firstIndex(where: { $0 === destination }) else {
+            flushDeferredStackMutationsIfPossible()
+            return []
+        }
+        guard index < stack.count - 1 else {
+            completion?()
+            flushDeferredStackMutationsIfPossible()
+            return []
+        }
+
         let currentTop = topViewController!  // safe: count was > 1
         var popped: [UIViewController] = []
 
-        while stack.count > 1 {
+        while stack.count > index + 1 {
             let vc = stack.removeLast()
             vc.willMove(toParent: nil)
             popped.append(vc)
@@ -367,23 +406,24 @@ public class ZynaNavigationController: UIViewController {
             for vc in popped {
                 vc.removeFromParent()
             }
+            completion?()
         }
 
         if isViewLoaded, animated {
-            // Animate the slide between currentTop → root. The middle
+            // Animate the slide between currentTop → destination. The middle
             // controllers were never in the hierarchy, so visually it
-            // looks like a single pop from the actual top to the root.
+            // looks like a single pop from the actual top to the destination.
             GlassService.shared.captureFor(duration: IOS26Spring.duration + 0.1)
-            performAnimatedPop(removing: currentTop, revealing: root, completion: finalize)
+            performAnimatedPop(removing: currentTop, revealing: destination, completion: finalize)
         } else {
             if isViewLoaded {
-                attachView(of: root)
+                attachView(of: destination)
                 for vc in popped {
                     detachView(of: vc)
                 }
             }
             finalize()
-            onStackChanged?()
+            notifyStackChanged()
             flushDeferredStackMutationsIfPossible()
         }
 
@@ -459,7 +499,7 @@ public class ZynaNavigationController: UIViewController {
             self.view.isUserInteractionEnabled = true
             self.isAnimatingTransition = false
             completion()
-            self.onStackChanged?()
+            self.notifyStackChanged()
             self.flushDeferredStackMutationsIfPossible()
             UIAccessibility.post(
                 notification: .screenChanged,
@@ -502,6 +542,7 @@ public class ZynaNavigationController: UIViewController {
         revealing revealedVC: UIViewController,
         completion: @escaping () -> Void
     ) {
+        (revealedVC as? any NavigationResidentScreen)?.materializeContent()
         let containerBounds = view.bounds
         let width = containerBounds.width
         let parallax = -width * Self.parallaxRatio
@@ -552,7 +593,7 @@ public class ZynaNavigationController: UIViewController {
             self.view.isUserInteractionEnabled = true
             self.isAnimatingTransition = false
             completion()
-            self.onStackChanged?()
+            self.notifyStackChanged()
             self.flushDeferredStackMutationsIfPossible()
             UIAccessibility.post(
                 notification: .screenChanged,
@@ -593,6 +634,10 @@ public class ZynaNavigationController: UIViewController {
     /// are `addChild`'d; controllers that drop out are removed.
     public func setStack(_ viewControllers: [UIViewController], animated: Bool = true) {
         precondition(!viewControllers.isEmpty, "ZynaNavigationController stack cannot be empty")
+        guard !isTransitionInFlight else {
+            deferredStackMutations.append(.setStack(viewControllers, animated: animated))
+            return
+        }
 
         let oldTop = topViewController
         let newTop = viewControllers.last!
@@ -632,12 +677,44 @@ public class ZynaNavigationController: UIViewController {
         for vc in leaving {
             vc.removeFromParent()
         }
+        notifyStackChanged()
+        flushDeferredStackMutationsIfPossible()
+    }
+
+    /// Route state outlives expensive screen content. Keep the nearest two
+    /// chats warm for back navigation, including routes below profile screens.
+    private func notifyStackChanged() {
+        updateResidentScreens()
         onStackChanged?()
+    }
+
+    private func updateResidentScreens(transitioning: Bool = false) {
+        let routes = stack.compactMap { $0 as? any NavigationResidentScreen }
+        let retained = Array(routes.suffix(2))
+        for controller in stack {
+            (controller as? any NavigationResidentScreen)?.setContentVisible(
+                !transitioning && controller === topViewController && isViewLoaded && view.window != nil)
+        }
+        for route in routes.dropLast(min(2, routes.count)) { route.releaseContent() }
+        for route in retained { route.materializeContent() }
+    }
+
+    public override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        updateResidentScreens()
+    }
+
+    public override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        for controller in stack {
+            (controller as? any NavigationResidentScreen)?.setContentVisible(false)
+        }
     }
 
     // MARK: - View hierarchy management
 
     private func attachView(of vc: UIViewController) {
+        (vc as? any NavigationResidentScreen)?.materializeContent()
         let v = vc.view!
         v.frame = view.bounds
         v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -661,6 +738,12 @@ public class ZynaNavigationController: UIViewController {
             _ = pop(animated: animated)
         case .popToRoot(let animated):
             _ = popToRoot(animated: animated)
+        case .popTo(let destination, let animated, let completion):
+            _ = pop(to: destination, animated: animated, completion: completion)
+        case .setStack(let controllers, let animated):
+            setStack(controllers, animated: animated)
+        case .whenIdle(let action):
+            performWhenIdle(action)
         }
     }
 

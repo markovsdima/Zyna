@@ -24,11 +24,12 @@ final class RoomDetailsNode: ScreenNode {
     var onSearchTapped: (() -> Void)?
     var onInviteTapped: (() -> Void)?
     var onMembersTapped: (() -> Void)?
-    var onProfileTapped: (() -> Void)?
     var onPinnedMessagesTapped: (() -> Void)?
+    var onAttachmentsTapped: (() -> Void)?
     var onStorylinesTapped: (() -> Void)?
     var onSecurityPrivacyTapped: (() -> Void)?
     var onRolesPermissionsTapped: (() -> Void)?
+    var onTopicTapped: (() -> Void)?
     var onLeaveTapped: (() -> Void)?
 
     /// Set by the VC after the bar is configured. Lets us put the bar
@@ -61,12 +62,13 @@ final class RoomDetailsNode: ScreenNode {
     private let inviteQuickAction = RoomDetailsQuickActionNode()
     private let pinnedQuickAction = RoomDetailsQuickActionNode()
 
-    private let profileRow = ActionRowNode()
     private let pinnedMessagesRow = ActionRowNode()
+    private let attachmentsRow = ActionRowNode()
     private let searchRow = ActionRowNode()
     private let storylinesRow = ActionRowNode()
     private let securityRow = ActionRowNode()
     private let rolesPermissionsRow = ActionRowNode()
+    private let topicRow = ActionRowNode()
     private let leaveRoomRow = ActionRowNode()
 
     // MARK: - State
@@ -75,13 +77,18 @@ final class RoomDetailsNode: ScreenNode {
     var bottomInset: CGFloat = 16
 
     private var isEditing = false
+    private var canEditName = false
+    private var canEditAvatar = false
+    private var canEditTopic = false
+    private var topic: String?
+    private var canInvite: Bool?
+    private var pinnedMessagesCount: Int?
     private var isDirectRoom = false
-    private var isDirectProfileAvailable = false
     private var isLeavingRoom = false
     private var hasAvatar = false
     private var storylinesTrailingText: String?
     private var storylinesNeedsAttention = false
-    private var avatarLoadRevision: UInt64 = 0
+    private(set) var avatarLoadRevision: UInt64 = 0
 
     var editingName: String? {
         nameEditNode.attributedText?.string
@@ -179,10 +186,6 @@ final class RoomDetailsNode: ScreenNode {
             accessibilityHint: String(localized: "Opens pinned messages")
         ))
 
-        profileRow.onTap = { [weak self] in self?.onProfileTapped?() }
-        profileRow.style.alignSelf = .stretch
-        applyProfileRowConfiguration()
-
         pinnedMessagesRow.onTap = { [weak self] in self?.onPinnedMessagesTapped?() }
         pinnedMessagesRow.style.alignSelf = .stretch
         pinnedMessagesRow.apply(ActionRowNode.Configuration(
@@ -190,6 +193,14 @@ final class RoomDetailsNode: ScreenNode {
             leadingIcon: AppIcon.pin.rendered(size: 17, weight: .medium, color: AppColor.accent),
             trailingText: "0",
             accessibilityHint: String(localized: "Opens pinned messages")
+        ))
+
+        attachmentsRow.onTap = { [weak self] in self?.onAttachmentsTapped?() }
+        attachmentsRow.style.alignSelf = .stretch
+        attachmentsRow.apply(ActionRowNode.Configuration(
+            title: String(localized: "Attachments"),
+            leadingIcon: AppIcon.photoOnRectangle.rendered(size: 16, weight: .medium, color: AppColor.accent),
+            accessibilityHint: String(localized: "Opens photos, videos and files shared in this chat")
         ))
 
         searchRow.onTap = { [weak self] in self?.onSearchTapped?() }
@@ -219,6 +230,13 @@ final class RoomDetailsNode: ScreenNode {
             leadingIcon: AppIcon.person2.rendered(size: 16, weight: .medium, color: AppColor.accent),
             accessibilityHint: String(localized: "Opens room roles and permissions settings")
         ))
+
+        topicRow.style.alignSelf = .stretch
+        topicRow.onTap = { [weak self] in
+            guard let self, self.isEditing, self.canEditTopic else { return }
+            self.onTopicTapped?()
+        }
+        updateTopic("")
 
         leaveRoomRow.onTap = { [weak self] in self?.onLeaveTapped?() }
         leaveRoomRow.style.alignSelf = .stretch
@@ -257,7 +275,7 @@ final class RoomDetailsNode: ScreenNode {
             setBackgroundVisible(true)
         }
 
-        removeAvatarButtonNode.isHidden = !(isEditing && hasAvatar)
+        removeAvatarButtonNode.isHidden = !(isEditing && canEditAvatar && hasAvatar)
         setNeedsLayout()
     }
 
@@ -268,7 +286,7 @@ final class RoomDetailsNode: ScreenNode {
             source: image, diameter: 100, cacheKey: UUID().uuidString
         )
         setBackgroundVisible(false)
-        removeAvatarButtonNode.isHidden = !isEditing
+        removeAvatarButtonNode.isHidden = !(isEditing && canEditAvatar)
         setNeedsLayout()
     }
 
@@ -286,6 +304,14 @@ final class RoomDetailsNode: ScreenNode {
         setNeedsLayout()
     }
 
+    func updateTopic(_ value: String) {
+        guard topic != value else { return }
+        topic = value
+        topicRow.apply(.init(title: String(localized: "Description", table: "RoomProfile"),
+            trailingText: value.isEmpty ? String(localized: "Not set", table: "RoomProfile") : value,
+            accessibilityHint: String(localized: "Edit the group description", table: "RoomProfile")))
+    }
+
     func updateTags(_ tags: [RoomDetailsTag]) {
         guard self.tags != tags else { return }
         self.tags = tags
@@ -294,6 +320,8 @@ final class RoomDetailsNode: ScreenNode {
     }
 
     func updatePinnedMessagesCount(_ count: Int) {
+        guard pinnedMessagesCount != count else { return }
+        pinnedMessagesCount = count
         pinnedMessagesRow.updateTrailingText("\(count)")
         pinnedQuickAction.updateSubtitle("\(count)")
         setNeedsLayout()
@@ -322,20 +350,24 @@ final class RoomDetailsNode: ScreenNode {
         setNeedsLayout()
     }
 
-    func setDirectProfileAvailable(_ available: Bool) {
-        guard isDirectProfileAvailable != available else { return }
-        isDirectProfileAvailable = available
-        applyProfileRowConfiguration()
-    }
-
     func setEditing(_ editing: Bool) {
         let effectiveEditing = editing && !isDirectRoom
         isEditing = effectiveEditing
-        editAvatarOverlayNode.isHidden = !effectiveEditing
-        avatarTapNode.isAccessibilityElement = effectiveEditing
-        removeAvatarButtonNode.isHidden = !(effectiveEditing && hasAvatar)
+        editAvatarOverlayNode.isHidden = !(effectiveEditing && canEditAvatar)
+        avatarTapNode.isAccessibilityElement = effectiveEditing && canEditAvatar
+        removeAvatarButtonNode.isHidden = !(effectiveEditing && canEditAvatar && hasAvatar)
         applyLeaveRoomRowConfiguration()
         setNeedsLayout()
+    }
+
+    func setPermissions(editName: Bool, editAvatar: Bool, invite: Bool, editTopic: Bool) {
+        guard canEditName != editName || canEditAvatar != editAvatar || canInvite != invite || canEditTopic != editTopic else { return }
+        canEditName = editName
+        canEditAvatar = editAvatar
+        canEditTopic = editTopic
+        canInvite = invite
+        inviteQuickAction.setEnabled(invite)
+        setEditing(isEditing)
     }
 
     func setLeavingRoom(_ leaving: Bool) {
@@ -376,15 +408,6 @@ final class RoomDetailsNode: ScreenNode {
         nameNode.attributedText = NSAttributedString(string: name, attributes: attrs)
         nameNode.accessibilityLabel = name
         nameEditNode.attributedText = NSAttributedString(string: name, attributes: attrs)
-    }
-
-    private func applyProfileRowConfiguration() {
-        profileRow.apply(ActionRowNode.Configuration(
-            title: String(localized: "Profile"),
-            leadingIcon: AppIcon.person.rendered(size: 17, weight: .medium, color: AppColor.accent),
-            isEnabled: isDirectProfileAvailable,
-            accessibilityHint: isDirectProfileAvailable ? String(localized: "Open Profile") : nil
-        ))
     }
 
     private func applyStorylinesRowConfiguration() {
@@ -470,7 +493,7 @@ final class RoomDetailsNode: ScreenNode {
         let withInitials = ASOverlayLayoutSpec(child: avatarBackgroundNode, overlay: initialsCenter)
         var avatarSpec: ASLayoutSpec = ASOverlayLayoutSpec(child: withInitials, overlay: avatarImageNode)
 
-        if isEditing {
+        if isEditing && canEditAvatar {
             let iconCenter = ASCenterLayoutSpec(
                 centeringOptions: .XY,
                 sizingOptions: .minimumXY,
@@ -490,7 +513,7 @@ final class RoomDetailsNode: ScreenNode {
         }
 
         let nameSpec: ASLayoutSpec
-        if isEditing {
+        if isEditing && canEditName {
             nameEditNode.style.minWidth = ASDimension(unit: .points, value: 150)
             nameSpec = ASWrapperLayoutSpec(layoutElement: nameEditNode)
         } else {
@@ -528,13 +551,14 @@ final class RoomDetailsNode: ScreenNode {
         var buttonsChildren: [ASLayoutElement]
         if isDirectRoom {
             buttonsChildren = [
-                profileRow,
                 pinnedMessagesRow,
+                attachmentsRow,
                 searchRow,
                 leaveRoomRow
             ]
         } else {
             buttonsChildren = [
+                attachmentsRow,
                 storylinesRow,
                 securityRow,
                 rolesPermissionsRow
@@ -548,7 +572,9 @@ final class RoomDetailsNode: ScreenNode {
         )
 
         let mainChildren: [ASLayoutElement]
-        if isDirectRoom {
+        if isEditing && !isDirectRoom {
+            mainChildren = [profileStack] + (canEditTopic ? [topicRow] : []) + [spacer]
+        } else if isDirectRoom {
             mainChildren = [profileStack, spacer, buttonsStack]
         } else {
             let quickActions = makeGroupQuickActionsGrid(
@@ -650,18 +676,25 @@ final class RoomDetailsNode: ScreenNode {
 
     private func appendContentAccessibilityElements(to elements: inout [Any]) {
         if isEditing {
-            appendNodeView(avatarTapNode, to: &elements)
-            appendNodeView(removeAvatarButtonNode, to: &elements)
-            appendNodeView(nameEditNode, to: &elements)
+            if canEditAvatar {
+                appendNodeView(avatarTapNode, to: &elements)
+                appendNodeView(removeAvatarButtonNode, to: &elements)
+            }
+            appendNodeView(canEditName ? nameEditNode : nameNode, to: &elements)
         } else {
             appendNodeView(nameNode, to: &elements)
         }
 
         tagNodes.forEach { appendNodeView($0, to: &elements) }
 
+        if isEditing && !isDirectRoom {
+            if canEditTopic { appendActionRow(topicRow, to: &elements) }
+            return
+        }
+
         if isDirectRoom {
-            appendActionRow(profileRow, to: &elements)
             appendActionRow(pinnedMessagesRow, to: &elements)
+            appendActionRow(attachmentsRow, to: &elements)
             appendActionRow(searchRow, to: &elements)
             appendActionRow(leaveRoomRow, to: &elements)
         } else {
@@ -669,6 +702,7 @@ final class RoomDetailsNode: ScreenNode {
             appendQuickAction(searchQuickAction, to: &elements)
             appendQuickAction(inviteQuickAction, to: &elements)
             appendQuickAction(pinnedQuickAction, to: &elements)
+            appendActionRow(attachmentsRow, to: &elements)
             appendActionRow(storylinesRow, to: &elements)
             appendActionRow(securityRow, to: &elements)
             appendActionRow(rolesPermissionsRow, to: &elements)
@@ -829,6 +863,12 @@ private final class RoomDetailsQuickActionNode: ASDisplayNode {
     func updateSubtitle(_ subtitle: String?) {
         var next = configuration
         next.subtitle = subtitle
+        apply(next)
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        var next = configuration
+        next.isEnabled = enabled
         apply(next)
     }
 

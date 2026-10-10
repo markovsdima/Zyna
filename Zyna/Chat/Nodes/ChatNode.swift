@@ -6,7 +6,7 @@
 import AsyncDisplayKit
 
 final class ChatNode: ASDisplayNode {
-    let tableNode = ASTableNode()
+    let list: ChatMessageList
     let paintSplashHostView = UIView()
     private let bubbleGradientHostView = UIView()
     private let bubbleGradientSources: [BubbleGradientRole: BubbleGradientSource]
@@ -20,6 +20,7 @@ final class ChatNode: ASDisplayNode {
     weak var unencryptedNoticeView: UIView?
     weak var activeCallBannerView: UIView?
     weak var pinnedMessagesBannerView: UIView?
+    weak var historyRecoveryNotice: UIView?
 
     /// Set by ChatViewController. The scroll-to-live floating button lives
     /// at this node's view level (not inside the input bar) so its tap
@@ -27,6 +28,7 @@ final class ChatNode: ASDisplayNode {
     weak var scrollButtonTap: UIView?
 
     override init() {
+        list = ChatMessageList()
         let theme = ChatBubbleThemeStore.shared.selectedTheme
         var sources: [BubbleGradientRole: BubbleGradientSource] = [:]
         for role in BubbleGradientRole.allCases {
@@ -40,10 +42,8 @@ final class ChatNode: ASDisplayNode {
         }
         self.bubbleGradientSources = sources
         super.init()
-        addSubnode(tableNode)
-        tableNode.inverted = true
+        addSubnode(list.node)
         backgroundColor = AppColor.chatBackground
-        tableNode.backgroundColor = AppColor.chatBackground
         bubbleGradientHostView.backgroundColor = .clear
         bubbleGradientHostView.isUserInteractionEnabled = false
         paintSplashHostView.backgroundColor = .clear
@@ -53,8 +53,8 @@ final class ChatNode: ASDisplayNode {
 
     override func didLoad() {
         super.didLoad()
-        view.insertSubview(bubbleGradientHostView, belowSubview: tableNode.view)
-        view.insertSubview(paintSplashHostView, aboveSubview: tableNode.view)
+        view.insertSubview(bubbleGradientHostView, belowSubview: list.view)
+        view.insertSubview(paintSplashHostView, aboveSubview: list.view)
         for role in BubbleGradientRole.allCases {
             guard let source = bubbleGradientSources[role] else { continue }
             bubbleGradientHostView.addSubview(source)
@@ -63,8 +63,8 @@ final class ChatNode: ASDisplayNode {
 
     override func layout() {
         super.layout()
-        if tableNode.frame != bounds {
-            tableNode.frame = bounds
+        if list.node.frame != bounds {
+            list.node.frame = bounds
         }
         if bubbleGradientHostView.frame != bounds {
             bubbleGradientHostView.frame = bounds
@@ -125,6 +125,9 @@ final class ChatNode: ASDisplayNode {
                     elements.append(contentsOf: inputElements)
                 }
             }
+            if let historyRecoveryNotice, !historyRecoveryNotice.isHidden {
+                elements.append(historyRecoveryNotice)
+            }
             if let readOnlyComposerView,
                readOnlyComposerView.superview === view,
                !readOnlyComposerView.isHidden {
@@ -133,7 +136,7 @@ final class ChatNode: ASDisplayNode {
             if let tap = scrollButtonTap, tap.superview === view, tap.alpha > 0 {
                 elements.append(tap)
             }
-            elements.append(tableNode.view)
+            elements.append(list.view)
             return elements
         }
         set { }

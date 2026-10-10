@@ -138,18 +138,27 @@ final class ChatViewModel {
     private(set) var rows: [ChatTimelineRow] = []
     @Published private(set) var isPaginating: Bool = false
 
-    /// True when SDK backward pagination returned no new visible
-    /// messages, meaning we've likely reached the room history start.
-    /// Prevents infinite batch-fetch loops when all remaining events
-    /// are filtered (call signaling, redacted, etc.).
-    var sdkPaginationExhausted = false
+    /// Only the SDK can establish the start of server history. Local pages
+    /// stay eligible independently, including projections arriving later.
+    private(set) var sdkPaginationExhausted = false {
+        didSet {
+            if sdkPaginationExhausted, !oldValue { decryptionRepair?.wake() }
+            #if DEBUG
+            historyPerformance?.gauge(.exhausted, sdkPaginationExhausted ? 1 : 0)
+            if sdkPaginationExhausted, !oldValue { diffBatcher.recheckProjectionAfterPagination() }
+            #endif
+        }
+    }
     @Published private(set) var replyingTo: ChatMessage?
     @Published private(set) var editingMessage: ChatMessage?
     @Published private(set) var pendingForwardContent: ChatMessage?
     @Published private(set) var isInvited: Bool = false
     @Published private(set) var sendFailureNotice: SendFailureNotice?
     @Published private(set) var isComposerSendBlocked: Bool = false
-    private var editingDraftOverride: String?
+    @Published var pollError: String?
+    @Published private(set) var pollPermissions = PollPermissions()
+    private var pollPowerPermissions = PollPermissions()
+    private var editingDraftOverride: ComposerText?
     private var activeEditAttemptId: UUID?
     private var recentlySentTransactionIds: Set<String> = []
     private var recentlySentTransactionOrder: [String] = []
@@ -157,7 +166,9 @@ final class ChatViewModel {
     private var recentlyFailedTransactionOrder: [String] = []
 
     /// Called on the main queue when the table needs updating.
-    var onTableUpdate: ((TableUpdate) -> Void)?
+    var onTableUpdate: ((TableUpdate, MessageWindowChangeOrigin) -> Void)?
+    var onOlderHistoryAvailable: (() -> Void)?
+    var onIncomingMessages: ((Int) -> Void)?
 
     /// Called for lightweight in-place cell updates (e.g. send-status change)
     /// that don't require cell recreation. Index path → updated message.
@@ -178,9 +189,13 @@ final class ChatViewModel {
     @Published private(set) var memberCount: Int?
     @Published private(set) var isGroupChat: Bool = false
     @Published private(set) var searchState: ChatSearchState?
+    private var searchRevision: UInt64 = 0
+    private var pendingSearchRestorationEventID: String?
     @Published private(set) var connectionStatusText: String?
     @Published private(set) var composerSendRestrictionReason: OutgoingSendFailureReason?
     @Published private(set) var isRoomEncrypted: Bool = true
+    private(set) var directBlocking: DirectChatBlockingModel?
+    private var blockingRoomInfoRevision = 0
     @Published private(set) var pinnedMessagesState = PinnedMessagesState()
     @Published private(set) var activeRoomCallState = ActiveRoomCallState()
     private var observedRoomCallState = ActiveRoomCallState()
@@ -192,20 +207,40 @@ final class ChatViewModel {
 
     private(set) var timelineService: TimelineService?
     private let diffBatcher: TimelineDiffBatcher
+    private var decryptionRepair: MessageDecryptionRepair?
+    #if DEBUG
+    private(set) var historyPerformance: HistoryPerformanceTrace.Session?
+    #endif
+    private(set) var historyRecovery: ChatHistoryRecovery?
+    private var historyReplacementID = UUID()
     private let window: MessageWindow
+    private let presentationDatabase: AccountDatabase
+    private let presentationUserId = UserDefaults.standard.string(forKey: "com.zyna.matrix.lastUserId")
+    private var includesLocalPresentationState = true
+    private var presentationRevision: UInt64 = 0
+    private var presentedStored: [StoredMessage]?
+    private var preparedWindowRender: PreparedRender?
+    private var pendingPresentationOrigin: MessageWindowChangeOrigin?
+    private var presentationRefreshScheduled = false
+    private var presentationRefreshRunning = false
+    #if DEBUG
+    var onRenderPreparedForTesting: (() -> Void)?
+    #endif
     private let outgoingEnvelopes = OutgoingEnvelopeService.shared
     private let pendingRedactions = PendingRedactionService.shared
     private let pendingReactions = PendingReactionService.shared
     private var room: Room?
     private let roomId: String
-    private var hiddenMessageKeys = Set<String>()
-    private var pendingPartialRedactions: [String: StoredMessage] = [:]
-    private var pendingRedactionIds = Set<String>()
-    private var pendingRedactionKeys = Set<String>()
-    private var partialReflowPreviewsByMessageId: [String: PartialReflowPreview] = [:]
+    private var hiddenMessageKeys = Set<String>() { didSet { presentationRevision &+= 1 } }
+    private var pendingPartialRedactions: [String: StoredMessage] = [:] { didSet { presentationRevision &+= 1 } }
+    private var pendingRedactionIds = Set<String>() { didSet { presentationRevision &+= 1 } }
+    private var pendingRedactionKeys = Set<String>() { didSet { presentationRevision &+= 1 } }
+    private var restoredPreviewMessageIds = Set<String>() { didSet { presentationRevision &+= 1 } }
+    private var partialReflowPreviewsByMessageId: [String: PartialReflowPreview] = [:] { didSet { presentationRevision &+= 1 } }
     private var cancellables = Set<AnyCancellable>()
     private var directUserId: String?
     private var historySyncTask: Task<Void, Never>?
+    private let historyPaginator = HistoryPaginationCoordinator()
     private var pendingRedactionPlaceholderWork: DispatchWorkItem?
     private var readReceiptWork: DispatchWorkItem?
     private var pendingReadReceiptSend: PendingReadReceiptSend?
@@ -214,6 +249,20 @@ final class ChatViewModel {
     private var messageIndexByEventId: [String: Int] = [:]
     private var rowIndexByEventId: [String: Int] = [:]
     private var didLoadInitialWindow = false
+    private var storedMessagePresentationCache = StoredMessagePresentationCache()
+    private let historyPageQueue = DispatchQueue(
+        label: "com.zyna.chat.history-page", qos: .userInitiated
+    )
+    private var acceptsTimelineRefreshes = true
+    private var navigationPresentationActive = true
+    private var initialNavigationAnchor: ChatNavigationAnchor?
+    private let presenceRegistration = "chat-" + UUID().uuidString
+    private var needsSparseHistoryCheck = false
+    private var isApplyingTimelineRefresh = false
+    private lazy var timelineRefreshQueue = ChatTimelineRefreshQueue { [weak self] summary, done in
+        guard let self else { done(.failed); return }
+        self.prepareTimelineRefresh(summary, completion: done)
+    }
     private var roomResolutionTask: Task<Void, Never>?
     private var sendPermissionTask: Task<Void, Never>?
     private var pinnedMessagesTask: Task<Void, Never>?
@@ -222,16 +271,23 @@ final class ChatViewModel {
     private var matrixRTCRingExpiryWorkItem: DispatchWorkItem?
     private var matrixRTCRingValidationWorkItem: DispatchWorkItem?
     private var matrixRTCRingMembershipValidationTask: Task<Void, Never>?
+    private var matrixRTCCallProjectionRefreshWorkItem: DispatchWorkItem?
+    private let matrixRTCCallProjectionQueue = DispatchQueue(
+        label: "com.zyna.matrixrtc.callProjection",
+        qos: .userInitiated
+    )
     private var currentMatrixClientState = MatrixClientService.shared.state
     private var currentSyncServiceState = MatrixClientService.shared.syncServiceState
     private var canSendRoomMessages = true
     private var pinnedEventIdSet = Set<String>()
 
     var onPinnedMessagesError: ((Error) -> Void)?
+    var onPinnedVisibilityChanged: (() -> Void)?
 
     /// Whether the window is at the live edge (newest messages visible).
     var isAtLiveEdge: Bool { window.isAtLiveEdge }
     var hasOlderInDB: Bool { window.hasOlderInDB }
+    var historyGeneration: UInt64 { window.generation }
     var roomIdentifier: String { roomId }
     var liveRoom: Room? { room }
     var liveTimelineService: TimelineService? { timelineService }
@@ -242,8 +298,9 @@ final class ChatViewModel {
         return room.encryptionState() != .notEncrypted
     }
 
-    init(room: Room, mode: ChatPresentationMode = .normal) {
+    init(room: Room, mode: ChatPresentationMode = .normal, navigationAnchor: ChatNavigationAnchor? = nil) {
         let roomId = room.id()
+        self.presentationDatabase = DatabaseService.shared.dbQueue
         self.room = nil
         self.roomId = roomId
         self.mode = mode
@@ -251,20 +308,21 @@ final class ChatViewModel {
         self.timelineService = nil
         self.diffBatcher = TimelineDiffBatcher(
             roomId: roomId,
-            dbQueue: DatabaseService.shared.dbQueue
+            dbQueue: presentationDatabase
         )
         self.window = MessageWindow(
             roomId: roomId,
-            dbQueue: DatabaseService.shared.dbQueue
+            dbQueue: presentationDatabase
         )
-        self.pendingRedactionIds = pendingRedactions.pendingMessageIds(roomId: roomId)
-        self.pendingRedactionKeys = pendingRedactions.pendingMessageIdentityKeys(roomId: roomId)
 
+        initialNavigationAnchor = navigationAnchor
+        if navigationAnchor != nil { timelineRefreshQueue.setPaused(true) }
         bindCommonServices()
         attachLiveRoom(room)
     }
 
-    init(cachedRoom: RoomModel, mode: ChatPresentationMode = .normal) {
+    init(cachedRoom: RoomModel, mode: ChatPresentationMode = .normal, navigationAnchor: ChatNavigationAnchor? = nil) {
+        self.presentationDatabase = DatabaseService.shared.dbQueue
         self.room = nil
         self.roomId = cachedRoom.id
         self.mode = mode
@@ -272,34 +330,88 @@ final class ChatViewModel {
         self.timelineService = nil
         self.diffBatcher = TimelineDiffBatcher(
             roomId: cachedRoom.id,
-            dbQueue: DatabaseService.shared.dbQueue
+            dbQueue: presentationDatabase
         )
         self.window = MessageWindow(
             roomId: cachedRoom.id,
-            dbQueue: DatabaseService.shared.dbQueue
+            dbQueue: presentationDatabase
         )
-        self.pendingRedactionIds = pendingRedactions.pendingMessageIds(roomId: cachedRoom.id)
-        self.pendingRedactionKeys = pendingRedactions.pendingMessageIdentityKeys(roomId: cachedRoom.id)
         self.directUserId = cachedRoom.directUserId
         self.partnerUserId = cachedRoom.directUserId
         self.isGroupChat = cachedRoom.directUserId == nil
         self.isRoomEncrypted = cachedRoom.isEncrypted
 
+        initialNavigationAnchor = navigationAnchor
+        if navigationAnchor != nil { timelineRefreshQueue.setPaused(true) }
         bindCommonServices()
         loadInitialWindowIfNeeded()
         scheduleLiveRoomResolution()
     }
 
+    #if DEBUG
+    /// Exercises window-to-display transitions without attaching a live room.
+    init(testingRoomId: String, dbQueue: AccountDatabase, window: MessageWindow,
+         includesLocalState: Bool = false, mode: ChatPresentationMode = .preview,
+         navigationAnchor: ChatNavigationAnchor? = nil, timelineService: TimelineService? = nil,
+         blocking: DirectChatBlockingModel? = nil, liveRoom: Room? = nil) {
+        self.presentationDatabase = dbQueue
+        self.includesLocalPresentationState = includesLocalState
+        self.roomId = testingRoomId
+        self.roomName = "Test room"
+        self.mode = mode
+        self.diffBatcher = TimelineDiffBatcher(roomId: testingRoomId, dbQueue: dbQueue)
+        self.window = window
+        self.timelineService = timelineService
+        self.room = liveRoom
+        initialNavigationAnchor = navigationAnchor
+        if navigationAnchor != nil { timelineRefreshQueue.setPaused(true) }
+        bindWindow()
+        bindPollUpdates()
+        if let blocking { observeDirectBlocking(blocking) }
+    }
+    #endif
+
     deinit {
+        #if DEBUG
+        historyPerformance?.stop()
+        #endif
+        decryptionRepair?.stop()
+        historyRecovery?.stop()
         roomResolutionTask?.cancel()
         sendPermissionTask?.cancel()
         pinnedMessagesTask?.cancel()
         matrixRTCRingExpiryWorkItem?.cancel()
         matrixRTCRingValidationWorkItem?.cancel()
         matrixRTCRingMembershipValidationTask?.cancel()
+        matrixRTCCallProjectionRefreshWorkItem?.cancel()
     }
 
+    #if DEBUG
+    @MainActor
+    func messageDiagnosticReport(for message: ChatMessage) async -> MessageDiagnostics.Report {
+        let request = window.messageDiagnosticRequest(for: message)
+        // Capture these objects before suspension; never look up a replacement
+        // room/client/database after a logout in the middle of diagnostics.
+        let timeline = timelineService?.messageDiagnosticTimeline
+        let room = room
+        let history = await diffBatcher.messageDiagnosticHistory(eventID: message.eventId)
+        let liveLookup: (@Sendable (String) async throws -> EventTimelineItem)? = timeline.map { timeline in
+            { @Sendable in try await timeline.getEventTimelineItemByEventId(eventId: $0) }
+        }
+        let eventLookup: (@Sendable (String) async throws -> RoomTimelineEventInspection)? = room.map { room in
+            { @Sendable in try await room.inspectTimelineEvent(eventId: $0) }
+        }
+        return await MessageDiagnostics.collect(request, history: history,
+                                                liveLookup: liveLookup, eventLookup: eventLookup)
+    }
+    #endif
+
     private func bindCommonServices() {
+        bindDirectBlocking()
+        #if DEBUG
+        if !mode.isPreview { historyPerformance = diffBatcher.startHistoryPerformance() }
+        #endif
+        if !mode.isPreview { historyRecovery = diffBatcher.makeHistoryRecovery() }
         MatrixClientService.shared.verificationStateSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -332,6 +444,33 @@ final class ChatViewModel {
         bindWindow()
         bindMatrixRTCCallNotifications()
         refreshComposerSendPermission()
+    }
+
+    private func bindDirectBlocking() {
+        guard !mode.isPreview else { return }
+        let database = presentationDatabase
+        let sessionID = MatrixClientService.shared.currentLocalSessionId
+        let currentSession = {
+            database.isActive && DatabaseService.shared.dbQueue === database
+                && MatrixClientService.shared.currentLocalSessionId == sessionID
+        }
+        let blocking = DirectChatBlockingModel(database: database, ownID: presentationUserId ?? "",
+            isCurrentSession: currentSession,
+            unignore: { id in
+                guard currentSession(), let client = MatrixClientService.shared.client else {
+                    throw DirectChatBlockingError.staleSession
+                }
+                try await IgnoredUsersService(client: client).unignore(userId: id)
+            })
+        observeDirectBlocking(blocking)
+    }
+
+    private func observeDirectBlocking(_ blocking: DirectChatBlockingModel) {
+        directBlocking = blocking
+        blocking.$state.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            self?.refreshComposerSendPermission()
+        }.store(in: &cancellables)
+        blocking.start()
     }
 
     private func bindMatrixRTCCallNotifications() {
@@ -426,6 +565,7 @@ final class ChatViewModel {
         bindSendFailure(OutgoingEditOutboxService.shared.sendFailureSubject)
         bindRoomUpdate(OutgoingRedactionOutboxService.shared.roomDidUpdateSubject)
         bindRoomUpdate(OutgoingReactionOutboxService.shared.roomDidUpdateSubject)
+        bindPollUpdates()
 
         OutgoingRedactionOutboxService.shared.redactionFailureSubject
             .receive(on: DispatchQueue.main)
@@ -437,6 +577,17 @@ final class ChatViewModel {
                     failure.error,
                     failure.disposition
                 )
+            }
+            .store(in: &cancellables)
+    }
+
+    private func bindPollUpdates() {
+        PollStore.shared.roomDidUpdate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] update in
+                guard let self, self.roomId == update.roomId else { return }
+                if update.origin != .catalog { self.presentationRevision &+= 1 }
+                self.timelineRefreshQueue.enqueue(update)
             }
             .store(in: &cancellables)
     }
@@ -468,9 +619,30 @@ final class ChatViewModel {
     }
 
     private func bindWindow() {
-        let win = window
-        diffBatcher.onFlush = { [weak win] summary in
-            win?.refresh(origin: .timelineFlush(summary))
+        NotificationCenter.default.publisher(for: IgnoredContentStore.didChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self, let database = notification.object as? AccountDatabase,
+                      database === self.presentationDatabase, database.isActive else { return }
+                self.presentationRevision &+= 1
+                self.window.invalidatePendingReads()
+                self.timelineRefreshQueue.enqueue(.init(resetCount: 1))
+                self.onPinnedVisibilityChanged?()
+                if let state = self.searchState {
+                    self.updateSearchQuery(state.query, restoringEventID: state.currentResult?.eventId)
+                }
+            }.store(in: &cancellables)
+        window.onRecoveryFocusChange = { [weak self] focus in
+            self?.decryptionRepair?.prioritize(focus)
+        }
+        window.onOlderHistoryAvailable = { [weak self] in
+            self?.onOlderHistoryAvailable?()
+        }
+        diffBatcher.onFlush = { [weak self] summary in
+            self?.acceptTimelineFlush(summary)
+        }
+        diffBatcher.onDecryptionCandidatesChanged = { [weak self] in
+            self?.decryptionRepair?.wake()
         }
 
         window.onChange = { [weak self] newStored, prevStored, origin in
@@ -482,11 +654,141 @@ final class ChatViewModel {
         }
     }
 
+    private func prepareTimelineRefresh(
+        _ summary: TimelineFlushSummary,
+        completion: @escaping (ChatTimelineRefreshQueue.Result) -> Void
+    ) {
+        let request = window.refreshRequest()
+        if summary.canRefreshBoundsOnly, request.canRefreshBoundsOnly {
+            prepareHistoryBounds(request, summary: summary, completion: completion)
+            return
+        }
+        let input = renderInput()
+        let includesLocalState = includesLocalPresentationState
+        let historyRevision = diffBatcher.historyRevision
+        #if DEBUG
+        let trace = historyPerformance
+        let operation = trace?.begin(.refreshQueue)
+        trace?.count(.refreshes)
+        #endif
+        historyPageQueue.async { [weak self] in
+            #if DEBUG
+            operation?.move(to: .refresh)
+            #endif
+            do {
+                let page = try request.fetch(historyRevision: historyRevision, includingLocalState: includesLocalState)
+                let force = summary.requiresPresentationRefresh || !page.localState.resolvedRedactions.messageIds.isEmpty
+                    || !input.pendingRedactionIds.isEmpty || !input.pendingRedactionKeys.isEmpty
+                let origin = page.origin(summary: summary.coveringSnapshot(historyRevision: page.committedHistoryRevision))
+                #if DEBUG
+                operation?.move(to: .decode)
+                if !page.contentChanged { trace?.count(.unchanged) }
+                #endif
+                let prepared = page.needsPresentation(force: force) ? Self.prepareRender(input,
+                    stored: page.stored, origin: origin, olderBoundary: page.olderNeighbor,
+                    newerBoundary: page.newerNeighbor, local: page.localState) : nil
+                #if DEBUG
+                operation?.move(to: .mainQueue)
+                #endif
+                DispatchQueue.main.async { [weak self] in
+                    #if DEBUG
+                    operation?.finish()
+                    #endif
+                    guard let self, self.acceptsTimelineRefreshes else {
+                        completion(.failed)
+                        return
+                    }
+                    guard self.navigationPresentationActive else { completion(.superseded); return }
+                    let applyingSummary = self.timelineRefreshQueue.summaryForApplying(summary)
+                        .coveringSnapshot(historyRevision: page.committedHistoryRevision)
+                    let applyingOrigin = page.origin(summary: applyingSummary)
+                    guard self.window.canApply(page), self.presentationRevision == input.revision,
+                          origin.allowsRemoteRedactionAnimation == applyingOrigin.allowsRemoteRedactionAnimation,
+                          prepared != nil || !page.needsPresentation(force: applyingSummary.requiresPresentationRefresh || force)
+                    else {
+                        #if DEBUG
+                        trace?.count(.refreshStale)
+                        #endif
+                        completion(.superseded)
+                        return
+                    }
+                    self.preparedWindowRender = prepared
+                    self.isApplyingTimelineRefresh = true
+                    self.window.applyRefresh(page, summary: applyingSummary, forceNotify: force)
+                    self.preparedWindowRender = nil
+                    self.isApplyingTimelineRefresh = false
+                    self.requestSparseHistoryCheck()
+                    completion(.applied)
+                }
+            } catch {
+                #if DEBUG
+                operation?.finish(failed: true)
+                trace?.count(.refreshError)
+                #endif
+                ScopedLog(.database)("Timeline refresh failed: \(error)")
+                DispatchQueue.main.async { completion(.failed) }
+            }
+        }
+    }
+
+    private func prepareHistoryBounds(
+        _ request: MessageWindow.RefreshRequest, summary: TimelineFlushSummary,
+        completion: @escaping (ChatTimelineRefreshQueue.Result) -> Void
+    ) {
+        #if DEBUG
+        let trace = historyPerformance
+        trace?.count(.boundsRefreshes)
+        let operation = trace?.begin(.refreshQueue)
+        #endif
+        historyPageQueue.async { [weak self] in
+            #if DEBUG
+            operation?.move(to: .bounds)
+            #endif
+            do {
+                let page = try request.fetchBounds()
+                #if DEBUG
+                operation?.move(to: .mainQueue)
+                #endif
+                DispatchQueue.main.async { [weak self] in
+                    #if DEBUG
+                    operation?.finish()
+                    #endif
+                    guard let self, self.acceptsTimelineRefreshes else { completion(.failed); return }
+                    guard self.navigationPresentationActive else { completion(.superseded); return }
+                    // A live/local update arriving during this read needs a
+                    // full snapshot. Retain its provenance in the same queue.
+                    guard self.timelineRefreshQueue.summaryForApplying(summary).canRefreshBoundsOnly,
+                          self.window.applyBounds(page) else {
+                        #if DEBUG
+                        trace?.count(.boundsStale)
+                        #endif
+                        completion(.superseded)
+                        return
+                    }
+                    self.requestSparseHistoryCheck()
+                    completion(.applied)
+                }
+            } catch {
+                #if DEBUG
+                operation?.finish(failed: true)
+                trace?.count(.refreshError)
+                #endif
+                ScopedLog(.database)("History bounds refresh failed: \(error)")
+                DispatchQueue.main.async { completion(.failed) }
+            }
+        }
+    }
+
     private func bindTimelineService(_ timelineService: TimelineService) {
+        #if DEBUG
+        timelineService.historyPerformance = historyPerformance
+        #endif
         timelineService.isPaginatingSubject
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isPaginating in
-                self?.isPaginating = isPaginating
+                #if DEBUG
+                self?.historyPerformance?.gauge(.sdkBusy, isPaginating ? 1 : 0)
+                #endif
             }
             .store(in: &cancellables)
 
@@ -561,19 +863,27 @@ final class ChatViewModel {
     }
 
     private func applyRoomInfoUpdate(_ info: RoomInfo) {
+        blockingRoomInfoRevision += 1
+        directBlocking?.update(info)
+        if let powers = info.powerLevels { updatePollPowerLevels(powers) }
         updateActiveRoomCallState(from: info)
         updatePinnedMessages(from: info)
     }
 
     private func resolveRoomInfo(_ room: Room) {
+        let blockingVersion = blockingRoomInfoRevision
         Task { [weak self] in
             guard let self else { return }
             guard let info = try? await room.roomInfo() else { return }
+            await MainActor.run {
+                if self.blockingRoomInfoRevision == blockingVersion { self.directBlocking?.update(info) }
+            }
             let activeRoomCallState = Self.activeRoomCallState(from: info)
             if let powerLevels = info.powerLevels {
                 let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
                 await MainActor.run {
                     self.updateCanSendRoomMessages(canSendMessage)
+                    self.updatePollPowerLevels(powerLevels)
                     self.applyObservedRoomCallState(activeRoomCallState)
                     self.updatePinnedMessages(from: info)
                 }
@@ -592,7 +902,7 @@ final class ChatViewModel {
                     self.isGroupChat = false
                 }
                 if !self.mode.isPreview {
-                    PresenceTracker.shared.register(userIds: [userId], for: "chat")
+                    PresenceTracker.shared.register(userIds: [userId], for: self.presenceRegistration)
                 }
                 PresenceTracker.shared.$statuses
                     .map { $0[userId] }
@@ -618,6 +928,7 @@ final class ChatViewModel {
             let canSendMessage = powerLevels.canOwnUserSendMessage(message: .roomMessage)
             await MainActor.run {
                 self.updateCanSendRoomMessages(canSendMessage)
+                self.updatePollPowerLevels(powerLevels)
             }
         }
     }
@@ -625,6 +936,11 @@ final class ChatViewModel {
     private func updateCanSendRoomMessages(_ canSend: Bool) {
         guard canSendRoomMessages != canSend else { return }
         canSendRoomMessages = canSend
+        refreshComposerSendPermission()
+    }
+
+    private func updatePollPowerLevels(_ powers: RoomPowerLevels) {
+        pollPowerPermissions = PollPermissions(powers)
         refreshComposerSendPermission()
     }
 
@@ -880,19 +1196,20 @@ final class ChatViewModel {
         }
     }
 
-    func pinnedPreview(eventId: String) -> String {
-        if let message = messages.first(where: { $0.eventId == eventId }) {
-            return message.content.textPreview
-        }
-
-        let stored = try? DatabaseService.shared.dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == roomId)
-                .filter(Column("eventId") == eventId)
-                .fetchOne(db)
-        }
-        return stored?.toChatMessage()?.content.textPreview
-            ?? String(localized: "Pinned message")
+    func pinnedPreview(eventId: String) async -> String {
+        let database = presentationDatabase, roomId = roomId
+        // A hidden chat can retain a pre-block window. Use the account's
+        // current visibility instead, and keep decoding off the main thread.
+        return await Task.detached {
+            let stored = try? database.read { db in
+                try StoredMessage.visible
+                    .filter(Column("roomId") == roomId)
+                    .filter(Column("eventId") == eventId)
+                    .fetchOne(db)
+            }
+            return stored?.toChatMessage()?.content.textPreview
+                ?? String(localized: "Pinned message")
+        }.value
     }
 
     private func refreshRoomEncryptionState(_ room: Room) {
@@ -903,6 +1220,7 @@ final class ChatViewModel {
 
     private func handleMatrixState(_ state: MatrixClientState) {
         currentMatrixClientState = state
+        presentationRevision &+= 1
         updateConnectionStatus()
         guard room == nil else { return }
 
@@ -980,7 +1298,93 @@ final class ChatViewModel {
     private func loadInitialWindowIfNeeded() {
         guard !didLoadInitialWindow else { return }
         didLoadInitialWindow = true
-        window.loadInitial()
+        enqueueMatrixRTCCallProjectionRefresh(recomputeAll: true) { [weak self] in
+            self?.prepareInitialHistoryWindow()
+        }
+    }
+
+    /// Bootstrap is not a navigation request. An abandoned catalog jump
+    /// must not cancel it; an already committed window always wins.
+    func prepareInitialHistoryWindow() {
+        let destination: MessageWindow.Destination = initialNavigationAnchor.map {
+            .restoration(eventID: $0.eventID, timestamp: $0.timestamp)
+        } ?? .newest
+        prepareHistoryReplacement(destination, id: nil) { [weak self] apply in
+            apply()
+            guard let self else { return }
+            self.initialNavigationAnchor = nil
+            self.timelineRefreshQueue.setPaused(!self.navigationPresentationActive)
+        }
+    }
+
+    private func enqueueMatrixRTCCallProjectionRefresh(
+        recomputeAll: Bool,
+        completion: (() -> Void)? = nil
+    ) {
+        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
+        guard !currentUserId.isEmpty else {
+            completion?()
+            return
+        }
+
+        let roomId = self.roomId
+        let dbQueue = presentationDatabase
+        matrixRTCCallProjectionQueue.async {
+            do {
+                try dbQueue.write { db in
+                    if recomputeAll {
+                        try StoredMatrixRTCCall.refreshRoomCallProjections(
+                            roomId: roomId,
+                            currentUserId: currentUserId,
+                            in: db
+                        )
+                    } else {
+                        try StoredMatrixRTCCall.refreshExpiredPendingCallProjections(
+                            roomId: roomId,
+                            currentUserId: currentUserId,
+                            in: db
+                        )
+                    }
+                }
+            } catch {
+                logMatrixRTCChat("Failed refreshing MatrixRTC call projections room=\(roomId): \(error)")
+            }
+
+            if let completion {
+                DispatchQueue.main.async(execute: completion)
+            }
+        }
+    }
+
+    private static func nextMatrixRTCCallExpiry(in messages: [ChatMessage], now: TimeInterval) -> TimeInterval? {
+        return messages.compactMap { message -> TimeInterval? in
+            guard case .matrixRTCCall(let details) = message.content,
+                  details.historyOutcome == nil || details.historyOutcome == .started,
+                  let expiresAt = details.expiresAt,
+                  expiresAt > now else {
+                return nil
+            }
+            return expiresAt
+        }.min()
+    }
+
+    private func scheduleMatrixRTCCallProjectionRefresh(nextExpiry: TimeInterval?) {
+        matrixRTCCallProjectionRefreshWorkItem?.cancel()
+        guard !isGroupChat else { return }
+        let now = Date().timeIntervalSince1970
+        guard let nextExpiry else { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.enqueueMatrixRTCCallProjectionRefresh(recomputeAll: false) { [weak self] in
+                self?.timelineRefreshQueue.enqueue(.init(requiresPresentationRefresh: true))
+            }
+        }
+        matrixRTCCallProjectionRefreshWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0.1, nextExpiry - now + 0.2),
+            execute: work
+        )
     }
 
     // MARK: - Timeline Bootstrap
@@ -996,6 +1400,18 @@ final class ChatViewModel {
         Task { [weak self] in
             guard let self else { return }
             await timelineService.startListening(subscribeForSync: !self.mode.isPreview)
+            await MainActor.run { [weak self] in
+                self?.startHistorySyncIfAllowed()
+                guard let self, self.acceptsTimelineRefreshes, !self.mode.isPreview,
+                      self.decryptionRepair == nil, let room = self.room else { return }
+                self.decryptionRepair = self.diffBatcher.makeDecryptionRepair(
+                    room: room, timeline: timelineService.recoveryTimeline
+                ) { [weak self] summary in
+                    guard let self, self.acceptsTimelineRefreshes else { return }
+                    self.timelineRefreshQueue.enqueueRepair(summary)
+                }
+                if let focus = self.window.recoveryFocus { self.decryptionRepair?.prioritize(focus) }
+            }
             guard !self.mode.isPreview else { return }
             let terminalFailures = await self.pendingRedactions.retryPendingRedactions(
                 roomId: self.roomId
@@ -1014,8 +1430,39 @@ final class ChatViewModel {
         }
 
         guard !mode.isPreview else { return }
-        historySyncTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1))
+        // R&D switch: the attachments screen measures its own pagination
+        // without the chat's background history sync running underneath.
+        NotificationCenter.default.publisher(for: AttachmentsResearchSettings.didChange)
+            .sink { [weak self] _ in
+                self?.applyHistorySyncResearchSetting()
+            }
+            .store(in: &cancellables)
+        startHistorySyncIfAllowed()
+    }
+
+    /// Two-way: pausing cancels the running sync, unpausing restarts it, so a
+    /// paused → unpaused measurement reproduces the real UX without
+    /// reopening the chat. A sync that already finished is not repeated.
+    private func applyHistorySyncResearchSetting() {
+        if AttachmentsResearchSettings.isChatHistorySyncPaused {
+            historySyncTask?.cancel()
+            historySyncTask = nil
+        } else {
+            startHistorySyncIfAllowed()
+        }
+    }
+
+    private func startHistorySyncIfAllowed() {
+        guard !mode.isPreview,
+              acceptsTimelineRefreshes,
+              timelineService?.hasLiveTimeline == true,
+              !AttachmentsResearchSettings.isChatHistorySyncPaused,
+              historySyncTask == nil else {
+            return
+        }
+        historySyncTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(1)) }
+            catch { return }
             await self?.syncFullHistory()
         }
     }
@@ -1029,6 +1476,7 @@ final class ChatViewModel {
                 try await room.join()
                 await MainActor.run { [weak self] in
                     self?.isInvited = false
+                    self?.refreshComposerSendPermission()
                 }
                 startTimelineAndHistory()
             } catch {
@@ -1039,21 +1487,97 @@ final class ChatViewModel {
 
     // MARK: - Window Change Handling
 
-    private func handleObservationChange(
-        newStored: [StoredMessage],
-        prevStored: [StoredMessage]?,
-        origin: MessageWindowChangeOrigin
-    ) {
-        let previousDisplayIdentityKeys = Set(messages.flatMap(\.timelineIdentityKeys))
-        let resolvedPending = pendingRedactions.reconcileResolvedPendingRedactions(roomId: roomId)
+    /// Main owns these values; workers receive copy-on-write snapshots only.
+    private struct RenderInput {
+        let revision: UInt64
+        let previousStored: [StoredMessage]?
+        let messages: [ChatMessage]
+        let rows: [ChatTimelineRow]
+        let currentUserId: String
+        let currentSessionId: String?
+        var cache: StoredMessagePresentationCache
+        var hiddenMessageKeys: Set<String>
+        var pendingRedactionIds: Set<String>
+        var pendingRedactionKeys: Set<String>
+        var pendingPartialRedactions: [String: StoredMessage]
+        var restoredPreviewMessageIds: Set<String>
+        var partialReflowPreviewsByMessageId: [String: PartialReflowPreview]
+        #if DEBUG
+        var trace: HistoryPerformanceTrace.Session?
+        var preparedHook: (() -> Void)?
+        #endif
+    }
+
+    private struct PreparedRender {
+        let input: RenderInput
+        let stored: [StoredMessage]
+        let origin: MessageWindowChangeOrigin
+        let local: ChatTimelineLocalState
+        let messages: [ChatMessage]
+        let rows: [ChatTimelineRow]
+        let messageIndices: [String: Int]
+        let rowIndices: [String: Int]
+        let update: TableUpdate
+        let inPlaceUpdates: [(IndexPath, ChatMessage)]
+        let redactions: DetectedRedactionBatch
+        let retireEnvelopeIds: Set<String>
+        let placeholderDeadline: TimeInterval?
+        let callExpiry: TimeInterval?
+    }
+
+    private func renderInput() -> RenderInput {
+        dispatchPrecondition(condition: .onQueue(.main))
+        var input = RenderInput(revision: presentationRevision, previousStored: presentedStored,
+            messages: messages, rows: rows,
+            currentUserId: (try? MatrixClientService.shared.client?.userId()) ?? "",
+            currentSessionId: MatrixClientService.shared.currentLocalSessionId,
+            cache: storedMessagePresentationCache, hiddenMessageKeys: hiddenMessageKeys,
+            pendingRedactionIds: pendingRedactionIds, pendingRedactionKeys: pendingRedactionKeys,
+            pendingPartialRedactions: pendingPartialRedactions,
+            restoredPreviewMessageIds: restoredPreviewMessageIds,
+            partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId)
+        #if DEBUG
+        input.trace = historyPerformance
+        input.preparedHook = onRenderPreparedForTesting
+        #endif
+        return input
+    }
+
+    private static func prepareRender(
+        _ input: RenderInput, stored newStored: [StoredMessage], origin: MessageWindowChangeOrigin,
+        olderBoundary: ClusterNeighbor?, newerBoundary: ClusterNeighbor?, local: ChatTimelineLocalState,
+        detectsRedactions: Bool = true
+    ) -> PreparedRender {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        #if DEBUG
+        let phase = input.trace?.begin(.prepareReconcile)
+        defer { phase?.finish(); input.preparedHook?() }
+        #endif
+        var state = input
+        var local = local
+        if !detectsRedactions {
+            // A hide/restore reuses the accepted window. The DB may already
+            // contain a confirmation that this window has not seen yet.
+            // Leave its keys and acknowledgement to the next window update.
+            let resolvedIds = local.resolvedRedactions.messageIds
+            local.redactions.removeAll { resolvedIds.contains($0.messageId) }
+            local.resolvedRedactions = .init(messageIds: [], identityKeys: [])
+        }
+        let prevStored = input.previousStored
+        let pendingRecords = local.redactions.filter { !local.resolvedRedactions.messageIds.contains($0.messageId) }
+        let pendingLookup = pendingRedactionDisplayLookup(for: pendingRecords)
+        state.pendingRedactionIds.formUnion(pendingRecords.map(\.messageId))
+        state.pendingRedactionKeys.formUnion(pendingLookup.byIdentityKey.keys)
+        let resolvedPending = local.resolvedRedactions
         let resolvedPendingIds = resolvedPending.messageIds
-        let resolvedPendingKeys = resolvedPending.identityKeys.union(
-            Self.identityKeys(
+        var resolvedPendingKeys = resolvedPending.identityKeys
+        if !resolvedPendingIds.isEmpty {
+            resolvedPendingKeys.formUnion(Self.identityKeys(
                 for: resolvedPendingIds,
                 in: newStored + (prevStored ?? [])
-            )
-        )
-        let activePendingRedactionKeys = pendingRedactionKeys.union(resolvedPendingKeys)
+            ))
+        }
+        let activePendingRedactionKeys = state.pendingRedactionKeys.union(resolvedPendingKeys)
 
         // 1. Detect newly redacted user messages (paint splash).
         //    Only for content that was a visible message — not call
@@ -1064,7 +1588,10 @@ final class ChatViewModel {
         let newlyRedactedIds: [String]
         let newlyRedactedIdentityKeys: Set<String>
         let redactionBatch: DetectedRedactionBatch
-        if let prevStored {
+        // Reuse this small subset for media-group reflow below. Most history
+        // updates need no identity index or redaction transition work at all.
+        let redactedStored = newStored.filter { $0.contentType == "redacted" }
+        if detectsRedactions, let prevStored, !redactedStored.isEmpty {
             let prevByIdentity = Dictionary(
                 prevStored.flatMap { stored in
                     stored.timelineIdentityKeys.map { ($0, stored) }
@@ -1073,13 +1600,17 @@ final class ChatViewModel {
                     Self.preferredTransitionPrevious(existing, candidate)
                 }
             )
-            redactionCandidates = newStored.compactMap { msg in
-                guard msg.contentType == "redacted" else { return nil }
+            redactionCandidates = redactedStored.compactMap { msg in
                 guard let prev = Self.previousMessage(for: msg, in: prevByIdentity),
                       Self.isSplashEligiblePreviousContent(prev)
                 else { return nil }
                 return RedactionTransitionCandidate(message: msg, previous: prev)
             }
+            // Local pending deletions match their own aliases and don't use
+            // the previous display set. History refreshes cannot animate a
+            // remote deletion, even if they contain redacted rows.
+            let previousDisplayIdentityKeys = origin.allowsRemoteRedactionAnimation && !redactionCandidates.isEmpty
+                ? Set(input.messages.flatMap(\.timelineIdentityKeys)) : []
             animatedRedactions = Self.animationEligibleRedactions(
                 candidates: redactionCandidates,
                 origin: origin,
@@ -1101,8 +1632,8 @@ final class ChatViewModel {
             redactionBatch = DetectedRedactionBatch(messageIds: [], mediaGroups: [])
         }
         if !resolvedPendingIds.isEmpty {
-            pendingRedactionIds.subtract(resolvedPendingIds)
-            pendingRedactionKeys.subtract(resolvedPendingKeys)
+            state.pendingRedactionIds.subtract(resolvedPendingIds)
+            state.pendingRedactionKeys.subtract(resolvedPendingKeys)
         }
         Self.logTimelineHealth(
             origin: origin,
@@ -1113,106 +1644,282 @@ final class ChatViewModel {
         )
 
         Self.registerPendingPartialRedactions(
-            into: &pendingPartialRedactions,
+            into: &state.pendingPartialRedactions,
             newStored: newStored,
             animatedRedactions: animatedRedactions,
-            hiddenMessageKeys: hiddenMessageKeys
+            hiddenMessageKeys: state.hiddenMessageKeys
         )
+        if !state.restoredPreviewMessageIds.isEmpty, !state.partialReflowPreviewsByMessageId.isEmpty {
+            let affectedMediaGroupIds = Set(
+                newStored.compactMap { message -> String? in
+                    guard state.restoredPreviewMessageIds.contains(message.id) else { return nil }
+                    return message.toChatMessage()?.zynaAttributes.mediaGroup?.id
+                }
+            )
+
+            if affectedMediaGroupIds.isEmpty {
+                for messageId in state.restoredPreviewMessageIds {
+                    state.partialReflowPreviewsByMessageId.removeValue(forKey: messageId)
+                }
+            } else {
+                state.partialReflowPreviewsByMessageId = state.partialReflowPreviewsByMessageId.filter { messageId, _ in
+                    guard let stored = newStored.first(where: { $0.id == messageId }) else { return false }
+                    let mediaGroupId = stored.toChatMessage()?.zynaAttributes.mediaGroup?.id
+                    return mediaGroupId.map { !affectedMediaGroupIds.contains($0) } ?? false
+                }
+            }
+        }
+        state.restoredPreviewMessageIds.removeAll()
         Self.prunePartialReflowPreviews(
-            in: &partialReflowPreviewsByMessageId,
+            in: &state.partialReflowPreviewsByMessageId,
             newStored: newStored
         )
 
-        // 2. Build display array: filter hidden and already-redacted (keep newly-redacted for animation)
+        #if DEBUG
+        phase?.move(to: .prepareMessages)
+        #endif
         let now = Date().timeIntervalSince1970
-        let pendingRedactionRecords = pendingRedactions.pendingRecords(roomId: roomId)
-        let pendingRedactionLookup = Self.pendingRedactionDisplayLookup(
-            for: pendingRedactionRecords
-        )
-        schedulePendingRedactionPlaceholderRefresh(
-            records: pendingRedactionRecords,
-            now: now
-        )
-        let pendingReactionRemovalsByEventId = pendingReactions
-            .pendingRemovalKeysByEventId(roomId: roomId)
-        let rawMessages = newStored.compactMap { msg -> ChatMessage? in
-            displayChatMessage(
-                for: msg,
-                pendingRedactionLookup: pendingRedactionLookup,
-                pendingReactionRemovalsByEventId: pendingReactionRemovalsByEventId,
-                now: now,
-                visibleRedactedKeys: newlyRedactedIdentityKeys
-            )
+        // A local hide/restore preserves other deletions whose splash is
+        // already running. A window transition detects new deletions above.
+        let visibleRedactedKeys = detectsRedactions ? newlyRedactedIdentityKeys
+            : Set(input.messages.filter { $0.content.isRedacted }.flatMap(\.timelineIdentityKeys))
+        let rawMessages = newStored.compactMap { message -> ChatMessage? in
+            guard !local.ignoredUserIDs.contains(message.senderId) else { return nil }
+            return displayChatMessage(for: message.hidingIgnoredReply(local.ignoredUserIDs), pendingRedactionLookup: pendingLookup,
+                pendingReactionRemovalsByEventId: local.reactionRemovals, now: now,
+                visibleRedactedKeys: visibleRedactedKeys, state: &state)
         }
-
-        let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: newStored)
-        if !deletedMediaGroupIds.isEmpty || !newlyRedactedIds.isEmpty {
-            logMediaGroup(
-                "deleteReflow observation newlyRedacted=\(newlyRedactedIds.joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ",")) hidden=\(hiddenMessageKeys.count)"
-            )
-        }
-        let olderBoundary = window.peekOlderNeighbor()
-        let newerBoundary = window.peekNewerNeighbor()
-        let newMessages = buildRenderableMessages(
-            from: rawMessages,
-            deletedMediaGroupIds: deletedMediaGroupIds,
-            partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
-            olderBoundary: olderBoundary,
-            newerBoundary: newerBoundary
-        )
-
-        // 3. Prefetch images
-        Self.prefetchImages(newMessages)
-
-        // 4. Compute table update
-        let oldRows = self.rows
-        setMessages(newMessages, olderBoundary: olderBoundary)
-
-        let tableUpdate: TableUpdate
-        var inPlaceUpdates: [(IndexPath, ChatMessage)] = []
-        if prevStored == nil {
-            tableUpdate = .reload
-        } else {
-            (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldRows, new: rows)
-        }
-        // 5. Emit (filter redacted from normal updates, send separately for animation)
-        if !newlyRedactedIds.isEmpty {
-            if case .batch(let del, let ins, let moves, let upd, let anim) = tableUpdate {
-                let filtered = upd.filter { ip in
-                    guard rows.indices.contains(ip.row),
-                          let message = rows[ip.row].message
-                    else { return true }
+        state.cache.retain(newStored)
+        #if DEBUG
+        phase?.move(to: .prepareGroups)
+        #endif
+        let (newMessages, retireIds) = buildRenderableMessages(from: rawMessages,
+            envelopes: local.envelopes, currentUserId: input.currentUserId,
+            currentLocalSessionId: input.currentSessionId,
+            deletedMediaGroupIds: redactedMediaGroupIds(in: redactedStored),
+            partialReflowPreviewsByMessageId: state.partialReflowPreviewsByMessageId,
+            olderBoundary: olderBoundary, newerBoundary: newerBoundary)
+        #if DEBUG
+        phase?.move(to: .prepareRows)
+        #endif
+        let rows = buildRows(from: newMessages, olderBoundary: olderBoundary)
+        let (messageIndices, rowIndices) = buildMessageIndices(messages: newMessages, rows: rows)
+        #if DEBUG
+        phase?.move(to: .prepareDiff)
+        #endif
+        let comparison = prevStored == nil
+            ? (TableUpdate.reload, [(IndexPath, ChatMessage)]())
+            : computeTableUpdate(old: input.rows, new: rows)
+        var update = comparison.0
+        let inPlace = comparison.1
+        if !newlyRedactedIds.isEmpty,
+           case .batch(let deletions, let insertions, let moves, let updates, let animated) = update {
+            update = .batch(deletions: deletions, insertions: insertions, moves: moves,
+                updates: updates.filter { index in
+                    guard rows.indices.contains(index.row), let message = rows[index.row].message else { return true }
                     return !message.content.isRedacted
-                }
-                onTableUpdate?(.batch(
-                    deletions: del,
-                    insertions: ins,
-                    moves: moves,
-                    updates: filtered,
-                    animated: anim
-                ))
-            } else {
-                onTableUpdate?(tableUpdate)
+                }, animated: animated)
+        }
+        return PreparedRender(input: state, stored: newStored, origin: origin, local: local,
+            messages: newMessages, rows: rows, messageIndices: messageIndices, rowIndices: rowIndices,
+            update: update, inPlaceUpdates: inPlace, redactions: redactionBatch, retireEnvelopeIds: retireIds,
+            placeholderDeadline: pendingRecords.map { $0.createdAt + pendingRedactionPlaceholderDelay }
+                .filter { $0 > now }.min(),
+            callExpiry: nextMatrixRTCCallExpiry(in: newMessages, now: now))
+    }
+
+    private func handleObservationChange(
+        newStored: [StoredMessage], prevStored: [StoredMessage]?, origin: MessageWindowChangeOrigin
+    ) {
+        // An explicit jump can commit before the restoration read. Whichever
+        // window wins bootstrap must release its pause on live refreshes.
+        defer {
+            if initialNavigationAnchor != nil, window.generation > 0 {
+                initialNavigationAnchor = nil
+                timelineRefreshQueue.setPaused(!navigationPresentationActive)
             }
-            onRedactedDetected?(redactionBatch)
+        }
+        if let prepared = preparedWindowRender {
+            preparedWindowRender = nil
+            applyRender(prepared, origin: origin)
         } else {
-            onTableUpdate?(tableUpdate)
+            // Synchronous MessageWindow conveniences are used by isolated
+            // tests. They still use the same background presentation path.
+            presentationRevision &+= 1
+            enqueuePresentationRefresh(origin: origin)
         }
+    }
 
-        // 6. Apply lightweight in-place updates (send-status) without cell recreation
-        for (indexPath, message) in inPlaceUpdates {
-            onInPlaceUpdate?(indexPath, message)
+    private func canApplyRender(_ render: PreparedRender) -> Bool {
+        acceptsTimelineRefreshes && presentationDatabase.isActive
+            && render.input.revision == presentationRevision
+    }
+
+    private func applyRender(_ render: PreparedRender, origin: MessageWindowChangeOrigin) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        #if DEBUG
+        let operation = historyPerformance?.begin(.renderMain)
+        defer {
+            operation?.finish()
+            historyPerformance?.gauge(.messages, messages.count)
+            historyPerformance?.gauge(.rows, rows.count)
+            historyPerformance?.gauge(.localOlder, window.hasOlderInDB ? 1 : 0)
         }
-
-        // 7. Any materialized older rows in GRDB mean backward pagination
-        // is not exhausted, even if a previous server round finished late.
-        if window.hasOlderInDB {
-            sdkPaginationExhausted = false
+        #endif
+        presentationRevision &+= 1
+        presentedStored = render.stored
+        storedMessagePresentationCache = render.input.cache
+        pendingRedactionIds = render.input.pendingRedactionIds
+        pendingRedactionKeys = render.input.pendingRedactionKeys
+        pendingPartialRedactions = render.input.pendingPartialRedactions
+        restoredPreviewMessageIds = render.input.restoredPreviewMessageIds
+        partialReflowPreviewsByMessageId = render.input.partialReflowPreviewsByMessageId
+        messages = render.messages
+        rows = render.rows
+        messageIndexByEventId = render.messageIndices
+        rowIndexByEventId = render.rowIndices
+        schedulePendingRedactionPlaceholderRefresh(deadline: render.placeholderDeadline)
+        scheduleMatrixRTCCallProjectionRefresh(nextExpiry: render.callExpiry)
+        Self.prefetchImages(render.messages)
+        // These callbacks may synchronously start or finish a deletion. All
+        // model state is committed before handing control back to the view.
+        onTableUpdate?(render.update, origin)
+        if !render.redactions.messageIds.isEmpty { onRedactedDetected?(render.redactions) }
+        for (indexPath, message) in render.inPlaceUpdates { onInPlaceUpdate?(indexPath, message) }
+        let database = presentationDatabase
+        let userId = presentationUserId
+        let roomId = roomId
+        if !render.local.resolvedRedactions.messageIds.isEmpty || !render.retireEnvelopeIds.isEmpty {
+            historyPageQueue.async {
+                do {
+                    try render.local.acknowledge(roomId: roomId, retiring: render.retireEnvelopeIds,
+                                                 database: database, userId: userId)
+                } catch { ScopedLog(.database)("Presentation acknowledgement failed: \(error)") }
+            }
         }
+        if !isApplyingTimelineRefresh { requestSparseHistoryCheck() }
+    }
 
-        // 8. Auto-paginate if too few messages and GRDB + SDK both need more
-        if newMessages.count < 20 && !isPaginating && !window.hasOlderInDB {
-            loadOlderFromServer()
+    private static func mergedPresentationOrigin(_ first: MessageWindowChangeOrigin?,
+                                                 _ next: MessageWindowChangeOrigin) -> MessageWindowChangeOrigin {
+        guard let first else { return next }
+        if case .timelineFlush(let lhs) = first, case .timelineFlush(let rhs) = next {
+            return .timelineFlush(lhs.merging(rhs))
+        }
+        if first == .localMutation { return next }
+        if next == .localMutation { return first }
+        // A replacement or a history page must not turn into a live deletion.
+        return next.allowsRemoteRedactionAnimation ? first : next
+    }
+
+    private func enqueuePresentationRefresh(origin: MessageWindowChangeOrigin) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard acceptsTimelineRefreshes else { return }
+        pendingPresentationOrigin = Self.mergedPresentationOrigin(pendingPresentationOrigin, origin)
+        guard !presentationRefreshScheduled, !presentationRefreshRunning else { return }
+        presentationRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.presentationRefreshScheduled = false
+            self.preparePresentationRefresh()
+        }
+    }
+
+    private func preparePresentationRefresh() {
+        guard acceptsTimelineRefreshes, navigationPresentationActive,
+              !presentationRefreshRunning, let origin = pendingPresentationOrigin else { return }
+        pendingPresentationOrigin = nil
+        presentationRefreshRunning = true
+        let input = renderInput()
+        let stored = window.currentStoredMessages()
+        let windowRevision = window.revision
+        let (older, newer) = window.presentationNeighbors
+        let database = presentationDatabase
+        let roomId = roomId
+        let includesLocalState = includesLocalPresentationState
+        #if DEBUG
+        let operation = historyPerformance?.begin(.refreshQueue)
+        #endif
+        historyPageQueue.async { [weak self] in
+            #if DEBUG
+            operation?.move(to: .refresh)
+            #endif
+            do {
+                let local = includesLocalState
+                    ? try database.read { try ChatTimelineLocalState.fetch(roomId: roomId, in: $0) }
+                    : ChatTimelineLocalState()
+                #if DEBUG
+                operation?.move(to: .decode)
+                #endif
+                let prepared = Self.prepareRender(input, stored: stored, origin: origin,
+                    olderBoundary: older, newerBoundary: newer, local: local,
+                    detectsRedactions: origin != .localMutation)
+                #if DEBUG
+                operation?.move(to: .mainQueue)
+                #endif
+                DispatchQueue.main.async { [weak self] in
+                    #if DEBUG
+                    operation?.finish()
+                    #endif
+                    guard let self else { return }
+                    self.presentationRefreshRunning = false
+                    guard self.acceptsTimelineRefreshes, database.isActive else { return }
+                    if self.navigationPresentationActive, self.canApplyRender(prepared), self.window.revision == windowRevision {
+                        self.applyRender(prepared, origin: origin)
+                        if self.pendingPresentationOrigin != nil {
+                            self.enqueuePresentationRefresh(origin: .localMutation)
+                        }
+                    } else {
+                        // Preserve uncommitted provenance when a local action
+                        // invalidates a prepared transition.
+                        self.enqueuePresentationRefresh(origin: origin)
+                    }
+                }
+            } catch {
+                #if DEBUG
+                operation?.finish(failed: true)
+                #endif
+                ScopedLog(.database)("Local presentation preparation failed: \(error)")
+                DispatchQueue.main.async { [weak self] in self?.presentationRefreshRunning = false }
+            }
+        }
+    }
+
+    private func acceptTimelineFlush(_ summary: TimelineFlushSummary) {
+        onIncomingMessages?(summary.incomingMessageCount)
+        timelineRefreshQueue.enqueue(summary)
+    }
+
+    #if DEBUG
+    func refreshPresentationForTesting(_ summary: TimelineFlushSummary) {
+        if summary.requiresPresentationRefresh { presentationRevision &+= 1 }
+        acceptTimelineFlush(summary)
+    }
+    var isTimelineRefreshIdleForTesting: Bool { timelineRefreshQueue.isIdle }
+    @MainActor
+    func drainPresentationWorkerForTesting() async throws {
+        await withCheckedContinuation { continuation in
+            historyPageQueue.async { DispatchQueue.main.async { continuation.resume() } }
+        }
+    }
+    var isPresentationIdleForTesting: Bool {
+        !presentationRefreshScheduled && !presentationRefreshRunning && pendingPresentationOrigin == nil
+    }
+    #endif
+
+    private func requestSparseHistoryCheck() {
+        needsSparseHistoryCheck = true
+        checkSparseHistoryIfNeeded()
+    }
+
+    private func checkSparseHistoryIfNeeded() {
+        guard navigationPresentationActive, needsSparseHistoryCheck, !isPaginating else { return }
+        needsSparseHistoryCheck = false
+        if ChatHistoryPageLoader.shouldLoadSparseHistory(
+            displayCount: messages.count, hasLocal: window.hasOlderInDB,
+            serverExhausted: sdkPaginationExhausted
+        ) {
+            Task { @MainActor [weak self] in _ = await self?.loadOlderFromServer() }
         }
     }
 
@@ -1241,21 +1948,19 @@ final class ChatViewModel {
         }
     }
 
-    private func buildRenderableMessages(
+    private static func buildRenderableMessages(
         from rawMessages: [ChatMessage],
+        envelopes: [OutgoingEnvelopeSnapshot], currentUserId: String, currentLocalSessionId: String?,
         deletedMediaGroupIds: Set<String>,
         partialReflowPreviewsByMessageId: [String: PartialReflowPreview],
         olderBoundary: ClusterNeighbor?,
         newerBoundary: ClusterNeighbor?
-    ) -> [ChatMessage] {
-        let envelopes = outgoingEnvelopes.envelopes(roomId: roomId)
+    ) -> ([ChatMessage], Set<String>) {
         if !envelopes.isEmpty {
             logMediaGroup(
-                "render pending groups room=\(roomId) \(envelopes.map(Self.describe).joined(separator: "; "))"
+                "render pending groups \(envelopes.map(Self.describe).joined(separator: "; "))"
             )
         }
-        let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
-        let currentLocalSessionId = MatrixClientService.shared.currentLocalSessionId
         let mediaBatchPlan = Self.pendingRenderableMediaGroupPlan(
             from: envelopes.filter { $0.kind == .mediaBatch },
             rawMessages: rawMessages,
@@ -1275,9 +1980,6 @@ final class ChatViewModel {
             newerBoundary: newerBoundary
         )
         let envelopeIdsToRetire = mediaBatchPlan.retireEnvelopeIds.union(singleEnvelopePlan.retireEnvelopeIds)
-        if !envelopeIdsToRetire.isEmpty {
-            outgoingEnvelopes.deleteEnvelopes(ids: envelopeIdsToRetire)
-        }
 
         let renderableMessages = Self.mergeRawMessages(
             rawMessages,
@@ -1286,13 +1988,13 @@ final class ChatViewModel {
                 + incomingAssemblyPlan.activeEnvelopes
         )
 
-        return Self.buildDisplayMessages(
+        return (Self.buildDisplayMessages(
             from: renderableMessages,
             deletedMediaGroupIds: deletedMediaGroupIds,
             partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
             olderBoundary: olderBoundary,
             newerBoundary: newerBoundary
-        )
+        ), envelopeIdsToRetire)
     }
 
     func registerPartialReflowPreviews(_ previews: [String: Data]) {
@@ -1347,69 +2049,9 @@ final class ChatViewModel {
             pendingPartialRedactions.removeValue(forKey: identityKey)
         }
 
-        let affectedMediaGroupIds = Set(
-            storedMessages.compactMap { message -> String? in
-                guard idsToRestore.contains(message.id) else { return nil }
-                return message.toChatMessage()?.zynaAttributes.mediaGroup?.id
-            }
-        )
+        restoredPreviewMessageIds.formUnion(idsToRestore)
 
-        if affectedMediaGroupIds.isEmpty {
-            for messageId in idsToRestore {
-                partialReflowPreviewsByMessageId.removeValue(forKey: messageId)
-            }
-        } else {
-            partialReflowPreviewsByMessageId = partialReflowPreviewsByMessageId.filter { messageId, _ in
-                guard let stored = storedMessages.first(where: { $0.id == messageId }) else { return false }
-                let mediaGroupId = stored.toChatMessage()?.zynaAttributes.mediaGroup?.id
-                return mediaGroupId.map { !affectedMediaGroupIds.contains($0) } ?? false
-            }
-        }
-
-        let oldRows = rows
-        let oldMessages = messages
-        let visibleRedactedKeys = Set(
-            oldMessages
-                .filter { $0.content.isRedacted }
-                .flatMap(\.timelineIdentityKeys)
-        )
-        let now = Date().timeIntervalSince1970
-        let pendingRedactionRecords = pendingRedactions.pendingRecords(roomId: roomId)
-        let pendingRedactionLookup = Self.pendingRedactionDisplayLookup(
-            for: pendingRedactionRecords
-        )
-        schedulePendingRedactionPlaceholderRefresh(
-            records: pendingRedactionRecords,
-            now: now
-        )
-        let pendingReactionRemovalsByEventId = pendingReactions
-            .pendingRemovalKeysByEventId(roomId: roomId)
-        let rawMessages = storedMessages.compactMap { msg -> ChatMessage? in
-            displayChatMessage(
-                for: msg,
-                pendingRedactionLookup: pendingRedactionLookup,
-                pendingReactionRemovalsByEventId: pendingReactionRemovalsByEventId,
-                now: now,
-                visibleRedactedKeys: visibleRedactedKeys
-            )
-        }
-
-        let olderBoundary = window.peekOlderNeighbor()
-        let newerBoundary = window.peekNewerNeighbor()
-        let newMessages = buildRenderableMessages(
-            from: rawMessages,
-            deletedMediaGroupIds: Self.redactedMediaGroupIds(in: storedMessages),
-            partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
-            olderBoundary: olderBoundary,
-            newerBoundary: newerBoundary
-        )
-        setMessages(newMessages, olderBoundary: olderBoundary)
-
-        let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldRows, new: rows)
-        onTableUpdate?(tableUpdate)
-        for (indexPath, message) in inPlaceUpdates {
-            onInPlaceUpdate?(indexPath, message)
-        }
+        enqueuePresentationRefresh(origin: .localMutation)
     }
 
     func areMessagesRedacted(_ messageIds: [String]) -> Bool {
@@ -1526,6 +2168,17 @@ final class ChatViewModel {
             retireEnvelopeIds: retireEnvelopeIds
         )
     }
+
+    #if DEBUG
+    /// Exercises the production envelope plan without a client, database, or
+    /// an active chat. Tests cover event binding and actionable local retries.
+    static func singleEnvelopePlanForTesting(_ envelope: OutgoingEnvelopeSnapshot, messages: [ChatMessage],
+                                             sessionId: String) -> (retired: Bool, pending: ChatMessage?) {
+        let plan = pendingRenderableSingleEnvelopePlan(from: [envelope], rawMessages: messages,
+            currentUserId: "@test:example.org", currentLocalSessionId: sessionId)
+        return (plan.retireEnvelopeIds.contains(envelope.id), plan.activeEnvelopes.first?.message)
+    }
+    #endif
 
     private static func incomingRenderableMediaGroupPlan(
         from rawMessages: [ChatMessage],
@@ -1844,6 +2497,8 @@ final class ChatViewModel {
                 ),
                 width: item.previewWidth ?? primaryImageContent?.width,
                 height: item.previewHeight ?? primaryImageContent?.height,
+                blurhash: primaryMessage?.mediaMetadata?.blurhash,
+                sizeBytes: primaryMessage?.mediaMetadata?.sizeBytes,
                 caption: group.caption ?? primaryImageContent?.caption,
                 sendStatus: isStaleSessionEnvelope ? "failed" : item.transportState.messageSendStatus
             )
@@ -1958,6 +2613,8 @@ final class ChatViewModel {
 
     private static func matches(envelopeKind: OutgoingEnvelopeKind, message: ChatMessage) -> Bool {
         switch (envelopeKind, message.content) {
+        case (.poll, .poll):
+            return true
         case (.text, .text):
             return true
         case (.image, .image):
@@ -2020,6 +2677,8 @@ final class ChatViewModel {
         envelopeKind: OutgoingEnvelopeKind
     ) -> Bool {
         switch (envelopeKind, message.content) {
+        case (.poll, .poll):
+            return true
         case (.text, .text):
             return true
         case (.image, .image(let source, _, _, _, _, _)):
@@ -2046,9 +2705,22 @@ final class ChatViewModel {
         }
 
         switch envelope.payload {
+        case .invalid:
+            return false
+        case .poll(let definition):
+            guard case .poll(let poll) = message.content else { return false }
+            return poll.definition == definition
         case .text(let textPayload):
             guard case .text(let body) = message.content else { return false }
-            return body == textPayload.body
+            guard body == textPayload.body else { return false }
+            guard textPayload.formattedBody != nil || message.textMetadata != nil else { return true }
+            // A plain echo with the same body must not retire a rich envelope.
+            // Ignore reply fallbacks and carrier spans when comparing content.
+            return MatrixRichTextParser.parse(body: body, metadata: message.textMetadata)
+                == MatrixRichTextParser.parse(
+                    body: textPayload.body,
+                    metadata: ComposerText(body: textPayload.body, formattedBody: textPayload.formattedBody).metadata
+                )
         case .image(let imagePayload):
             guard case .image(let source, _, let width, let height, let caption, _) = message.content,
                   source != nil
@@ -2107,14 +2779,15 @@ final class ChatViewModel {
         currentUserId: String,
         currentLocalSessionId: String?
     ) -> PendingRenderableEnvelope {
-        let isStaleSessionEnvelope = envelope.isStaleSession(currentSessionId: currentLocalSessionId)
+        let acceptedPoll = envelope.kind == .poll && envelope.state == .sent && envelope.primaryItem?.eventId != nil
+        let isStaleSessionEnvelope = !acceptedPoll && envelope.isStaleSession(currentSessionId: currentLocalSessionId)
         let primaryMessage = observedState.primaryMessageIndex.flatMap {
             rawMessages.indices.contains($0) ? rawMessages[$0] : nil
         }
         let primaryContent = primaryMessage?.content
         let primaryTimestamp = primaryMessage?.timestamp ?? envelope.createdAt
         let primarySenderId = primaryMessage?.senderId ?? currentUserId
-        let sendStatus = isStaleSessionEnvelope
+        let sendStatus = isStaleSessionEnvelope || envelope.payload == .invalid
             ? "failed"
             : pendingSendStatus(
                 transportState: envelope.primaryItem?.transportState,
@@ -2123,6 +2796,10 @@ final class ChatViewModel {
 
         let content: ChatMessageContent = {
             switch envelope.payload {
+            case .invalid:
+                return .unsupported(typeName: String(localized: "Poll"))
+            case .poll(let definition):
+                return .poll(.empty(definition))
             case .text(let payload):
                 return .text(body: payload.body)
             case .image(let payload):
@@ -2231,6 +2908,9 @@ final class ChatViewModel {
             isOutgoing: true,
             timestamp: primaryTimestamp,
             content: content,
+            textMetadata: envelope.textPayload?.formattedBody.map {
+                ChatTextMetadata(format: ChatTextMetadata.matrixHTMLFormat, formattedBody: $0)
+            },
             reactions: [],
             replyInfo: envelope.replyInfo,
             isEditable: false,
@@ -2243,8 +2923,13 @@ final class ChatViewModel {
         )
         message.outgoingEnvelopeId = envelope.id
         message.isStaleOutgoingEnvelope = isStaleSessionEnvelope
-        message.canRetryOutgoingEnvelope = (isStaleSessionEnvelope || envelope.primaryItem?.transportState == .failed)
-            && envelope.isRetryableAfterSessionChange
+        if envelope.kind == .poll {
+            message.canRetryOutgoingEnvelope = envelope.payload != .invalid
+                && !isStaleSessionEnvelope && envelope.primaryItem?.transportState == .failed
+        } else {
+            message.canRetryOutgoingEnvelope = (isStaleSessionEnvelope || envelope.primaryItem?.transportState == .failed)
+                && envelope.isRetryableAfterSessionChange
+        }
 
         logMediaGroup(
             "pending synthetic envelope=\(describe(envelope)) anchor=\(observedState.primaryMessageIndex.map(String.init) ?? "nil") hidden=\(observedState.hiddenMessageIndices.count) status=\(sendStatus)"
@@ -2378,7 +3063,7 @@ final class ChatViewModel {
             }
         }
 
-        if !deletions.isEmpty {
+        if timelineHealthLog.isEnabled, !deletions.isEmpty {
             let deletedRows = deletions.prefix(8).compactMap { indexPath -> String? in
                 guard old.indices.contains(indexPath.row) else { return nil }
                 return debugTimelineRow(old[indexPath.row])
@@ -2426,6 +3111,12 @@ final class ChatViewModel {
             let detail: String
             let type: String
             switch message.content {
+            case .unableToDecrypt:
+                type = "unableToDecrypt"
+                detail = "unableToDecrypt"
+            case .poll:
+                type = "poll"
+                detail = "poll"
             case .text(let body), .notice(let body), .emote(let body):
                 type = "text"
                 detail = body
@@ -2450,6 +3141,9 @@ final class ChatViewModel {
             case .callEvent(let callType, let callId, let reason):
                 type = "call"
                 detail = "\(callType.rawValue):\(callId):\(reason ?? "-")"
+            case .matrixRTCCall(let details):
+                type = "matrixRTCCall"
+                detail = "\(details.notificationType.rawValue):\(details.callIntent ?? "-"):\(details.parentEventId ?? "-"):\(details.declinedBy.joined(separator: ","))"
             case .systemEvent(let text, _):
                 type = "system"
                 detail = text
@@ -2471,55 +3165,316 @@ final class ChatViewModel {
 
     // MARK: - Pagination
 
-    /// Load older messages from GRDB. Returns true if data was available.
-    func loadOlderFromDB() -> Bool {
-        window.loadOlder()
-    }
+    var retainedHistoryMessageCount: Int { window.retainedMessageCount }
 
-    /// Query-only part of older-page load. Safe to call from any
-    /// thread; returns merged+sorted rows or nil when exhausted.
-    /// Caller is expected to pair this with `applyOlderPageFromDB`
-    /// on the main thread.
-    func queryOlderFromDB() -> MessageWindow.OlderPage? {
-        window.queryOlder()
-    }
-
-    /// Main-thread apply step paired with `queryOlderFromDB`.
-    func applyOlderPageFromDB(_ page: MessageWindow.OlderPage) {
-        sdkPaginationExhausted = false
-        window.applyOlder(page)
-    }
-
-    /// Paginate from server when GRDB is exhausted.
-    func loadOlderFromServer() {
-        guard !isPaginating,
-              let timelineService else { return }
-        Task {
-            await timelineService.paginateBackwards(numEvents: 50)
+    /// Revalidate the viewport on main after preparation. Scrolling itself
+    /// does not invalidate ordinary history reads or stall their worker.
+    func retainHistoryWindow(
+        policy: ChatHistoryRetentionPolicy,
+        protectedRowIDs: Set<String>,
+        currentProtectedRowIDs: @escaping () -> Set<String>?,
+        completion: @escaping (ChatHistoryPageLoader.Result) -> Void
+    ) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let protectedMessages = rows.filter { protectedRowIDs.contains($0.listIdentifier) }.compactMap(\.message)
+        let keys = protectedMessages.reduce(into: Set<String>()) { result, message in
+            result.formUnion(message.timelineIdentityKeys)
+            for item in message.mediaGroupPresentation?.items ?? [] { result.formUnion(item.timelineIdentityKeys) }
+        }
+        guard acceptsTimelineRefreshes, navigationPresentationActive,
+              let request = window.retentionRequest(protecting: keys, policy: policy) else {
+            completion(.exhausted); return
+        }
+        let input = renderInput()
+        let includesLocalState = includesLocalPresentationState
+        #if DEBUG
+        let trace = historyPerformance
+        trace?.count(.retentionAttempts)
+        #endif
+        historyPageQueue.async { [weak self] in
+            do {
+                guard let page = try request.fetch(includingLocalState: includesLocalState) else {
+                    #if DEBUG
+                    trace?.count(.retentionExhausted)
+                    #endif
+                    DispatchQueue.main.async { completion(.exhausted) }
+                    return
+                }
+                let prepared = Self.prepareRender(input, stored: page.stored, origin: .databasePagination,
+                    olderBoundary: page.olderNeighbor, newerBoundary: page.newerNeighbor, local: page.localState)
+                let retainedIDs = Set(prepared.rows.map(\.listIdentifier))
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.acceptsTimelineRefreshes, self.navigationPresentationActive,
+                          self.window.canApply(page), self.canApplyRender(prepared),
+                          let current = currentProtectedRowIDs(), !current.isEmpty,
+                          current.isSubset(of: retainedIDs) else {
+                        #if DEBUG
+                        trace?.count(.retentionStale)
+                        #endif
+                        completion(.superseded); return
+                    }
+                    self.preparedWindowRender = prepared
+                    self.window.applyRetention(page)
+                    self.preparedWindowRender = nil
+                    #if DEBUG
+                    trace?.count(.retentionApplied)
+                    #endif
+                    completion(.applied)
+                }
+            } catch {
+                ScopedLog(.database)("History window retention failed: \(error)")
+                #if DEBUG
+                trace?.count(.retentionError)
+                #endif
+                DispatchQueue.main.async { completion(.failed) }
+            }
         }
     }
 
-    /// Load newer messages from GRDB (when scrolling back down after jump).
-    func loadNewerMessages() {
-        window.loadNewer()
+    /// Only snapshots and the final commit touch the mutable window on
+    /// main. Queries, normalization and message decoding run on the worker.
+    func loadHistoryPage(
+        _ direction: MessageWindow.PageDirection,
+        completion: @escaping (ChatHistoryPageLoader.Result) -> Void
+    ) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard acceptsTimelineRefreshes else { completion(.superseded); return }
+        guard let request = window.pageRequest(direction) else {
+            completion(.exhausted)
+            return
+        }
+        let input = renderInput()
+        let includesLocalState = includesLocalPresentationState
+        #if DEBUG
+        let trace = historyPerformance
+        let operation = trace?.begin(.pageQueue)
+        #endif
+        historyPageQueue.async { [weak self] in
+            #if DEBUG
+            operation?.move(to: .page)
+            #endif
+            do {
+                let page = try request.fetch(includingLocalState: includesLocalState)
+                #if DEBUG
+                operation?.move(to: .decode)
+                #endif
+                let prepared = Self.prepareRender(input, stored: page.merged, origin: .databasePagination,
+                    olderBoundary: page.olderNeighbor, newerBoundary: page.newerNeighbor, local: page.localState)
+                #if DEBUG
+                operation?.move(to: .mainQueue)
+                #endif
+                DispatchQueue.main.async { [weak self] in
+                    #if DEBUG
+                    operation?.finish()
+                    #endif
+                    guard let self, self.acceptsTimelineRefreshes else { completion(.superseded); return }
+                    let windowIsCurrent = self.window.canApply(page)
+                    let presentationIsCurrent = self.canApplyRender(prepared)
+                    guard windowIsCurrent, presentationIsCurrent else {
+                        #if DEBUG
+                        trace?.count(.pageStale)
+                        if !windowIsCurrent { trace?.count(.pageStaleWindow) }
+                        if !presentationIsCurrent { trace?.count(.pageStalePresentation) }
+                        #endif
+                        completion(.superseded)
+                        return
+                    }
+                    self.preparedWindowRender = prepared
+                    self.window.applyPage(page)
+                    self.preparedWindowRender = nil
+                    completion(page.fetchedCount > 0 ? .applied : .exhausted)
+                }
+            } catch {
+                #if DEBUG
+                operation?.finish(failed: true)
+                trace?.count(.pageError)
+                #endif
+                ScopedLog(.database)("History page query failed (\(direction)): \(error)")
+                DispatchQueue.main.async { completion(.failed) }
+            }
+        }
+    }
+
+    /// Share the page and persistence barrier with every demand/background
+    /// waiter. Empty or filtered local pages never establish SDK exhaustion.
+    @MainActor
+    func loadOlderFromServer(background: Bool = false) async -> HistoryPaginationResult {
+        guard acceptsTimelineRefreshes, !Task.isCancelled else { return .cancelled }
+        guard let timelineService else { return .unavailable }
+        if sdkPaginationExhausted { return .page(reachedStart: true) }
+        #if DEBUG
+        historyPerformance?.count(background ? .background : .demand)
+        if historyPaginator.isLoading { historyPerformance?.count(.pageJoined) }
+        #endif
+        let batcher = diffBatcher
+        if !historyPaginator.isLoading { isPaginating = true }
+        return await historyPaginator.load(operation: {
+            let result = await timelineService.paginateBackwards(numEvents: 50)
+            guard !Task.isCancelled else { return .cancelled }
+            // Drain diffs already delivered by the SDK, including debounce.
+            // Later decryption/listener updates remain eligible for refresh.
+            await batcher.synchronize()
+            return result
+        }, didFinish: { [weak self] result in
+            guard let self, self.acceptsTimelineRefreshes else { return }
+            if case .page(let reachedStart) = result { self.sdkPaginationExhausted = reachedStart }
+            self.isPaginating = false
+            if case .page = result { self.checkSparseHistoryIfNeeded() }
+        })
     }
 
     // MARK: - Jump
 
-    func jumpToMessage(eventId: String) {
-        window.jumpTo(eventId: eventId)
+    /// Catalog entries and links need the ordinary timeline's full projection.
+    /// Keep the source screen visible until history and presentation are ready.
+    @MainActor
+    func preparePollNavigation(
+        eventId: String, targetKind: ChatCatalogTarget = .poll,
+        paginate: (() async -> HistoryPaginationResult)? = nil
+    ) async throws -> PreparedPollNavigation {
+        let id = UUID()
+        historyReplacementID = id
+        let isCurrent = { [weak self] in
+            guard let self else { return false }
+            return self.acceptsTimelineRefreshes && self.presentationDatabase.isActive
+                && self.historyReplacementID == id
+        }
+        try await ChatPollNavigation.load(eventId: eventId, roomId: roomId,
+            database: presentationDatabase, targetKind: targetKind, isCurrent: isCurrent,
+            isReadyForPagination: { [weak self] in
+                paginate != nil || self?.timelineService?.hasLiveTimeline == true
+            },
+            paginate: { [weak self] in
+                if let paginate { return await paginate() }
+                guard let self else { return .cancelled }
+                return await self.loadOlderFromServer()
+            })
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while true {
+            try Task.checkCancellation()
+            guard isCurrent() else { throw CancellationError() }
+            let request = window.replacementRequest(.event(eventId))
+            let input = renderInput()
+            let includesLocalState = includesLocalPresentationState
+            let (page, prepared) = try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<(MessageWindow.ReplacementPage, PreparedRender), Error>) in
+                historyPageQueue.async {
+                    do {
+                        guard let page = try request.fetch(includingLocalState: includesLocalState) else {
+                            throw PollNavigationError.unavailable
+                        }
+                        let prepared = Self.prepareRender(input, stored: page.stored, origin: page.origin,
+                            olderBoundary: page.olderNeighbor, newerBoundary: page.newerNeighbor, local: page.localState)
+                        guard prepared.messages.contains(where: {
+                            $0.eventId == eventId && targetKind.accepts($0.content)
+                        }) else { throw PollNavigationError.unavailable }
+                        continuation.resume(returning: (page, prepared))
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+            try Task.checkCancellation()
+            guard isCurrent() else { throw CancellationError() }
+            guard window.canApply(page), canApplyRender(prepared) else {
+                guard ContinuousClock.now < deadline else { throw PollNavigationError.loadingFailed }
+                continue
+            }
+            return PreparedPollNavigation { [weak self] in
+                guard let self, isCurrent(), self.window.canApply(page), self.canApplyRender(prepared) else { return false }
+                self.preparedWindowRender = prepared
+                self.window.applyReplacement(page)
+                self.preparedWindowRender = nil
+                self.requestSparseHistoryCheck()
+                return true
+            }
+        }
     }
 
-    func jumpToLive() {
-        sdkPaginationExhausted = false
-        window.jumpToLive()
+    func cancelPendingHistoryReplacement() { historyReplacementID = UUID() }
+
+    /// Prepare all SQL and decoding before the view starts its synchronous
+    /// teleport swap. A newer navigation or cleanup cancels this request.
+    func prepareHistoryReplacement(
+        _ destination: MessageWindow.Destination, ready: @escaping (() -> Void) -> Void
+    ) {
+        historyReplacementID = UUID()
+        prepareHistoryReplacement(destination, id: historyReplacementID, ready: ready)
     }
 
-    func jumpToOldest() {
-        sdkPaginationExhausted = false
-        window.jumpToOldest()
+    private func prepareHistoryReplacement(
+        _ destination: MessageWindow.Destination, id: UUID?, ready: @escaping (() -> Void) -> Void
+    ) {
+        guard acceptsHistoryReplacement(id) else { return }
+        // A live flush may have initialized the same window while initial
+        // preparation was queued. Do not replace its more recent snapshot.
+        if case .newest = destination, window.generation > 0 { return }
+        let request = window.replacementRequest(destination)
+        let input = renderInput()
+        let includesLocalState = includesLocalPresentationState
+        #if DEBUG
+        let trace = historyPerformance
+        let operation = trace?.begin(.pageQueue)
+        #endif
+        historyPageQueue.async { [weak self] in
+            #if DEBUG
+            operation?.move(to: .page)
+            #endif
+            do {
+                guard let page = try request.fetch(includingLocalState: includesLocalState) else { return }
+                #if DEBUG
+                operation?.move(to: .decode)
+                #endif
+                let prepared = Self.prepareRender(input, stored: page.stored, origin: page.origin,
+                    olderBoundary: page.olderNeighbor, newerBoundary: page.newerNeighbor, local: page.localState)
+                #if DEBUG
+                operation?.move(to: .mainQueue)
+                #endif
+                DispatchQueue.main.async { [weak self] in
+                    #if DEBUG
+                    operation?.finish()
+                    #endif
+                    guard let self, self.acceptsHistoryReplacement(id) else { return }
+                    guard self.window.canApply(page), self.canApplyRender(prepared) else {
+                        #if DEBUG
+                        trace?.count(.pageStale)
+                        #endif
+                        self.prepareHistoryReplacement(destination, id: id, ready: ready)
+                        return
+                    }
+                    ready { [weak self] in
+                        guard let self, self.acceptsHistoryReplacement(id),
+                              self.window.canApply(page), self.canApplyRender(prepared) else { return }
+                        self.preparedWindowRender = prepared
+                        self.window.applyReplacement(page)
+                        self.preparedWindowRender = nil
+                        self.requestSparseHistoryCheck()
+                    }
+                }
+            } catch {
+                #if DEBUG
+                operation?.finish(failed: true)
+                trace?.count(.pageError)
+                #endif
+                ScopedLog(.database)("History replacement failed: \(error)")
+                if id == nil {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.initialNavigationAnchor != nil else { return }
+                        self.initialNavigationAnchor = nil
+                        self.timelineRefreshQueue.setPaused(!self.navigationPresentationActive)
+                        self.prepareInitialHistoryWindow()
+                    }
+                }
+            }
+        }
     }
 
+    private func acceptsHistoryReplacement(_ id: UUID?) -> Bool {
+        acceptsTimelineRefreshes && presentationDatabase.isActive
+            && (id.map { $0 == historyReplacementID } ?? (window.generation == 0))
+    }
+
+    func retryHistoryRecovery() { decryptionRepair?.retry() }
+
+    /// An index in `rows`, including date dividers, not in `messages`.
     func indexOfMessage(eventId: String) -> Int? {
         rowIndexByEventId[eventId]
     }
@@ -2542,9 +3497,10 @@ final class ChatViewModel {
         eventId: String?,
         canEstablishBaseline: Bool
     ) {
-        guard !mode.isPreview else { return }
+        guard !mode.isPreview, acceptsTimelineRefreshes, navigationPresentationActive else { return }
         guard let eventId else {
             readReceiptWork?.cancel()
+            readReceiptWork = nil
             pendingReadReceiptSend = nil
             return
         }
@@ -2555,34 +3511,44 @@ final class ChatViewModel {
             guard canEstablishBaseline else { return }
             guard pendingReadReceiptSend != .bootstrap(target) else { return }
             guard lastBootstrapReadReceiptTarget != target else { return }
-            scheduleReadReceiptSend(to: target, mode: .bootstrap(target))
+            scheduleReadReceiptSend(.bootstrap(target))
             return
         }
 
         guard shouldAdvanceReadReceipt(to: target) else { return }
         guard pendingReadReceiptSend != .advance(target) else { return }
 
-        scheduleReadReceiptSend(to: target, mode: .advance(target))
+        scheduleReadReceiptSend(.advance(target))
     }
 
-    private func scheduleReadReceiptSend(
-        to target: VisibleReadReceiptTarget,
-        mode: PendingReadReceiptSend
-    ) {
-        guard let timelineService else { return }
+    private func scheduleReadReceiptSend(_ mode: PendingReadReceiptSend) {
+        guard timelineService != nil else { return }
         readReceiptWork?.cancel()
         pendingReadReceiptSend = mode
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            Task {
-                let didSend = await timelineService.sendReadReceipt(for: target.eventId)
-                await MainActor.run {
-                    self.finishReadReceiptSend(mode, didSend: didSend)
-                }
-            }
+            self?.flushPendingReadReceipt()
         }
         readReceiptWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    /// Finish the debounce on departure. An in-flight request has no work
+    /// item and must not be started a second time by another lifecycle hook.
+    func flushPendingReadReceipt() {
+        guard readReceiptWork != nil, let pending = pendingReadReceiptSend else { return }
+        readReceiptWork?.cancel()
+        readReceiptWork = nil
+        guard let request = timelineService?.readReceiptRequest(for: pending.target.eventId) else {
+            pendingReadReceiptSend = nil
+            return
+        }
+        let database = presentationDatabase
+        Task { @MainActor [weak self] in
+            guard database.isActive else { return }
+            let didSend = await request.send()
+            guard let self, self.acceptsTimelineRefreshes else { return }
+            self.finishReadReceiptSend(pending, didSend: didSend)
+        }
     }
 
     private func finishReadReceiptSend(_ pending: PendingReadReceiptSend, didSend: Bool) {
@@ -2655,20 +3621,19 @@ final class ChatViewModel {
         if let pendingTarget = pendingReadReceiptSend?.target,
            !isReadReceiptTarget(pendingTarget, newerThan: target) {
             readReceiptWork?.cancel()
+            readReceiptWork = nil
             pendingReadReceiptSend = nil
         }
     }
 
-    private func setMessages(_ newMessages: [ChatMessage], olderBoundary: ClusterNeighbor?) {
-        messages = newMessages
-        rows = Self.buildRows(from: newMessages, olderBoundary: olderBoundary)
-
+    private static func buildMessageIndices(messages: [ChatMessage], rows: [ChatTimelineRow])
+        -> ([String: Int], [String: Int]) {
         // Matrix event_ids identify one event, but SDK/local-echo
         // replacement can transiently surface the same event twice.
         // Navigation/read receipts only need one visible target.
         var messageIndices: [String: Int] = [:]
-        messageIndices.reserveCapacity(newMessages.count)
-        for (index, message) in newMessages.enumerated() {
+        messageIndices.reserveCapacity(messages.count)
+        for (index, message) in messages.enumerated() {
             guard let eventId = message.eventId,
                   !eventId.isEmpty,
                   messageIndices[eventId] == nil else {
@@ -2676,7 +3641,6 @@ final class ChatViewModel {
             }
             messageIndices[eventId] = index
         }
-        messageIndexByEventId = messageIndices
 
         var rowIndices: [String: Int] = [:]
         rowIndices.reserveCapacity(rows.count)
@@ -2688,7 +3652,7 @@ final class ChatViewModel {
             }
             rowIndices[eventId] = index
         }
-        rowIndexByEventId = rowIndices
+        return (messageIndices, rowIndices)
     }
 
     private static func buildRows(
@@ -2757,8 +3721,11 @@ final class ChatViewModel {
         pendingForwardContent = preview
     }
 
-    func editingInputText(for message: ChatMessage) -> String? {
-        editingDraftOverride ?? message.content.textBody
+    func editingInputText(for message: ChatMessage) -> ComposerText? {
+        if let editingDraftOverride { return editingDraftOverride }
+        return message.content.textBody.map {
+            ComposerText(body: $0, metadata: message.textMetadata)
+        }
     }
 
     func clearPendingForward() {
@@ -2769,7 +3736,8 @@ final class ChatViewModel {
 
     private func refreshWindow() async {
         await MainActor.run {
-            self.window.refresh(origin: .localMutation)
+            self.presentationRevision &+= 1
+            self.timelineRefreshQueue.enqueue(.init(requiresPresentationRefresh: true))
         }
     }
 
@@ -2830,6 +3798,7 @@ final class ChatViewModel {
                             isEditFailed = 0,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
@@ -2893,6 +3862,7 @@ final class ChatViewModel {
                             isEditFailed = 0,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND editTransactionId = ?
@@ -2923,6 +3893,7 @@ final class ChatViewModel {
                             isEditFailed = 0,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
@@ -2953,6 +3924,7 @@ final class ChatViewModel {
                             isEditFailed = 1,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND editTransactionId = ?
@@ -2983,6 +3955,7 @@ final class ChatViewModel {
                             isEditFailed = 1,
                             editTransactionId = NULL,
                             pendingEditBody = NULL,
+                            pendingEditFormattedBody = NULL,
                             pendingEditZynaAttributesJSON = NULL
                         WHERE roomId = ?
                           AND eventId = ?
@@ -3028,20 +4001,18 @@ final class ChatViewModel {
     }
 
     private func refreshComposerSendPermission() {
-        let reason = composerSendBlockReason()
-        let blocked = composerSendBlockedValue(reason: reason)
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if self.composerSendRestrictionReason != reason {
-                    self.composerSendRestrictionReason = reason
-                }
-                if self.isComposerSendBlocked != blocked {
-                    self.isComposerSendBlocked = blocked
-                }
+                self?.refreshComposerSendPermission()
             }
             return
         }
+        let reason = composerSendBlockReason()
+        let blocked = composerSendBlockedValue(reason: reason)
+        // Publish effective permissions so verification changes update visible
+        // poll cells through the same lightweight path as room power levels.
+        let allowed = canInteractWithPolls ? pollPowerPermissions : PollPermissions()
+        if pollPermissions != allowed { pollPermissions = allowed }
         if composerSendRestrictionReason != reason {
             composerSendRestrictionReason = reason
         }
@@ -3056,18 +4027,81 @@ final class ChatViewModel {
 
     private func composerSendBlockedValue(reason: OutgoingSendFailureReason?) -> Bool {
         guard !mode.isPreview else { return false }
+        if directBlocking?.state == .loading { return true }
         guard room != nil else { return true }
         return reason != nil
     }
 
     private func composerSendBlockReason() -> OutgoingSendFailureReason? {
         guard !mode.isPreview else { return nil }
+        if directBlocking?.state.blockedUserID != nil { return .recipientBlocked }
         guard room != nil else { return nil }
         guard canSendRoomMessages else { return .roomSendNotAllowed }
         return requiresVerifiedDeviceForSending
             && !SessionVerificationService.shared.canSendEncryptedMessages
             ? .ownDeviceVerificationRequired
             : nil
+    }
+
+    var canCreatePoll: Bool {
+        canInteractWithPolls && pollPermissions.start
+    }
+
+    private var canInteractWithPolls: Bool {
+        !mode.isPreview && !isInvited && room != nil
+            && (directBlocking == nil || directBlocking?.state == .allowed)
+            && (!requiresVerifiedDeviceForSending || SessionVerificationService.shared.canSendEncryptedMessages)
+    }
+
+    func pollActions(for message: ChatMessage) -> (vote: Bool, edit: Bool, end: Bool) {
+        guard canInteractWithPolls, message.eventId != nil, !message.isSyntheticOutgoingEnvelope,
+              case .poll(let poll) = message.content, !poll.hasEnded else { return (false, false, false) }
+        let available = poll.pending == nil || poll.pending?.failed == true
+        return (pollPermissions.response && poll.allowsVote,
+                message.isOutgoing && pollPermissions.start && poll.isEditable && available,
+                message.isOutgoing && pollPermissions.end && available)
+    }
+
+    @MainActor
+    func savePoll(_ definition: PollDefinition, editing message: ChatMessage?) async throws {
+        guard let sessionId = MatrixClientService.shared.currentLocalSessionId else { throw PollError.staleSession }
+        if let message {
+            guard pollActions(for: message).edit, let eventId = message.eventId else { throw PollError.notAllowed }
+            try await PollStore.shared.enqueue(roomId: roomId, eventId: eventId, kind: .edit,
+                                               definition: definition, sessionId: sessionId)
+        } else {
+            guard canCreatePoll else { throw PollError.notAllowed }
+            _ = try await PollStore.shared.create(roomId: roomId, definition: definition, sessionId: sessionId)
+        }
+        OutgoingPollOutboxService.shared.kick()
+    }
+
+    @MainActor
+    func performPollAction(_ action: PollMessageCellNode.Action, for message: ChatMessage) {
+        Task {
+            do {
+                if case .dismissFailure(let id) = action {
+                    try await PollStore.shared.dismissFailure(id: id)
+                    return
+                }
+                guard let sessionId = MatrixClientService.shared.currentLocalSessionId,
+                      canInteractWithPolls else { throw PollError.notAllowed }
+                let current = messages.first { $0.eventId == message.eventId } ?? message
+                switch action {
+                case .vote(let answers):
+                    guard pollActions(for: current).vote, let id = current.eventId else { throw PollError.notAllowed }
+                    try await PollStore.shared.enqueue(roomId: roomId, eventId: id, kind: .response,
+                                                       answers: answers, sessionId: sessionId)
+                case .end:
+                    guard pollActions(for: current).end, let id = current.eventId else { throw PollError.notAllowed }
+                    try await PollStore.shared.enqueue(roomId: roomId, eventId: id, kind: .end, sessionId: sessionId)
+                case .retry(let id): try await PollStore.shared.retry(id: id, sessionId: sessionId)
+                case .dismissFailure: return
+                case .edit: return
+                }
+                OutgoingPollOutboxService.shared.kick()
+            } catch { pollError = error.localizedDescription }
+        }
     }
 
     @discardableResult
@@ -3088,21 +4122,29 @@ final class ChatViewModel {
         return true
     }
 
+    /// Check synchronously before the input node clears a draft. Published
+    /// permission changes may still be queued for delivery to the view.
+    func canSubmitComposer() -> Bool { guardCanCreateOutgoingEnvelope() }
+
     private func sendOutgoingText(
         body: String,
+        formattedBody: String? = nil,
         replyEventId: String? = nil,
         replyInfo: ReplyInfo? = nil,
-        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes()
+        zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
+        envelopeId: String = UUID().uuidString,
+        transactionId: String? = nil
     ) async {
         guard let timelineService else { return }
-        let envelopeId = UUID().uuidString
         let transactionId = timelineService.prepareDirectRawTextTransactionId(
-            replyEventId: replyEventId
+            replyEventId: replyEventId,
+            existingTransactionId: transactionId
         )
         outgoingEnvelopes.createOutgoingText(
             roomId: roomId,
             envelopeId: envelopeId,
             body: body,
+            formattedBody: formattedBody,
             replyInfo: replyInfo,
             zynaAttributes: zynaAttributes,
             transactionId: transactionId
@@ -3335,7 +4377,7 @@ final class ChatViewModel {
                 replyInfo: nil,
                 zynaAttributes: attrs
             )
-        case .file:
+        case .audio, .file:
             guard case .file(_, let filename, let mimetype, let size, _) = preview.content else {
                 return
             }
@@ -3380,13 +4422,14 @@ final class ChatViewModel {
     ) -> PendingForwardedMediaDraft? {
         switch message.content {
         case .image(let source?, let thumbnailSource, let width, let height, _, _):
+            let metadata = message.mediaMetadata
             return PendingForwardedMediaDraft(
                 kind: .image,
                 source: source,
                 thumbnailSource: thumbnailSource,
-                filename: "image.jpg",
-                mimetype: "image/jpeg",
-                size: nil,
+                filename: metadata?.filename ?? RoomAttachmentKind.image.defaultFilename,
+                mimetype: metadata?.mimetype ?? RoomAttachmentKind.image.defaultMimetype,
+                size: metadata?.sizeBytes,
                 width: width,
                 height: height,
                 duration: nil,
@@ -3406,29 +4449,36 @@ final class ChatViewModel {
                 waveform: []
             )
         case .voice(let source?, let duration, let waveform):
+            let metadata = message.mediaMetadata
             return PendingForwardedMediaDraft(
                 kind: .voice,
                 source: source,
                 thumbnailSource: nil,
-                filename: "voice.m4a",
-                mimetype: "audio/mp4",
-                size: nil,
+                filename: metadata?.filename ?? RoomAttachmentKind.voice.defaultFilename,
+                mimetype: metadata?.mimetype ?? RoomAttachmentKind.voice.defaultMimetype,
+                size: metadata?.sizeBytes,
                 width: nil,
                 height: nil,
                 duration: duration,
                 waveform: waveform
             )
         case .file(let source?, let filename, let mimetype, let size, _):
+            let metadata = message.mediaMetadata
+            let kind: PendingForwardedMediaKind = metadata?.attachmentKind == .audio
+                ? .audio
+                : .file
             return PendingForwardedMediaDraft(
-                kind: .file,
+                kind: kind,
                 source: source,
                 thumbnailSource: nil,
-                filename: filename,
-                mimetype: mimetype ?? "application/octet-stream",
+                filename: metadata?.filename ?? filename,
+                mimetype: mimetype ?? (kind == .audio
+                    ? RoomAttachmentKind.audio.defaultMimetype
+                    : RoomAttachmentKind.file.defaultMimetype),
                 size: size,
                 width: nil,
                 height: nil,
-                duration: nil,
+                duration: metadata?.durationSeconds,
                 waveform: []
             )
         default:
@@ -3436,7 +4486,8 @@ final class ChatViewModel {
         }
     }
 
-    func sendMessage(_ text: String, color: UIColor? = nil) {
+    func sendMessage(_ message: ComposerText, color: UIColor? = nil) {
+        let text = message.body
         guard guardCanCreateOutgoingEnvelope() else { return }
 
         if let editing = editingMessage {
@@ -3448,7 +4499,11 @@ final class ChatViewModel {
 
             let editedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !editedText.isEmpty else { return }
-            guard editedText != originalBody.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            let original = ComposerText(
+                body: originalBody, metadata: editing.textMetadata
+            )
+            let originalSnapshot = ComposerText(attributedText: original.attributedText(color: .label), trimming: true)
+            guard message != originalSnapshot else {
                 setEditingTarget(nil)
                 return
             }
@@ -3467,6 +4522,7 @@ final class ChatViewModel {
                        roomId: self.roomId,
                        eventId: eventId,
                        body: editedText,
+                       formattedBody: message.formattedBody,
                        zynaAttributes: editing.zynaAttributes,
                        transactionId: transactionId
                    ) {
@@ -3483,7 +4539,7 @@ final class ChatViewModel {
                     guard self.activeEditAttemptId == attemptId else { return }
                     self.activeEditAttemptId = nil
                     guard self.canRestoreFailedEditDraft?() ?? true else { return }
-                    self.editingDraftOverride = editedText
+                    self.editingDraftOverride = message
                     self.replyingTo = nil
                     self.pendingForwardContent = nil
                     self.editingMessage = editing
@@ -3503,7 +4559,7 @@ final class ChatViewModel {
 
             if let body = forward.content.textBody {
                 Task { [weak self] in
-                    await self?.sendOutgoingText(body: body, zynaAttributes: attrs)
+                    await self?.sendOutgoingText(body: body, formattedBody: forward.textMetadata?.matrixHTML, zynaAttributes: attrs)
                 }
             } else if forward.content.mediaForwardInfo != nil {
                 let caption = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
@@ -3526,6 +4582,7 @@ final class ChatViewModel {
             Task { [weak self] in
                 await self?.sendOutgoingText(
                     body: text,
+                    formattedBody: message.formattedBody,
                     replyEventId: eventId,
                     replyInfo: replyInfo,
                     zynaAttributes: attrs
@@ -3537,13 +4594,13 @@ final class ChatViewModel {
         if let color {
             let attrs = ZynaMessageAttributes(color: color)
             Task { [weak self] in
-                await self?.sendOutgoingText(body: text, zynaAttributes: attrs)
+                await self?.sendOutgoingText(body: text, formattedBody: message.formattedBody, zynaAttributes: attrs)
             }
             return
         }
 
         Task { [weak self] in
-            await self?.sendOutgoingText(body: text)
+            await self?.sendOutgoingText(body: text, formattedBody: message.formattedBody)
         }
     }
 
@@ -3593,14 +4650,14 @@ final class ChatViewModel {
         }
     }
 
+    @discardableResult
     func sendComposerAttachments(
         _ attachments: [ChatComposerAttachmentDraft],
         caption: String?,
         captionPlacement: CaptionPlacement = .bottom,
         layoutOverride: MediaGroupLayoutOverride? = nil
-    ) {
-        guard !attachments.isEmpty else { return }
-        guard guardCanCreateOutgoingEnvelope() else { return }
+    ) -> Bool {
+        guard !attachments.isEmpty, guardCanCreateOutgoingEnvelope() else { return false }
 
         let videoCount = attachments.filter(\.isVideo).count
         if videoCount > 0 {
@@ -3633,7 +4690,7 @@ final class ChatViewModel {
                     replyInfo: replyInfo
                 )
             }
-            return
+            return true
         }
 
         Task { [weak self] in
@@ -3670,6 +4727,7 @@ final class ChatViewModel {
                 }
             }
         }
+        return true
     }
 
     private func sendSingleImage(
@@ -3677,10 +4735,11 @@ final class ChatViewModel {
         caption: String?,
         replyEventId: String?,
         replyInfo: ReplyInfo?,
-        zynaAttributes: ZynaMessageAttributes
+        zynaAttributes: ZynaMessageAttributes,
+        envelopeId: String = UUID().uuidString,
+        transactionId: String? = nil
     ) async {
-        let envelopeId = UUID().uuidString
-        let transactionId = DirectRawMediaSender.prepareImageTransactionId()
+        let transactionId = DirectRawMediaSender.prepareImageTransactionId(existingTransactionId: transactionId)
         outgoingEnvelopes.createOutgoingImage(
             roomId: roomId,
             envelopeId: envelopeId,
@@ -4029,13 +5088,21 @@ final class ChatViewModel {
     }
 
     private func retryOutgoingEnvelopeNow(id envelopeId: String) async {
+        guard guardCanCreateOutgoingEnvelope() else { return }
+        if let envelope = outgoingEnvelopes.envelope(id: envelopeId, roomId: roomId), envelope.kind == .poll {
+            do {
+                guard envelope.payload != .invalid else { throw PollError.invalidContent }
+                guard let sessionId = MatrixClientService.shared.currentLocalSessionId else { throw PollError.staleSession }
+                try await PollStore.shared.retry(id: envelopeId, sessionId: sessionId)
+                OutgoingPollOutboxService.shared.kick()
+            } catch { await MainActor.run { self.pollError = error.localizedDescription } }
+            return
+        }
         guard let envelope = outgoingEnvelopes.envelope(id: envelopeId, roomId: roomId),
               envelope.isRetryableAfterSessionChange
         else {
             return
         }
-        guard guardCanCreateOutgoingEnvelope() else { return }
-
         switch envelope.payload {
         case .text(let payload):
             await retryTextEnvelope(envelope, body: payload.body)
@@ -4277,92 +5344,64 @@ final class ChatViewModel {
         for messageId in idsToHide {
             partialReflowPreviewsByMessageId.removeValue(forKey: messageId)
         }
-        let oldRows = rows
-        let oldMessages = messages
-        var visibleRedactedKeys = Set(
-            oldMessages
-                .filter { $0.content.isRedacted }
-                .flatMap(\.timelineIdentityKeys)
-        )
-        visibleRedactedKeys.subtract(keysToHide)
-        let now = Date().timeIntervalSince1970
-        let pendingRedactionRecords = pendingRedactions.pendingRecords(roomId: roomId)
-        let pendingRedactionLookup = Self.pendingRedactionDisplayLookup(
-            for: pendingRedactionRecords
-        )
-        schedulePendingRedactionPlaceholderRefresh(
-            records: pendingRedactionRecords,
-            now: now
-        )
-        let pendingReactionRemovalsByEventId = pendingReactions
-            .pendingRemovalKeysByEventId(roomId: roomId)
-        let rawMessages = storedMessages.compactMap { msg -> ChatMessage? in
-            displayChatMessage(
-                for: msg,
-                pendingRedactionLookup: pendingRedactionLookup,
-                pendingReactionRemovalsByEventId: pendingReactionRemovalsByEventId,
-                now: now,
-                visibleRedactedKeys: visibleRedactedKeys
-            )
-        }
-        let deletedMediaGroupIds = Self.redactedMediaGroupIds(in: storedMessages)
-        logMediaGroup(
-            "deleteReflow hide messageIds=\(idsToHide.sorted().joined(separator: ",")) visibleRedactedKeys=\(visibleRedactedKeys.sorted().joined(separator: ",")) deletedGroups=\(deletedMediaGroupIds.sorted().joined(separator: ","))"
-        )
-        let olderBoundary = window.peekOlderNeighbor()
-        let newerBoundary = window.peekNewerNeighbor()
-        let newMessages = buildRenderableMessages(
-            from: rawMessages,
-            deletedMediaGroupIds: deletedMediaGroupIds,
-            partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId,
-            olderBoundary: olderBoundary,
-            newerBoundary: newerBoundary
-        )
-        setMessages(newMessages, olderBoundary: olderBoundary)
-
-        let (tableUpdate, inPlaceUpdates) = Self.computeTableUpdate(old: oldRows, new: rows)
-        onTableUpdate?(tableUpdate)
-        for (indexPath, message) in inPlaceUpdates {
-            onInPlaceUpdate?(indexPath, message)
-        }
+        enqueuePresentationRefresh(origin: .localMutation)
     }
 
     // MARK: - Search
 
     func activateSearch() {
+        searchRevision &+= 1
+        pendingSearchRestorationEventID = nil
         searchState = ChatSearchState()
     }
 
     func deactivateSearch() {
+        searchRevision &+= 1
+        pendingSearchRestorationEventID = nil
         searchState = nil
     }
 
-    func updateSearchQuery(_ text: String) {
-        guard searchState != nil else { return }
-        searchState?.query = text
+    var navigationSearchState: ChatNavigationState.Search? {
+        searchState.map { .init(query: $0.query,
+            eventID: $0.currentResult?.eventId ?? pendingSearchRestorationEventID) }
+    }
 
-        guard !text.isEmpty else {
-            searchState?.results = []
-            searchState?.currentIndex = 0
-            return
-        }
+    func updateSearchQuery(_ text: String, restoringEventID: String? = nil) {
+        guard var state = searchState else { return }
+        searchRevision &+= 1
+        let revision = searchRevision
+        pendingSearchRestorationEventID = restoringEventID
+        state.query = text
+        state.results = []
+        state.currentIndex = 0
+        searchState = state
+        guard !text.isEmpty else { return }
 
         let rid = roomId
         let pattern = "%\(text)%"
-        let results: [ChatSearchResult] = (try? DatabaseService.shared.dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == rid)
-                .filter(Column("contentBody").like(pattern))
-                .order(Column("timestamp").desc)
-                .fetchAll(db)
-                .compactMap { msg -> ChatSearchResult? in
-                    guard let eventId = msg.eventId, let body = msg.contentBody else { return nil }
-                    return ChatSearchResult(eventId: eventId, body: body)
-                }
-        }) ?? []
+        let database = presentationDatabase
+        historyPageQueue.async { [weak self] in
+            let results: [ChatSearchResult] = (try? database.read { db in
+                try StoredMessage.visible
+                    .filter(Column("roomId") == rid)
+                    .filter(Column("contentBody").like(pattern))
+                    .order(Column("timestamp").desc)
+                    .fetchAll(db)
+                    .compactMap { msg -> ChatSearchResult? in
+                        guard let eventId = msg.eventId, let body = msg.contentBody else { return nil }
+                        return ChatSearchResult(eventId: eventId, body: body)
+                    }
+            }) ?? []
 
-        searchState?.results = results
-        searchState?.currentIndex = 0
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.acceptsTimelineRefreshes, database.isActive,
+                      self.searchRevision == revision, var state = self.searchState, state.query == text else { return }
+                state.results = results
+                state.currentIndex = restoringEventID.flatMap { id in results.firstIndex { $0.eventId == id } } ?? 0
+                self.pendingSearchRestorationEventID = nil
+                self.searchState = state
+            }
+        }
     }
 
     func nextSearchResult() {
@@ -4377,13 +5416,51 @@ final class ChatViewModel {
         searchState = state
     }
 
+    func setNavigationPresentationActive(_ active: Bool) {
+        guard acceptsTimelineRefreshes, navigationPresentationActive != active else { return }
+        navigationPresentationActive = active
+        timelineRefreshQueue.setPaused(!active || initialNavigationAnchor != nil)
+        if active {
+            if pendingPresentationOrigin != nil { preparePresentationRefresh() }
+            checkSparseHistoryIfNeeded()
+        } else {
+            flushPendingReadReceipt()
+        }
+    }
+
+    func restoreNavigationComposer(_ state: ChatNavigationState) {
+        replyingTo = state.reply
+        editingMessage = state.editing
+        editingDraftOverride = state.editing == nil ? nil : state.text
+        pendingForwardContent = state.forward
+        if let search = state.search {
+            activateSearch()
+            updateSearchQuery(search.query, restoringEventID: search.eventID)
+        }
+    }
+
     func cleanup() {
+        directBlocking?.stop()
+        flushPendingReadReceipt()
+        #if DEBUG
+        historyPerformance?.stop()
+        #endif
+        acceptsTimelineRefreshes = false
+        pendingPresentationOrigin = nil
+        presentationRevision &+= 1
+        decryptionRepair?.stop()
+        decryptionRepair = nil
+        historyRecovery?.stop()
+        window.onRecoveryFocusChange = nil
+        timelineRefreshQueue.cancel()
         historySyncTask?.cancel()
+        historyPaginator.stop()
         pendingRedactionPlaceholderWork?.cancel()
         readReceiptWork?.cancel()
+        readReceiptWork = nil
         pendingReadReceiptSend = nil
         if !mode.isPreview {
-            PresenceTracker.shared.unregister(for: "chat")
+            PresenceTracker.shared.unregister(for: self.presenceRegistration)
         }
         roomResolutionTask?.cancel()
         roomResolutionTask = nil
@@ -4400,36 +5477,59 @@ final class ChatViewModel {
         timelineService?.onRoomEncryptionChanged = nil
         timelineService?.onRoomPinnedEventsChanged = nil
         diffBatcher.onFlush = nil
+        diffBatcher.onDecryptionCandidatesChanged = nil
         timelineService?.stopListening()
+        cancellables.removeAll()
     }
+
+    #if DEBUG || CHAT_LIST_PLAYGROUND
+    // MARK: - Chat Load Generator
+
+    @MainActor
+    func makeLoadGenerator(image: @escaping () -> ProcessedImage?) -> ChatLoadGenerator {
+        let sessionID = MatrixClientService.shared.currentLocalSessionId
+        let database = presentationDatabase
+        return ChatLoadGenerator(validate: { [weak self] in
+            guard let self, self.acceptsTimelineRefreshes, !self.mode.isPreview,
+                  database.isActive, let sessionID,
+                  MatrixClientService.shared.currentLocalSessionId == sessionID,
+                  self.timelineService != nil else {
+                throw ChatLoadGenerator.Failure("Чат или аккаунт закрыт. Откройте генератор заново.")
+            }
+            guard self.canSubmitComposer() else {
+                throw ChatLoadGenerator.Failure("Сейчас нельзя отправлять сообщения в этот чат.")
+            }
+        }, enqueue: { [weak self] item in
+            guard let self else { throw ChatLoadGenerator.Failure("Чат закрыт.") }
+            if item.isPhoto {
+                guard let image = image() else { throw ChatLoadGenerator.Failure("Выберите фото.") }
+                await self.sendSingleImage(image, caption: item.body, replyEventId: nil,
+                                           replyInfo: nil, zynaAttributes: ZynaMessageAttributes(),
+                                           envelopeId: item.envelopeID, transactionId: item.envelopeID)
+            } else {
+                await self.sendOutgoingText(body: item.body, envelopeId: item.envelopeID,
+                                            transactionId: item.envelopeID)
+            }
+        }, delivery: { [roomId] id in
+            try await database.read { db in
+                try ChatLoadGeneratorDelivery.read(envelopeID: id, roomID: roomId, in: db)
+            }
+        })
+    }
+    #endif
 
     // MARK: - Background History Sync
 
+    @MainActor
     private func syncFullHistory() async {
-        guard let timelineService else { return }
-        var stagnantBatchCount = 0
-        while !Task.isCancelled {
-            let countBefore = storedMessageCount()
-            await timelineService.paginateBackwards(numEvents: 50)
-            // Wait for batcher debounce (50ms) + margin
-            try? await Task.sleep(for: .milliseconds(150))
-            let countAfter = storedMessageCount()
-            if countAfter <= countBefore {
-                stagnantBatchCount += 1
-                if stagnantBatchCount >= 3 { break }
-            } else {
-                stagnantBatchCount = 0
-            }
+        while !Task.isCancelled, acceptsTimelineRefreshes {
+            let result = await loadOlderFromServer(background: true)
+            guard result == .page(reachedStart: false) else { return }
+            // Pace cached/filtered pages too, without using row counts as
+            // progress: repair can delete rows while history is advancing.
+            do { try await Task.sleep(for: .milliseconds(150)) }
+            catch { return }
         }
-    }
-
-    private func storedMessageCount() -> Int {
-        let rid = roomId
-        return (try? DatabaseService.shared.dbQueue.read { db in
-            try StoredMessage
-                .filter(Column("roomId") == rid)
-                .fetchCount(db)
-        }) ?? 0
     }
 
     // MARK: - Cluster Decoration
@@ -4607,7 +5707,7 @@ final class ChatViewModel {
         olderBoundary: ClusterNeighbor?,
         newerBoundary: ClusterNeighbor?
     ) -> [ChatMessage] {
-        let previewHydratedMessages = rawMessages.map { message in
+        let previewHydratedMessages = partialReflowPreviewsByMessageId.isEmpty ? rawMessages : rawMessages.map { message in
             message.applyingPreviewImageData(
                 partialReflowPreviewsByMessageId[message.id]?.imageData
             )
@@ -4800,6 +5900,8 @@ final class ChatViewModel {
                     previewIdentity: partialReflowPreviewsByMessageId[message.id]?.identity,
                     width: width,
                     height: height,
+                    blurhash: message.mediaMetadata?.blurhash,
+                    sizeBytes: message.mediaMetadata?.sizeBytes,
                     caption: caption,
                     sendStatus: message.sendStatus
                 )
@@ -4855,14 +5957,14 @@ final class ChatViewModel {
         Self.identityKeys(for: messageIds, in: window.currentStoredMessages())
     }
 
-    private func displayChatMessage(
+    private static func displayChatMessage(
         for message: StoredMessage,
         pendingRedactionLookup: PendingRedactionDisplayLookup,
         pendingReactionRemovalsByEventId: [String: Set<String>],
         now: TimeInterval,
-        visibleRedactedKeys: Set<String>
+        visibleRedactedKeys: Set<String>, state: inout RenderInput
     ) -> ChatMessage? {
-        if Self.hasAnyIdentityKey(hiddenMessageKeys, for: message) { return nil }
+        if Self.hasAnyIdentityKey(state.hiddenMessageKeys, for: message) { return nil }
         if let pendingPlaceholder = pendingRedactionPlaceholder(
             for: message,
             lookup: pendingRedactionLookup,
@@ -4872,21 +5974,21 @@ final class ChatViewModel {
         }
         if let pending = Self.pendingPartialRedaction(
             for: message,
-            in: pendingPartialRedactions
+            in: state.pendingPartialRedactions
         ) {
-            return pending.toChatMessage().map {
+            return state.cache.message(for: pending).map {
                 Self.markPendingReactionRemovals(
                     in: $0,
                     removalsByEventId: pendingReactionRemovalsByEventId
                 )
             }
         }
-        if Self.hasAnyIdentityKey(pendingRedactionKeys, for: message) { return nil }
+        if Self.hasAnyIdentityKey(state.pendingRedactionKeys, for: message) { return nil }
         if message.contentType == "redacted",
            message.timelineIdentityKeys.isDisjoint(with: visibleRedactedKeys) {
             return nil
         }
-        return message.toChatMessage().map {
+        return state.cache.message(for: message).map {
             Self.markPendingReactionRemovals(
                 in: $0,
                 removalsByEventId: pendingReactionRemovalsByEventId
@@ -4924,7 +6026,7 @@ final class ChatViewModel {
         return didChange ? message.applyingReactions(reactions) : message
     }
 
-    private func pendingRedactionPlaceholder(
+    private static func pendingRedactionPlaceholder(
         for message: StoredMessage,
         lookup: PendingRedactionDisplayLookup,
         now: TimeInterval
@@ -4969,6 +6071,7 @@ final class ChatViewModel {
             return record
         }
 
+        guard !lookup.byIdentityKey.isEmpty else { return nil }
         for identityKey in message.timelineIdentityKeys {
             if let record = lookup.byIdentityKey[identityKey] {
                 return record
@@ -5003,22 +6106,14 @@ final class ChatViewModel {
     }
 
     private func schedulePendingRedactionPlaceholderRefresh(
-        records: [PendingRedactionRecord]? = nil,
-        now: TimeInterval = Date().timeIntervalSince1970
+        deadline: TimeInterval? = Date().timeIntervalSince1970 + pendingRedactionPlaceholderDelay
     ) {
         pendingRedactionPlaceholderWork?.cancel()
-
-        let records = records ?? pendingRedactions.pendingRecords(roomId: roomId)
-        let nextDelay = records
-            .map { $0.createdAt + Self.pendingRedactionPlaceholderDelay - now }
-            .filter { $0 > 0 }
-            .min()
-
-        guard let nextDelay else {
+        guard let deadline else {
             pendingRedactionPlaceholderWork = nil
             return
         }
-
+        let nextDelay = deadline - Date().timeIntervalSince1970
         let work = DispatchWorkItem { [weak self] in
             Task { [weak self] in
                 await self?.refreshWindow()
@@ -5035,13 +6130,14 @@ final class ChatViewModel {
         _ keys: Set<String>,
         for message: StoredMessage
     ) -> Bool {
-        !message.timelineIdentityKeys.isDisjoint(with: keys)
+        !keys.isEmpty && !message.timelineIdentityKeys.isDisjoint(with: keys)
     }
 
     private static func pendingPartialRedaction(
         for message: StoredMessage,
         in pending: [String: StoredMessage]
     ) -> StoredMessage? {
+        guard !pending.isEmpty else { return nil }
         for identityKey in message.timelineIdentityKeys {
             if let redaction = pending[identityKey] {
                 return redaction
@@ -5058,7 +6154,7 @@ final class ChatViewModel {
                 .replacingOccurrences(of: "\u{200B}", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return !body.isEmpty
-        case "image", "video", "voice", "file":
+        case "image", "video", "audio", "voice", "file", "poll":
             return true
         default:
             return false
@@ -5113,6 +6209,7 @@ final class ChatViewModel {
         redactionCandidates: [RedactionTransitionCandidate],
         animatedRedactions: [RedactionTransitionCandidate]
     ) {
+        guard timelineHealthLog.isEnabled else { return }
         var duplicateIdentityCounts: [String: Int] = [:]
         for message in newStored {
             for identityKey in message.timelineIdentityKeys {
@@ -5163,9 +6260,11 @@ final class ChatViewModel {
         animatedRedactions: [RedactionTransitionCandidate],
         hiddenMessageKeys: Set<String>
     ) {
-        let existingKeys = Set(newStored.flatMap(\.timelineIdentityKeys))
-        pendingPartialRedactions = pendingPartialRedactions.filter {
-            !hiddenMessageKeys.contains($0.key) && existingKeys.contains($0.key)
+        if !pendingPartialRedactions.isEmpty {
+            let existingKeys = Set(newStored.flatMap(\.timelineIdentityKeys))
+            pendingPartialRedactions = pendingPartialRedactions.filter {
+                !hiddenMessageKeys.contains($0.key) && existingKeys.contains($0.key)
+            }
         }
 
         for redaction in animatedRedactions {
@@ -5202,6 +6301,7 @@ final class ChatViewModel {
         in previews: inout [String: PartialReflowPreview],
         newStored: [StoredMessage]
     ) {
+        guard !previews.isEmpty else { return }
         let liveIds = Set(
             newStored.compactMap { message in
                 message.contentType == "image" ? message.id : nil
@@ -5323,7 +6423,12 @@ final class ChatViewModel {
 
         for message in messages {
             guard case .image(let source?, let thumbnailSource, let width, let height, _, _) = message.content else { continue }
-            let displaySource = thumbnailSource ?? source
+            // Never speculate on an encrypted original. For those events a
+            // thumbnail request is a full-file download; let the rendered
+            // cell request it when it is actually needed.
+            guard let displaySource = thumbnailSource
+                ?? (message.mediaMetadata?.isSourceEncrypted == false ? source : nil)
+            else { continue }
             guard MediaCache.shared.bubbleImage(
                 for: displaySource,
                 maxPixelWidth: maxPixelWidth,

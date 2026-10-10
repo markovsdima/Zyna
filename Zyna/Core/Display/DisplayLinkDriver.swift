@@ -64,7 +64,7 @@ private extension DisplayLinkRate {
 public final class DisplayLinkToken {
     fileprivate weak var driver: DisplayLinkDriver?
     fileprivate let rate: DisplayLinkRate
-    fileprivate let tick: ((CFTimeInterval) -> Void)?
+    fileprivate let tick: ((DisplayLinkDriver.Frame) -> Void)?
 
     fileprivate var isPaused: Bool = false
     fileprivate var isValid: Bool = true
@@ -72,7 +72,7 @@ public final class DisplayLinkToken {
     fileprivate init(
         driver: DisplayLinkDriver,
         rate: DisplayLinkRate,
-        tick: ((CFTimeInterval) -> Void)?
+        tick: ((DisplayLinkDriver.Frame) -> Void)?
     ) {
         self.driver = driver
         self.rate = rate
@@ -124,6 +124,31 @@ public final class DisplayLinkDriver {
     // MARK: - Singleton
 
     public static let shared = DisplayLinkDriver()
+
+    /// Immutable timing for one delivered tick. Safe to retain after the
+    /// callback; a deferred consumer must account for an expired target time.
+    public struct Frame: Sendable {
+        public let timestamp: CFTimeInterval
+        public let targetTimestamp: CFTimeInterval
+
+        /// Interval of the underlying display link, independent of the
+        /// subscriber's requested rate.
+        public var duration: CFTimeInterval { targetTimestamp - timestamp }
+
+        /// Animation step: 1 / requested FPS for a fixed-rate subscriber,
+        /// or the display interval for `.max`. Not elapsed wall-clock time.
+        public let deltaTime: CFTimeInterval
+
+        /// If this deadline was missed, estimate the next one on the same
+        /// refresh cadence. The next display-link callback updates that cadence.
+        public func estimatedPresentationTimestamp(at now: CFTimeInterval) -> CFTimeInterval {
+            guard now >= targetTimestamp, duration > 0 else {
+                return max(targetTimestamp, now)
+            }
+            let missedIntervals = floor((now - targetTimestamp) / duration) + 1
+            return targetTimestamp + missedIntervals * duration
+        }
+    }
 
     // MARK: - Private Properties
 
@@ -183,12 +208,13 @@ public final class DisplayLinkDriver {
     /// Subscribe to shared CADisplayLink ticks.
     /// - Parameters:
     ///   - rate: Requested frame rate for this subscriber.
-    ///   - tick: Optional callback invoked on main thread for each frame. Pass nil for silent rate requests.
+    ///   - tick: Synchronous main-thread callback with display timing and the
+    ///     subscriber's animation step. Pass nil for silent rate requests.
     /// - Returns: Token that holds the subscription. Release to automatically unsubscribe.
     @discardableResult
     public func subscribe(
         rate: DisplayLinkRate = .fps(60),
-        tick: ((CFTimeInterval) -> Void)? = nil
+        tick: ((Frame) -> Void)? = nil
     ) -> DisplayLinkToken {
         let token = DisplayLinkToken(
             driver: self,
@@ -302,7 +328,8 @@ public final class DisplayLinkDriver {
         }
 
         let currentTime = link.timestamp
-        let frameDuration = link.targetTimestamp - link.timestamp
+        let targetTime = link.targetTimestamp
+        let frameDuration = targetTime - currentTime
         //logCurrentFPS(currentTime)
 
         var indicesToRemove: [Int]?
@@ -322,14 +349,16 @@ public final class DisplayLinkDriver {
 
             guard !token.isPaused, let tick = token.tick else { continue }
 
+            let deltaTime: CFTimeInterval
             if let interval = token.rate.frameInterval {
                 let elapsed = currentTime - entry.lastTickTime
                 guard elapsed >= interval * 0.95 else { continue }
                 entry.lastTickTime = currentTime
-                tick(interval)
+                deltaTime = interval
             } else {
-                tick(frameDuration)
+                deltaTime = frameDuration
             }
+            tick(Frame(timestamp: currentTime, targetTimestamp: targetTime, deltaTime: deltaTime))
         }
 
         // Cleanup deallocated subscriptions

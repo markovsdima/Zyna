@@ -312,8 +312,8 @@ final class PaintSplashLayer: CAMetalLayer, GlassBackdropOverlaySource {
         if !items.isEmpty || glassDripRemaining > 0 {
             if displayLinkToken == nil {
                 GlassService.shared.addBackdropOverlaySource(self)
-                displayLinkToken = DisplayLinkDriver.shared.subscribe(rate: .fps(60)) { [weak self] dt in
-                    self?.tick(deltaTime: dt)
+                displayLinkToken = DisplayLinkDriver.shared.subscribe(rate: .fps(60)) { [weak self] frame in
+                    self?.tick(deltaTime: frame.deltaTime)
                 }
             }
         } else {

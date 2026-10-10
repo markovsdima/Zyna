@@ -1224,7 +1224,9 @@ final class GlassNavBar: ASDisplayNode, AccessibilityElementsOrderProviding {
     }
 
     private func applyGlassAdaptiveMaterial(_ material: GlassAdaptiveMaterial) {
+        let appearanceChanged = material.appearance != glassMaterial.appearance
         glassMaterial = material
+        guard appearanceChanged else { return }
         let glyph = material.glyphForeground
         backButtonNode.imageNode.tintColor = glyph
         callButtonNode.imageNode.tintColor = glyph
@@ -1243,7 +1245,6 @@ private final class GlassNavVoiceTextRenderer {
         let remaining: String
         let rate: String
         let appearance: Int
-        let contrast: Int
     }
 
     private var cachedKey: CacheKey?
@@ -1266,8 +1267,7 @@ private final class GlassNavVoiceTextRenderer {
             subtitle: subtitle,
             remaining: state.remainingText,
             rate: state.rateText,
-            appearance: Int((material.appearance * 100).rounded()),
-            contrast: Int((material.contrast * 100).rounded())
+            appearance: Int((material.appearance * 100).rounded())
         )
         if key == cachedKey, let cachedTexture {
             return cachedTexture

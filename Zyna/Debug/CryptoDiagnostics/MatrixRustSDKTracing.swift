@@ -25,6 +25,15 @@ enum MatrixRustSDKTracing {
     private static var didSetup = false
     private static var setupError: String?
     private static var setupProcessName: String?
+    private static var setupEventCacheTrace = false
+    private static var setupWritesToSystemLog = false
+
+    /// Opt-in for one device reproduction. Restart after changing the scheme
+    /// environment; initPlatform cannot change its filter after initialization.
+    private static var eventCacheTraceRequested: Bool {
+        CryptoDiagnosticsGate.isTruthyEnvironmentValue("ZYNA_RUST_EVENT_CACHE_TRACE")
+    }
+    private static let eventCacheFilePrefix = "zyna-app-event-cache"
 
     /// Global log level. `.debug` is a good signal/noise default that still
     /// includes crypto key-sharing / UTD events. Bump to `.trace` for maximum
@@ -66,6 +75,11 @@ enum MatrixRustSDKTracing {
         defer { lock.unlock() }
         guard !didSetup else { return }
 
+        // The export-only diagnostics launch must not start another TRACE
+        // capture, even if its scheme still contains the capture variable.
+        let eventCacheTrace = processName == "app" && eventCacheTraceRequested && !CryptoDiagnosticsGate.isEnabled
+        let writesToSystemLog = !eventCacheTrace && shouldWriteToSystemLog
+
         let directory = logsDirectory
         do {
             try LocalDataProtection.createProtectedDirectory(
@@ -82,7 +96,7 @@ enum MatrixRustSDKTracing {
 
         let fileConfig = TracingFileConfiguration(
             path: directory.path,
-            filePrefix: "zyna-\(processName)",
+            filePrefix: eventCacheTrace ? eventCacheFilePrefix : "zyna-\(processName)",
             fileSuffix: ".log",
             maxTotalSizeBytes: 64 * 1024 * 1024, // 64 MB total, rotated
             maxAgeSeconds: 7 * 24 * 60 * 60 // one week
@@ -90,9 +104,9 @@ enum MatrixRustSDKTracing {
 
         let config = TracingConfiguration(
             logLevel: logLevel,
-            traceLogPacks: [],
+            traceLogPacks: eventCacheTrace ? [.eventCache] : [],
             extraTargets: extraTargets,
-            writeToStdoutOrSystem: shouldWriteToSystemLog,
+            writeToStdoutOrSystem: writesToSystemLog,
             writeToFiles: fileConfig,
             sentryConfig: nil
         )
@@ -102,11 +116,18 @@ enum MatrixRustSDKTracing {
             didSetup = true
             setupError = nil
             setupProcessName = processName
-            os_log("%{public}@", log: .default, type: .default, "[tracing] initialized process=\(processName); logs at \(directory.path)")
+            setupEventCacheTrace = eventCacheTrace
+            setupWritesToSystemLog = writesToSystemLog
+            os_log("%{public}@", log: .default, type: .default, "[tracing] initialized process=\(processName) eventCacheTrace=\(eventCacheTrace); logs at \(directory.path)")
         } catch {
             setupError = "initPlatform failed: \(error)"
             os_log("%{public}@", log: .default, type: .error, "[tracing] initPlatform failed: \(error)")
         }
+    }
+
+    /// Export only this diagnostic profile, without unrelated crypto/NSE logs.
+    static func eventCacheTraceFiles() -> [URL] {
+        logFiles().filter { $0.lastPathComponent.hasPrefix(eventCacheFilePrefix) }
     }
 
     /// Log files sorted newest-first.
@@ -143,13 +164,22 @@ enum MatrixRustSDKTracing {
     static func statusReport() -> String {
         let files = logFiles()
         let totalBytes = files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        lock.lock()
+        let initialized = didSetup
+        let processName = setupProcessName
+        let eventCacheTrace = setupEventCacheTrace
+        let writesToSystemLog = setupWritesToSystemLog
+        let lastError = setupError
+        lock.unlock()
         var out = "Rust SDK tracing\n"
-        out += "initialized=\(isInitialized)\n"
-        out += "process=\(setupProcessName ?? "<nil>")\n"
+        out += "initialized=\(initialized)\n"
+        out += "process=\(processName ?? "<nil>")\n"
         out += "logLevel=\(logLevel)\n"
-        out += "writeToStdoutOrSystem=\(shouldWriteToSystemLog)\n"
+        out += "traceLogPacks=\(eventCacheTrace ? "eventCache" : "none")\n"
+        out += "writeToStdoutOrSystem=\(writesToSystemLog)\n"
+        out += "eventCacheTraceFiles=\(files.filter { $0.lastPathComponent.hasPrefix(eventCacheFilePrefix) }.count)\n"
         out += "directory=\(logsDirectory.path)\n"
-        out += "lastError=\(setupError ?? "<nil>")\n"
+        out += "lastError=\(lastError ?? "<nil>")\n"
         out += "fileCount=\(files.count) totalSize=\(ByteCountFormatter.string(fromByteCount: Int64(totalBytes), countStyle: .file))\n"
         if files.isEmpty {
             out += "files=<none yet>"

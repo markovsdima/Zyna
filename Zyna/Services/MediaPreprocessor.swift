@@ -638,10 +638,8 @@ enum MediaPreprocessor {
 }
 
 private extension UIImage {
-    // BlurHash uses this fixed Base83 alphabet.
-    private static let blurHashBase83Characters = Array(
-        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~"
-    )
+    // BlurHash uses this fixed Base83 alphabet (shared with BlurhashDecoder).
+    private static var blurHashBase83Characters: [Character] { Blurhash.base83Characters }
 
     func zynaBlurHash(
         numberOfComponents components: (x: Int, y: Int),

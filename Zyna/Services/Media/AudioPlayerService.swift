@@ -9,6 +9,12 @@ import MatrixRustSDK
 
 final class AudioPlayerService: NSObject {
 
+    struct PlaybackFailure: Equatable {
+        let sourceURL: String
+        let eventId: String?
+        let message: String
+    }
+
     enum NowPlayingItem: Equatable {
         case voice(NowPlayingVoice)
         case track(NowPlayingTrack)
@@ -152,6 +158,7 @@ final class AudioPlayerService: NSObject {
         }
     }
     @Published private(set) var snapshot: PlaybackSnapshot = .idle(playbackRate: 1)
+    @Published private(set) var failure: PlaybackFailure?
 
     private let log = ScopedLog(.voiceRecording, prefix: "[AudioPlayer]")
 
@@ -162,6 +169,9 @@ final class AudioPlayerService: NSObject {
 
     private var player: AVAudioPlayer?
     private var displayLink: DisplayLinkToken?
+    private var loadTask: Task<Void, Never>?
+    private var loadToken: UUID?
+    private enum PlaybackStartError: Error { case rejected }
 
     // MARK: - Public API
 
@@ -169,27 +179,35 @@ final class AudioPlayerService: NSObject {
     func play(
         source: MediaSource,
         mimeType: String = "audio/mp4",
-        nowPlaying item: NowPlayingItem? = nil
+        nowPlaying item: NowPlayingItem? = nil,
+        startProgress: Float = 0,
+        onStarted: (() -> Void)? = nil
     ) {
         let sourceKey = source.url()
 
         // If same source is paused — resume
-        if case .paused(let url, _) = state, url == sourceKey {
+        if case .paused(let url, _) = state,
+           url == sourceKey,
+           representsCurrentItem(item) {
             if let item { nowPlaying = item }
-            resume()
+            if resume() { onStarted?() }
             return
         }
 
         stopInternal()
+        failure = nil
         nowPlaying = item
         state = .loading(sourceURL: sourceKey)
 
-        Task { [weak self] in
+        guard let client = MatrixClientService.shared.client else {
+            failLoadingIfCurrent(sourceKey: sourceKey)
+            return
+        }
+
+        let token = UUID()
+        loadToken = token
+        loadTask = Task { [weak self] in
             guard let self else { return }
-            guard let client = MatrixClientService.shared.client else {
-                await MainActor.run { self.failLoadingIfCurrent(sourceKey: sourceKey) }
-                return
-            }
             do {
                 let handle = try await client.getMediaFile(
                     mediaSource: source,
@@ -200,14 +218,25 @@ final class AudioPlayerService: NSObject {
                 )
                 let path = try handle.path()
                 let url = URL(fileURLWithPath: path)
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    // Guard against race: another play() may have started while downloading
-                    guard self.state == .loading(sourceURL: sourceKey) else { return }
-                    self.startPlayback(url: url, sourceKey: sourceKey)
+                    self.completeLoading(
+                        url: url,
+                        sourceKey: sourceKey,
+                        token: token,
+                        startProgress: startProgress,
+                        onStarted: onStarted
+                    )
                 }
             } catch {
+                guard !Task.isCancelled else { return }
                 self.log("download failed: \(error)")
-                await MainActor.run { self.failLoadingIfCurrent(sourceKey: sourceKey) }
+                await MainActor.run {
+                    self.failLoadingIfCurrent(
+                        sourceKey: sourceKey,
+                        token: token
+                    )
+                }
             }
         }
     }
@@ -216,12 +245,15 @@ final class AudioPlayerService: NSObject {
     func playLocal(
         url: URL,
         sourceKey: String? = nil,
-        nowPlaying item: NowPlayingItem? = nil
+        nowPlaying item: NowPlayingItem? = nil,
+        startProgress: Float = 0,
+        onStarted: (() -> Void)? = nil
     ) {
         stopInternal()
+        failure = nil
         let resolvedSourceKey = sourceKey ?? url.absoluteString
         nowPlaying = item
-        startPlayback(url: url, sourceKey: resolvedSourceKey)
+        startPlayback(url: url, sourceKey: resolvedSourceKey, startProgress: startProgress, onStarted: onStarted)
     }
 
     func pause() {
@@ -231,29 +263,37 @@ final class AudioPlayerService: NSObject {
         state = .paused(sourceURL: url, progress: progress)
     }
 
-    func resume() {
-        guard case .paused(let url, _) = state else { return }
+    @discardableResult
+    func resume() -> Bool {
+        guard case .paused(let url, _) = state, let player else { return false }
         applyPlaybackRate()
-        player?.play()
+        guard player.play() else { return false }
         displayLink?.resume()
         state = .playing(sourceURL: url, progress: currentProgress)
+        return true
     }
 
     func togglePlayPause(
         source: MediaSource,
         mimeType: String = "audio/mp4",
-        nowPlaying item: NowPlayingItem? = nil
+        nowPlaying item: NowPlayingItem? = nil,
+        startProgress: Float = 0,
+        onStarted: (() -> Void)? = nil
     ) {
         let sourceKey = source.url()
+        let isCurrentItem = state.sourceURL == sourceKey
+            && representsCurrentItem(item)
         switch state {
-        case .playing(let url, _) where url == sourceKey:
+        case .playing where isCurrentItem:
             if let item { nowPlaying = item }
             pause()
-        case .paused(let url, _) where url == sourceKey:
+        case .paused where isCurrentItem:
             if let item { nowPlaying = item }
-            resume()
+            if resume() { onStarted?() }
+        case .loading where isCurrentItem:
+            stop()
         default:
-            play(source: source, mimeType: mimeType, nowPlaying: item)
+            play(source: source, mimeType: mimeType, nowPlaying: item, startProgress: startProgress, onStarted: onStarted)
         }
     }
 
@@ -290,13 +330,14 @@ final class AudioPlayerService: NSObject {
 
     func stop() {
         stopInternal()
+        failure = nil
         nowPlaying = nil
         state = .idle
     }
 
     // MARK: - Private
 
-    private func startPlayback(url: URL, sourceKey: String) {
+    private func startPlayback(url: URL, sourceKey: String, startProgress: Float = 0, onStarted: (() -> Void)? = nil) {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
@@ -305,15 +346,25 @@ final class AudioPlayerService: NSObject {
             audioPlayer.delegate = self
             audioPlayer.enableRate = true
             audioPlayer.rate = playbackRate
-            audioPlayer.play()
+            let progress = startProgress.isFinite ? max(0, min(startProgress, 1)) : 0
+            // Seek before producing sound; a resumed note must not play its
+            // beginning while the UI waits for the next playback snapshot.
+            audioPlayer.currentTime = audioPlayer.duration * Double(progress)
+            guard audioPlayer.play() else { throw PlaybackStartError.rejected }
             self.player = audioPlayer
 
-            state = .playing(sourceURL: sourceKey, progress: 0)
+            state = .playing(sourceURL: sourceKey, progress: progress)
             startProgressTracking(sourceKey: sourceKey)
+            onStarted?()
 
             log("playing \(url.lastPathComponent)")
         } catch {
             log("playback error: \(error)")
+            failure = PlaybackFailure(
+                sourceURL: sourceKey,
+                eventId: nowPlaying?.eventId,
+                message: String(localized: "Couldn't play voice message. Tap to retry.")
+            )
             nowPlaying = nil
             state = .idle
         }
@@ -329,6 +380,9 @@ final class AudioPlayerService: NSObject {
     }
 
     private func stopInternal() {
+        loadToken = nil
+        loadTask?.cancel()
+        loadTask = nil
         player?.stop()
         player = nil
         displayLink?.invalidate()
@@ -394,12 +448,39 @@ final class AudioPlayerService: NSObject {
         return Float(player.currentTime / player.duration)
     }
 
+    /// A forwarded voice note may reuse the same MXC in multiple events.
+    /// Playback controls are message-scoped even though the byte cache is not.
+    private func representsCurrentItem(_ candidate: NowPlayingItem?) -> Bool {
+        guard let candidateEventId = candidate?.eventId,
+              let currentEventId = nowPlaying?.eventId else {
+            return true
+        }
+        return candidateEventId == currentEventId
+    }
+
     private func deactivateAudioSession() {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    private func failLoadingIfCurrent(sourceKey: String) {
+    private func completeLoading(url: URL, sourceKey: String, token: UUID,
+                                 startProgress: Float, onStarted: (() -> Void)?) {
+        guard loadToken == token,
+              state == .loading(sourceURL: sourceKey) else { return }
+        loadToken = nil
+        loadTask = nil
+        startPlayback(url: url, sourceKey: sourceKey, startProgress: startProgress, onStarted: onStarted)
+    }
+
+    private func failLoadingIfCurrent(sourceKey: String, token: UUID? = nil) {
+        if let token, loadToken != token { return }
         guard state == .loading(sourceURL: sourceKey) else { return }
+        loadToken = nil
+        loadTask = nil
+        failure = PlaybackFailure(
+            sourceURL: sourceKey,
+            eventId: nowPlaying?.eventId,
+            message: String(localized: "Couldn't load voice message. Tap to retry.")
+        )
         nowPlaying = nil
         state = .idle
     }

@@ -12,6 +12,8 @@ final class SearchBarView: UIView {
     var onPrevious: (() -> Void)?
     var onCancel: (() -> Void)?
 
+    func restoreQuery(_ query: String) { textField.text = query }
+
     private let textField = UITextField()
     private let statusLabel = UILabel()
     private let upButton = UIButton(type: .system)

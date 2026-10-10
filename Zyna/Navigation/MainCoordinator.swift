@@ -103,8 +103,8 @@ final class MainCoordinator {
         let currentRoomId: String?
         if let chats = chatsCoordinator,
            tabBarController.selectedController === chats.navigationController,
-           let chat = chats.navigationController.topViewController as? ChatViewController {
-            currentRoomId = chat.roomIdentifier
+           let roomID = chats.navigationController.topViewController?.chatRoomIdentifier {
+            currentRoomId = roomID
         } else {
             currentRoomId = nil
         }

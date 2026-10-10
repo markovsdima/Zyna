@@ -10,6 +10,11 @@ final class ListContextMenuCellNode: ZynaCellNode {
 
     var onContextMenuActivated: ((CGPoint) -> Void)?
     var onQuickTap: (() -> Void)?
+    var shouldBeginContextInteraction: ((CGPoint) -> Bool)?
+    var onAccessibilityAdjust: ((Bool) -> Void)?
+    var onLayoutAttributesChanged: ((UICollectionViewLayoutAttributes) -> Void)?
+    /// Sparse scroll surfaces own visibility independently of Texture ranges.
+    var onViewportVisibilityChanged: ((Bool) -> Void)?
     var onDragChanged: ((CGPoint) -> Void)? {
         get { contextSourceNode.onDragChanged }
         set { contextSourceNode.onDragChanged = newValue }
@@ -40,8 +45,10 @@ final class ListContextMenuCellNode: ZynaCellNode {
         contextSourceNode.onQuickTap = { [weak self] _ in
             self?.onQuickTap?()
         }
-        contextSourceNode.shouldBegin = { [weak self] _ in
-            self?.onContextMenuActivated != nil
+        contextSourceNode.shouldBegin = { [weak self] point in
+            guard let self, self.onContextMenuActivated != nil else { return false }
+            let point = self.contextSourceNode.view.convert(point, to: self.view)
+            return self.shouldBeginContextInteraction?(point) ?? true
         }
     }
 
@@ -53,6 +60,20 @@ final class ListContextMenuCellNode: ZynaCellNode {
         super.layout()
         contextSourceNode.frame = bounds
     }
+
+    override func applyLayoutAttributes(_ layoutAttributes: UICollectionViewLayoutAttributes) {
+        super.applyLayoutAttributes(layoutAttributes)
+        onLayoutAttributesChanged?(layoutAttributes)
+    }
+
+    override func accessibilityActivate() -> Bool {
+        guard let onQuickTap else { return false }
+        onQuickTap()
+        return true
+    }
+
+    override func accessibilityIncrement() { onAccessibilityAdjust?(true) }
+    override func accessibilityDecrement() { onAccessibilityAdjust?(false) }
 
     func extractContentForMenu(in coordinateSpace: UICoordinateSpace) -> (node: ASDisplayNode, frame: CGRect) {
         contextSourceNode.extractContentForMenu(in: coordinateSpace)
@@ -89,6 +110,7 @@ private final class ListContextSourceNode: ASDisplayNode {
     private var touchStartLocation: CGPoint = .zero
     private var latestLocation: CGPoint = .zero
     private var isInteractionLocked = false
+    private var pressGesture: UILongPressGestureRecognizer?
 
     private enum Metrics {
         static let shrinkDelay: TimeInterval = 0.12
@@ -116,6 +138,7 @@ private final class ListContextSourceNode: ASDisplayNode {
         gesture.minimumPressDuration = 0
         gesture.delegate = self
         view.addGestureRecognizer(gesture)
+        pressGesture = gesture
     }
 
     override func layoutSpecThatFits(_ constrainedSize: ASSizeRange) -> ASLayoutSpec {
@@ -309,6 +332,9 @@ private final class ListContextSourceNode: ASDisplayNode {
 
 extension ListContextSourceNode: UIGestureRecognizerDelegate {
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === pressGesture else {
+            return super.gestureRecognizerShouldBegin(gestureRecognizer)
+        }
         if UIAccessibility.isVoiceOverRunning { return false }
         let location = gestureRecognizer.location(in: view)
         return shouldBegin?(location) ?? true

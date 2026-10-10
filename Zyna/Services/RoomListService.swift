@@ -10,14 +10,15 @@ import GRDB
 
 // MARK: - Room Summary (UI-friendly model)
 
-struct RoomSummary: Identifiable {
+struct RoomSummary: Identifiable, Equatable {
     let id: String
     let displayName: String
     let avatarURL: String?
-    let lastMessage: String?
-    let lastMessageSenderName: String?
+    var lastMessage: String?
+    var lastMessageSenderID: String? = nil
+    var lastMessageSenderName: String?
     let lastMessageTimestamp: Date?
-    let lastOwnMessageStatus: LastOwnMessageStatus?
+    var lastOwnMessageStatus: LastOwnMessageStatus?
     let unreadCount: UInt64
     let unreadMentionCount: UInt64
     let isMarkedUnread: Bool
@@ -30,6 +31,40 @@ struct RoomSummary: Identifiable {
     let spaceChildSpaceCount: Int
     let spaceRecentRooms: [SpaceChildSummary]
     let spaceMetadata: SpaceRoomMetadata?
+
+    struct Preview: Equatable {
+        let body: String?
+        let senderName: String?
+        let ownStatus: LastOwnMessageStatus?
+    }
+    /// Visibility is a reversible projection, including while a space's
+    /// children are unavailable from the SDK. Persist the original preview.
+    var hiddenPreview: Preview? = nil
+
+    func hidingIgnoredPreview(_ ignored: Set<String>) -> Self {
+        var result = self
+        if let original = hiddenPreview {
+            result.lastMessage = original.body
+            result.lastMessageSenderName = original.senderName
+            result.lastOwnMessageStatus = original.ownStatus
+            result.hiddenPreview = nil
+        }
+        if let lastMessageSenderID, ignored.contains(lastMessageSenderID) {
+            result.hiddenPreview = Preview(body: result.lastMessage,
+                senderName: result.lastMessageSenderName, ownStatus: result.lastOwnMessageStatus)
+            result.lastMessage = nil
+            result.lastMessageSenderName = nil
+            result.lastOwnMessageStatus = nil
+        }
+        return result
+    }
+
+    func preservingHiddenPreview(from source: Self?) -> Self {
+        var result = self
+        result.hiddenPreview = source?.hiddenPreview
+        return result
+    }
+
 }
 
 enum LastOwnMessageStatus: String, Codable, Equatable {
@@ -81,7 +116,9 @@ final class ZynaRoomListService: NSObject {
     private var listUpdatesResult: RoomListEntriesWithDynamicAdaptersResult?
     private var loadingStateStreamHandle: TaskHandle?
     private var serviceStateHandle: TaskHandle?
-    private var rooms: [Room] = []
+    private let entriesProcessor = RoomListEntriesProcessor()
+    private let entriesSnapshot = Atomic(RoomListEntriesProcessor.Snapshot())
+    private var rooms: [Room] { entriesSnapshot.wrappedValue.rooms }
     private var publishedSummariesByRoomId: [String: RoomSummary] = [:]
     private var spaceChildSummariesBySpaceId: [String: [RoomSummary]] = [:]
     private var spaceChildSpaceSummariesBySpaceId: [String: [RoomSummary]] = [:]
@@ -90,15 +127,17 @@ final class ZynaRoomListService: NSObject {
     private var locallyHiddenRoomIds = Set<String>()
     private var rebuildTask: Task<Void, Never>?
     private var rebuildRevision: UInt64 = 0
+    private var pendingSummaryRoomIds = Set<String>()
     private var isListening = false
     private var cancellables = Set<AnyCancellable>()
+    private var notificationSettingsObservation: AnyCancellable?
 
     private static let writeQueue = DispatchQueue(label: "com.zyna.db.rooms", qos: .userInitiated)
     private static let latestEventSettleDelay: Duration = .milliseconds(150)
     private static let spaceRecentRoomLimit = 4
 
     func room(for id: String) -> Room? {
-        if let cached = rooms.first(where: { $0.id() == id }) {
+        if let cached = entriesSnapshot.wrappedValue.roomsByID[id] {
             return cached
         }
         // Rooms from GRDB cache may be visible before the SDK room
@@ -555,10 +594,10 @@ final class ZynaRoomListService: NSObject {
             let children = try StoredSpaceChild
                 .order(Column("spaceId").asc, Column("isSpace").desc, Column("sortOrder").asc)
                 .fetchAll(db)
-            return (rooms: rooms, children: children)
+            return (rooms: rooms, children: children, ignored: try IgnoredContentStore.userIDs(in: db))
         }) else { return }
 
-        let childCaches = Self.spaceChildCaches(from: cached.children)
+        let childCaches = Self.spaceChildCaches(from: cached.children, ignored: cached.ignored)
         spaceChildSummariesBySpaceId = childCaches.roomsBySpaceId
         spaceChildSpaceSummariesBySpaceId = childCaches.spacesBySpaceId
 
@@ -570,7 +609,7 @@ final class ZynaRoomListService: NSObject {
         }
 
         let summaries = Self.enrichSpaceSummaries(
-            cached.rooms.map { $0.toRoomSummary() },
+            cached.rooms.map { $0.toRoomSummary().hidingIgnoredPreview(cached.ignored) },
             cachedSpaceChildSummariesBySpaceId: childCaches.roomsBySpaceId,
             cachedSpaceChildSpaceSummariesBySpaceId: childCaches.spacesBySpaceId
         )
@@ -586,7 +625,26 @@ final class ZynaRoomListService: NSObject {
     }
 
     private func observeClientState() {
+        NotificationCenter.default.publisher(for: IgnoredContentStore.didChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self, let database = notification.object as? AccountDatabase,
+                      database === DatabaseService.shared.dbQueue, database.isActive else { return }
+                let ignored = self.matrixService.ignoredContentService?.userIDs ?? []
+                self.spaceChildSummariesBySpaceId = self.spaceChildSummariesBySpaceId.mapValues {
+                    $0.map { $0.hidingIgnoredPreview(ignored) }
+                }
+                self.spaceChildSpaceSummariesBySpaceId = self.spaceChildSpaceSummariesBySpaceId.mapValues {
+                    $0.map { $0.hidingIgnoredPreview(ignored) }
+                }
+                let summaries = self.roomsSubject.value.map { $0.hidingIgnoredPreview(ignored) }
+                self.publishedSummariesByRoomId = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
+                self.roomsSubject.send(summaries)
+                self.scheduleSummaryRebuild(for: self.rooms, impactedRoomIds: [])
+            }
+            .store(in: &cancellables)
         matrixService.stateSubject
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
                 logRooms("Client state changed: \(state)")
                 if case .syncing = state {
@@ -610,28 +668,35 @@ final class ZynaRoomListService: NSObject {
         }
         isListening = true
         self.roomListService = sdkRoomListService
+        notificationSettingsObservation = matrixService.notificationSettingsService?.changes
+            .debounce(for: .milliseconds(50), scheduler: DispatchQueue.main)
+            .sink { [weak self] in
+                guard let self else { return }
+                self.scheduleSummaryRebuild(for: self.rooms, impactedRoomIds: [])
+            }
 
-        // Observe RoomListService state
-        let stateListener = ServiceStateListener { state in
-            logRooms("RoomListService state: \(state)")
+        let receiveUpdate: @MainActor @Sendable (RoomListEntriesProcessor.Update) -> Void = { [weak self] update in
+            self?.applyUpdates(update)
         }
-        self.serviceStateHandle = sdkRoomListService.state(listener: stateListener)
-
-        Task {
+        let entriesProcessor = entriesProcessor
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            let stateListener = ServiceStateListener { state in
+                logRooms("RoomListService state: \(state)")
+            }
+            let serviceStateHandle = sdkRoomListService.state(listener: stateListener)
             do {
                 let roomList = try await sdkRoomListService.allRooms()
-                self.roomList = roomList
 
                 // Set up entries with dynamic adapters
                 let result = roomList.entriesWithDynamicAdapters(
                     pageSize: 200,
-                    listener: EntriesListener { [weak self] updates in
-                        guard let self else { return }
-                        logRooms("Received \(updates.count) room list entry updates")
-                        self.applyUpdates(updates)
+                    listener: EntriesListener { updates in
+                        entriesProcessor.apply(updates) { update in
+                            DispatchQueue.main.async { receiveUpdate(update) }
+                        }
                     }
                 )
-                self.listUpdatesResult = result
 
                 // Forces the listener to be called with the current state
                 _ = result.controller().setFilter(kind: .all(filters: [.nonLeft]))
@@ -640,11 +705,17 @@ final class ZynaRoomListService: NSObject {
                 let loadingResult = try roomList.loadingState(listener: LoadingStateListener { state in
                     logRooms("RoomList loading state: \(state)")
                 })
-                self.loadingStateStreamHandle = loadingResult.stateStream
+                await MainActor.run {
+                    self.serviceStateHandle = serviceStateHandle
+                    self.roomList = roomList
+                    self.listUpdatesResult = result
+                    self.loadingStateStreamHandle = loadingResult.stateStream
+                }
                 logRooms("Initial loading state: \(loadingResult.state)")
 
                 logRooms("Room list listener started")
             } catch {
+                serviceStateHandle.cancel()
                 logRooms("Failed to start room list listener: \(error)")
             }
         }
@@ -652,93 +723,36 @@ final class ZynaRoomListService: NSObject {
 
     // MARK: - Apply Diffs
 
-    private func applyUpdates(_ updates: [RoomListEntriesUpdate]) {
-        var impactedRoomIds = Set<String>()
-        for update in updates {
-            applySingleUpdate(update, impactedRoomIds: &impactedRoomIds)
-        }
-
-        let currentRooms = rooms
-        logRooms("Room count after diffs: \(currentRooms.count)")
-        scheduleSummaryRebuild(for: currentRooms, impactedRoomIds: impactedRoomIds)
-    }
-
-    // swiftlint:disable:next cyclomatic_complexity
-    private func applySingleUpdate(
-        _ update: RoomListEntriesUpdate,
-        impactedRoomIds: inout Set<String>
-    ) {
-        switch update {
-        case .reset(let values):
-            rooms = values
-            let valueIds = Set(values.map { $0.id() })
-            locallyHiddenRoomIds.formIntersection(valueIds)
-            impactedRoomIds.formUnion(values.map { $0.id() })
-        case .append(let values):
-            rooms.append(contentsOf: values)
-            impactedRoomIds.formUnion(values.map { $0.id() })
-        case .pushBack(let value):
-            rooms.append(value)
-            impactedRoomIds.insert(value.id())
-        case .pushFront(let value):
-            rooms.insert(value, at: 0)
-            impactedRoomIds.insert(value.id())
-        case .insert(let index, let value):
-            rooms.insert(value, at: Int(index))
-            impactedRoomIds.insert(value.id())
-        case .set(let index, let value):
-            if Int(index) < rooms.count {
-                let oldRoomId = rooms[Int(index)].id()
-                rooms[Int(index)] = value
-                if oldRoomId != value.id() {
-                    locallyHiddenRoomIds.remove(oldRoomId)
-                }
-                impactedRoomIds.insert(value.id())
-            }
-        case .remove(let index):
-            if Int(index) < rooms.count {
-                let removed = rooms.remove(at: Int(index))
-                locallyHiddenRoomIds.remove(removed.id())
-            }
-        case .popBack:
-            if !rooms.isEmpty {
-                let removed = rooms.removeLast()
-                locallyHiddenRoomIds.remove(removed.id())
-            }
-        case .popFront:
-            if !rooms.isEmpty {
-                let removed = rooms.removeFirst()
-                locallyHiddenRoomIds.remove(removed.id())
-            }
-        case .truncate(let length):
-            if Int(length) < rooms.count {
-                let removed = rooms.dropFirst(Int(length))
-                for room in removed {
-                    locallyHiddenRoomIds.remove(room.id())
-                }
-            }
-            rooms = Array(rooms.prefix(Int(length)))
-        case .clear:
-            rooms = []
-            locallyHiddenRoomIds.removeAll()
-        }
+    private func applyUpdates(_ update: RoomListEntriesProcessor.Update) {
+        entriesSnapshot.wrappedValue = update.snapshot
+        for change in update.visibilityChanges { change.apply(to: &locallyHiddenRoomIds) }
+        scheduleSummaryRebuild(for: update.snapshot.rooms, impactedRoomIds: update.impactedRoomIDs)
     }
 
     private func scheduleSummaryRebuild(
         for roomsSnapshot: [Room],
         impactedRoomIds: Set<String>
     ) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.scheduleSummaryRebuild(for: roomsSnapshot, impactedRoomIds: impactedRoomIds)
+            }
+            return
+        }
+        // A push-rule refresh must not drop event/status work from a rebuild
+        // it supersedes. Drain the accumulated IDs only after publication.
+        pendingSummaryRoomIds.formUnion(impactedRoomIds)
+        let impactedRoomIds = pendingSummaryRoomIds
         rebuildRevision &+= 1
         let revision = rebuildRevision
         let previousSummaries = publishedSummariesByRoomId
         let cachedSpaceChildSummaries = spaceChildSummariesBySpaceId
         let cachedSpaceChildSpaceSummaries = spaceChildSpaceSummariesBySpaceId
         let hiddenRoomIds = locallyHiddenRoomIds
+        let previousOrder = roomsSubject.value
 
         rebuildTask?.cancel()
-        rebuildTask = Task { [weak self] in
-            guard let self else { return }
-
+        rebuildTask = Task.detached(priority: .userInitiated) { [weak self] in
             let buildResult = await Self.buildSummaries(
                 from: roomsSnapshot.filter { !hiddenRoomIds.contains($0.id()) },
                 impactedRoomIds: impactedRoomIds.subtracting(hiddenRoomIds),
@@ -747,35 +761,32 @@ final class ZynaRoomListService: NSObject {
                 cachedSpaceChildSummariesBySpaceId: cachedSpaceChildSummaries,
                 cachedSpaceChildSpaceSummariesBySpaceId: cachedSpaceChildSpaceSummaries
             )
+            guard !Task.isCancelled else { return }
             let summaries = buildResult.summaries
-
-            guard !Task.isCancelled, self.rebuildRevision == revision else { return }
-
-            self.publishedSummariesByRoomId = Dictionary(
-                summaries.map { ($0.id, $0) },
-                uniquingKeysWith: { _, latest in latest }
-            )
-            Self.writeRoomsToGRDB(summaries)
+            let changed = summaries != previousOrder
+            let byID = Dictionary(summaries.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            let spaceIDs = summaries.filter(\.isSpace).map(\.id)
 
             await MainActor.run { [weak self] in
                 guard let self, self.rebuildRevision == revision else { return }
-                self.roomsSubject.send(summaries)
+                self.publishedSummariesByRoomId = byID
+                self.pendingSummaryRoomIds.subtract(impactedRoomIds)
+                if changed {
+                    Self.writeRoomsToGRDB(summaries)
+                    self.roomsSubject.send(summaries)
+                }
+                self.scheduleSpaceChildBootstrapIfNeeded(for: spaceIDs)
+                logRooms("Rooms updated: \(summaries.count) rooms")
             }
-
-            self.scheduleSpaceChildBootstrapIfNeeded(for: summaries)
-            logRooms("Rooms updated: \(summaries.count) rooms")
         }
     }
 
-    private func scheduleSpaceChildBootstrapIfNeeded(for summaries: [RoomSummary]) {
-        let missingSpaceIds = summaries
-            .filter(\.isSpace)
-            .map(\.id)
-            .filter { spaceId in
-                !hasSpaceChildrenCacheEntry(for: spaceId)
-                    && !spaceChildBootstrapInFlight.contains(spaceId)
-                    && !spaceChildBootstrapCompletedSpaceIds.contains(spaceId)
-            }
+    private func scheduleSpaceChildBootstrapIfNeeded(for spaceIDs: [String]) {
+        let missingSpaceIds = spaceIDs.filter { spaceId in
+            !hasSpaceChildrenCacheEntry(for: spaceId)
+                && !spaceChildBootstrapInFlight.contains(spaceId)
+                && !spaceChildBootstrapCompletedSpaceIds.contains(spaceId)
+        }
 
         guard !missingSpaceIds.isEmpty else { return }
 
@@ -827,6 +838,9 @@ final class ZynaRoomListService: NSObject {
         previousSummaries: [String: RoomSummary]
     ) async -> [RoomSummary] {
         var summaries: [RoomSummary] = []
+        let ignored = (try? await MatrixClientService.shared.ignoredContentService?.storedUserIDs())
+            ?? MatrixClientService.shared.ignoredContentService?.userIDs ?? []
+        let localMuteOverrides = MatrixClientService.shared.notificationSettingsService?.localMuteOverrides ?? [:]
 
         for room in rooms {
             if Task.isCancelled { break }
@@ -853,7 +867,7 @@ final class ZynaRoomListService: NSObject {
                 avatarURL = (try? await client.getProfile(userId: partnerId))?.avatarUrl
             }
 
-            let previousSpaceSummary = info.isSpace ? previousSummaries[roomId] : nil
+            let previousSpaceSummary = info.isSpace ? previousSummaries[roomId]?.hidingIgnoredPreview([]) : nil
             let shouldRefreshOwnStatus = refreshAllOwnMessageStatuses
                 || impactedRoomIds.contains(roomId)
                 || previousSummaries[roomId] == nil
@@ -871,6 +885,7 @@ final class ZynaRoomListService: NSObject {
                 displayName: room.displayName() ?? (info.isSpace ? String(localized: "Untitled") : "Unknown"),
                 avatarURL: avatarURL,
                 lastMessage: previousSpaceSummary?.lastMessage ?? lastPreview.body,
+                lastMessageSenderID: previousSpaceSummary?.lastMessageSenderID ?? lastPreview.senderID,
                 lastMessageSenderName: previousSpaceSummary?.lastMessageSenderName ?? lastPreview.senderName,
                 lastMessageTimestamp: previousSpaceSummary?.lastMessageTimestamp ?? lastPreview.timestamp,
                 lastOwnMessageStatus: lastOwnMessageStatus,
@@ -879,13 +894,13 @@ final class ZynaRoomListService: NSObject {
                 isMarkedUnread: previousSpaceSummary?.isMarkedUnread ?? info.isMarkedUnread,
                 isEncrypted: room.encryptionState() != .notEncrypted,
                 isSpace: info.isSpace,
-                isMuted: info.cachedUserDefinedNotificationMode == .mute,
+                isMuted: localMuteOverrides[roomId] ?? (info.cachedUserDefinedNotificationMode == .mute),
                 directUserId: directUserId,
                 spaceChildRoomCount: previousSpaceSummary?.spaceChildRoomCount ?? 0,
                 spaceChildSpaceCount: previousSpaceSummary?.spaceChildSpaceCount ?? 0,
                 spaceRecentRooms: previousSpaceSummary?.spaceRecentRooms ?? [],
                 spaceMetadata: info.isSpace ? SpaceRoomMetadata(roomInfo: info) : nil
-            ))
+            ).hidingIgnoredPreview(ignored))
         }
 
         return summaries
@@ -900,7 +915,7 @@ final class ZynaRoomListService: NSObject {
         let spacesBySpaceId: [String: [RoomSummary]]
     }
 
-    private static func enrichSpaceSummaries(
+    static func enrichSpaceSummaries(
         _ summaries: [RoomSummary],
         cachedSpaceChildSummariesBySpaceId: [String: [RoomSummary]],
         cachedSpaceChildSpaceSummariesBySpaceId: [String: [RoomSummary]]
@@ -973,6 +988,7 @@ final class ZynaRoomListService: NSObject {
             displayName: summary.displayName,
             avatarURL: summary.avatarURL,
             lastMessage: latestChild?.lastMessage,
+            lastMessageSenderID: latestChild?.lastMessageSenderID,
             lastMessageSenderName: latestChild?.lastMessageSenderName,
             lastMessageTimestamp: latestVisibleChild?.lastMessageTimestamp,
             lastOwnMessageStatus: latestChild?.lastOwnMessageStatus,
@@ -994,7 +1010,7 @@ final class ZynaRoomListService: NSObject {
                 )
             },
             spaceMetadata: summary.spaceMetadata
-        )
+        ).preservingHiddenPreview(from: latestChild)
     }
 
     private static func updatedSpaceChildSummary(
@@ -1004,18 +1020,23 @@ final class ZynaRoomListService: NSObject {
         guard let localSummary else { return cachedSummary }
 
         let usesCachedSpaceRollup = cachedSummary.isSpace
+        // The SDK can temporarily lose its latest event while rebuilding
+        // ignored-user caches. Keep the reversible cached preview meanwhile.
+        let usesCachedPreview = usesCachedSpaceRollup
+            || (localSummary.lastMessageTimestamp == nil && cachedSummary.lastMessageTimestamp != nil)
         return RoomSummary(
             id: localSummary.id,
             displayName: localSummary.displayName,
             avatarURL: localSummary.avatarURL,
-            lastMessage: usesCachedSpaceRollup ? cachedSummary.lastMessage : localSummary.lastMessage,
-            lastMessageSenderName: usesCachedSpaceRollup
+            lastMessage: usesCachedPreview ? cachedSummary.lastMessage : localSummary.lastMessage,
+            lastMessageSenderID: usesCachedPreview ? cachedSummary.lastMessageSenderID : localSummary.lastMessageSenderID,
+            lastMessageSenderName: usesCachedPreview
                 ? cachedSummary.lastMessageSenderName
                 : localSummary.lastMessageSenderName,
-            lastMessageTimestamp: usesCachedSpaceRollup
+            lastMessageTimestamp: usesCachedPreview
                 ? cachedSummary.lastMessageTimestamp
                 : localSummary.lastMessageTimestamp,
-            lastOwnMessageStatus: usesCachedSpaceRollup
+            lastOwnMessageStatus: usesCachedPreview
                 ? cachedSummary.lastOwnMessageStatus
                 : localSummary.lastOwnMessageStatus,
             unreadCount: usesCachedSpaceRollup ? cachedSummary.unreadCount : localSummary.unreadCount,
@@ -1035,10 +1056,10 @@ final class ZynaRoomListService: NSObject {
                 : localSummary.spaceChildSpaceCount,
             spaceRecentRooms: usesCachedSpaceRollup ? cachedSummary.spaceRecentRooms : localSummary.spaceRecentRooms,
             spaceMetadata: cachedSummary.spaceMetadata ?? localSummary.spaceMetadata
-        )
+        ).preservingHiddenPreview(from: usesCachedPreview ? cachedSummary : localSummary)
     }
 
-    private static func spaceChildCaches(from storedChildren: [StoredSpaceChild]) -> SpaceChildCacheSnapshot {
+    private static func spaceChildCaches(from storedChildren: [StoredSpaceChild], ignored: Set<String> = []) -> SpaceChildCacheSnapshot {
         let grouped = Dictionary(grouping: storedChildren, by: \.spaceId)
         var roomsBySpaceId: [String: [RoomSummary]] = [:]
         var spacesBySpaceId: [String: [RoomSummary]] = [:]
@@ -1055,10 +1076,10 @@ final class ZynaRoomListService: NSObject {
             }
             roomsBySpaceId[spaceId] = sorted
                 .filter { !$0.isSpace }
-                .map { $0.toRoomSummary() }
+                .map { $0.toRoomSummary().hidingIgnoredPreview(ignored) }
             spacesBySpaceId[spaceId] = sorted
                 .filter(\.isSpace)
-                .map { $0.toRoomSummary() }
+                .map { $0.toRoomSummary().hidingIgnoredPreview(ignored) }
         }
 
         return SpaceChildCacheSnapshot(
@@ -1107,6 +1128,7 @@ final class ZynaRoomListService: NSObject {
             displayName: localSummary.displayName,
             avatarURL: localSummary.avatarURL,
             lastMessage: localSummary.lastMessage,
+            lastMessageSenderID: localSummary.lastMessageSenderID,
             lastMessageSenderName: localSummary.lastMessageSenderName,
             lastMessageTimestamp: localSummary.lastMessageTimestamp,
             lastOwnMessageStatus: localSummary.lastOwnMessageStatus,
@@ -1121,7 +1143,7 @@ final class ZynaRoomListService: NSObject {
             spaceChildSpaceCount: localSummary.spaceChildSpaceCount,
             spaceRecentRooms: localSummary.spaceRecentRooms,
             spaceMetadata: SpaceRoomMetadata(spaceRoom: child)
-        )
+        ).preservingHiddenPreview(from: localSummary)
     }
 
     private func waitForLocalRoom(roomId: String) async -> Room? {
@@ -1381,6 +1403,9 @@ final class ZynaRoomListService: NSObject {
                         _ = try StoredMessage
                             .filter(Column("roomId") == roomId)
                             .deleteAll(db)
+                        _ = try StoredRoomAttachment
+                            .filter(Column("roomId") == roomId)
+                            .deleteAll(db)
                     }
                 }
                 logRooms("Removed room \(roomId) from local cache")
@@ -1402,6 +1427,7 @@ final class ZynaRoomListService: NSObject {
     }
 
     private struct LatestMessagePreview {
+        var senderID: String? = nil
         let body: String?
         let senderName: String?
         let timestamp: Date?
@@ -1410,6 +1436,7 @@ final class ZynaRoomListService: NSObject {
     }
 
     private static func extractLastMessage(from value: LatestEventValue) -> LatestMessagePreview {
+        let senderID: String
         let timestamp: Date
         let content: TimelineItemContent
         let senderName: String?
@@ -1426,12 +1453,14 @@ final class ZynaRoomListService: NSObject {
                 needsReadReceiptSummary: false
             )
         case .remote(let ts, let sender, let isOwn, let profile, let c):
+            senderID = sender
             timestamp = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
             content = c
             senderName = Self.senderDisplayName(sender: sender, isOwn: isOwn, profile: profile)
             localOwnMessageStatus = isOwn ? .sent : nil
             needsReadReceiptSummary = isOwn
         case .local(let ts, let sender, let profile, let c, let state):
+            senderID = sender
             timestamp = Date(timeIntervalSince1970: TimeInterval(ts) / 1000)
             content = c
             senderName = Self.senderDisplayName(sender: sender, isOwn: true, profile: profile)
@@ -1449,6 +1478,7 @@ final class ZynaRoomListService: NSObject {
 
         guard case .msgLike(let msgContent) = content else {
             return LatestMessagePreview(
+                senderID: senderID,
                 body: nil,
                 senderName: senderName,
                 timestamp: timestamp,
@@ -1464,7 +1494,7 @@ final class ZynaRoomListService: NSObject {
         case .sticker:
             text = "Sticker"
         case .poll(let question, _, _, _, _, _, _):
-            text = "Poll: \(question)"
+            text = String(localized: "Poll: \(question)")
         case .redacted:
             text = "..последнее сообщение удалено.."
         case .unableToDecrypt:
@@ -1473,6 +1503,7 @@ final class ZynaRoomListService: NSObject {
             text = "Live location"
         case .other:
             return LatestMessagePreview(
+                senderID: senderID,
                 body: nil,
                 senderName: senderName,
                 timestamp: timestamp,
@@ -1481,6 +1512,7 @@ final class ZynaRoomListService: NSObject {
             )
         @unknown default:
             return LatestMessagePreview(
+                senderID: senderID,
                 body: nil,
                 senderName: senderName,
                 timestamp: timestamp,
@@ -1490,6 +1522,7 @@ final class ZynaRoomListService: NSObject {
         }
 
         return LatestMessagePreview(
+            senderID: senderID,
             body: text,
             senderName: senderName,
             timestamp: timestamp,

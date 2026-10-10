@@ -37,15 +37,24 @@ enum AppIcon {
     case bubbleLeft
     case pin
     case pinSlash
+    case listBullet
     case personBadgeMinus
     case personBadgePlus
     case personSlash
     case noSign
     case magnifyingGlass
     case settings
+    case photoOnRectangle
+    case bell
+    case bellSlash
+    case ellipsis
+    case copy
+    case share
 
     var systemName: String {
         switch self {
+        case .copy:             return "doc.on.doc"
+        case .share:            return "square.and.arrow.up"
         case .play:             return "play.fill"
         case .pause:            return "pause.fill"
         case .stop:             return "stop.circle.fill"
@@ -77,12 +86,17 @@ enum AppIcon {
         case .bubbleLeft:       return "bubble.left.fill"
         case .pin:              return "pin.fill"
         case .pinSlash:         return "pin.slash.fill"
+        case .listBullet:       return "list.bullet"
         case .personBadgeMinus: return "person.badge.minus"
         case .personBadgePlus:  return "person.badge.plus"
         case .personSlash:      return "person.slash"
         case .noSign:           return "nosign"
         case .magnifyingGlass:  return "magnifyingglass"
         case .settings:         return "gearshape.fill"
+        case .photoOnRectangle: return "photo.on.rectangle"
+        case .bell:             return "bell"
+        case .bellSlash:        return "bell.slash"
+        case .ellipsis:         return "ellipsis"
         }
     }
 

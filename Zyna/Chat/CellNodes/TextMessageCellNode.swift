@@ -7,10 +7,19 @@ import AsyncDisplayKit
 
 final class TextMessageCellNode: MessageCellNode {
 
+    var onLinkTapped: ((URL) -> Void)?
+    private var linkActivity: BubbleLinkActivity?
+
+    private struct AccessibleLink {
+        let url: URL
+        let label: String
+    }
+
     // MARK: - Subnodes
 
     private let flatContentNode: TextBubbleContentNode
     private let replyEventId: String?
+    private let accessibleLinks: [AccessibleLink]
 
     // MARK: - Constants
 
@@ -27,41 +36,64 @@ final class TextMessageCellNode: MessageCellNode {
             ? AppColor.bubbleTimestampOutgoing
             : AppColor.bubbleTimestampIncoming
 
-        let bodyText: String
+        let bodyDocument: RichTextDocument
         switch message.content {
+        case .poll, .unableToDecrypt:
+            bodyDocument = MatrixRichTextParser.parse(body: message.content.textPreview, metadata: nil)
         case .text(let body):
-            bodyText = body
+            bodyDocument = MatrixRichTextParser.parse(
+                body: body,
+                metadata: message.textMetadata
+            )
         case .notice(let body):
-            bodyText = body
+            bodyDocument = MatrixRichTextParser.parse(
+                body: body,
+                metadata: message.textMetadata
+            )
         case .emote(let body):
-            bodyText = "* \(message.senderDisplayName ?? "") \(body)"
+            bodyDocument = MatrixRichTextParser.parse(
+                body: body,
+                metadata: message.textMetadata
+            ).prepending("* \(message.senderDisplayName ?? "") ")
         case .image:
-            bodyText = "📷 Photo"
+            bodyDocument = MatrixRichTextParser.parse(body: "📷 Photo", metadata: nil)
         case .video(_, _, _, _, _, let filename, _, _, _, _):
-            bodyText = "🎬 \(filename)"
+            bodyDocument = MatrixRichTextParser.parse(body: "🎬 \(filename)", metadata: nil)
         case .pendingOutgoingMediaBatch:
-            bodyText = "📷 Photo"
+            bodyDocument = MatrixRichTextParser.parse(body: "📷 Photo", metadata: nil)
         case .voice:
-            bodyText = "🎤 \(String(localized: "Voice message"))"
+            bodyDocument = MatrixRichTextParser.parse(
+                body: "🎤 \(String(localized: "Voice message"))",
+                metadata: nil
+            )
         case .file(_, let filename, _, _, _):
-            bodyText = "📎 \(filename)"
+            bodyDocument = MatrixRichTextParser.parse(body: "📎 \(filename)", metadata: nil)
         case .callEvent(let type, _, let reason):
-            bodyText = "📞 \(type.displayText(reason: reason))"
+            bodyDocument = MatrixRichTextParser.parse(
+                body: "📞 \(type.displayText(reason: reason))",
+                metadata: nil
+            )
+        case .matrixRTCCall(let details):
+            bodyDocument = MatrixRichTextParser.parse(
+                body: "📞 \(details.timelineText(isDirect: !isGroupChat, currentUserId: nil))",
+                metadata: nil
+            )
         case .systemEvent(let text, _):
-            bodyText = text
+            bodyDocument = MatrixRichTextParser.parse(body: text, metadata: nil)
         case .unsupported(let typeName):
-            bodyText = "[\(typeName)]"
+            bodyDocument = MatrixRichTextParser.parse(body: "[\(typeName)]", metadata: nil)
         case .redacted:
-            bodyText = "Message deleted"
+            bodyDocument = MatrixRichTextParser.parse(body: "Message deleted", metadata: nil)
         }
 
-        let bodyAttributedText = NSAttributedString(
-            string: bodyText,
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 16),
-                .foregroundColor: bubbleForegroundColor
-            ]
+        let bodyAttributedText = RichTextRenderer.attributedString(
+            from: bodyDocument,
+            foregroundColor: bubbleForegroundColor,
+            linkColor: usesAccentBubbleStyle
+                ? bubbleForegroundColor
+                : AppColor.accent
         )
+        self.accessibleLinks = Self.makeAccessibleLinks(from: bodyDocument)
 
         let forwardedHeaderText: NSAttributedString?
         if let forwarderName = message.zynaAttributes.forwardedFrom {
@@ -131,6 +163,9 @@ final class TextMessageCellNode: MessageCellNode {
             timeText: timeAttributedText,
             statusIcon: statusIcon,
             statusTintColor: bubbleTimestampColor,
+            quoteBarColor: usesAccentBubbleStyle
+                ? AppColor.replyBarOutgoing
+                : AppColor.replyBarIncoming,
             maxTextWidth: maxContentWidth
         )
         self.replyEventId = message.replyInfo?.eventId
@@ -144,12 +179,17 @@ final class TextMessageCellNode: MessageCellNode {
             return ASInsetLayoutSpec(insets: Self.bubbleInsets, child: self.flatContentNode)
         }
 
-        if let replyEventId {
+        if replyEventId != nil || bodyDocument.hasLinks {
             contextSourceNode.onQuickTap = { [weak self] point in
                 guard let self, self.isNodeLoaded else { return }
-                let localPoint = self.contextSourceNode.view.convert(point, to: self.flatContentNode.view)
+                let localPoint = self.contextSourceNode.convert(point, to: self.flatContentNode)
+                if let url = self.flatContentNode.linkURL(at: localPoint) {
+                    self.onLinkTapped?(url)
+                    return
+                }
                 if let replyFrame = self.flatContentNode.replyHeaderFrame,
-                   replyFrame.contains(localPoint) {
+                   replyFrame.contains(localPoint),
+                   let replyEventId {
                     self.onReplyHeaderTapped?(replyEventId)
                 }
             }
@@ -161,8 +201,74 @@ final class TextMessageCellNode: MessageCellNode {
         assignProbeName("textMessage.flatContent", to: flatContentNode)
     }
 
+    func setLinkOpening(_ active: Bool) {
+        guard isNodeLoaded else { return }
+        if active {
+            if linkActivity == nil {
+                linkActivity = BubbleLinkActivity(parent: bubbleNode.layer, color: bubbleForegroundColor)
+            }
+            linkActivity?.update(bounds: bubbleNode.bounds, path: bubbleNode.currentPath().cgPath)
+        } else {
+            linkActivity?.remove()
+            linkActivity = nil
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        linkActivity?.update(bounds: bubbleNode.bounds, path: bubbleNode.currentPath().cgPath)
+    }
+
+    override func didEnterVisibleState() {
+        super.didEnterVisibleState()
+        linkActivity?.setVisible(true)
+    }
+
+    override func didExitVisibleState() {
+        super.didExitVisibleState()
+        linkActivity?.setVisible(false)
+    }
+
     override func updateSendStatus(_ status: String) {
         super.updateSendStatus(status)
         flatContentNode.statusIcon = statusIcon(forSendStatus: status)
+    }
+
+    func linkAccessibilityActions() -> [UIAccessibilityCustomAction] {
+        accessibleLinks.map { link in
+            UIAccessibilityCustomAction(
+                name: String(localized: "Open link") + ": " + link.label
+            ) { [weak self] _ in
+                guard let self,
+                      self.onLinkTapped != nil else {
+                    return false
+                }
+                self.onLinkTapped?(link.url)
+                return true
+            }
+        }
+    }
+
+    private static func makeAccessibleLinks(
+        from document: RichTextDocument
+    ) -> [AccessibleLink] {
+        let text = document.text as NSString
+        var destinations = Set<String>()
+        return document.links.compactMap { link in
+            guard link.range.location >= 0,
+                  NSMaxRange(link.range) <= text.length,
+                  let url = URL(string: link.destination),
+                  destinations.insert(link.destination).inserted else {
+                return nil
+            }
+            let visibleText = text.substring(with: link.range)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return AccessibleLink(
+                url: url,
+                label: visibleText.isEmpty
+                    ? (url.host ?? link.destination)
+                    : visibleText
+            )
+        }
     }
 }

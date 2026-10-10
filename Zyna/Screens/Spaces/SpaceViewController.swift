@@ -210,7 +210,8 @@ final class SpaceViewController: ASDKViewController<SpaceScreenNode> {
             spaceChildRoomCount: roomCount,
             spaceChildSpaceCount: lineCount,
             spaceRecentRooms: space.spaceRecentRooms,
-            spaceMetadata: space.spaceMetadata
+            spaceMetadata: space.spaceMetadata,
+            isMuted: space.isMuted
         )
     }
 

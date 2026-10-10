@@ -5,7 +5,6 @@
 
 import UIKit
 import Combine
-import UniformTypeIdentifiers
 import MatrixRustSDK
 import GRDB
 
@@ -18,6 +17,7 @@ enum OutgoingSendFailureReason: Equatable {
     case ownDeviceVerificationRequired
     case recipientIdentityVerificationRequired
     case roomSendNotAllowed
+    case recipientBlocked
 
     static func fromQueueWedgeError(_ error: QueueWedgeError) -> OutgoingSendFailureReason? {
         switch error {
@@ -67,6 +67,9 @@ struct OutgoingSendFailureContext: Equatable {
     }
 
     static func fromError(_ error: Error) -> OutgoingSendFailureContext? {
+        if case DirectChatBlockingError.blocked(let userID) = error {
+            return .init(reason: .recipientBlocked, affectedUserIds: [userID], insecureDevicesByUserId: [:])
+        }
         let errorText = [
             String(reflecting: error),
             String(describing: error),
@@ -186,13 +189,36 @@ final class TimelineService {
     var onRoomPinnedEventsChanged: (() -> Void)?
 
     private let room: Room
-    private var timeline: Timeline?
+    private var listeningTimeline: Timeline?
+    private var timeline: Timeline? { listenerGeneration.withValue { _ in listeningTimeline } }
     private var listenerHandle: TaskHandle?
     private var roomAccountDataHandle: TaskHandle?
+    private let listenerGeneration = Atomic(UInt64(0))
 
     init(room: Room) {
         self.room = room
     }
+
+    var recoveryTimeline: Timeline? { timeline }
+
+    #if DEBUG
+    var messageDiagnosticTimeline: Timeline? { timeline }
+
+    /// Probe the same content mapper used by normal diffs, off the main thread.
+    static func messageDiagnosticProjection(_ event: EventTimelineItem) -> HistoryPerformanceTrace.Count {
+        switch event.content {
+        case .msgLike(let content):
+            switch content.kind {
+            case .unableToDecrypt: return .projectionUTD
+            case .redacted: return .projectionRedacted
+            default: break
+            }
+        case .failedToParseMessageLike, .failedToParseState: return .projectionParseError
+        default: break
+        }
+        return contentFromEvent(event) == nil ? .projectionFiltered : .projectionMapped
+    }
+    #endif
 
     var hasLiveTimeline: Bool { timeline != nil }
 
@@ -209,6 +235,7 @@ final class TimelineService {
     // MARK: - Start
 
     func startListening(subscribeForSync: Bool = true) async {
+        let generation = resetListener()
         do {
             // Subscribe room for full sliding sync delivery (live events)
             if subscribeForSync {
@@ -216,22 +243,41 @@ final class TimelineService {
             }
 
             let timeline = try await room.timeline()
-            self.timeline = timeline
+            let accepts = listenerGeneration.withValue { current in
+                guard current == generation, !Task.isCancelled else { return false }
+                self.listeningTimeline = timeline
+                return true
+            }
+            guard accepts else { return }
 
             let listener = ZynaTimelineListener { [weak self] diffs in
+                guard self?.listenerGeneration.wrappedValue == generation else { return }
                 self?.handleDiffs(diffs)
             }
-            self.listenerHandle = await timeline.addListener(listener: listener)
+            let handle = await timeline.addListener(listener: listener)
+            let installed = listenerGeneration.withValue { current in
+                guard current == generation, !Task.isCancelled else { return false }
+                self.listenerHandle = handle
+                return true
+            }
+            guard installed else { handle.cancel(); return }
 
             if let client = MatrixClientService.shared.client {
                 let roomAccountDataListener = ZynaRoomAccountDataListener { [weak self] event, roomId in
+                    guard self?.listenerGeneration.wrappedValue == generation else { return }
                     self?.handleRoomAccountDataEvent(event, roomId: roomId)
                 }
-                self.roomAccountDataHandle = try client.observeRoomAccountDataEvent(
+                let accountHandle = try client.observeRoomAccountDataEvent(
                     roomId: room.id(),
                     eventType: .fullyRead,
                     listener: roomAccountDataListener
                 )
+                let installed = listenerGeneration.withValue { current in
+                    guard current == generation, !Task.isCancelled else { return false }
+                    self.roomAccountDataHandle = accountHandle
+                    return true
+                }
+                if !installed { accountHandle.cancel() }
             }
 
             logTimeline("Timeline listener started for room \(room.id())")
@@ -356,7 +402,9 @@ final class TimelineService {
             senderAvatarUrl = nil
         }
 
-        guard let content = contentFromEvent(event) else { return nil }
+        guard var content = contentFromEvent(event) else { return nil }
+        let mediaMetadata = mediaMetadata(from: event)
+        let textMetadata = textMetadata(from: event)
 
         let eventId: String? = {
             if case .eventId(let id) = event.eventOrTransactionId {
@@ -377,6 +425,10 @@ final class TimelineService {
         }()
         let isEdited = messageContentIsEdited(from: event)
         let editState = messageEditState(from: event, isEdited: isEdited)
+        if case .poll(var poll) = content {
+            poll.latestEditEventID = editState.eventId
+            content = .poll(poll)
+        }
 
         let itemIdentifier: ChatItemIdentifier? = {
             switch event.eventOrTransactionId {
@@ -396,6 +448,8 @@ final class TimelineService {
             isOutgoing: event.isOwn,
             timestamp: timestamp,
             content: content,
+            mediaMetadata: mediaMetadata,
+            textMetadata: textMetadata,
             reactions: reactions,
             replyInfo: replyInfo,
             isEditable: event.isEditable,
@@ -409,12 +463,45 @@ final class TimelineService {
     }
 
     private static func messageContentIsEdited(from event: EventTimelineItem) -> Bool {
+        if case .msgLike(let content) = event.content,
+           case .poll(_, _, _, _, _, _, let edited) = content.kind {
+            return edited
+        }
         guard case .msgLike(let msgContent) = event.content,
               case .message(let message) = msgContent.kind
         else {
             return false
         }
         return message.isEdited
+    }
+
+    private static func textMetadata(from event: EventTimelineItem) -> ChatTextMetadata? {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let messageContent) = msgContent.kind else {
+            return nil
+        }
+
+        let formatted: FormattedBody?
+        switch messageContent.msgType {
+        case .text(let content):
+            formatted = content.formatted
+        case .notice(let content):
+            formatted = content.formatted
+        case .emote(let content):
+            formatted = content.formatted
+        default:
+            return nil
+        }
+
+        guard let formatted else { return nil }
+        let format: String
+        switch formatted.format {
+        case .html:
+            format = ChatTextMetadata.matrixHTMLFormat
+        case .unknown(let rawFormat):
+            format = rawFormat
+        }
+        return ChatTextMetadata(format: format, formattedBody: formatted.body)
     }
 
     private struct MessageEditState {
@@ -580,7 +667,8 @@ final class TimelineService {
             case .text(let t): return t.body
             case .image: return "Photo"
             case .video: return "Video"
-            case .audio: return String(localized: "Voice message")
+            case .audio(let audio):
+                return audio.voice == nil ? "File" : String(localized: "Voice message")
             case .file: return "File"
             case .notice(let t): return t.body
             case .emote(let t): return t.body
@@ -813,11 +901,18 @@ final class TimelineService {
     }
 
     private static func contentFromEvent(_ event: EventTimelineItem) -> ChatMessageContent? {
-        // Call events: invite is native SDK, signaling rides in span.
-        // CallService writes call events to GRDB directly — skip here.
+        let attributes = extractZynaAttributes(from: event)
+        guard ChatEventVisibility.exclusion(for: event.content, attributes: attributes) == nil else { return nil }
         switch event.content {
-        case .callInvite:
-            return nil
+        case .rtcNotification(let callIntent, let declinedBy):
+            guard let details = matrixRTCCallDetails(
+                from: event,
+                sdkCallIntent: callIntent,
+                declinedBy: declinedBy
+            ) else {
+                return nil
+            }
+            return .matrixRTCCall(details: details)
 
         case .roomMembership(userId: let userId, userDisplayName: let userDisplayName, change: let change, reason: let reason):
             guard let text = membershipEventText(
@@ -850,22 +945,24 @@ final class TimelineService {
             return .systemEvent(text: text, kind: .roomState)
 
         case .msgLike(let msgContent):
-            let attrs = extractZynaAttributes(from: event)
-            if attrs.callSignal != nil { return nil }
-
             switch msgContent.kind {
             case .message(let messageContent):
                 guard let content = contentFromMessageType(messageContent.msgType) else { return nil }
                 return content
             case .sticker:
                 return .unsupported(typeName: "sticker")
-            case .poll:
-                return .unsupported(typeName: "poll")
+            case .poll(let question, let kind, let maxSelections, let answers, let votes, let endTime, let edited):
+                return .poll(PollSnapshot.fromSDK(
+                    question: question, kind: kind, maxSelections: maxSelections,
+                    answers: answers, votes: votes, endTime: endTime,
+                    isEditable: event.isEditable, isEdited: edited,
+                    currentUserID: (try? MatrixClientService.shared.client?.userId()) ?? ""
+                ))
             case .redacted:
                 return .redacted
             case .unableToDecrypt(let message):
                 logTimeline("UTD: eventId=\(event.eventOrTransactionId) sender=\(event.sender) \(describeEncryptedMessage(message))")
-                return .text(body: String(localized: "Unable to decrypt message"))
+                return .unableToDecrypt(ChatDecryptionFailure(message))
             case .other:
                 return nil
             case .liveLocation(content: _):
@@ -879,14 +976,71 @@ final class TimelineService {
         }
     }
 
+    private static func matrixRTCCallDetails(
+        from event: EventTimelineItem,
+        sdkCallIntent: String?,
+        declinedBy: [String]
+    ) -> MatrixRTCCallEventDetails? {
+        guard let rawJSON = event.lazyProvider.debugInfo().originalJson,
+              let data = rawJSON.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = root["content"] as? [String: Any]
+        else {
+            return MatrixRTCCallEventDetails(
+                parentEventId: nil,
+                callIntent: sdkCallIntent,
+                notificationType: .unknown,
+                expiresAt: nil,
+                declinedBy: declinedBy,
+                historyOutcome: nil
+            )
+        }
+
+        let parentEventId = (content["m.relates_to"] as? [String: Any])?["event_id"] as? String
+        let rawNotificationType = content["notification_type"] as? String
+        let notificationType = rawNotificationType
+            .flatMap(MatrixRTCCallNotificationKind.init(rawValue:))
+            ?? .unknown
+        let callIntent = sdkCallIntent ?? content["m.call.intent"] as? String
+
+        let senderTimestamp = int64Value(content["sender_ts"])
+        let lifetime = int64Value(content["lifetime"])
+        let expiresAt: TimeInterval?
+        if let senderTimestamp, let lifetime {
+            expiresAt = TimeInterval(senderTimestamp + lifetime) / 1000
+        } else {
+            expiresAt = nil
+        }
+
+        return MatrixRTCCallEventDetails(
+            parentEventId: parentEventId,
+            callIntent: callIntent,
+            notificationType: notificationType,
+            expiresAt: expiresAt,
+            declinedBy: declinedBy.sorted(),
+            historyOutcome: nil
+        )
+    }
+
+    private static func int64Value(_ value: Any?) -> Int64? {
+        if let value = value as? Int64 {
+            return value
+        }
+        if let value = value as? Int {
+            return Int64(value)
+        }
+        if let value = value as? NSNumber {
+            return value.int64Value
+        }
+        if let value = value as? String {
+            return Int64(value)
+        }
+        return nil
+    }
+
     private static func contentFromMessageType(_ msgType: MessageType) -> ChatMessageContent? {
         switch msgType {
         case .text(let content):
-            // Skip zero-width-space-only bodies — carrier messages
-            // (call signaling) that slipped past the span check.
-            let visible = content.body.replacingOccurrences(of: "\u{200B}", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if visible.isEmpty { return nil }
             return .text(body: content.body)
         case .image(let content):
             return .image(
@@ -919,8 +1073,22 @@ final class TimelineService {
             return .emote(body: content.body)
         case .audio(let content):
             let duration = content.audio?.duration ?? content.info?.duration ?? 0
-            let waveform = content.audio?.waveform ?? []
-            return .voice(source: content.source, duration: duration, waveform: waveform)
+            if content.voice != nil {
+                return .voice(
+                    source: content.source,
+                    duration: duration,
+                    waveform: content.audio?.waveform ?? []
+                )
+            }
+            // Only m.audio events with voice metadata are voice messages.
+            // Other audio events use the generic file presentation.
+            return .file(
+                source: content.source,
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                size: content.info?.size,
+                caption: content.caption
+            )
         case .file(let content):
             if Self.isLikelyVideoFile(
                 filename: content.filename,
@@ -954,6 +1122,110 @@ final class TimelineService {
         }
     }
 
+    private static func mediaMetadata(from event: EventTimelineItem) -> ChatMediaMetadata? {
+        guard case .msgLike(let msgContent) = event.content,
+              case .message(let messageContent) = msgContent.kind
+        else {
+            return nil
+        }
+
+        switch messageContent.msgType {
+        case .image(let content):
+            let thumbnailSource = content.info?.thumbnailSource
+            let sourceJSON = content.source.toJson()
+            let thumbnailSourceJSON = thumbnailSource?.toJson()
+            return ChatMediaMetadata(
+                attachmentKind: .image,
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                sizeBytes: content.info?.size,
+                durationSeconds: nil,
+                blurhash: content.info?.blurhash.flatMap { $0.isEmpty ? nil : $0 },
+                isAnimated: content.info?.isAnimated ?? false,
+                sourceJSON: sourceJSON,
+                isSourceEncrypted: MediaSourceInspector.isEncrypted(json: sourceJSON),
+                thumbnailSourceJSON: thumbnailSourceJSON,
+                isThumbnailEncrypted: thumbnailSourceJSON.map {
+                    MediaSourceInspector.isEncrypted(json: $0)
+                },
+                thumbnailWidth: content.info?.thumbnailInfo?.width,
+                thumbnailHeight: content.info?.thumbnailInfo?.height,
+                thumbnailSizeBytes: content.info?.thumbnailInfo?.size,
+                thumbnailMimetype: content.info?.thumbnailInfo?.mimetype
+            )
+        case .video(let content):
+            let thumbnailSource = content.info?.thumbnailSource
+            let sourceJSON = content.source.toJson()
+            let thumbnailSourceJSON = thumbnailSource?.toJson()
+            return ChatMediaMetadata(
+                attachmentKind: .video,
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                sizeBytes: content.info?.size,
+                durationSeconds: content.info?.duration,
+                blurhash: content.info?.blurhash.flatMap { $0.isEmpty ? nil : $0 },
+                isAnimated: false,
+                sourceJSON: sourceJSON,
+                isSourceEncrypted: MediaSourceInspector.isEncrypted(json: sourceJSON),
+                thumbnailSourceJSON: thumbnailSourceJSON,
+                isThumbnailEncrypted: thumbnailSourceJSON.map {
+                    MediaSourceInspector.isEncrypted(json: $0)
+                },
+                thumbnailWidth: content.info?.thumbnailInfo?.width,
+                thumbnailHeight: content.info?.thumbnailInfo?.height,
+                thumbnailSizeBytes: content.info?.thumbnailInfo?.size,
+                thumbnailMimetype: content.info?.thumbnailInfo?.mimetype
+            )
+        case .audio(let content):
+            let sourceJSON = content.source.toJson()
+            return ChatMediaMetadata(
+                attachmentKind: RoomAttachmentClassifier.kindForAudio(isVoice: content.voice != nil),
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                sizeBytes: content.info?.size,
+                durationSeconds: content.audio?.duration ?? content.info?.duration,
+                blurhash: nil,
+                isAnimated: false,
+                sourceJSON: sourceJSON,
+                isSourceEncrypted: MediaSourceInspector.isEncrypted(json: sourceJSON),
+                thumbnailSourceJSON: nil,
+                isThumbnailEncrypted: nil,
+                thumbnailWidth: nil,
+                thumbnailHeight: nil,
+                thumbnailSizeBytes: nil,
+                thumbnailMimetype: nil
+            )
+        case .file(let content):
+            let thumbnailSource = content.info?.thumbnailSource
+            let sourceJSON = content.source.toJson()
+            let thumbnailSourceJSON = thumbnailSource?.toJson()
+            return ChatMediaMetadata(
+                attachmentKind: RoomAttachmentClassifier.kindForFile(
+                    filename: content.filename,
+                    mimetype: content.info?.mimetype
+                ),
+                filename: content.filename,
+                mimetype: content.info?.mimetype,
+                sizeBytes: content.info?.size,
+                durationSeconds: nil,
+                blurhash: nil,
+                isAnimated: false,
+                sourceJSON: sourceJSON,
+                isSourceEncrypted: MediaSourceInspector.isEncrypted(json: sourceJSON),
+                thumbnailSourceJSON: thumbnailSourceJSON,
+                isThumbnailEncrypted: thumbnailSourceJSON.map {
+                    MediaSourceInspector.isEncrypted(json: $0)
+                },
+                thumbnailWidth: content.info?.thumbnailInfo?.width,
+                thumbnailHeight: content.info?.thumbnailInfo?.height,
+                thumbnailSizeBytes: content.info?.thumbnailInfo?.size,
+                thumbnailMimetype: content.info?.thumbnailInfo?.mimetype
+            )
+        default:
+            return nil
+        }
+    }
+
     private static func describeEncryptedMessage(_ message: EncryptedMessage) -> String {
         switch message {
         case .olmV1Curve25519AesSha2(let senderKey):
@@ -967,32 +1239,58 @@ final class TimelineService {
 
     // MARK: - Pagination
 
-    func paginateBackwards(numEvents: UInt16 = 20) async {
-        guard let timeline, !isPaginatingSubject.value else { return }
+    #if DEBUG
+    var historyPerformance: HistoryPerformanceTrace.Session?
+    #endif
+
+    func paginateBackwards(numEvents: UInt16 = 20) async -> HistoryPaginationResult {
+        #if DEBUG
+        if timeline == nil { historyPerformance?.count(.sdkMissing) }
+        #endif
+        // The chat coordinator serializes callers, including the writer drain.
+        guard !Task.isCancelled else { return .cancelled }
+        guard let timeline else { return .unavailable }
 
         await MainActor.run { isPaginatingSubject.send(true) }
 
+        #if DEBUG
+        let operation = historyPerformance?.begin(.sdk)
+        defer { operation?.finish() }
+        #endif
+        let result: HistoryPaginationResult
         do {
-            try await timeline.paginateBackwards(numEvents: numEvents)
+            let hitStart = try await timeline.paginateBackwards(numEvents: numEvents)
+            #if DEBUG
+            if hitStart { historyPerformance?.count(.sdkStart) }
+            operation?.finish()
+            #endif
+            result = .page(reachedStart: hitStart)
             logTimeline("Paginated backwards successfully")
+        } catch is CancellationError {
+            result = .cancelled
         } catch {
-            logTimeline("Pagination failed: \(error)")
-            await handleMatrixTransportError(error)
+            if Task.isCancelled {
+                result = .cancelled
+            } else {
+                #if DEBUG
+                operation?.finish(failed: true)
+                #endif
+                logTimeline("Pagination failed: \(error)")
+                await handleMatrixTransportError(error)
+                result = .failed
+            }
         }
 
         await MainActor.run { isPaginatingSubject.send(false) }
+        return Task.isCancelled ? .cancelled : result
     }
 
     private func handleMatrixTransportError(_ error: Error) async {
         await MatrixClientService.shared.handleInvalidAccessTokenIfNeeded(error)
     }
 
-    private static func isLikelyVideoFile(filename: String, mimetype: String?) -> Bool {
-        if mimetype?.lowercased().hasPrefix("video/") == true { return true }
-        guard let type = UTType(filenameExtension: (filename as NSString).pathExtension) else {
-            return false
-        }
-        return type.conforms(to: .movie) || type.conforms(to: .video)
+    static func isLikelyVideoFile(filename: String, mimetype: String?) -> Bool {
+        RoomAttachmentClassifier.isLikelyVideoFile(filename: filename, mimetype: mimetype)
     }
 
     /// Send call signaling data through the timeline's encrypted
@@ -1058,31 +1356,52 @@ final class TimelineService {
         }
     }
 
-    @discardableResult
-    func sendReadReceipt(for eventId: String) async -> Bool {
-        do {
-            try await timeline?.sendReadReceipt(receiptType: .read, eventId: eventId)
-        } catch {
-            logTimeline("sendReadReceipt(.read) failed event=\(eventId): \(error)")
-        }
+    /// Capture the SDK timeline before navigation can release its listener.
+    /// The request outlives the screen without retaining its view model.
+    func readReceiptRequest(for eventId: String) -> ReadReceiptRequest? {
+        guard let timeline else { return nil }
+        return ReadReceiptRequest(timeline: timeline, eventId: eventId)
+    }
 
-        do {
-            try await timeline?.sendReadReceipt(receiptType: .fullyRead, eventId: eventId)
-            return true
-        } catch {
-            logTimeline("sendReadReceipt(.fullyRead) failed event=\(eventId): \(error)")
-            return false
+    struct ReadReceiptRequest {
+        fileprivate let timeline: Timeline
+        fileprivate let eventId: String
+
+        func send() async -> Bool {
+            do {
+                try await timeline.sendReadReceipt(receiptType: .read, eventId: eventId)
+            } catch {
+                logTimeline("sendReadReceipt(.read) failed event=\(eventId): \(error)")
+            }
+
+            do {
+                try await timeline.sendReadReceipt(receiptType: .fullyRead, eventId: eventId)
+                return true
+            } catch {
+                logTimeline("sendReadReceipt(.fullyRead) failed event=\(eventId): \(error)")
+                return false
+            }
         }
     }
 
     // MARK: - Cleanup
 
     func stopListening() {
-        listenerHandle?.cancel()
-        listenerHandle = nil
-        roomAccountDataHandle?.cancel()
-        roomAccountDataHandle = nil
-        timeline = nil
+        resetListener()
+    }
+
+    @discardableResult
+    private func resetListener() -> UInt64 {
+        let (generation, handles) = listenerGeneration.withValue { generation in
+            generation &+= 1
+            let handles = [listenerHandle, roomAccountDataHandle].compactMap { $0 }
+            listenerHandle = nil
+            roomAccountDataHandle = nil
+            listeningTimeline = nil
+            return (generation, handles)
+        }
+        handles.forEach { $0.cancel() }
+        return generation
     }
 
     private static func describe(_ mediaGroup: MediaGroupInfo?) -> String {

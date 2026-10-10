@@ -1,0 +1,79 @@
+//
+// Copyright 2026 Dmitry Markovsky
+// SPDX-License-Identifier: AGPL-3.0-only
+//
+
+import Foundation
+import MatrixRustSDK
+
+enum IgnoredUsersServiceError: Error {
+    case noClient
+}
+
+/// Matrix `m.ignored_user_list`, stored as account data so it follows the
+/// user across devices. Homeservers suppress ignored users' non-state events.
+protocol IgnoredUsersProviding: Sendable {
+    func ignoredUserIds() async throws -> [String]
+    func observeIgnoredUsers(_ onChange: @escaping @Sendable ([String]) -> Void) -> TaskHandle?
+    func ignore(userId: String) async throws
+    func unignore(userId: String) async throws
+}
+
+final class IgnoredUsersService: IgnoredUsersProviding, @unchecked Sendable {
+
+    static let shared = IgnoredUsersService()
+
+    private let fixedClient: Client?
+    private let visibility: ((Client) -> IgnoredContentService?)
+
+    private init() { fixedClient = nil; visibility = Self.activeVisibility }
+    init(client: Client, visibility: @escaping (Client) -> IgnoredContentService? = IgnoredUsersService.activeVisibility) {
+        fixedClient = client; self.visibility = visibility
+    }
+
+    static func activeVisibility(for client: Client) -> IgnoredContentService? {
+        guard let service = MatrixClientService.shared.ignoredContentService, service.client === client else { return nil }
+        return service
+    }
+
+    private var client: Client? { fixedClient ?? MatrixClientService.shared.client }
+
+    func ignoredUserIds() async throws -> [String] {
+        guard let client else { throw IgnoredUsersServiceError.noClient }
+        return try await client.ignoredUsers()
+    }
+
+    /// The caller owns the handle; releasing it ends the subscription.
+    func observeIgnoredUsers(
+        _ onChange: @escaping @Sendable ([String]) -> Void
+    ) -> TaskHandle? {
+        client?.subscribeToIgnoredUsers(
+            listener: IgnoredUsersCallbackListener(callback: onChange)
+        )
+    }
+
+    func ignore(userId: String) async throws {
+        guard let client else { throw IgnoredUsersServiceError.noClient }
+        try await client.ignoreUser(userId: userId)
+        await visibility(client)?.applyConfirmedChange(userID: userId, isIgnored: true)
+    }
+
+    func unignore(userId: String) async throws {
+        guard let client else { throw IgnoredUsersServiceError.noClient }
+        try await client.unignoreUser(userId: userId)
+        await visibility(client)?.applyConfirmedChange(userID: userId, isIgnored: false)
+    }
+}
+
+private final class IgnoredUsersCallbackListener: IgnoredUsersListener {
+
+    private let callback: @Sendable ([String]) -> Void
+
+    init(callback: @escaping @Sendable ([String]) -> Void) {
+        self.callback = callback
+    }
+
+    func call(ignoredUserIds: [String]) {
+        callback(ignoredUserIds)
+    }
+}

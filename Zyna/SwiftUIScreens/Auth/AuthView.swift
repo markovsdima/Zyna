@@ -108,7 +108,7 @@ struct AuthView: View {
                 )
                 .autocapitalization(.none)
                 .disableAutocorrection(true)
-                .onChange(of: homeserver) { newValue in
+                .onChange(of: homeserver) { _, newValue in
                     viewModel.checkServerCapabilities(homeserver: newValue)
                 }
         }.padding(.horizontal)

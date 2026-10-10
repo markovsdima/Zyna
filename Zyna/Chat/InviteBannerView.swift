@@ -6,12 +6,14 @@
 import UIKit
 
 /// Banner shown below the nav bar when the room is in
-/// invited state. Shows inviter name and an accept button.
+/// invited state. Offers acceptance and the decline/block form.
 final class InviteBannerView: UIView {
 
+    var onDecline: (() -> Void)?
     var onAccept: (() -> Void)?
 
     private let label = UILabel()
+    private let declineButton = UIButton(type: .system)
     private let acceptButton = UIButton(type: .system)
     private let hPad: CGFloat = 16
 
@@ -34,6 +36,10 @@ final class InviteBannerView: UIView {
         acceptButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
         acceptButton.addTarget(self, action: #selector(acceptTapped), for: .touchUpInside)
 
+        declineButton.setTitle(String(localized: "Decline", table: "Reports"), for: .normal)
+        declineButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
+        declineButton.addTarget(self, action: #selector(declineTapped), for: .touchUpInside)
+        addSubview(declineButton)
         addSubview(label)
         addSubview(acceptButton)
     }
@@ -50,13 +56,16 @@ final class InviteBannerView: UIView {
             height: h
         )
 
+        let declineWidth = declineButton.intrinsicContentSize.width + 16
+        declineButton.frame = CGRect(x: acceptButton.frame.minX - declineWidth, y: 0, width: declineWidth, height: h)
         label.frame = CGRect(
             x: hPad,
             y: 0,
-            width: acceptButton.frame.minX - hPad * 2,
+            width: max(0, declineButton.frame.minX - hPad * 2),
             height: h
         )
     }
 
+    @objc private func declineTapped() { onDecline?() }
     @objc private func acceptTapped() { onAccept?() }
 }

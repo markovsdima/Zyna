@@ -8,6 +8,10 @@ import Foundation
 
 final class OutgoingOutboxScanCoordinator {
 
+    // Scans orchestrate on main, but their bulk database fetches must await
+    // GRDB's async reader. After every suspension, callers recheck cancellation
+    // and session identity before changing an outgoing action or sending it.
+
     typealias EnvelopeIds = Set<String>?
 
     private let matrixService = MatrixClientService.shared

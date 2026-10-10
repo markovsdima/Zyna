@@ -16,8 +16,6 @@ final class AppCoordinator {
         case sessionRecovery
     }
 
-    private static let installationSentinelKey = "com.zyna.installation.initialized"
-
     weak var window: UIWindow?
     private var mainCoordinator: MainCoordinator?
     private var rootScreen: RootScreen?
@@ -35,12 +33,24 @@ final class AppCoordinator {
     private var sessionRestoreRetryDelaySeconds: UInt64 = 5
     private var pendingNotificationPrePrompt = false
     private weak var notificationPrePromptAlert: UIAlertController?
+    private var startupTask: Task<Void, Never>?
 
     func start() {
+        guard startupTask == nil else { return }
+        // Match the system launch screen while storage becomes ready. Do not
+        // construct screen models whose initializers synchronously read DB.
+        window?.rootViewController = UIStoryboard(name: "LaunchScreen", bundle: nil).instantiateInitialViewController()
+        startupTask = Task { @MainActor [weak self] in
+            let hasStoredSession = await LocalDataBootstrap.shared.ready()
+            guard let self, !Task.isCancelled else { return }
+            self.startAfterDatabaseReady(hasStoredSession: hasStoredSession)
+        }
+    }
+
+    private func startAfterDatabaseReady(hasStoredSession: Bool) {
         if let window {
             AppBannerCenter.shared.attach(to: window)
         }
-        prepareLocalStateForLaunch()
         OutgoingTextOutboxService.shared.start()
         OutgoingImageOutboxService.shared.start()
         OutgoingVideoOutboxService.shared.start()
@@ -50,29 +60,16 @@ final class AppCoordinator {
         OutgoingEditOutboxService.shared.start()
         OutgoingRedactionOutboxService.shared.start()
         OutgoingReactionOutboxService.shared.start()
+        OutgoingPollOutboxService.shared.start()
         observeClientState()
         observeNetworkRestoration()
 
-        if MatrixClientService.shared.hasStoredSession {
+        if hasStoredSession {
             showMain()
             restoreSessionInBackground()
         } else {
             showAuth()
         }
-    }
-
-    private func prepareLocalStateForLaunch() {
-        let defaults = UserDefaults.standard
-        guard defaults.object(forKey: Self.installationSentinelKey) == nil else {
-            return
-        }
-
-        if defaults.string(forKey: ZynaSecurityConfig.matrixLastUserIdKey) == nil {
-            MatrixClientService.resetPersistedSessionStateAfterFreshInstall()
-        }
-
-        defaults.set(true, forKey: Self.installationSentinelKey)
-        defaults.synchronize()
     }
 
     private func observeClientState() {
@@ -106,6 +103,9 @@ final class AppCoordinator {
                 self.mainCoordinator?.stopVoicePlayback()
                 self.mainCoordinator = nil
                 self.showAuth()
+                #if DEBUG
+                PollCacheDiagnostics.log("logout-ui-auth origin=state")
+                #endif
                 self.isPerformingLogout = false
             }
             .store(in: &cancellables)
@@ -137,7 +137,7 @@ final class AppCoordinator {
             }
         }
         let authView = AuthView(viewModel: viewModel)
-        let vc = authView.wrapped()
+        let vc = authView.wrapped(forcedStyle: .light)
         rootScreen = .auth
         window?.rootViewController = vc
     }
@@ -274,13 +274,13 @@ final class AppCoordinator {
             viewModel.onSkipped = { [weak self] in
                 self?.dismissVerificationAndContinue()
             }
-            let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+            let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
             vc.modalPresentationStyle = .fullScreen
             window?.rootViewController?.present(vc, animated: true)
         } else {
             viewModel.onVerified = { [weak self] in self?.showMain() }
             viewModel.onSkipped = { [weak self] in self?.showMain() }
-            let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+            let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
             rootScreen = .verification
             window?.rootViewController = vc
         }
@@ -375,7 +375,7 @@ final class AppCoordinator {
         viewModel.onSkipped = { [weak self] in
             self?.window?.rootViewController?.dismiss(animated: true)
         }
-        let vc = SessionVerificationView(viewModel: viewModel).wrapped()
+        let vc = SessionVerificationView(viewModel: viewModel).wrapped(forcedStyle: .light)
         vc.modalPresentationStyle = .fullScreen
         window?.rootViewController?.present(vc, animated: true)
     }
@@ -438,10 +438,11 @@ final class AppCoordinator {
         }
 
         rootScreen = .sessionRecovery
-        window?.rootViewController = SessionRecoveryView(viewModel: viewModel).wrapped()
+        window?.rootViewController = SessionRecoveryView(viewModel: viewModel).wrapped(forcedStyle: .light)
     }
 
     func resumeHeartbeatIfNeeded() {
+        guard rootScreen == .main else { return }
         PresenceTracker.shared.connect()
     }
 
@@ -555,6 +556,9 @@ final class AppCoordinator {
         await MatrixClientService.shared.logoutLocally()
         mainCoordinator = nil
         showAuth()
+        #if DEBUG
+        PollCacheDiagnostics.log("logout-ui-auth origin=interactive")
+        #endif
         isPerformingLogout = false
     }
 

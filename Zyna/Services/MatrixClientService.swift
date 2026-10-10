@@ -96,6 +96,8 @@ final class MatrixClientService {
     private(set) var client: Client?
     private(set) var syncService: SyncService?
     private(set) var roomListService: RoomListService?
+    private(set) var ignoredContentService: IgnoredContentService?
+    private(set) var notificationSettingsService: RoomNotificationSettingsService?
 
     // MARK: - Private
 
@@ -398,12 +400,12 @@ final class MatrixClientService {
         return uniqueURLs(candidates).contains(where: matrixCryptoStoreExists)
     }
 
-    private func ensureRecoverableMatrixCryptoStoreExists(for userId: String, context: String) throws {
+    private func ensureRecoverableMatrixCryptoStoreExists(for userId: String, context: String) async throws {
         guard hasRecoverableMatrixCryptoStore(for: userId) else {
             logAuth(
                 "\(context): stored Matrix session exists for \(userId), but the local Matrix crypto store is missing; clearing the saved session to avoid resurrecting the deviceId on a new crypto identity"
             )
-            clearLocalSession(userId: userId)
+            await clearLocalSession(userId: userId)
             stateSubject.send(.loggedOut)
             throw AuthenticationError.localCryptoStoreMissing
         }
@@ -510,15 +512,15 @@ final class MatrixClientService {
     }
 
     // MARK: - Login
-    // TODO: Remove NSAllowsArbitraryLoads from Info.plist once the server has HTTPS
 
     func login(username: String, password: String, homeserver: String = Brand.current.defaultHomeserver) async throws {
+        await LocalDataBootstrap.shared.ready()
         stateSubject.send(.loggingIn)
 
         // Clear stale local state so a fresh login cannot reuse another user's
         // decrypted app cache or Matrix crypto store.
         if let existingUserId = persistedUserId() {
-            clearLocalSession(userId: existingUserId)
+            await clearLocalSession(userId: existingUserId)
         } else {
             clearSessionDirectories()
             clearCryptoIdentityFingerprint()
@@ -563,7 +565,7 @@ final class MatrixClientService {
 
             persistStoredSessionMarker(userId: userId)
             let localSessionId = startNewLocalSessionId()
-            activateLocalData(userId: userId)
+            await activateLocalData(userId: userId)
 
             logAuth("Logged in as \(userId) localSession=\(localSessionId)")
 
@@ -586,6 +588,7 @@ final class MatrixClientService {
     // MARK: - Session Restore
 
     func restoreSession() async throws {
+        await LocalDataBootstrap.shared.ready()
         if client != nil {
             guard syncService == nil else {
                 stateSubject.send(.syncing)
@@ -620,7 +623,7 @@ final class MatrixClientService {
         }
 
         do {
-            try ensureRecoverableMatrixCryptoStoreExists(for: userId, context: "Session restore")
+            try await ensureRecoverableMatrixCryptoStoreExists(for: userId, context: "Session restore")
 
             let storePaths = matrixStorePaths(for: userId)
             let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
@@ -651,7 +654,7 @@ final class MatrixClientService {
             logAuth("Session restored for \(userId)")
             ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
             ensureLocalSessionId()
-            activateLocalData(userId: userId)
+            await activateLocalData(userId: userId)
             sessionRecoverySession = nil
             sessionRecoveryActive.tryToClearFlag()
 
@@ -663,7 +666,7 @@ final class MatrixClientService {
                 throw error
             }
             if case AuthenticationError.localCryptoIdentityMismatch = error {
-                clearLocalSession(userId: session.userId)
+                await clearLocalSession(userId: session.userId)
                 stateSubject.send(.loggedOut)
                 throw error
             }
@@ -734,6 +737,14 @@ final class MatrixClientService {
         }
 
         await attachClientDelegates(to: client)
+        if notificationSettingsService == nil {
+            notificationSettingsService = await RoomNotificationSettingsService(settings: client.getNotificationSettings())
+        }
+
+        if ignoredContentService == nil {
+            ignoredContentService = IgnoredContentService(client: client, database: DatabaseService.shared.dbQueue)
+        }
+        ignoredContentService?.start()
 
         // Attach encryption state listeners *before* sync starts so
         // we don't miss the first state delivery from the SDK.
@@ -942,17 +953,28 @@ final class MatrixClientService {
     }
 
     func logoutLocally() async {
+        #if DEBUG
+        PollCacheDiagnostics.log("logout-local-begin")
+        #endif
         let userId = currentOrStoredUserId(client: client)
 
         await stopSync()
+        #if DEBUG
+        PollCacheDiagnostics.log("logout-sync-stopped")
+        #endif
         detachEncryptionListeners()
         detachClientDelegates()
 
         client = nil
+        ignoredContentService?.stop(); ignoredContentService = nil
+        notificationSettingsService = nil
         sessionRecoverySession = nil
         sessionRecoveryActive.tryToClearFlag()
-        clearLocalSession(userId: userId)
+        await clearLocalSession(userId: userId)
         stateSubject.send(.loggedOut)
+        #if DEBUG
+        PollCacheDiagnostics.log("logout-local-end")
+        #endif
         logAuth("Logged out locally")
     }
 
@@ -1022,6 +1044,8 @@ final class MatrixClientService {
         detachEncryptionListeners()
         detachClientDelegates()
         client = nil
+        ignoredContentService?.stop(); ignoredContentService = nil
+        notificationSettingsService = nil
         stateSubject.send(sessionRecoverySource.state)
     }
 
@@ -1038,7 +1062,7 @@ final class MatrixClientService {
         stateSubject.send(.loggingIn)
 
         do {
-            try ensureRecoverableMatrixCryptoStoreExists(for: session.userId, context: "Session recovery sign-in")
+            try await ensureRecoverableMatrixCryptoStoreExists(for: session.userId, context: "Session recovery sign-in")
 
             let storePaths = matrixStorePaths(for: session.userId)
             let storeConfig = SqliteStoreBuilder(dataPath: storePaths.dataPath, cachePath: storePaths.cachePath)
@@ -1077,7 +1101,7 @@ final class MatrixClientService {
 
             persistStoredSessionMarker(userId: refreshedSession.userId)
             ensureLocalSessionId()
-            activateLocalData(userId: refreshedSession.userId)
+            await activateLocalData(userId: refreshedSession.userId)
 
             sessionRecoverySession = refreshedSession
             sessionRecoveryActive.tryToClearFlag()
@@ -1092,12 +1116,12 @@ final class MatrixClientService {
         } catch {
             logAuth("Session recovery sign-in failed: \(error)")
             if case AuthenticationError.localCryptoStoreMissing = error {
-                clearLocalSession(userId: session.userId)
+                await clearLocalSession(userId: session.userId)
                 stateSubject.send(.loggedOut)
                 throw error
             }
             if case AuthenticationError.localCryptoIdentityMismatch = error {
-                clearLocalSession(userId: session.userId)
+                await clearLocalSession(userId: session.userId)
                 stateSubject.send(.loggedOut)
                 throw error
             }
@@ -1130,8 +1154,9 @@ final class MatrixClientService {
 
     /// Build a client for a given homeserver (without logging in).
     func buildUnauthenticatedClient(homeserver: String) async throws -> Client {
+        await LocalDataBootstrap.shared.ready()
         if let existingUserId = persistedUserId() {
-            clearLocalSession(userId: existingUserId)
+            await clearLocalSession(userId: existingUserId)
         } else {
             clearSessionDirectories()
             clearCryptoIdentityFingerprint()
@@ -1193,6 +1218,7 @@ final class MatrixClientService {
 
     /// Complete an OAuth flow after receiving the callback URL from the browser.
     func completeOAuthFlow(client: Client, callbackURL: String) async throws {
+        await LocalDataBootstrap.shared.ready()
         try await client.loginWithOauthCallback(callbackUrl: callbackURL)
 
         let userId = try client.userId()
@@ -1206,7 +1232,7 @@ final class MatrixClientService {
 
         persistStoredSessionMarker(userId: userId)
         let localSessionId = startNewLocalSessionId()
-        activateLocalData(userId: userId)
+        await activateLocalData(userId: userId)
 
         logAuth("OAuth login successful as \(userId) localSession=\(localSessionId)")
 
@@ -1218,6 +1244,10 @@ final class MatrixClientService {
             context: "OAuth login"
         )
     }
+
+    /// Startup resolves all legacy markers on the bootstrap worker before
+    /// selecting the cached account database or constructing screen models.
+    var storedUserIdForLocalStartup: String? { persistedUserId() }
 
     var hasStoredSession: Bool {
         persistedUserId() != nil
@@ -1297,48 +1327,54 @@ final class MatrixClientService {
         ZynaSecurityConfig.setSharedLastMatrixUserId(userId)
     }
 
-    private func activateLocalData(userId: String) {
-        DatabaseService.shared.activate(userId: userId)
-        FileCacheService.shared.activate(userId: userId)
-        MediaCache.shared.activate(userId: userId)
-        LocalDataProtection.removeLegacyGlobalLocalData()
+    private func activateLocalData(userId: String) async {
+        do {
+            try await DatabaseService.shared.activate(userId: userId) {
+                FileCacheService.shared.activate(userId: userId)
+                MediaCache.shared.activate(userId: userId)
+                LocalDataProtection.removeLegacyGlobalLocalData()
+            }
+        } catch {
+            fatalError("Unable to activate encrypted app database: \(error)")
+        }
     }
 
-    private func clearAppLocalData(userId: String?) {
-        DatabaseService.shared.closeForLocalDataRemoval(userId: userId)
-        FileCacheService.shared.clearAll(userId: userId)
-        MediaCache.shared.clearAll(userId: userId)
+    private func clearLocalSession(userId: String?) async {
+        do {
+            try await DatabaseService.shared.resetToNoSession { [self] in
+                if let userId, !userId.isEmpty {
+                    sessionDelegate.clearSession(userId: userId)
+                    SessionVerificationService.clearLocalEncryptionFlags(userId: userId)
+                } else {
+                    sessionDelegate.clearAllSessions()
+                }
+                UserDefaults.standard.removeObject(forKey: userIdKey)
+                UserDefaults.standard.synchronize()
+                ZynaSecurityConfig.clearSharedLastMatrixUserId()
+                UserDefaults.standard.removeObject(forKey: localSessionIdKey)
+                UserDefaults.standard.synchronize()
+                clearCryptoIdentityFingerprint()
+                clearSessionDirectories(userId: userId)
 
-        if let userId, !userId.isEmpty {
-            LocalDataProtection.removeUserLocalData(userId: userId)
-            DatabasePassphraseStore.removePassphrase(for: userId)
-        } else {
-            LocalDataProtection.removeAllUserLocalData()
-            DatabasePassphraseStore.removeAllPassphrases()
+                FileCacheService.shared.clearAll(userId: userId)
+                MediaCache.shared.clearAll(userId: userId)
+
+                if let userId, !userId.isEmpty {
+                    LocalDataProtection.removeUserLocalData(userId: userId)
+                    DatabasePassphraseStore.removePassphrase(for: userId)
+                } else {
+                    LocalDataProtection.removeAllUserLocalData()
+                    DatabasePassphraseStore.removeAllPassphrases()
+                }
+
+                LocalDataProtection.removeLegacyGlobalLocalData()
+                LocalDataProtection.removeTemporaryLocalData()
+                FileCacheService.shared.activate(userId: nil)
+                MediaCache.shared.activate(userId: nil)
+            }
+        } catch {
+            fatalError("Unable to reset encrypted app database: \(error)")
         }
-
-        LocalDataProtection.removeLegacyGlobalLocalData()
-        LocalDataProtection.removeTemporaryLocalData()
-        DatabaseService.shared.activate(userId: nil)
-        FileCacheService.shared.activate(userId: nil)
-        MediaCache.shared.activate(userId: nil)
-    }
-
-    private func clearLocalSession(userId: String?) {
-        if let userId, !userId.isEmpty {
-            sessionDelegate.clearSession(userId: userId)
-            SessionVerificationService.clearLocalEncryptionFlags(userId: userId)
-        } else {
-            sessionDelegate.clearAllSessions()
-        }
-        UserDefaults.standard.removeObject(forKey: userIdKey)
-        UserDefaults.standard.synchronize()
-        ZynaSecurityConfig.clearSharedLastMatrixUserId()
-        UserDefaults.standard.removeObject(forKey: localSessionIdKey)
-        UserDefaults.standard.synchronize()
-        clearCryptoIdentityFingerprint()
-        clearSessionDirectories(userId: userId)
-        clearAppLocalData(userId: userId)
     }
 
     private func clearStoredSessionMarker(userId: String) {
