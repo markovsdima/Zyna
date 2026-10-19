@@ -123,6 +123,7 @@ struct ChatLoadGeneratorTests {
         try await eventually { generator.state == .finished }
         #expect(generator.sent == 7)
         #expect(transport.items.filter(\.isPhoto).map(\.number) == [3, 6])
+        #expect(transport.items.compactMap(\.photoNumber) == [1, 2])
         #expect(Set(transport.items.map(\.envelopeID)).count == 7)
         #expect(transport.items.allSatisfy { $0.body.contains(generator.runID) })
     }
@@ -308,7 +309,7 @@ struct ChatLoadGeneratorTests {
             try row.insert(db)
             try db.execute(sql: "UPDATE pendingMediaGroupItem SET eventId = ?, transportState = 'sent' WHERE groupId = ?",
                            arguments: [row.eventId, item.envelopeID])
-            return try ChatTimelineLocalState.fetch(roomId: Self.roomID, in: db)
+            return try ChatTimelineLocalState.fetch(roomId: Self.roomID, window: [row], in: db)
         }
         try await Task.detached {
             try snapshot.acknowledge(roomId: Self.roomID, retiring: [item.envelopeID], database: database, userId: nil)

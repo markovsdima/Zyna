@@ -15,6 +15,140 @@ struct ChatHistoryRetentionTests {
     private let policy = ChatHistoryRetentionPolicy()
     private let roomID = TimelineWriteFixture.roomID
 
+    @Test("An arrival merged with recovered history follows the live edge but preserves a scrolled viewport",
+          arguments: [false, true])
+    func arrivalDuringRecovery(scrolled: Bool) async throws {
+        let database = try TimelineWriteFixture.database(legacyMessages: (0..<50).map(TimelineWriteFixture.message))
+        let history = MessageWindow(roomId: roomID, dbQueue: database)
+        let model = ChatViewModel(testingRoomId: roomID, dbQueue: database, window: history, mode: .normal)
+        let chat = ChatViewController(viewModel: model, audioPlayer: AudioPlayerService())
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = chat; window.isHidden = false
+        defer { chat.finishNavigationSession(); window.isHidden = true; window.rootViewController = nil }
+        chat.view.layoutIfNeeded()
+        model.prepareInitialHistoryWindow()
+        let list = chat.node.list
+        try await ChatBackgroundPresentationTests.wait { list.layout.geometry.ids.count >= 50 }
+        await withCheckedContinuation { continuation in
+            list.onDidFinishProcessingUpdates { continuation.resume() }
+        }
+        let before = scrolled ? CGFloat(300) : -list.view.adjustedContentInset.top
+        list.contentOffset.y = before
+        list.view.layoutIfNeeded()
+        let anchor = try #require(list.indexPathsForVisibleItems().first)
+        let anchorID = try #require(model.rows[anchor.row].message?.eventId)
+        let anchorY = list.rectForItem(at: anchor).minY - list.contentOffset.y
+        try await database.write { db in
+            try TimelineWriteFixture.message(50).insert(db)
+            try db.execute(sql: "UPDATE storedMessage SET contentBody = 'Recovered history' WHERE id = 'row-0'")
+        }
+        model.refreshPresentationForTesting(.init(pushBackCount: 1, incomingMessageCount: 1,
+                                                 includesUnreportedHistory: true))
+        try await ChatBackgroundPresentationTests.wait { model.isTimelineRefreshIdleForTesting && model.messages.count == 51 }
+        await withCheckedContinuation { continuation in
+            list.onDidFinishProcessingUpdates { continuation.resume() }
+        }
+        list.view.layoutIfNeeded()
+        if scrolled {
+            let after = try #require(model.indexOfMessage(eventId: anchorID))
+            #expect(abs(list.rectForItem(at: IndexPath(row: after, section: 0)).minY - list.contentOffset.y - anchorY) < 1)
+        } else {
+            #expect(abs(list.contentOffset.y + list.view.adjustedContentInset.top) < 1)
+        }
+    }
+
+    @Test("A covered chat keeps its anchor when a prepared newer page reaches live")
+    func newerPageReachesLive() async throws {
+        let database = try TimelineWriteFixture.database(legacyMessages: (0..<240).map(TimelineWriteFixture.message))
+        let history = MessageWindow(roomId: roomID, dbQueue: database)
+        let model = ChatViewModel(testingRoomId: roomID, dbQueue: database, window: history, mode: .normal)
+        let chat = ChatViewController(viewModel: model, audioPlayer: AudioPlayerService())
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = chat; window.isHidden = false
+        defer { chat.finishNavigationSession(); window.isHidden = true; window.rootViewController = nil }
+        chat.view.layoutIfNeeded()
+        // Keep preparing real Texture updates, but prevent automatic prefetch
+        // from consuming the final page before the controlled request below.
+        chat.setNavigationContentVisible(false, prepareWhileHidden: true)
+        let list = chat.node.list
+        await withCheckedContinuation { continuation in
+            model.prepareHistoryReplacement(.oldest) { apply in
+                apply()
+                continuation.resume()
+            }
+        }
+        try await ChatBackgroundPresentationTests.wait { list.layout.geometry.ids.count >= 200 && model.messages.first?.eventId == "$event-199" }
+        await withCheckedContinuation { continuation in list.onDidFinishProcessingUpdates { continuation.resume() } }
+        #expect(!model.isAtLiveEdge)
+        list.contentOffset.y = -list.view.adjustedContentInset.top
+        list.view.layoutIfNeeded()
+        let index = try #require(model.indexOfMessage(eventId: "$event-199"))
+        let before = list.rectForItem(at: IndexPath(row: index, section: 0)).minY - list.contentOffset.y
+        // Deliver an already prepared page directly to the window: covered
+        // routes deliberately refuse to start new pagination requests.
+        let request = try #require(history.pageRequest(.newer))
+        let page = try await Task.detached { try request.fetch() }.value
+        #expect(history.applyPage(page))
+        try await model.waitForPresentation()
+        await withCheckedContinuation { continuation in list.onDidFinishProcessingUpdates { continuation.resume() } }
+        #expect(model.isAtLiveEdge)
+        let afterIndex = try #require(model.indexOfMessage(eventId: "$event-199"))
+        let after = list.rectForItem(at: IndexPath(row: afterIndex, section: 0)).minY - list.contentOffset.y
+        #expect(abs(before - after) < 1)
+        #expect(list.contentOffset.y > -list.view.adjustedContentInset.top + 100)
+    }
+
+    @Test("A delayed live jump respects manual scrolling and an already reached endpoint", arguments: [0, 1, 2])
+    func liveButtonDuringRecovery(scenario: Int) async throws {
+        let database = try TimelineWriteFixture.database(legacyMessages: (0..<600).map(TimelineWriteFixture.message))
+        let history = MessageWindow(roomId: roomID, dbQueue: database)
+        let model = ChatViewModel(testingRoomId: roomID, dbQueue: database, window: history, mode: .normal)
+        let chat = ChatViewController(viewModel: model, audioPlayer: AudioPlayerService())
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = chat; window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil; model.cleanup() }
+        chat.view.layoutIfNeeded()
+        model.prepareInitialHistoryWindow()
+        let list = chat.node.list
+        try await ChatBackgroundPresentationTests.wait { list.layout.geometry.ids.count >= 200 }
+        let index = try #require(model.indexOfMessage(eventId: "$event-480"))
+        list.scrollToItem(at: IndexPath(row: index, section: 0), at: .centeredVertically, animated: false)
+        list.view.layoutIfNeeded()
+        #expect(list.contentOffset.y > list.bounds.height * 2)
+
+        let entered = Atomic(false)
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        model.onRenderPreparedForTesting = {
+            if entered.tryToSetFlag() { #expect(gate.wait(timeout: .now() + 5) == .success) }
+        }
+        model.refreshPresentationForTesting(.init(requiresPresentationRefresh: true))
+        try await ChatBackgroundPresentationTests.wait { entered.wrappedValue }
+        let button = try #require(chat.node.scrollButtonTap as? UIButton)
+        let generation = history.generation
+        let previousOffset = list.contentOffset.y
+        button.sendActions(for: .touchUpInside)
+        if scenario == 1 {
+            chat.scrollViewWillBeginDragging(list.view)
+        } else if scenario == 2 {
+            list.contentOffset = CGPoint(x: 0, y: -list.view.adjustedContentInset.top)
+        }
+        gate.signal()
+        let targetOffset = scenario == 1 ? previousOffset : -list.view.adjustedContentInset.top
+        try await ChatBackgroundPresentationTests.wait {
+            model.isTimelineRefreshIdleForTesting
+                && abs(list.contentOffset.y - targetOffset) < 1
+        }
+        try await model.drainPresentationWorkerForTesting()
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(abs(list.contentOffset.y - targetOffset) < 1)
+        #expect(model.messages.first?.id == "row-599")
+        if scenario != 0 { #expect(history.generation == generation) }
+    }
+
     @Test("The title debug gesture cannot start over expanded voice controls")
     func debugTitleGesture() throws {
         let database = try TimelineWriteFixture.database()

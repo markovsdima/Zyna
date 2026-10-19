@@ -10,8 +10,12 @@ import UniformTypeIdentifiers
 @MainActor
 final class ChatLoadGeneratorViewController: UIViewController, PHPickerViewControllerDelegate {
     private let chat: ChatViewModel
-    private var image: ProcessedImage?
-    private lazy var generator = chat.makeLoadGenerator { [weak self] in self?.image }
+    private static let maximumPhotos = 4
+    private var images: [ProcessedImage] = []
+    private lazy var generator = chat.makeLoadGenerator { [weak self] photoNumber in
+        guard let self, !self.images.isEmpty else { return nil }
+        return self.images[(photoNumber - 1) % self.images.count]
+    }
     private let count = UITextField()
     private let photoEvery = UITextField()
     private let interval = UITextField()
@@ -65,7 +69,7 @@ final class ChatLoadGeneratorViewController: UIViewController, PHPickerViewContr
         addField(photoEvery, title: "Фото вместо каждого N-го сообщения · 0 — без фото", value: "100", keyboard: .numberPad, to: stack)
         addField(interval, title: "Пауза после подтверждения, секунды", value: "0.25", keyboard: .decimalPad, to: stack)
         photoButton.configuration = .bordered()
-        photoButton.setTitle("Выбрать фото", for: .normal)
+        photoButton.setTitle("Выбрать фото · до \(Self.maximumPhotos)", for: .normal)
         photoButton.addTarget(self, action: #selector(pickPhoto), for: .touchUpInside)
         stack.addArrangedSubview(photoButton)
         summary.numberOfLines = 0
@@ -84,7 +88,7 @@ final class ChatLoadGeneratorViewController: UIViewController, PHPickerViewContr
         pauseButton.setTitle("Остановить", for: .normal)
         pauseButton.addTarget(self, action: #selector(pause), for: .touchUpInside)
         stack.addArrangedSubview(pauseButton)
-        stack.addArrangedSubview(label("В очереди генератора — одно сообщение. Экран не гаснет во время работы. Прогресс хранится до закрытия чата; фото каждый раз загружается как отдельное вложение.", style: .footnote))
+        stack.addArrangedSubview(label("Тексты чередуются: короткий, средний, длинный и список. Выбранные фото идут по кругу; каждое загружается как отдельное вложение. В очереди генератора — одно сообщение. Экран не гаснет во время работы. Прогресс хранится до закрытия чата.", style: .footnote))
 
         generator.objectWillChange
             .receive(on: DispatchQueue.main)
@@ -146,7 +150,7 @@ final class ChatLoadGeneratorViewController: UIViewController, PHPickerViewContr
                 try generator.resume()
             } else {
                 let config = try configuration()
-                guard config.photoCount == 0 || image != nil else {
+                guard config.photoCount == 0 || !images.isEmpty else {
                     throw ChatLoadGenerator.Failure("Выберите фото или укажите 0 для запуска только с текстом.")
                 }
                 try generator.start(config)
@@ -182,7 +186,8 @@ final class ChatLoadGeneratorViewController: UIViewController, PHPickerViewContr
         view.endEditing(true)
         var config = PHPickerConfiguration()
         config.filter = .images
-        config.selectionLimit = 1
+        config.selectionLimit = Self.maximumPhotos
+        config.selection = .ordered
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = self
         present(picker, animated: true)
@@ -190,25 +195,34 @@ final class ChatLoadGeneratorViewController: UIViewController, PHPickerViewContr
 
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
-        guard let result = results.first else { return }
+        guard !results.isEmpty else { return }
         isPreparingImage = true
         photoButton.setTitle("Подготовка фото…", for: .normal)
         render()
         Task { [weak self] in
-            let data: Data? = await withCheckedContinuation { continuation in
-                result.itemProvider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                    continuation.resume(returning: data)
-                }
-            }
             do {
-                guard let data else { throw ChatLoadGenerator.Failure("Не удалось прочитать фото.") }
-                let processed = try await MediaPreprocessor.processImage(from: data)
+                // Prepare sequentially; retain compressed results, not four
+                // simultaneously decoded originals. Replace the set atomically.
+                var prepared: [ProcessedImage] = []
+                for result in results.prefix(Self.maximumPhotos) {
+                    guard self != nil else { return }
+                    let data: Data? = await withCheckedContinuation { continuation in
+                        result.itemProvider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                            continuation.resume(returning: data)
+                        }
+                    }
+                    guard let data else { throw ChatLoadGenerator.Failure("Не удалось прочитать фото.") }
+                    prepared.append(try await MediaPreprocessor.processImage(from: data))
+                }
                 guard let self else { return }
-                self.image = processed
-                self.photoButton.setTitle("Фото \(processed.width) × \(processed.height) · заменить", for: .normal)
+                self.images = prepared
             } catch {
-                self?.photoButton.setTitle(self?.image == nil ? "Выбрать фото" : "Заменить фото", for: .normal)
                 self?.show(error)
+            }
+            if let self {
+                let title = self.images.isEmpty ? "Выбрать фото · до \(Self.maximumPhotos)"
+                    : "Выбрано фото: \(self.images.count) · заменить"
+                self.photoButton.setTitle(title, for: .normal)
             }
             self?.isPreparingImage = false
             self?.render()

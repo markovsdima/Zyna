@@ -179,6 +179,9 @@ final class TimelineService {
     /// Event acknowledged by the current user's own fully-read marker.
     var onOwnFullyReadMarker: ((String) -> Void)?
 
+    /// Cached messages may become visible before the SDK timeline is ready.
+    var onTimelineReady: (() -> Void)?
+
     /// Room power levels changed while the timeline is open.
     var onRoomPowerLevelsChanged: (() -> Void)?
 
@@ -261,6 +264,7 @@ final class TimelineService {
                 return true
             }
             guard installed else { handle.cancel(); return }
+            onTimelineReady?()
 
             if let client = MatrixClientService.shared.client {
                 let roomAccountDataListener = ZynaRoomAccountDataListener { [weak self] event, roomId in
@@ -1368,16 +1372,37 @@ final class TimelineService {
         fileprivate let eventId: String
 
         func send() async -> Bool {
+            #if DEBUG
+            ChatReadReceiptTrace.record("sdk.read.begin", eventID: eventId)
+            #endif
             do {
                 try await timeline.sendReadReceipt(receiptType: .read, eventId: eventId)
+                #if DEBUG
+                ChatReadReceiptTrace.record("sdk.read.returned", eventID: eventId)
+                #endif
             } catch {
+                #if DEBUG
+                ChatReadReceiptTrace.record("sdk.read.failed", eventID: eventId)
+                #endif
                 logTimeline("sendReadReceipt(.read) failed event=\(eventId): \(error)")
+                // Do not acknowledge a public receipt that failed, or advance
+                // the fully-read baseline past it and suppress a later retry.
+                return false
             }
 
             do {
+                #if DEBUG
+                ChatReadReceiptTrace.record("sdk.fullyRead.begin", eventID: eventId)
+                #endif
                 try await timeline.sendReadReceipt(receiptType: .fullyRead, eventId: eventId)
+                #if DEBUG
+                ChatReadReceiptTrace.record("sdk.fullyRead.returned", eventID: eventId)
+                #endif
                 return true
             } catch {
+                #if DEBUG
+                ChatReadReceiptTrace.record("sdk.fullyRead.failed", eventID: eventId)
+                #endif
                 logTimeline("sendReadReceipt(.fullyRead) failed event=\(eventId): \(error)")
                 return false
             }

@@ -122,6 +122,77 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     var onForwardMessage: ((ChatMessage) -> Void)?
 
     private let viewModel: ChatViewModel
+    #if DEBUG
+    var simulatorAcceptanceModel: ChatViewModel { viewModel }
+    var simulatorAcceptanceScroll: UIScrollView { node.list.view }
+    func prepareLocalDeletionForTesting(_ messageID: String) -> Bool {
+        guard let message = viewModel.messages.first(where: { $0.id == messageID }),
+              let index = indexPathForMessageId(messageID),
+              let cell = node.list.nodeForItem(at: index) as? MessageCellNode,
+              let target = freezeSnapshotTarget(cell.paintSplashTarget()) else { return false }
+        prepareMessageDeleteAnimation(message, target: target)
+        return true
+    }
+    private var acceptanceDeletedID: String?
+    private var acceptanceDeletedEventID: String?
+    private var acceptanceDeletedKeys: Set<String> = []
+    private var acceptanceDeletionNumber = 0
+    private weak var acceptanceDeletedCell: MessageCellNode?
+    @discardableResult
+    func simulatorAcceptanceTraceDeletion(_ stage: String, readDatabase: Bool = false) -> [String: Any] {
+        guard SimulatorAcceptanceProbe.tracesDeletion, let id = acceptanceDeletedID else { return [:] }
+        var value = viewModel.deletionStateForAcceptance(id: id, keys: acceptanceDeletedKeys)
+        value["stage"] = stage
+        value["deletion"] = acceptanceDeletionNumber
+        value["epoch"] = Date().timeIntervalSince1970
+        value["committedCells"] = node.list.committedVisiblePaths.compactMap { path -> [String: Any]? in
+            guard let cell = node.list.committedNode(at: path) as? MessageCellNode,
+                  cell.messageId == id else { return nil }
+            return ["row": path.row, "alpha": cell.alpha, "hidden": cell.isHidden,
+                "sameNode": cell === acceptanceDeletedCell]
+        }
+        if let cell = acceptanceDeletedCell {
+            value["originalCell"] = ["alpha": cell.alpha, "inWindow": cell.view.window != nil,
+                "committed": node.list.committedIndexPath(for: cell) != nil]
+        }
+        SimulatorAcceptanceProbe.recordDeletion(value)
+        if readDatabase {
+            let snapshot = value
+            let eventID = acceptanceDeletedEventID
+            Task { [weak self] in
+                guard let self else { return }
+                var result = await self.viewModel.deletionDatabaseStateForAcceptance(id: id, eventID: eventID)
+                result["stage"] = "database.sample"
+                result["deletion"] = snapshot["deletion"]
+                result["requestedAt"] = snapshot["epoch"]
+                SimulatorAcceptanceProbe.recordDeletion(result)
+            }
+        }
+        return value
+    }
+    func simulatorAcceptanceExposeImages() -> [(id: String, caption: String)] {
+        var images: [(id: String, caption: String)] = []
+        for path in node.list.indexPathsForVisibleItems() {
+            guard let cell = node.list.nodeForItem(at: path) as? ImageMessageCellNode else { continue }
+            cell.accessibilityIdentifier = "acceptance.image." + cell.messageId
+            cell.accessibilityValue = cell.simulatorAcceptanceCaption
+            images.append((cell.messageId, cell.simulatorAcceptanceCaption))
+        }
+        return images
+    }
+    func simulatorAcceptanceExposeEditor() {
+        let editor = glassInputBar.inputNode.textInputNode
+        guard editor.isNodeLoaded,
+              editor.textView.accessibilityIdentifier != "acceptance.messageInput" else { return }
+        // Expose the actual UIKit editor to XCTest instead of the Texture wrapper.
+        // This changes accessibility only; input still follows native UI events.
+        editor.isAccessibilityElement = false
+        editor.view.accessibilityElements = [editor.textView]
+        editor.textView.isAccessibilityElement = true
+        editor.textView.accessibilityLabel = "Message"
+        editor.textView.accessibilityIdentifier = "acceptance.messageInput"
+    }
+    #endif
     private let composerController = ChatComposerController()
     #if DEBUG || CHAT_LIST_PLAYGROUND
     private var loadGeneratorPanel: ChatLoadGeneratorViewController?
@@ -278,16 +349,16 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         return state
     }
 
-    func setNavigationContentVisible(_ visible: Bool) {
-        guard navigationContentVisible != visible else { return }
-        if !visible {
+    func setNavigationContentVisible(_ visible: Bool, prepareWhileHidden: Bool = false) {
+        let visibilityChanged = navigationContentVisible != visible
+        if visibilityChanged && !visible {
             flushVisibleReadReceipts()
             messageLinkSharing.cancel()
             openingLink?.cancel()
         }
         navigationContentVisible = visible
-        viewModel.setNavigationPresentationActive(visible)
-        guard isViewLoaded else { return }
+        viewModel.setNavigationPresentationActive(visible, prepareWhileHidden: prepareWhileHidden)
+        guard visibilityChanged, isViewLoaded else { return }
         if visible {
             applyVoiceIslandState(state: audioPlayer.state, item: audioPlayer.nowPlaying, snapshot: audioPlayer.snapshot)
             tryRestoreNavigationAnchor()
@@ -1244,6 +1315,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         let canEstablishBaseline = viewModel.isAtLiveEdge
             && tableDistanceToLiveEdge() <= ReadReceipts.baselineLiveTolerance
 
+        #if DEBUG
+        ChatReadReceiptTrace.record("viewport", eventID: candidate,
+            state: "live=\(viewModel.isAtLiveEdge) baselineAllowed=\(canEstablishBaseline)")
+        #endif
+
         viewModel.updateVisibleReadReceiptCandidate(
             eventId: candidate,
             canEstablishBaseline: canEstablishBaseline
@@ -1677,6 +1753,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         viewModel.onTableUpdate = { [weak self] update, origin in
             self?.applyTableUpdate(update, origin: origin)
         }
+        viewModel.onReadReceiptEvaluationRequested = { [weak self] in
+            self?.scheduleVisibleReadReceiptEvaluation(delay: ReadReceipts.contentUpdateDelay)
+        }
         viewModel.onIncomingMessages = { [weak self] count in
             guard let self, count > 0, !self.isViewportPinnedToLiveEdge(),
                   !self.pendingPostSendPinToLive else { return }
@@ -1702,6 +1781,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             }
             if let groupCell = cellNode as? PhotoGroupMessageCellNode {
                 groupCell.updateMediaGroupPresentation(message.mediaGroupPresentation)
+            }
+            if let imageCell = cellNode as? ImageMessageCellNode, message.mediaGroupPresentation == nil {
+                imageCell.updateCaption(message)
             }
             cellNode.updateAccessibilityMessage(message)
             cellNode.updateSendStatus(message.effectiveSendStatus)
@@ -1920,7 +2002,18 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func applyTableUpdate(_ update: TableUpdate, origin: MessageWindowChangeOrigin) {
+        #if DEBUG
+        simulatorAcceptanceTraceDeletion("table.submit." + origin.compactDescription)
+        if SimulatorAcceptanceProbe.tracesDeletion {
+            afterTableUpdates { [weak self] in self?.simulatorAcceptanceTraceDeletion("table.previousCommitted") }
+        }
+        #endif
         defer {
+            #if DEBUG
+            if SimulatorAcceptanceProbe.tracesDeletion {
+                afterTableUpdates { [weak self] in self?.simulatorAcceptanceTraceDeletion("table.committed") }
+            }
+            #endif
             if pendingNavigationAnchor != nil {
                 afterTableUpdates { [weak self] in self?.tryRestoreNavigationAnchor() }
             }
@@ -1960,7 +2053,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
             let shouldForcePostSendPin = pendingPostSendPinToLive
             let shouldPreserveViewport = !wasPinnedToLiveEdge && !shouldForcePostSendPin
 
-            let effectiveAnimated = animated && !shouldPreserveViewport
+            let effectiveAnimated = animated && !shouldPreserveViewport && navigationContentVisible
             #if DEBUG
             let performance = viewModel.historyPerformance
             let textureWork = performance?.begin(.texture)
@@ -2953,6 +3046,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         }
 
         #if DEBUG
+        if viewModel.canDebugEditPhotoCaption(message) {
+            actions.append(ContextMenuAction(title: "Edit photo caption (test)", image: UIImage(systemName: "pencil"),
+                handler: { [weak self] in self?.presentDebugPhotoCaptionEditor(message) }))
+        }
         actions.append(ContextMenuAction(title: "Message diagnostics", image: UIImage(systemName: "ladybug"),
             handler: { [weak self] in self?.showMessageDiagnostics(message) }))
         #endif
@@ -2990,6 +3087,44 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         activeContextMenu = menuVC
         menuVC.show(in: window)
     }
+
+    #if DEBUG
+    private func presentDebugPhotoCaptionEditor(_ message: ChatMessage, draft: String? = nil) {
+        guard viewModel.canDebugEditPhotoCaption(message), presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Edit photo caption (test)",
+            message: "Leave empty to remove the caption.", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = draft ?? message.content.visibleImageCaption ?? ""
+            field.placeholder = "Caption"
+            field.clearButtonMode = .whileEditing
+            field.accessibilityIdentifier = "debug.photoCaption"
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self, weak alert] _ in
+            guard let self, let caption = alert?.textFields?.first?.text else { return }
+            alert?.dismiss(animated: true) { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await self.viewModel.debugEditPhotoCaption(message, caption: caption)
+                    } catch {
+                        guard self.view.window != nil, self.presentedViewController == nil else { return }
+                        let failure = UIAlertController(title: "Could not edit caption",
+                            message: error.localizedDescription, preferredStyle: .alert)
+                        failure.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+                        failure.addAction(UIAlertAction(title: "Try Again", style: .default) { [weak self, weak failure] _ in
+                            failure?.dismiss(animated: true) { [weak self] in
+                                self?.presentDebugPhotoCaptionEditor(message, draft: caption)
+                            }
+                        })
+                        self.present(failure, animated: true)
+                    }
+                }
+            }
+        })
+        present(alert, animated: true)
+    }
+    #endif
 
     private struct CopyableMessageText {
         let text: ComposerText
@@ -3097,7 +3232,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     private func shouldBatchFetchHistory() -> Bool {
         // Let Texture establish its waiting context during retention too.
         // The shared request path defers the read and resumes cache/server demand.
-        guard !didCleanupViewModel, !isTeleporting,
+        guard navigationContentVisible, !didCleanupViewModel, !isTeleporting,
               !olderPageLoader.isLoading, !newerPageLoader.isLoading,
               olderPageRetryAfter.map({ CACurrentMediaTime() >= $0 }) ?? true else { return false }
         if !viewModel.hasOlderInDB,
@@ -3112,7 +3247,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         // Capture window state on main. loadHistoryPage schedules the actual
         // query and preparation on its serial worker, not on this queue.
         DispatchQueue.main.async { [weak self] in
-            guard let self, !self.didCleanupViewModel, !self.isTeleporting else {
+            guard let self, self.navigationContentVisible, !self.didCleanupViewModel, !self.isTeleporting else {
                 context.completeBatchFetching(true)
                 return
             }
@@ -3316,14 +3451,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         reachedStart: Bool,
         attemptsRemaining: Int
     ) {
-        guard !didCleanupViewModel, viewModel.historyGeneration == generation,
+        guard navigationContentVisible, !didCleanupViewModel, viewModel.historyGeneration == generation,
               serverBatchFetch.isCurrent(token) else {
             serverBatchFetch.finish(token)
             return
         }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            guard !self.didCleanupViewModel, self.viewModel.historyGeneration == generation,
+            guard self.navigationContentVisible, !self.didCleanupViewModel, self.viewModel.historyGeneration == generation,
                   self.serverBatchFetch.isCurrent(token) else {
                 self.serverBatchFetch.finish(token)
                 return
@@ -3611,18 +3746,26 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     private func navigateToLive() {
         openingLink?.cancel()
         pendingNavigationAnchor = nil
-        if viewModel.isAtLiveEdge && !shouldTeleportToLive() {
-            viewModel.cancelPendingHistoryReplacement()
-            node.list.scrollToItem(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
-            return
-        }
+        if scrollToLiveIfNearby() { return }
         // Jumping to live (newest) → content slides up
         viewModel.prepareHistoryReplacement(.live) { [weak self] apply in
             guard let self, !self.isTeleporting else { return }
+            // Preparation may have waited behind history recovery. Another
+            // scroll can already have brought us to live in the meantime.
+            guard !self.scrollToLiveIfNearby() else { return }
             self.teleport(direction: .down, swapData: apply) {
                 self.node.list.contentOffset = CGPoint(x: 0, y: -self.node.list.contentInset.top)
             }
         }
+    }
+
+    private func scrollToLiveIfNearby() -> Bool {
+        guard viewModel.isAtLiveEdge, !shouldTeleportToLive() else { return false }
+        viewModel.cancelPendingHistoryReplacement()
+        if !isViewportPinnedToLiveEdge(), !viewModel.rows.isEmpty {
+            node.list.scrollToItem(at: IndexPath(row: 0, section: 0), at: .bottom, animated: true)
+        }
+        return true
     }
 
     /// Snapshot-based teleportation (Telegram approach).
@@ -3725,6 +3868,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         pendingNavigationAnchor = nil
+        viewModel.cancelPendingHistoryReplacement()
         #if DEBUG
         historyScrollSampler.start(viewModel.historyPerformance)
         #endif
@@ -3792,6 +3936,21 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     private func handleRedactionBatch(_ batch: ChatViewModel.DetectedRedactionBatch) {
         guard !batch.messageIds.isEmpty else { return }
 
+        guard navigationContentVisible else {
+            var confirmedIds = Set(batch.messageIds)
+            for (groupId, pending) in pendingCompositeGroupDeletes {
+                guard !pending.messageIds.isDisjoint(with: confirmedIds)
+                    || !pending.identityKeys.isDisjoint(with: batch.identityKeys) else { continue }
+                pendingCompositeGroupDeletes.removeValue(forKey: groupId)
+                clearPendingAnimatedDeleteIdentityKeys(for: pending.messageIds, fallbackKeys: pending.identityKeys)
+                confirmedIds.formUnion(pending.messageIds.filter { viewModel.areMessagesRedacted([$0]) })
+            }
+            for messageId in confirmedIds { pendingAnimatedDeleteTargets.removeValue(forKey: messageId) }
+            clearPendingAnimatedDeleteIdentityKeys(for: confirmedIds, fallbackKeys: batch.identityKeys)
+            viewModel.hideMessages(Array(confirmedIds))
+            return
+        }
+
         guard redactionAnimationsArmed || hasUserInitiatedRedactionAnimation(for: batch) else {
             viewModel.hideMessages(batch.messageIds)
             return
@@ -3825,6 +3984,10 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
     }
 
     private func handleRedactedMessages(_ messageIds: [String]) {
+        guard navigationContentVisible else {
+            handleRedactionBatch(.init(messageIds: messageIds, mediaGroups: []))
+            return
+        }
         // Defer if context menu is active (bubble is reparented to overlay)
         if activeContextMenu != nil {
             pendingRedactionBatches.append(
@@ -3861,6 +4024,14 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         for messageId in remainingIds {
             if let pendingTarget = pendingAnimatedDeleteTargets.removeValue(forKey: messageId) {
                 clearPendingAnimatedDeleteIdentityKeys(for: [messageId])
+                // A waiting placeholder may have already replaced the bubble.
+                // Release its frozen snapshot without bringing that content
+                // back as a splash after confirmation.
+                guard indexPathForMessageId(messageId) != nil
+                        || indexPathForCompositeItem(messageId) != nil else {
+                    viewModel.hideMessage(messageId)
+                    continue
+                }
                 PaintSplashTrigger.trigger(
                     in: node.list,
                     overlayView: node.paintSplashHostView,
@@ -3969,6 +4140,11 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
 
     private func finalizeIncomingGroupRedaction(groupId: String) {
         guard let pending = pendingIncomingGroupRedactions.removeValue(forKey: groupId) else {
+            return
+        }
+
+        guard navigationContentVisible else {
+            viewModel.hideMessages(Array(pending.redactedMessageIds))
             return
         }
 
@@ -4160,12 +4336,31 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
         _ message: ChatMessage,
         target: PaintSplashTrigger.SnapshotTarget?
     ) {
+        #if DEBUG
+        if SimulatorAcceptanceProbe.tracesDeletion {
+            acceptanceDeletedID = message.id
+            acceptanceDeletedEventID = message.eventId
+            acceptanceDeletedKeys = message.timelineIdentityKeys
+            acceptanceDeletionNumber += 1
+            acceptanceDeletedCell = indexPathForMessageId(message.id).flatMap {
+                node.list.nodeForItem(at: $0) as? MessageCellNode
+            }
+            simulatorAcceptanceTraceDeletion("delete.begin", readDatabase: true)
+        }
+        #endif
+        prepareMessageDeleteAnimation(message, target: target)
+        triggerPaintSplashDelete(for: message)
+    }
+
+    private func prepareMessageDeleteAnimation(
+        _ message: ChatMessage,
+        target: PaintSplashTrigger.SnapshotTarget?
+    ) {
         if let target {
             pendingAnimatedDeleteTargets[message.id] = target
         }
         pendingAnimatedDeleteIdentityKeys.formUnion(message.timelineIdentityKeys)
         viewModel.registerPendingAnimatedRedactions([message.id])
-        triggerPaintSplashDelete(for: message)
     }
 
     private func beginLocalOutgoingEnvelopeDelete(
@@ -4526,6 +4721,9 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
                 self.shouldPresentAttachmentPreviewAfterDismiss = true
                 return
             }
+            // The send is accepted, but its local echo is inserted asynchronously.
+            // Keep the live edge through that insertion, as for text and voice.
+            self.armPostSendPinToLive()
             self.composerController.clearAttachments()
             self.glassInputBar.inputNode.setCurrentText("")
             self.scrollToLiveAfterUserSend()
@@ -4573,6 +4771,7 @@ final class ChatViewController: ASDKViewController<ChatNode>, UIScrollViewDelega
                 self.shouldPresentAttachmentPreviewAfterDismiss = true
                 return
             }
+            self.armPostSendPinToLive()
             let sentAttachmentIDs = Set(attachments.map(\.id))
             self.composerController.clearAttachments(preservingTemporaryResourcesFor: sentAttachmentIDs)
             self.glassInputBar.inputNode.setCurrentText("")

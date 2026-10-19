@@ -184,6 +184,41 @@ struct ChatBackgroundPresentationTests {
         #expect(model.messages.isEmpty)
     }
 
+    @Test("Confirming a deletion after its waiting placeholder cannot bring the old bubble back",
+          arguments: [false, true])
+    func confirmationAfterPlaceholder(renamed: Bool) async throws {
+        let (database, _, model) = try fixture(count: 1)
+        defer { model.cleanup() }
+        try await load(model)
+        model.registerPendingAnimatedRedactions(["row-0"])
+        let roomID = model.roomIdentifier
+        try await database.write { db in
+            try PendingRedactionRecord(messageId: "row-0", roomId: roomID,
+                itemIdentifier: .eventId("$event-0"), createdAt: Date().timeIntervalSince1970 - 3).insert(db)
+        }
+        model.refreshPresentationForTesting(.init(requiresPresentationRefresh: true))
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
+        #expect(model.messages.map(\.id) == ["pending-redaction:row-0"])
+        var confirmations = 0
+        model.onRedactedDetected = { _ in
+            confirmations += 1
+            // Observe before the view finishes the deletion. Restoring the
+            // original even for this one presentation is the regression.
+            #expect(model.messages.isEmpty)
+        }
+        try await database.write { db in
+            try db.execute(sql: "UPDATE storedMessage SET contentType = 'redacted', contentBody = NULL")
+            if renamed { try db.execute(sql: "UPDATE storedMessage SET id = 'zz-renamed'") }
+        }
+        model.refreshPresentationForTesting(.init(setCount: 1, redactedUpsertCount: 1))
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
+        #expect(confirmations == 1)
+        #expect(model.messages.isEmpty)
+        model.refreshPresentationForTesting(.init(requiresPresentationRefresh: true))
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
+        #expect(model.messages.isEmpty)
+    }
+
     @Test("Delayed acknowledgement preserves a newer deletion attempt")
     func acknowledgementCompare() async throws {
         let (database, _, model) = try fixture(count: 1)
@@ -193,7 +228,7 @@ struct ChatBackgroundPresentationTests {
             try db.execute(sql: "UPDATE storedMessage SET contentType = 'redacted'")
             try PendingRedactionRecord(messageId: "row-0", roomId: roomID,
                 itemIdentifier: .eventId("$event-0")).insert(db)
-            return try ChatTimelineLocalState.fetch(roomId: roomID, in: db)
+            return try ChatTimelineLocalState.fetch(roomId: roomID, window: [], in: db)
         }
         try await database.write { try $0.execute(sql: "UPDATE pendingRedaction SET attemptCount = 2") }
         try await Task.detached {
@@ -275,7 +310,7 @@ struct ChatBackgroundPresentationTests {
             try Self.envelope(roomID: roomID).insert(db)
             try OutgoingEnvelopeItemRecord(id: "pending:0", groupId: "pending", itemIndex: 0,
                                            transportState: "sent").insert(db)
-            return try ChatTimelineLocalState.fetch(roomId: roomID, in: db)
+            return try ChatTimelineLocalState.fetch(roomId: roomID, window: [], in: db)
         }
         try await database.write { try $0.execute(sql: "UPDATE pendingMediaGroupItem SET transportState = 'retrying'") }
         try await Task.detached {
@@ -287,6 +322,107 @@ struct ChatBackgroundPresentationTests {
     nonisolated private static func envelope(roomID: String) -> OutgoingEnvelopeRecord {
         .init(id: "pending", roomId: roomID, caption: "Queued message", captionPlacement: "bottom",
               expectedItemCount: 1, createdAt: 300, kind: "text", state: "sending")
+    }
+
+    @Test("A large sent outbox loads previews only for its current history window")
+    func sentOutboxWindow() async throws {
+        let (database, window, model) = try fixture(count: 2_000)
+        defer { model.cleanup() }
+        let roomID = model.roomIdentifier
+        let preview = Data(repeating: 1, count: 16_384)
+        try await database.write { db in
+            for index in 0..<2_000 {
+                var message = TimelineWriteFixture.message(index)
+                message.roomId = roomID
+                message.isOutgoing = true
+                message.contentType = "image"
+                message.contentMediaJSON = #"{"url":"mxc://example.org/photo"}"#
+                try message.update(db)
+                var envelope = Self.envelope(roomID: roomID)
+                envelope.id = "sent-\(index)"
+                envelope.kind = "image"
+                envelope.state = "sent"
+                envelope.createdAt = Double(index)
+                envelope.payloadJSON = OutgoingEnvelopePayload.image(.init(caption: nil, width: 100, height: 100)).encodeJSON()
+                try envelope.insert(db)
+                try OutgoingEnvelopeItemRecord(id: "\(envelope.id):0", groupId: envelope.id, itemIndex: 0,
+                    eventId: message.eventId, previewImageData: preview, transportState: "sent").insert(db)
+            }
+        }
+        let request = window.replacementRequest(.newest)
+        let page = try #require(try await Task.detached { try request.fetch(includingLocalState: true) }.value)
+        #expect(page.localState.envelopeRecords.count == 200)
+        #expect(page.localState.envelopeItems.count == 200)
+        let previewBytes = page.localState.envelopeItems.reduce(0) { $0 + ($1.previewImageData?.count ?? 0) }
+        #expect(previewBytes == 200 * preview.count)
+        // Filtering does not acknowledge records or discard their previews.
+        #expect(try await database.read { try OutgoingEnvelopeRecord.fetchCount($0) } == 2_000)
+        try await load(model)
+        try await model.drainPresentationWorkerForTesting()
+        #expect(model.messages.count == 200)
+        #expect(model.messages.first?.id == "row-1999")
+        #expect(try await database.read { try OutgoingEnvelopeRecord.fetchCount($0) } == 1_800)
+        var applied = false
+        model.prepareHistoryReplacement(.oldest) { apply in apply(); applied = true }
+        try await Self.wait { applied }
+        try await model.drainPresentationWorkerForTesting()
+        #expect(model.messages.count == 200)
+        #expect(model.messages.last?.id == "row-0")
+        #expect(try await database.read { try OutgoingEnvelopeRecord.fetchCount($0) } == 1_600)
+    }
+
+    @Test("Window scoping preserves unfinished sends and requires a remote echo in the same room",
+          arguments: ["sent", "transaction", "unobserved", "localEcho", "foreignRoom", "incoming", "retrying", "itemRetry", "missingItem"])
+    func outboxScopeConfirmation(scenario: String) async throws {
+        let (database, _, model) = try fixture(count: 1)
+        defer { model.cleanup() }
+        let roomID = model.roomIdentifier
+        let snapshot = try await database.write { db in
+            var message = TimelineWriteFixture.message(0)
+            message.roomId = scenario == "foreignRoom" ? "!other:example.org" : roomID
+            message.isOutgoing = scenario != "incoming"
+            message.transactionId = "transaction"
+            if scenario == "localEcho" { message.eventId = nil }
+            try message.update(db)
+            var envelope = Self.envelope(roomID: roomID)
+            envelope.state = scenario == "retrying" ? "retrying" : "sent"
+            try envelope.insert(db)
+            if scenario != "missingItem" {
+                try OutgoingEnvelopeItemRecord(id: "pending:0", groupId: "pending", itemIndex: 0,
+                    transactionId: scenario == "unobserved" ? "unknown" : "transaction",
+                    eventId: scenario == "transaction" ? nil : "$event-0",
+                    previewImageData: Data([1, 2, 3]),
+                    transportState: scenario == "itemRetry" ? "retrying" : "sent").insert(db)
+            }
+            if scenario == "unobserved" { try message.delete(db) }
+            return try ChatTimelineLocalState.fetch(roomId: roomID, window: [], in: db)
+        }
+        #expect(snapshot.envelopeRecords.isEmpty == ["sent", "transaction"].contains(scenario))
+        #expect(try await database.read { try OutgoingEnvelopeRecord.fetchCount($0) } == 1)
+    }
+
+    @Test("A sent album remains whole if any bound event belongs to the window", arguments: [false, true])
+    func outboxScopeAlbum(intersectsWindow: Bool) async throws {
+        let (database, _, model) = try fixture(count: 2)
+        defer { model.cleanup() }
+        let roomID = model.roomIdentifier
+        let snapshot = try await database.write { db in
+            try db.execute(sql: "UPDATE storedMessage SET isOutgoing = 1")
+            var envelope = Self.envelope(roomID: roomID)
+            envelope.kind = "mediaBatch"
+            envelope.state = "sent"
+            envelope.expectedItemCount = 2
+            try envelope.insert(db)
+            for index in 0..<2 {
+                try OutgoingEnvelopeItemRecord(id: "pending:\(index)", groupId: "pending", itemIndex: index,
+                    eventId: "$event-\(index)", previewImageData: Data([1]), transportState: "sent").insert(db)
+            }
+            let window = intersectsWindow ? try StoredMessage.filter(Column("id") == "row-1").fetchAll(db) : []
+            return try ChatTimelineLocalState.fetch(roomId: roomID, window: window, in: db)
+        }
+        #expect(snapshot.envelopeRecords.count == (intersectsWindow ? 1 : 0))
+        #expect(snapshot.envelopeItems.count == (intersectsWindow ? 2 : 0))
+        #expect(try await database.read { try OutgoingEnvelopeRecord.fetchCount($0) } == 1)
     }
 
     @Test("An ignored-list change refreshes a live chat and its search without an SDK message diff")
@@ -337,6 +473,126 @@ struct ChatBackgroundPresentationTests {
         var applied = false
         model.prepareHistoryReplacement(.newest) { apply in apply(); applied = true }
         try await Self.wait { applied }
+    }
+
+    @Test("A covered chat applies edits and deletions without retaining incoming history or animating on return")
+    func coveredChatPreparation() async throws {
+        let (database, _, model) = try fixture(count: 2)
+        defer { model.cleanup() }
+        try await load(model)
+        let roomID = model.roomIdentifier
+        model.onRedactedDetected = { _ in Issue.record("A hidden deletion should not animate") }
+        model.setNavigationPresentationActive(false, prepareWhileHidden: true)
+        try await database.write { db in
+            try db.execute(sql: "UPDATE storedMessage SET contentBody = 'Edited while covered' WHERE id = 'row-1'")
+            try db.execute(sql: "UPDATE storedMessage SET contentType = 'redacted' WHERE id = 'row-0'")
+            for index in 2..<1002 {
+                var message = TimelineWriteFixture.message(index)
+                message.roomId = roomID
+                try message.insert(db)
+            }
+        }
+        model.refreshPresentationForTesting(.init(pushBackCount: 1000, setCount: 2, redactedUpsertCount: 1))
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
+        #expect(model.messages.count == 1)
+        #expect(model.messages.first?.content.textPreview == "Edited while covered")
+        #expect(model.retainedHistoryMessageCount == 2)
+        // Navigation freezes both screens during a pop. Catch-up must survive
+        // that intermediate pause, even when the hidden queue already drained.
+        model.setNavigationPresentationActive(false)
+        model.setNavigationPresentationActive(true)
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
+        #expect(model.messages.count == 1001)
+        #expect(!model.messages.contains { $0.id == "row-0" })
+    }
+
+    @Test("Covering the chat rejects an already prepared expanding live snapshot")
+    func coverDuringPreparation() async throws {
+        let (database, _, model) = try fixture(count: 2)
+        defer { model.cleanup() }
+        try await load(model)
+        let roomID = model.roomIdentifier
+        try await database.write { db in
+            var message = TimelineWriteFixture.message(2)
+            message.roomId = roomID
+            try message.insert(db)
+        }
+        let gate = Gate()
+        defer { gate.release() }
+        model.onRenderPreparedForTesting = { gate.holdOnce() }
+        model.refreshPresentationForTesting(.init(pushBackCount: 1))
+        try await Self.wait { gate.entered.wrappedValue }
+        model.setNavigationPresentationActive(false, prepareWhileHidden: true)
+        gate.release()
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
+        #expect(model.retainedHistoryMessageCount == 2)
+    }
+
+    @Test("A covered refresh initializes an unread window with one bounded page")
+    func coveredBeforeInitialLoad() async throws {
+        let (_, window, model) = try fixture(count: 240)
+        defer { model.cleanup() }
+        #expect(window.generation == 0)
+        model.setNavigationPresentationActive(false, prepareWhileHidden: true)
+        model.refreshPresentationForTesting(.init(requiresPresentationRefresh: true))
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
+        #expect(window.generation > 0)
+        #expect(model.messages.count == MessageWindow.windowSize)
+        #expect(model.messages.first?.id == "row-239")
+        #expect(window.hasOlderInDB)
+    }
+
+    @Test("An initialized empty covered window does not admit incoming history until visible")
+    func coveredEmptyWindow() async throws {
+        let (database, _, model) = try fixture(count: 0)
+        defer { model.cleanup() }
+        try await load(model)
+        model.setNavigationPresentationActive(false, prepareWhileHidden: true)
+        let roomID = model.roomIdentifier
+        try await database.write { db in
+            var message = TimelineWriteFixture.message(0)
+            message.roomId = roomID
+            try message.insert(db)
+        }
+        model.refreshPresentationForTesting(.init(pushBackCount: 1))
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
+        #expect(model.messages.isEmpty)
+        model.setNavigationPresentationActive(true)
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
+        #expect(model.messages.map(\.id) == ["row-0"])
+    }
+
+    @Test("A jump to live does not wait for a stream of background refreshes to end")
+    func jumpDuringRefreshStream() async throws {
+        let (_, window, model) = try fixture(count: 600)
+        defer { model.cleanup() }
+        var loaded = false
+        model.prepareHistoryReplacement(.oldest) { apply in apply(); loaded = true }
+        try await Self.wait { loaded }
+        #expect(!window.isAtLiveEdge)
+        let gate = Gate()
+        defer { gate.release() }
+        model.onRenderPreparedForTesting = { gate.holdOnce() }
+        var jumped = false
+        var refreshesBeforeJump = 0
+        model.onTableUpdate = { _, origin in
+            guard case .timelineFlush = origin, !jumped else { return }
+            refreshesBeforeJump += 1
+            // Keep the stream finite so a starvation regression fails an
+            // assertion rather than leaving background work running forever.
+            if refreshesBeforeJump < 8 {
+                model.refreshPresentationForTesting(.init(requiresPresentationRefresh: true))
+            }
+        }
+        model.refreshPresentationForTesting(.init(requiresPresentationRefresh: true))
+        try await Self.wait { gate.entered.wrappedValue }
+        model.prepareHistoryReplacement(.live) { apply in apply(); jumped = true }
+        gate.release()
+        try await Self.wait { jumped }
+        #expect(refreshesBeforeJump <= 1)
+        #expect(window.isAtLiveEdge)
+        #expect(model.messages.first?.id == "row-599")
+        try await Self.wait { model.isTimelineRefreshIdleForTesting }
     }
 
     @Test("Retention rejects a moved viewport, a hidden screen and an intervening mutation", arguments: [0, 1, 2])
@@ -418,6 +674,10 @@ struct ChatBackgroundPresentationTests {
                 CREATE TABLE pendingDirectImage (envelopeId TEXT);
                 CREATE TABLE pendingDirectVideo (envelopeId TEXT);
                 CREATE TABLE pendingDirectFile (envelopeId TEXT);
+                CREATE INDEX outboxRoom ON pendingMediaGroup(roomId, createdAt);
+                CREATE UNIQUE INDEX outboxItem ON pendingMediaGroupItem(groupId, itemIndex);
+                CREATE INDEX messageEvent ON storedMessage(roomId, eventId) WHERE eventId IS NOT NULL;
+                CREATE INDEX messageTransaction ON storedMessage(transactionId) WHERE transactionId IS NOT NULL;
                 """)
             for index in 0..<count {
                 var record = TimelineWriteFixture.message(index)

@@ -10,6 +10,33 @@ import Testing
 @Suite("Repair refresh coalescing")
 @MainActor
 struct ChatHistoryRefreshTests {
+    @Test("Covered chat refreshes coalesce and returning flushes without waiting for the timer")
+    func coveredChat() {
+        var scheduled: [() -> Void] = []
+        var starts: [TimelineFlushSummary] = []
+        let queue = ChatTimelineRefreshQueue(scheduleRepair: { scheduled.append($0) }) { summary, done in
+            starts.append(summary)
+            done(.applied)
+        }
+        queue.setBackgrounded(true)
+        for _ in 0..<100 { queue.enqueue(.init(setCount: 1)) }
+        #expect(starts.isEmpty)
+        #expect(scheduled.count == 1)
+        scheduled[0]()
+        #expect(starts.count == 1 && starts[0].setCount == 100)
+        queue.enqueue(.init(setCount: 1))
+        #expect(starts.count == 1)
+        queue.setBackgrounded(false)
+        #expect(starts.count == 2)
+        scheduled[1]()
+        #expect(starts.count == 2)
+        queue.setBackgrounded(true)
+        queue.enqueue(.init(setCount: 1))
+        queue.cancel()
+        scheduled[2]()
+        #expect(starts.count == 2)
+    }
+
     @Test("Repair bursts use a fixed deadline and preserve every committed revision and recovered ID")
     func burst() {
         var scheduled: [() -> Void] = []

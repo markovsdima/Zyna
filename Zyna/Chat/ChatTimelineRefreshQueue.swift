@@ -20,6 +20,10 @@ final class ChatTimelineRefreshQueue {
     private var repairSequence: UInt64 = 0
     private var scheduledRepair: UInt64?
     private var hasImmediatePending = false
+    private var isBackgrounded = false
+    private var backgroundSequence: UInt64 = 0
+    private var scheduledBackground: UInt64?
+    private var backgroundReady = false
 
     var hasPending: Bool { pending != nil }
     var isIdle: Bool { !isRunning && pending == nil }
@@ -79,6 +83,7 @@ final class ChatTimelineRefreshQueue {
         pending = nil
         scheduledRepair = nil
         hasImmediatePending = false
+        scheduledBackground = nil
     }
 
     /// Retain one merged notification while hidden, without reading or
@@ -89,8 +94,33 @@ final class ChatTimelineRefreshQueue {
         if !paused { startNext() }
     }
 
+    /// A covered, retained chat prepares at most one snapshot per fixed
+    /// interval. Returning to it immediately releases any pending update.
+    func setBackgrounded(_ backgrounded: Bool) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard isBackgrounded != backgrounded else { return }
+        isBackgrounded = backgrounded
+        scheduledBackground = nil
+        backgroundReady = false
+        startNext()
+    }
+
     private func startNext() {
         guard !isCancelled, !isPaused, !isRunning, scheduledRepair == nil, let summary = pending else { return }
+        if isBackgrounded && !backgroundReady {
+            guard scheduledBackground == nil else { return }
+            backgroundSequence &+= 1
+            let sequence = backgroundSequence
+            scheduledBackground = sequence
+            scheduleRepair { [weak self] in
+                guard let self, self.scheduledBackground == sequence else { return }
+                self.scheduledBackground = nil
+                self.backgroundReady = true
+                self.startNext()
+            }
+            return
+        }
+        backgroundReady = false
         let wasImmediate = hasImmediatePending
         pending = nil
         hasImmediatePending = false

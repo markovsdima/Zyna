@@ -11,6 +11,7 @@ final class ChatRouteViewController: UIViewController, NavigationResidentScreen 
     private(set) var chat: ChatViewController?
     private var savedState: ChatNavigationState?
     private var contentVisible = false
+    private var preparesHiddenContent = false
     private var wasAttached = false
     private var pendingForward: ChatMessage?
 
@@ -44,7 +45,7 @@ final class ChatRouteViewController: UIViewController, NavigationResidentScreen 
         savedState = nil
         // A warm route must be hidden before mounting its view, including
         // when restoring inside an already attached wrapper.
-        controller.setNavigationContentVisible(contentVisible)
+        controller.setNavigationContentVisible(contentVisible, prepareWhileHidden: preparesHiddenContent)
         addChild(controller)
         loadViewIfNeeded()
         controller.view.frame = view.bounds
@@ -78,8 +79,13 @@ final class ChatRouteViewController: UIViewController, NavigationResidentScreen 
     }
 
     func setContentVisible(_ visible: Bool) {
+        setContentVisible(visible, prepareWhileHidden: false)
+    }
+
+    func setContentVisible(_ visible: Bool, prepareWhileHidden: Bool) {
         contentVisible = visible
-        chat?.setNavigationContentVisible(visible)
+        preparesHiddenContent = !visible && prepareWhileHidden
+        chat?.setNavigationContentVisible(visible, prepareWhileHidden: preparesHiddenContent)
     }
 }
 

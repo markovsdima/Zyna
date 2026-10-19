@@ -105,6 +105,7 @@ struct TimelineFlushSummary: Equatable {
             upsertCount > 0 ? "upsert=\(upsertCount)" : nil,
             deleteCount > 0 ? "delete=\(deleteCount)" : nil,
             redactedUpsertCount > 0 ? "redacted=\(redactedUpsertCount)" : nil,
+            incomingMessageCount > 0 ? "incoming=\(incomingMessageCount)" : nil,
             includesUnreportedHistory ? "unreported" : nil
         ]
         .compactMap { $0 }
@@ -123,7 +124,12 @@ enum MessageWindowChangeOrigin: Equatable {
 
     var preservesHistoryViewport: Bool {
         if case .databasePagination = self { return true }
-        if case .timelineFlush(let summary) = self { return summary.includesUnreportedHistory }
+        if case .timelineFlush(let summary) = self {
+            // A repair merged with a proven incoming live arrival must not
+            // suppress following that arrival at an already pinned viewport.
+            // Pure hydration and ordinary database pagination keep their anchor.
+            return summary.includesUnreportedHistory && summary.incomingMessageCount == 0
+        }
         return false
     }
 
@@ -203,7 +209,7 @@ final class MessageWindow {
     private var previousStored: [StoredMessage]?
     private(set) var revision: UInt64 = 0
 
-    /// Reject reads prepared before the account's visibility rules changed.
+    /// Reject reads prepared before a navigation request or visibility change.
     func invalidatePendingReads() { revision &+= 1 }
     private(set) var generation: UInt64 = 0
     private var olderCursor: Cursor?
@@ -307,7 +313,7 @@ final class MessageWindow {
                     neighbors: try MessageWindow.neighbors(in: db, roomId: roomId, oldest: oldest,
                         newest: newest, rawOlder: rawOlder, rawNewer: rawNewer),
                     origin: origin, focus: MessageWindow.focus(for: raw),
-                    localState: includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, in: db) : ChatTimelineLocalState())
+                    localState: includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, window: raw, in: db) : ChatTimelineLocalState())
             }
         }
     }
@@ -454,7 +460,7 @@ final class MessageWindow {
                         ignored.isEmpty ? stored : stored.filter { !ignored.contains($0.senderId) },
                         try MessageWindow.neighbors(in: db, roomId: roomId,
                             oldest: nextOldest, newest: nextNewest, rawOlder: older, rawNewer: newer),
-                        includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, in: db) : ChatTimelineLocalState())
+                        includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, window: stored + records, in: db) : ChatTimelineLocalState())
             }
             let merged = admitted.isEmpty ? previous : MessageWindow.normalizedStored(previous + admitted)
             #if DEBUG
@@ -575,7 +581,7 @@ final class MessageWindow {
                         cursor: nextNewest, live: live && range.lowerBound == 0))
                 return RetentionPage(revision: revision, stored: retained,
                     oldest: nextOldest, newest: nextNewest, neighbors: neighbors,
-                    localState: includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, in: db) : ChatTimelineLocalState())
+                    localState: includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, window: retained, in: db) : ChatTimelineLocalState())
             }
         }
     }
@@ -655,7 +661,8 @@ final class MessageWindow {
             }
         }
 
-        func fetch(historyRevision: TimelineHistoryRevision? = nil, includingLocalState: Bool = false) throws -> RefreshPage {
+        func fetch(historyRevision: TimelineHistoryRevision? = nil, includingLocalState: Bool = false,
+                   retainedOnly: Bool = false) throws -> RefreshPage {
             let (records, nextOlder, nextNewer, neighbors, committedHistoryRevision, localState) = try database.read { db in
                 let room = StoredMessage.visible
                     .filter(Column("roomId") == roomId && Column("contentType") != "call")
@@ -668,7 +675,26 @@ final class MessageWindow {
                 } else {
                     query = query.limit(MessageWindow.windowSize)
                 }
-                let records = try query.fetchAll(db)
+                let records: [StoredMessage]
+                if retainedOnly, let previous {
+                    // Refresh only already retained identities while covered.
+                    // New live/backfilled events cannot expand a hidden UI.
+                    // Chunk binds even if an older window exceeded retention.
+                    let ids = previous.map(\.id)
+                    var retained: [StoredMessage] = []
+                    for start in stride(from: 0, to: ids.count, by: 400) {
+                        let chunk = Array(ids[start..<min(start + 400, ids.count)])
+                        retained += try room.filter(chunk.contains(Column("id"))).fetchAll(db)
+                    }
+                    records = retained.sorted {
+                        $0.timestamp == $1.timestamp ? $0.id > $1.id : $0.timestamp > $1.timestamp
+                    }
+                } else {
+                    // An uninitialized covered window still needs its first
+                    // bounded page. An already initialized empty window takes
+                    // the retained-only branch and stays empty until visible.
+                    records = try query.fetchAll(db)
+                }
                 let nextOlder = Cursor.oldest(oldest, records.last.map(Cursor.init))
                 let nextNewer = Cursor.newest(newest, records.first.map(Cursor.init))
                 let older = try MessageWindow.olderNeighbor(in: db, roomId: roomId, cursor: nextOlder)
@@ -678,7 +704,7 @@ final class MessageWindow {
                 return (try MessageDecryptionRepairStore.admitted(records, in: db), nextOlder, nextNewer,
                     try MessageWindow.neighbors(in: db, roomId: roomId, oldest: nextOlder,
                         newest: nextNewer, rawOlder: older, rawNewer: newer), historyRevision?.current ?? 0,
-                    includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, in: db) : ChatTimelineLocalState())
+                    includingLocalState ? try ChatTimelineLocalState.fetch(roomId: roomId, window: records, in: db) : ChatTimelineLocalState())
             }
             let normalized = previous == records ? records : MessageWindow.normalizedStored(records)
             return RefreshPage(

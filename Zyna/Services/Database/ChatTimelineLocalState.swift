@@ -21,14 +21,48 @@ struct ChatTimelineLocalState {
         return envelopeRecords.map { .init(record: $0, items: items[$0.id] ?? []) }
     }
 
-    static func fetch(roomId: String, in db: Database) throws -> Self {
+    static func fetch(roomId: String, window: [StoredMessage], in db: Database) throws -> Self {
         let redactions = try PendingRedactionRecord.filter(Column("roomId") == roomId)
             .order(Column("createdAt").asc).fetchAll(db)
         let resolved = redactions.isEmpty
             ? PendingRedactionService.ResolvedPendingRedactions(messageIds: [], identityKeys: [])
             : try PendingRedactionService.resolvedPendingRedactions(roomId: roomId, in: db)
-        let envelopes = try OutgoingEnvelopeRecord.filter(Column("roomId") == roomId)
-            .order(Column("createdAt").desc).fetchAll(db)
+        // Sent envelopes may survive until their remote echoes enter an
+        // accepted presentation. Keep their previews on disk while all of
+        // those echoes are outside this window. This is presentation scoping,
+        // not acknowledgement: incomplete hydration and album metadata are
+        // still checked by the renderer before anything can be retired.
+        // Unfinished sends and sends not yet observed in the DB remain visible.
+        let eventIDs = window.compactMap(\.eventId)
+        let transactionIDs = window.compactMap(\.transactionId)
+        let envelopes = try SQLRequest<OutgoingEnvelopeRecord>(literal: """
+            SELECT envelope.* FROM pendingMediaGroup AS envelope
+            WHERE envelope.roomId = \(roomId) AND (
+                envelope.state IS NOT 'sent'
+                OR envelope.expectedItemCount < 1
+                OR (SELECT COUNT(*) FROM pendingMediaGroupItem AS item
+                    WHERE item.groupId = envelope.id) != envelope.expectedItemCount
+                OR EXISTS (
+                    SELECT 1 FROM pendingMediaGroupItem AS item
+                    WHERE item.groupId = envelope.id AND (
+                        COALESCE(item.transportState,
+                            CASE WHEN item.eventId IS NOT NULL THEN 'sent' ELSE 'queued' END) != 'sent'
+                        OR item.eventId IN \(eventIDs)
+                        OR item.transactionId IN \(transactionIDs)
+                        OR (NOT EXISTS (
+                            SELECT 1 FROM storedMessage AS message
+                            WHERE message.roomId = envelope.roomId AND message.isOutgoing = 1
+                                AND message.eventId = item.eventId
+                        ) AND NOT EXISTS (
+                            SELECT 1 FROM storedMessage AS message
+                            WHERE message.roomId = envelope.roomId AND message.isOutgoing = 1
+                                AND message.eventId IS NOT NULL
+                                AND message.transactionId = item.transactionId
+                        ))
+                    )
+                )
+            ) ORDER BY envelope.createdAt DESC
+            """).fetchAll(db)
         let ids = envelopes.map(\.id)
         let items = ids.isEmpty ? [] : try OutgoingEnvelopeItemRecord
             .filter(ids.contains(Column("groupId"))).order(Column("itemIndex").asc).fetchAll(db)

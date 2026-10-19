@@ -189,18 +189,16 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         bubbleWrapperNode.addSubnode(directBubbleContentNode)
         bubbleWrapperNode.layoutSpecBlock = { [weak self] _, _ in
             guard let self else { return ASLayoutSpec() }
-            if self.usesBareBubbleContent {
-                return ASWrapperLayoutSpec(layoutElement: self.directBubbleContentNode)
-            }
+            let content = self.usesBareBubbleContent ? self.directBubbleContentNode : self.bubbleNode
             guard self.showsBubbleChrome else {
-                return ASWrapperLayoutSpec(layoutElement: self.bubbleNode)
+                return ASWrapperLayoutSpec(layoutElement: content)
             }
             let layeredBackground = ASOverlayLayoutSpec(
                 child: self.bubbleBackgroundNode,
                 overlay: self.bubblePortalBackgroundNode
             )
             return ASBackgroundLayoutSpec(
-                child: self.bubbleNode,
+                child: content,
                 background: layeredBackground
             )
         }
@@ -527,15 +525,6 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         directBubbleContentNode.isHidden = !usesBareBubbleContent
         bubbleNode.isHidden = usesBareBubbleContent
 
-        guard !usesBareBubbleContent else {
-            bubbleBackgroundNode.fillColor = .clear
-            bubbleBackgroundNode.isHidden = true
-            bubblePortalBackgroundNode.isHidden = true
-            bubblePortalBackgroundNode.sourceView = nil
-            bubbleNode.fillColor = .clear
-            return
-        }
-
         bubbleNode.radius = MessageCellHelpers.bubbleCornerRadius
         bubbleBackgroundNode.radius = bubbleNode.radius
         bubblePortalBackgroundNode.radius = bubbleNode.radius
@@ -559,8 +548,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
             bubbleBackgroundNode.fillColor = usesFallbackBubbleBackground ? bubbleBaseFillColor : .clear
             bubbleNode.fillColor = .clear
         } else {
-            bubbleBackgroundNode.fillColor = .clear
-            bubbleNode.fillColor = bubbleBaseFillColor
+            bubbleBackgroundNode.fillColor = usesBareBubbleContent ? bubbleBaseFillColor : .clear
+            bubbleNode.fillColor = usesBareBubbleContent ? .clear : bubbleBaseFillColor
         }
     }
 
@@ -577,6 +566,8 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         setNeedsLayout()
     }
 
+    /// Select the non-drawing content container independently of chrome.
+    /// An image can then gain a caption/background without being reparented.
     func setUsesBareBubbleContent(_ enabled: Bool) {
         guard usesBareBubbleContent != enabled else { return }
         usesBareBubbleContent = enabled
@@ -584,6 +575,10 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
         bubbleWrapperNode.setNeedsLayout()
         contextSourceNode.setNeedsLayout()
         setNeedsLayout()
+    }
+
+    private var activeBubbleContentNode: ASDisplayNode {
+        usesBareBubbleContent ? directBubbleContentNode : bubbleNode
     }
 
     var bubbleForegroundColor: UIColor {
@@ -679,11 +674,13 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
               old.senderDisplayName == new.senderDisplayName,
               old.senderAvatarUrl == new.senderAvatarUrl,
               old.isFirstInCluster == new.isFirstInCluster,
-              old.isEdited == new.isEdited,
               mediaGroupPresentationIsVisuallyEquivalent(old: old.mediaGroupPresentation, new: new.mediaGroupPresentation)
         else {
             return false
         }
+
+        if ImageMessageCellNode.canUpdateCaption(old: old, new: new) { return true }
+        guard old.isEdited == new.isEdited else { return false }
 
         if isVisuallyEquivalentCompositeMediaGroupRow(old: old, new: new) {
             return true
@@ -897,12 +894,14 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     func highlightBubble() {
         guard isNodeLoaded else { return }
         let highlight = CAShapeLayer()
-        highlight.frame = bubbleNode.bounds
-        highlight.path = bubbleNode.currentPath().cgPath
+        let content = activeBubbleContentNode
+        highlight.frame = content.bounds
+        highlight.path = UIBezierPath(roundedRect: content.bounds, byRoundingCorners: bubbleNode.roundedCorners,
+            cornerRadii: CGSize(width: bubbleNode.radius, height: bubbleNode.radius)).cgPath
         highlight.fillColor = bubbleForegroundColor
             .withAlphaComponent(0.3).cgColor
         highlight.opacity = 0
-        bubbleNode.layer.addSublayer(highlight)
+        content.layer.addSublayer(highlight)
 
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak highlight] in
@@ -923,7 +922,7 @@ class MessageCellNode: ZynaCellNode, ContextMenuCellNode {
     // MARK: - Context Menu Reparenting
 
     func contextMenuContentPath() -> CGPath {
-        contextMenuContentPath(for: bubbleNode, radius: bubbleNode.radius,
+        contextMenuContentPath(for: activeBubbleContentNode, radius: bubbleNode.radius,
                               roundedCorners: bubbleNode.roundedCorners)
     }
 

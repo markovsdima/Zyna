@@ -10,7 +10,7 @@ import MatrixRustSDK
 private let logMediaGroup = ScopedLog(.media, prefix: "[MediaGroup]")
 private let logTimelineDB = ScopedLog(.database, prefix: "[TimelineDB]")
 
-/// Accumulates SDK timeline diffs for 50 ms, then persists whole events
+/// Maps SDK diffs into bounded portions, then persists whole events
 /// in bounded transactions on a serial worker. Maintains a shadow
 /// array for positional diff handling (SDK diffs reference items by index).
 // Pending SDK state belongs to processingQueue, writes to writeQueue, and
@@ -27,6 +27,11 @@ final class TimelineDiffBatcher: @unchecked Sendable {
         qos: .userInitiated
     )
     private let writeQueue = DispatchQueue(label: "com.zyna.db.write", qos: .userInitiated)
+    /// Only processingQueue waits on this permit. The writer never waits for
+    /// processingQueue or main, and releases its payload before signalling.
+    /// At most one portion is queued/writing and one is being prepared.
+    private let writerSlot = DispatchSemaphore(value: 1)
+    private let ingestionLimits: IngestionLimits
 
     // MARK: - Shadow positions
 
@@ -49,7 +54,7 @@ final class TimelineDiffBatcher: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             processingQueue.async { [self] in
                 continuation.resume(returning: diagnosticHistory.snapshot(eventID: eventID)
-                    + ["pendingMappedEvents=\(pendingEvents.count)"])
+                    + [ingestionMetrics.snapshot.description])
             }
         }
     }
@@ -72,9 +77,14 @@ final class TimelineDiffBatcher: @unchecked Sendable {
     }
 
     private var pendingEvents: [[DiffOp]] = []
+    private var pendingEstimatedBytes = 0
+    private var pendingBegan: TimeInterval?
     private var pendingFlushSummary = TimelineFlushSummary()
-    private var debounceWork: DispatchWorkItem?
-    private static let debounceInterval: TimeInterval = 0.05
+    /// Every portion of a callback keeps its complete live/history shape,
+    /// including when a reset or append crosses a portion boundary.
+    private var activeSourceSummary: TimelineFlushSummary?
+    private var pendingIncludesActiveSource = false
+    private var flushWork: DispatchWorkItem?
 
     /// Timestamp of the newest own message read by someone else.
     /// Updated from TimelineService when SDK delivers read receipts.
@@ -88,6 +98,7 @@ final class TimelineDiffBatcher: @unchecked Sendable {
     #if DEBUG
     private(set) var historyPerformance: HistoryPerformanceTrace.Session?
     private var projectionDiagnostics: MessageProjectionDiagnostics?
+    let ingestionMetrics = TimelineIngestionMetrics()
 
     func recheckProjectionAfterPagination() {
         guard let probe = projectionDiagnostics else { return }
@@ -128,9 +139,12 @@ final class TimelineDiffBatcher: @unchecked Sendable {
 
     // MARK: - Init
 
-    init(roomId: String, dbQueue: AccountDatabase) {
+    init(roomId: String, dbQueue: AccountDatabase, ingestionLimits: IngestionLimits = .init()) {
+        precondition(ingestionLimits.maximumEvents > 0 && ingestionLimits.maximumEstimatedBytes > 0
+            && ingestionLimits.maximumDelay > 0)
         self.roomId = roomId
         self.dbQueue = dbQueue
+        self.ingestionLimits = ingestionLimits
     }
 
     deinit {
@@ -141,8 +155,8 @@ final class TimelineDiffBatcher: @unchecked Sendable {
 
     /// Update read cursor from SDK read receipts.
     func updateReadCursor(timestamp: TimeInterval) {
-        processingQueue.async { [weak self] in
-            guard let self, self.dbQueue.isActive else { return }
+        processingQueue.async { [self] in
+            guard self.dbQueue.isActive else { return }
             if self.readCursorTimestamp == nil || timestamp > self.readCursorTimestamp! {
                 self.readCursorTimestamp = timestamp
                 self.pendingFlushSummary.readReceiptCount += 1
@@ -158,20 +172,29 @@ final class TimelineDiffBatcher: @unchecked Sendable {
         #if DEBUG
         let trace = historyPerformance
         let operation = trace?.begin(.mapQueue)
+        let input = TimelineIngestionMetrics.Input(diffs)
+        let metrics = ingestionMetrics
+        metrics.receive(input)
         #endif
-        processingQueue.async { [weak self] in
+        processingQueue.async { [self] in
             #if DEBUG
             operation?.move(to: .map)
-            defer { operation?.finish() }
+            defer { operation?.finish(); metrics.release(input) }
             trace?.count(.diffs, diffs.count)
             #endif
-            guard let self, self.dbQueue.isActive else { return }
+            guard self.dbQueue.isActive else { return }
             let types = diffs.map { Self.diffName($0) }
             self.log("Received diffs: \(types.joined(separator: ", "))")
+            self.activeSourceSummary = .init()
+            self.pendingIncludesActiveSource = false
+            for diff in diffs { self.recordSummary(for: diff) }
+            self.includeActiveSource()
             for diff in diffs {
-                self.recordSummary(for: diff)
-                self.enqueueDiff(diff)
+                guard self.dbQueue.isActive else { break }
+                autoreleasepool { self.enqueueDiff(diff) }
             }
+            self.activeSourceSummary = nil
+            self.pendingIncludesActiveSource = false
             self.scheduleFlush()
         }
     }
@@ -201,72 +224,134 @@ final class TimelineDiffBatcher: @unchecked Sendable {
         #endif
         await withCheckedContinuation { continuation in
             processingQueue.async { [self] in
-                debounceWork?.cancel()
-                debounceWork = nil
+                flushWork?.cancel()
+                flushWork = nil
                 flush()
                 writeQueue.async { continuation.resume() }
             }
         }
     }
 
-    // MARK: - Debounce
+    // MARK: - Flush scheduling
 
     private func scheduleFlush() {
-        debounceWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.flush() }
-        debounceWork = work
-        processingQueue.asyncAfter(deadline: .now() + Self.debounceInterval, execute: work)
+        guard !pendingEvents.isEmpty || readCursorTimestamp != nil else {
+            pendingFlushSummary = .init()
+            pendingIncludesActiveSource = false
+            return
+        }
+        guard flushWork == nil else { return }
+        // A fixed deadline cannot be postponed by a continuous SDK stream.
+        // Retain accepted work until this bounded tail has been handed off.
+        let work = DispatchWorkItem { [self] in flush() }
+        flushWork = work
+        processingQueue.asyncAfter(deadline: .now() + ingestionLimits.maximumDelay, execute: work)
     }
 
     // MARK: - Flush
 
     private func flush() {
-        let events = pendingEvents
-        pendingEvents.removeAll()
+        dispatchPrecondition(condition: .onQueue(processingQueue))
+        flushWork?.cancel()
+        flushWork = nil
+        guard !pendingEvents.isEmpty || readCursorTimestamp != nil else { return }
+
+        // A small writeQueue.async block for every portion would merely move
+        // an unbounded backlog to another queue. Wait before handing off the
+        // next portion; SDK callbacks themselves remain nonblocking.
+        writerSlot.wait()
+        let payload = WritePayload(taking: &pendingEvents, estimatedBytes: pendingEstimatedBytes)
+        pendingEstimatedBytes = 0
+        pendingBegan = nil
         let summary = pendingFlushSummary
         pendingFlushSummary = TimelineFlushSummary()
+        pendingIncludesActiveSource = false
         let cursorTs = readCursorTimestamp
         readCursorTimestamp = nil
-        guard !events.isEmpty || cursorTs != nil else { return }
 
         let roomId = self.roomId
         let dbQueue = self.dbQueue
         let historyRevision = self.historyRevision
+        let writerSlot = self.writerSlot
         let currentUserId = (try? MatrixClientService.shared.client?.userId()) ?? ""
         #if DEBUG
         let trace = historyPerformance
         let operation = trace?.begin(.writerQueue)
+        let metrics = ingestionMetrics
         #endif
         writeQueue.async { [weak self] in
             #if DEBUG
             operation?.move(to: .flush)
             defer { operation?.finish() }
+            var failed = false
             #endif
             defer {
+                #if DEBUG
+                let count = payload.events.count
+                #endif
+                payload.events.removeAll()
+                #if DEBUG
+                metrics.releaseMapped(count: count, bytes: payload.estimatedBytes, failed: failed)
+                #endif
+                writerSlot.signal()
                 DispatchQueue.main.async { [weak self] in
                     guard dbQueue.isActive else { return }
                     self?.onDecryptionCandidatesChanged?()
                 }
             }
             do {
-                try Self.writeMappedEvents(events, roomId: roomId, database: dbQueue,
-                    currentUserId: currentUserId, summary: summary, cursorTs: cursorTs,
-                    historyRevision: historyRevision) { summary in
-                    #if DEBUG
-                    trace?.count(.upserts, summary.upsertCount)
-                    #endif
-                    DispatchQueue.main.async { [weak self] in
-                        guard dbQueue.isActive else { return }
-                        self?.onFlush?(summary)
+                try autoreleasepool {
+                    try Self.writeMappedEvents(payload.events, roomId: roomId, database: dbQueue,
+                        currentUserId: currentUserId, summary: summary, cursorTs: cursorTs,
+                        historyRevision: historyRevision) { summary in
+                        #if DEBUG
+                        trace?.count(.upserts, summary.upsertCount)
+                        #endif
+                        DispatchQueue.main.async { [weak self] in
+                            guard dbQueue.isActive else { return }
+                            self?.onFlush?(summary)
+                        }
                     }
                 }
             } catch AccountDatabase.AccessError.retired {
                 // The account was retired between enqueue or chunk boundaries.
             } catch {
+                #if DEBUG
+                failed = true
+                #endif
                 DispatchQueue.main.async { [weak self] in
                     self?.log("Flush failed: \(error)")
                 }
             }
+        }
+    }
+
+    private func includeActiveSource() {
+        guard !pendingIncludesActiveSource, let activeSourceSummary else { return }
+        pendingFlushSummary = pendingFlushSummary.merging(activeSourceSummary)
+        pendingIncludesActiveSource = true
+    }
+
+    private func appendOperations(_ operations: [DiffOp]) {
+        guard !operations.isEmpty, dbQueue.isActive else { return }
+        let bytes = Self.estimatedBytes(of: operations)
+        if !pendingEvents.isEmpty, pendingEstimatedBytes + bytes > ingestionLimits.maximumEstimatedBytes {
+            flush()
+        }
+        includeActiveSource()
+        pendingEvents.append(operations)
+        pendingEstimatedBytes += bytes
+        #if DEBUG
+        ingestionMetrics.mapped(bytes: bytes)
+        #endif
+        let now = ProcessInfo.processInfo.systemUptime
+        if pendingBegan == nil { pendingBegan = now }
+        if pendingEvents.count >= ingestionLimits.maximumEvents
+            || pendingEstimatedBytes >= ingestionLimits.maximumEstimatedBytes
+            || now - (pendingBegan ?? now) >= ingestionLimits.maximumDelay {
+            flush()
+        } else {
+            scheduleFlush()
         }
     }
 
@@ -283,7 +368,7 @@ final class TimelineDiffBatcher: @unchecked Sendable {
         var committedSummary: TimelineFlushSummary?
         var chunkSummary = summary
         defer {
-            // Preserve one UI refresh per SDK batch. If a later chunk fails,
+            // Preserve one UI refresh per prepared portion. If a later chunk fails,
             // publish the committed prefix instead of hiding valid changes.
             if let committedSummary { didCommit(committedSummary) }
         }
@@ -494,27 +579,27 @@ final class TimelineDiffBatcher: @unchecked Sendable {
     private func recordSummary(for diff: TimelineDiff) {
         switch diff {
         case .append:
-            pendingFlushSummary.appendCount += 1
+            activeSourceSummary?.appendCount += 1
         case .pushBack:
-            pendingFlushSummary.pushBackCount += 1
+            activeSourceSummary?.pushBackCount += 1
         case .pushFront:
-            pendingFlushSummary.pushFrontCount += 1
+            activeSourceSummary?.pushFrontCount += 1
         case .insert:
-            pendingFlushSummary.insertCount += 1
+            activeSourceSummary?.insertCount += 1
         case .set:
-            pendingFlushSummary.setCount += 1
+            activeSourceSummary?.setCount += 1
         case .remove:
-            pendingFlushSummary.removeCount += 1
+            activeSourceSummary?.removeCount += 1
         case .popBack:
-            pendingFlushSummary.removeCount += 1
+            activeSourceSummary?.removeCount += 1
         case .popFront:
-            pendingFlushSummary.removeCount += 1
+            activeSourceSummary?.removeCount += 1
         case .reset:
-            pendingFlushSummary.resetCount += 1
+            activeSourceSummary?.resetCount += 1
         case .truncate:
-            pendingFlushSummary.truncateCount += 1
+            activeSourceSummary?.truncateCount += 1
         case .clear:
-            pendingFlushSummary.clearCount += 1
+            activeSourceSummary?.clearCount += 1
         }
     }
 
@@ -524,6 +609,7 @@ final class TimelineDiffBatcher: @unchecked Sendable {
         case .append(let items):
             let isLiveArrival = !shadowPositions.isEmpty
             for item in items {
+                guard dbQueue.isActive else { break }
                 appendItem(item, isLiveArrival: isLiveArrival)
             }
 
@@ -589,6 +675,7 @@ final class TimelineDiffBatcher: @unchecked Sendable {
             }
             shadowPositions.removeAll()
             for item in items {
+                guard dbQueue.isActive else { break }
                 appendItem(item)
             }
 
@@ -613,14 +700,18 @@ final class TimelineDiffBatcher: @unchecked Sendable {
     // MARK: - Helpers
 
     private func appendItem(_ item: TimelineItem, isLiveArrival: Bool = false) {
-        let msg = TimelineService.mapTimelineItem(item)
-        shadowPositions.append(shadowPosition(for: item))
-        enqueueSidecarEvents(for: item, message: msg, isLiveArrival: isLiveArrival)
+        // A reset/append can contain the entire cached history. Drain Cocoa
+        // mapping temporaries per item instead of at the end of that callback.
+        autoreleasepool {
+            let msg = TimelineService.mapTimelineItem(item)
+            shadowPositions.append(shadowPosition(for: item))
+            enqueueSidecarEvents(for: item, message: msg, isLiveArrival: isLiveArrival)
+        }
     }
 
     private func enqueueSidecarEvents(for item: TimelineItem, message: ChatMessage?, isLiveArrival: Bool = false) {
         var operations: [DiffOp] = []
-        defer { if !operations.isEmpty { pendingEvents.append(operations) } }
+        defer { appendOperations(operations) }
         if let message {
             let record = StoredMessage(from: message, roomId: roomId)
             let isPollStart = message.content.isPoll || (message.content.isRedacted
@@ -678,7 +769,7 @@ final class TimelineDiffBatcher: @unchecked Sendable {
     }
 
     private func enqueueInspection(_ position: ShadowPosition) {
-        if let id = position.decryptionEventID { pendingEvents.append([.inspectDecryption(eventId: id)]) }
+        if let id = position.decryptionEventID { appendOperations([.inspectDecryption(eventId: id)]) }
     }
 
     private static func deleteMatrixRTCSidecars(

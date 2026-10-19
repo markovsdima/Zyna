@@ -118,7 +118,7 @@ enum MatrixRustSDKTracing {
             setupProcessName = processName
             setupEventCacheTrace = eventCacheTrace
             setupWritesToSystemLog = writesToSystemLog
-            os_log("%{public}@", log: .default, type: .default, "[tracing] initialized process=\(processName) eventCacheTrace=\(eventCacheTrace); logs at \(directory.path)")
+            os_log("%{public}@", log: .default, type: .default, "[tracing] initialized process=\(processName) sdkGitSha=\(sdkGitSha()) eventCacheTrace=\(eventCacheTrace); logs at \(directory.path)")
         } catch {
             setupError = "initPlatform failed: \(error)"
             os_log("%{public}@", log: .default, type: .error, "[tracing] initPlatform failed: \(error)")
@@ -172,6 +172,7 @@ enum MatrixRustSDKTracing {
         let lastError = setupError
         lock.unlock()
         var out = "Rust SDK tracing\n"
+        out += "sdkGitSha=\(sdkGitSha())\n"
         out += "initialized=\(initialized)\n"
         out += "process=\(processName ?? "<nil>")\n"
         out += "logLevel=\(logLevel)\n"

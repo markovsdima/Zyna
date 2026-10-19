@@ -167,6 +167,7 @@ final class ChatViewModel {
 
     /// Called on the main queue when the table needs updating.
     var onTableUpdate: ((TableUpdate, MessageWindowChangeOrigin) -> Void)?
+    var onReadReceiptEvaluationRequested: (() -> Void)?
     var onOlderHistoryAvailable: (() -> Void)?
     var onIncomingMessages: ((Int) -> Void)?
 
@@ -207,6 +208,14 @@ final class ChatViewModel {
 
     private(set) var timelineService: TimelineService?
     private let diffBatcher: TimelineDiffBatcher
+    #if DEBUG
+    var simulatorAcceptanceIngestion: TimelineIngestionMetrics.Snapshot { diffBatcher.ingestionMetrics.snapshot }
+    var simulatorAcceptanceBatcher: TimelineDiffBatcher { diffBatcher }
+    func reactionStateForAcceptance(_ message: ChatMessage) -> [String: Any] {
+        guard let eventId = message.eventId else { return [:] }
+        return pendingReactions.stateForAcceptance(roomId: roomId, eventId: eventId)
+    }
+    #endif
     private var decryptionRepair: MessageDecryptionRepair?
     #if DEBUG
     private(set) var historyPerformance: HistoryPerformanceTrace.Session?
@@ -225,6 +234,30 @@ final class ChatViewModel {
     private var presentationRefreshRunning = false
     #if DEBUG
     var onRenderPreparedForTesting: (() -> Void)?
+    func deletionStateForAcceptance(id: String, keys: Set<String>) -> [String: Any] {
+        func matches(_ stored: StoredMessage) -> Bool { !stored.timelineIdentityKeys.isDisjoint(with: keys) }
+        return ["revision": presentationRevision,
+            "window": window.currentStoredMessages().filter(matches).map(\.contentType),
+            "presented": (presentedStored ?? []).filter(matches).map(\.contentType),
+            "messages": messages.filter { !$0.timelineIdentityKeys.isDisjoint(with: keys) }.count,
+            "placeholder": messages.contains { $0.id == Self.pendingRedactionPlaceholderID(id) },
+            "rows": rows.filter { $0.message.map { !$0.timelineIdentityKeys.isDisjoint(with: keys) } ?? false }.count,
+            "hidden": !hiddenMessageKeys.isDisjoint(with: keys),
+            "pending": pendingRedactionIds.contains(id) || !pendingRedactionKeys.isDisjoint(with: keys),
+            "preview": keys.contains { pendingPartialRedactions[$0] != nil }]
+    }
+
+    func deletionDatabaseStateForAcceptance(id: String, eventID: String?) async -> [String: Any] {
+        do {
+            let roomID = roomId
+            return try await presentationDatabase.read { db in
+                let records = try StoredMessage.filter(Column("roomId") == roomID)
+                    .filter(Column("id") == id || (eventID != nil && Column("eventId") == eventID)).fetchAll(db)
+                return ["database": records.map(\.contentType),
+                    "databasePending": try PendingRedactionRecord.fetchOne(db, key: id) != nil]
+            }
+        } catch { return ["databaseError": true] }
+    }
     #endif
     private let outgoingEnvelopes = OutgoingEnvelopeService.shared
     private let pendingRedactions = PendingRedactionService.shared
@@ -255,6 +288,9 @@ final class ChatViewModel {
     )
     private var acceptsTimelineRefreshes = true
     private var navigationPresentationActive = true
+    private var preparesHiddenPresentation = false
+    private var needsVisibleTimelineRefresh = false
+    private var canPrepareNavigationPresentation: Bool { navigationPresentationActive || preparesHiddenPresentation }
     private var initialNavigationAnchor: ChatNavigationAnchor?
     private let presenceRegistration = "chat-" + UUID().uuidString
     private var needsSparseHistoryCheck = false
@@ -367,6 +403,7 @@ final class ChatViewModel {
         if navigationAnchor != nil { timelineRefreshQueue.setPaused(true) }
         bindWindow()
         bindPollUpdates()
+        if let timelineService { bindTimelineService(timelineService) }
         if let blocking { observeDirectBlocking(blocking) }
     }
     #endif
@@ -664,6 +701,7 @@ final class ChatViewModel {
             return
         }
         let input = renderInput()
+        let retainedOnly = !navigationPresentationActive
         let includesLocalState = includesLocalPresentationState
         let historyRevision = diffBatcher.historyRevision
         #if DEBUG
@@ -676,7 +714,8 @@ final class ChatViewModel {
             operation?.move(to: .refresh)
             #endif
             do {
-                let page = try request.fetch(historyRevision: historyRevision, includingLocalState: includesLocalState)
+                let page = try request.fetch(historyRevision: historyRevision, includingLocalState: includesLocalState,
+                                             retainedOnly: retainedOnly)
                 let force = summary.requiresPresentationRefresh || !page.localState.resolvedRedactions.messageIds.isEmpty
                     || !input.pendingRedactionIds.isEmpty || !input.pendingRedactionKeys.isEmpty
                 let origin = page.origin(summary: summary.coveringSnapshot(historyRevision: page.committedHistoryRevision))
@@ -698,7 +737,7 @@ final class ChatViewModel {
                         completion(.failed)
                         return
                     }
-                    guard self.navigationPresentationActive else { completion(.superseded); return }
+                    guard self.canPrepareNavigationPresentation else { completion(.superseded); return }
                     let applyingSummary = self.timelineRefreshQueue.summaryForApplying(summary)
                         .coveringSnapshot(historyRevision: page.committedHistoryRevision)
                     let applyingOrigin = page.origin(summary: applyingSummary)
@@ -754,7 +793,7 @@ final class ChatViewModel {
                     operation?.finish()
                     #endif
                     guard let self, self.acceptsTimelineRefreshes else { completion(.failed); return }
-                    guard self.navigationPresentationActive else { completion(.superseded); return }
+                    guard self.canPrepareNavigationPresentation else { completion(.superseded); return }
                     // A live/local update arriving during this read needs a
                     // full snapshot. Retain its provenance in the same queue.
                     guard self.timelineRefreshQueue.summaryForApplying(summary).canRefreshBoundsOnly,
@@ -780,6 +819,19 @@ final class ChatViewModel {
     }
 
     private func bindTimelineService(_ timelineService: TimelineService) {
+        timelineService.onTimelineReady = { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.acceptsTimelineRefreshes,
+                      self.navigationPresentationActive,
+                      self.timelineService?.hasLiveTimeline == true else { return }
+                #if DEBUG
+                ChatReadReceiptTrace.record("timeline.ready")
+                #endif
+                // Re-evaluate the current viewport instead of resending a
+                // cached candidate that may already have scrolled away.
+                self.onReadReceiptEvaluationRequested?()
+            }
+        }
         #if DEBUG
         timelineService.historyPerformance = historyPerformance
         #endif
@@ -1313,7 +1365,7 @@ final class ChatViewModel {
             apply()
             guard let self else { return }
             self.initialNavigationAnchor = nil
-            self.timelineRefreshQueue.setPaused(!self.navigationPresentationActive)
+            self.timelineRefreshQueue.setPaused(!self.canPrepareNavigationPresentation)
         }
     }
 
@@ -1502,6 +1554,7 @@ final class ChatViewModel {
         var pendingPartialRedactions: [String: StoredMessage]
         var restoredPreviewMessageIds: Set<String>
         var partialReflowPreviewsByMessageId: [String: PartialReflowPreview]
+        var allowsRedactionAnimation = true
         #if DEBUG
         var trace: HistoryPerformanceTrace.Session?
         var preparedHook: (() -> Void)?
@@ -1536,6 +1589,7 @@ final class ChatViewModel {
             pendingPartialRedactions: pendingPartialRedactions,
             restoredPreviewMessageIds: restoredPreviewMessageIds,
             partialReflowPreviewsByMessageId: partialReflowPreviewsByMessageId)
+        input.allowsRedactionAnimation = navigationPresentationActive
         #if DEBUG
         input.trace = historyPerformance
         input.preparedHook = onRenderPreparedForTesting
@@ -1609,8 +1663,11 @@ final class ChatViewModel {
             // Local pending deletions match their own aliases and don't use
             // the previous display set. History refreshes cannot animate a
             // remote deletion, even if they contain redacted rows.
-            let previousDisplayIdentityKeys = origin.allowsRemoteRedactionAnimation && !redactionCandidates.isEmpty
+            let previousDisplayIdentityKeys = input.allowsRedactionAnimation
+                && origin.allowsRemoteRedactionAnimation && !redactionCandidates.isEmpty
                 ? Set(input.messages.flatMap(\.timelineIdentityKeys)) : []
+            // Confirm local deletion intents even while covered so the view
+            // can release frozen snapshots and complete partial-group reflow.
             animatedRedactions = Self.animationEligibleRedactions(
                 candidates: redactionCandidates,
                 origin: origin,
@@ -1679,10 +1736,28 @@ final class ChatViewModel {
         phase?.move(to: .prepareMessages)
         #endif
         let now = Date().timeIntervalSince1970
+        // A slow local deletion may already have replaced its bubble with
+        // a waiting placeholder. Confirmation must not revive the saved
+        // content for a second disappearance, even for one accepted render.
+        let placeholderIDs = Set(input.messages.compactMap { message -> String? in
+            let prefix = Self.pendingRedactionPlaceholderPrefix
+            return message.id.hasPrefix(prefix) ? String(message.id.dropFirst(prefix.count)) : nil
+        })
+        let placeholderKeys = Self.identityKeys(for: placeholderIDs, in: prevStored ?? [])
+        let completedPlaceholderKeys = placeholderKeys.isEmpty ? Set<String>() : Set(
+            redactedStored.filter { !$0.timelineIdentityKeys.isDisjoint(with: placeholderKeys) }
+                .flatMap(\.timelineIdentityKeys)
+        )
+        if !completedPlaceholderKeys.isEmpty {
+            state.pendingPartialRedactions = state.pendingPartialRedactions.filter {
+                !completedPlaceholderKeys.contains($0.key)
+            }
+        }
         // A local hide/restore preserves other deletions whose splash is
         // already running. A window transition detects new deletions above.
-        let visibleRedactedKeys = detectsRedactions ? newlyRedactedIdentityKeys
-            : Set(input.messages.filter { $0.content.isRedacted }.flatMap(\.timelineIdentityKeys))
+        let visibleRedactedKeys = (detectsRedactions ? newlyRedactedIdentityKeys
+            : Set(input.messages.filter { $0.content.isRedacted }.flatMap(\.timelineIdentityKeys)))
+            .subtracting(completedPlaceholderKeys)
         let rawMessages = newStored.compactMap { message -> ChatMessage? in
             guard !local.ignoredUserIDs.contains(message.senderId) else { return nil }
             return displayChatMessage(for: message.hidingIgnoredReply(local.ignoredUserIDs), pendingRedactionLookup: pendingLookup,
@@ -1736,7 +1811,7 @@ final class ChatViewModel {
         defer {
             if initialNavigationAnchor != nil, window.generation > 0 {
                 initialNavigationAnchor = nil
-                timelineRefreshQueue.setPaused(!navigationPresentationActive)
+                timelineRefreshQueue.setPaused(!canPrepareNavigationPresentation)
             }
         }
         if let prepared = preparedWindowRender {
@@ -1826,7 +1901,7 @@ final class ChatViewModel {
     }
 
     private func preparePresentationRefresh() {
-        guard acceptsTimelineRefreshes, navigationPresentationActive,
+        guard acceptsTimelineRefreshes, canPrepareNavigationPresentation,
               !presentationRefreshRunning, let origin = pendingPresentationOrigin else { return }
         pendingPresentationOrigin = nil
         presentationRefreshRunning = true
@@ -1846,7 +1921,7 @@ final class ChatViewModel {
             #endif
             do {
                 let local = includesLocalState
-                    ? try database.read { try ChatTimelineLocalState.fetch(roomId: roomId, in: $0) }
+                    ? try database.read { try ChatTimelineLocalState.fetch(roomId: roomId, window: stored, in: $0) }
                     : ChatTimelineLocalState()
                 #if DEBUG
                 operation?.move(to: .decode)
@@ -1864,7 +1939,7 @@ final class ChatViewModel {
                     guard let self else { return }
                     self.presentationRefreshRunning = false
                     guard self.acceptsTimelineRefreshes, database.isActive else { return }
-                    if self.navigationPresentationActive, self.canApplyRender(prepared), self.window.revision == windowRevision {
+                    if self.canPrepareNavigationPresentation, self.canApplyRender(prepared), self.window.revision == windowRevision {
                         self.applyRender(prepared, origin: origin)
                         if self.pendingPresentationOrigin != nil {
                             self.enqueuePresentationRefresh(origin: .localMutation)
@@ -3238,7 +3313,7 @@ final class ChatViewModel {
         completion: @escaping (ChatHistoryPageLoader.Result) -> Void
     ) {
         dispatchPrecondition(condition: .onQueue(.main))
-        guard acceptsTimelineRefreshes else { completion(.superseded); return }
+        guard acceptsTimelineRefreshes, navigationPresentationActive else { completion(.superseded); return }
         guard let request = window.pageRequest(direction) else {
             completion(.exhausted)
             return
@@ -3397,6 +3472,11 @@ final class ChatViewModel {
         _ destination: MessageWindow.Destination, ready: @escaping (() -> Void) -> Void
     ) {
         historyReplacementID = UUID()
+        // A user jump takes precedence over reads already queued for the
+        // old window. Otherwise each refresh can invalidate this preparation
+        // and enqueue its successor ahead of our retry indefinitely.
+        // Those reads retry behind the jump on the same serial worker.
+        window.invalidatePendingReads()
         prepareHistoryReplacement(destination, id: historyReplacementID, ready: ready)
     }
 
@@ -3459,7 +3539,7 @@ final class ChatViewModel {
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.initialNavigationAnchor != nil else { return }
                         self.initialNavigationAnchor = nil
-                        self.timelineRefreshQueue.setPaused(!self.navigationPresentationActive)
+                        self.timelineRefreshQueue.setPaused(!self.canPrepareNavigationPresentation)
                         self.prepareInitialHistoryWindow()
                     }
                 }
@@ -3508,6 +3588,10 @@ final class ChatViewModel {
         let target = VisibleReadReceiptTarget(eventId: eventId)
 
         if readReceiptBaselineTarget == nil {
+            #if DEBUG
+            ChatReadReceiptTrace.record("candidate.bootstrap", eventID: eventId,
+                state: "allowed=\(canEstablishBaseline) pending=\(pendingReadReceiptSend == .bootstrap(target)) acknowledged=\(lastBootstrapReadReceiptTarget == target)")
+            #endif
             guard canEstablishBaseline else { return }
             guard pendingReadReceiptSend != .bootstrap(target) else { return }
             guard lastBootstrapReadReceiptTarget != target else { return }
@@ -3515,7 +3599,11 @@ final class ChatViewModel {
             return
         }
 
-        guard shouldAdvanceReadReceipt(to: target) else { return }
+        let canAdvance = shouldAdvanceReadReceipt(to: target)
+        #if DEBUG
+        ChatReadReceiptTrace.record("candidate.advance", eventID: eventId, state: "allowed=\(canAdvance)")
+        #endif
+        guard canAdvance else { return }
         guard pendingReadReceiptSend != .advance(target) else { return }
 
         scheduleReadReceiptSend(.advance(target))
@@ -3523,6 +3611,9 @@ final class ChatViewModel {
 
     private func scheduleReadReceiptSend(_ mode: PendingReadReceiptSend) {
         guard timelineService != nil else { return }
+        #if DEBUG
+        ChatReadReceiptTrace.record("scheduled", eventID: mode.target.eventId)
+        #endif
         readReceiptWork?.cancel()
         pendingReadReceiptSend = mode
         let work = DispatchWorkItem { [weak self] in
@@ -3539,6 +3630,9 @@ final class ChatViewModel {
         readReceiptWork?.cancel()
         readReceiptWork = nil
         guard let request = timelineService?.readReceiptRequest(for: pending.target.eventId) else {
+            #if DEBUG
+            ChatReadReceiptTrace.record("timeline.unavailable", eventID: pending.target.eventId)
+            #endif
             pendingReadReceiptSend = nil
             return
         }
@@ -3552,6 +3646,9 @@ final class ChatViewModel {
     }
 
     private func finishReadReceiptSend(_ pending: PendingReadReceiptSend, didSend: Bool) {
+        #if DEBUG
+        ChatReadReceiptTrace.record("request.completed", eventID: pending.target.eventId, state: "success=\(didSend)")
+        #endif
         if pendingReadReceiptSend == pending {
             pendingReadReceiptSend = nil
         }
@@ -3606,6 +3703,9 @@ final class ChatViewModel {
     }
 
     private func seedReadReceiptBaseline(eventId: String) {
+        #if DEBUG
+        ChatReadReceiptTrace.record("baseline.received", eventID: eventId)
+        #endif
         establishReadReceiptBaseline(to: VisibleReadReceiptTarget(eventId: eventId))
     }
 
@@ -3727,6 +3827,26 @@ final class ChatViewModel {
             ComposerText(body: $0, metadata: message.textMetadata)
         }
     }
+
+    #if DEBUG
+    func canDebugEditPhotoCaption(_ message: ChatMessage) -> Bool {
+        acceptsTimelineRefreshes && presentationDatabase.isActive && !mode.isPreview && !isInvited
+            && !composerSendBlockedValue() && timelineService?.hasLiveTimeline == true
+            && DebugPhotoCaptionEdit.canEdit(message)
+    }
+
+    @MainActor
+    func debugEditPhotoCaption(_ message: ChatMessage, caption: String) async throws {
+        let current = messages.first { $0.eventId == message.eventId } ?? message
+        guard canDebugEditPhotoCaption(current),
+              let timeline = timelineService?.messageDiagnosticTimeline else {
+            throw DebugPhotoCaptionEdit.Failure.unavailable
+        }
+        // Do not patch local rows: this probe must exercise the SDK update
+        // and the ordinary chat/catalog ingestion paths, including removal.
+        try await DebugPhotoCaptionEdit.send(current, caption: caption, timeline: timeline)
+    }
+    #endif
 
     func clearPendingForward() {
         pendingForwardContent = nil
@@ -5036,17 +5156,17 @@ final class ChatViewModel {
             let hasOwnReaction = message.reactions.contains {
                 $0.key == key && $0.isOwn
             }
-            let didPrepare = hasOwnReaction
-                ? pendingReactions.prepareDirectRawRemoval(
-                    roomId: roomId,
-                    targetEventId: targetEventId,
-                    key: key
-                )
-                : pendingReactions.prepareDirectRawAdd(
-                    roomId: roomId,
-                    targetEventId: targetEventId,
-                    key: key
-                )
+            let didPrepare = pendingReactions.prepareToggle(
+                roomId: roomId, targetEventId: targetEventId, key: key,
+                observedOwnReaction: hasOwnReaction
+            )
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["ZYNA_CLOSURE_MARKER"] != nil {
+                Task { @MainActor in
+                    SimulatorAcceptanceProbe.recordClosureReactionAttempt(message, key: key, prepared: didPrepare)
+                }
+            }
+            #endif
             if didPrepare {
                 Task { [weak self] in
                     await self?.refreshWindow()
@@ -5416,12 +5536,25 @@ final class ChatViewModel {
         searchState = state
     }
 
-    func setNavigationPresentationActive(_ active: Bool) {
-        guard acceptsTimelineRefreshes, navigationPresentationActive != active else { return }
+    func setNavigationPresentationActive(_ active: Bool, prepareWhileHidden: Bool = false) {
+        let preparesHidden = !active && prepareWhileHidden
+        guard acceptsTimelineRefreshes,
+              navigationPresentationActive != active || preparesHiddenPresentation != preparesHidden else { return }
+        timelineRefreshQueue.setPaused(true)
         navigationPresentationActive = active
-        timelineRefreshQueue.setPaused(!active || initialNavigationAnchor != nil)
-        if active {
+        preparesHiddenPresentation = preparesHidden
+        if preparesHidden { needsVisibleTimelineRefresh = true }
+        presentationRevision &+= 1
+        timelineRefreshQueue.setBackgrounded(preparesHidden)
+        if active, needsVisibleTimelineRefresh {
+            needsVisibleTimelineRefresh = false
+            timelineRefreshQueue.enqueue(.init(requiresPresentationRefresh: true))
+        }
+        timelineRefreshQueue.setPaused(!canPrepareNavigationPresentation || initialNavigationAnchor != nil)
+        if canPrepareNavigationPresentation {
             if pendingPresentationOrigin != nil { preparePresentationRefresh() }
+        }
+        if active {
             checkSparseHistoryIfNeeded()
         } else {
             flushPendingReadReceipt()
@@ -5473,6 +5606,7 @@ final class ChatViewModel {
         timelineService?.onDiffs = nil
         timelineService?.onReadCursor = nil
         timelineService?.onOwnFullyReadMarker = nil
+        timelineService?.onTimelineReady = nil
         timelineService?.onRoomPowerLevelsChanged = nil
         timelineService?.onRoomEncryptionChanged = nil
         timelineService?.onRoomPinnedEventsChanged = nil
@@ -5486,7 +5620,7 @@ final class ChatViewModel {
     // MARK: - Chat Load Generator
 
     @MainActor
-    func makeLoadGenerator(image: @escaping () -> ProcessedImage?) -> ChatLoadGenerator {
+    func makeLoadGenerator(image: @escaping (_ photoNumber: Int) -> ProcessedImage?) -> ChatLoadGenerator {
         let sessionID = MatrixClientService.shared.currentLocalSessionId
         let database = presentationDatabase
         return ChatLoadGenerator(validate: { [weak self] in
@@ -5501,8 +5635,8 @@ final class ChatViewModel {
             }
         }, enqueue: { [weak self] item in
             guard let self else { throw ChatLoadGenerator.Failure("Чат закрыт.") }
-            if item.isPhoto {
-                guard let image = image() else { throw ChatLoadGenerator.Failure("Выберите фото.") }
+            if let photoNumber = item.photoNumber {
+                guard let image = image(photoNumber) else { throw ChatLoadGenerator.Failure("Выберите фото.") }
                 await self.sendSingleImage(image, caption: item.body, replyEventId: nil,
                                            replyInfo: nil, zynaAttributes: ZynaMessageAttributes(),
                                            envelopeId: item.envelopeID, transactionId: item.envelopeID)
@@ -6026,6 +6160,12 @@ final class ChatViewModel {
         return didChange ? message.applyingReactions(reactions) : message
     }
 
+    private static let pendingRedactionPlaceholderPrefix = "pending-redaction:"
+
+    private static func pendingRedactionPlaceholderID(_ messageId: String) -> String {
+        pendingRedactionPlaceholderPrefix + messageId
+    }
+
     private static func pendingRedactionPlaceholder(
         for message: StoredMessage,
         lookup: PendingRedactionDisplayLookup,
@@ -6038,7 +6178,7 @@ final class ChatViewModel {
         }
 
         return ChatMessage(
-            id: "pending-redaction:\(record.messageId)",
+            id: Self.pendingRedactionPlaceholderID(record.messageId),
             eventId: nil,
             transactionId: nil,
             itemIdentifier: nil,

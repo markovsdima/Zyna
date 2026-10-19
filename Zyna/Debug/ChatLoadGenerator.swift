@@ -32,7 +32,9 @@ final class ChatLoadGenerator: ObservableObject {
         // Also supplied to the ordinary sender as its stable Matrix transaction ID.
         let envelopeID: String
         let number: Int
-        let isPhoto: Bool
+        /// One-based ordinal among photos, stable across pause and retries.
+        let photoNumber: Int?
+        var isPhoto: Bool { photoNumber != nil }
         let body: String
     }
 
@@ -111,8 +113,9 @@ final class ChatLoadGenerator: ObservableObject {
                 if pending == nil {
                     let number = sent + 1
                     let photo = configuration.isPhoto(number)
-                    let item = Item(envelopeID: UUID().uuidString, number: number, isPhoto: photo,
-                                    body: "[Load \(runID)] \(number)/\(configuration.count) · \(photo ? "Фото" : "Тестовое сообщение для проверки истории и прокрутки.")")
+                    let item = Item(envelopeID: UUID().uuidString, number: number,
+                                    photoNumber: photo ? number / configuration.photoEvery : nil,
+                                    body: messageBody(number: number, configuration: configuration))
                     pending = item
                     enqueueUnconfirmed = true
                     detail = "Отправка \(number)/\(configuration.count)\(photo ? " · фото" : "")"
@@ -163,6 +166,37 @@ final class ChatLoadGenerator: ObservableObject {
             guard state == .running else { return }
             state = .failed
             detail = error.localizedDescription
+        }
+    }
+
+    private func messageBody(number: Int, configuration: Configuration) -> String {
+        let marker = "[Load \(runID)] \(number)/\(configuration.count)"
+        if configuration.isPhoto(number) { return "Фото · \(marker)" }
+        // Count text messages separately: every second message being a photo
+        // must not reduce the four text shapes to only two.
+        let precedingPhotos = configuration.photoEvery == 0 ? 0 : number / configuration.photoEvery
+        switch (number - precedingPhotos - 1) % 4 {
+        case 0:
+            return "Ок · \(number) · \(runID)"
+        case 1:
+            return "Давай встретимся у входа. Я буду через десять минут, напишу по дороге.\n\(marker)"
+        case 2:
+            return """
+                Посмотрел фотографии с поездки. Особенно понравился кадр у воды: на переднем плане лодка, дальше набережная, а за ней видны горы. На маленьком экране детали почти теряются, зато цвета всё равно отлично читаются.
+
+                В следующий раз предлагаю выйти пораньше, пройти вдоль берега и вернуться другой дорогой. Так успеем спокойно позавтракать и не будем торопиться к вечернему поезду.
+
+                \(marker)
+                """
+        default:
+            return """
+                На завтра:
+                • Зарядить телефон
+                • Взять воду и наушники
+                • Проверить билеты
+                • Встретиться у станции
+                \(marker)
+                """
         }
     }
 }

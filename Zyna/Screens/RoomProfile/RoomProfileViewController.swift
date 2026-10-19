@@ -25,6 +25,15 @@ final class RoomProfileViewController: ASDKViewController<ASDisplayNode>, UIScro
     var onOpenMediaImage: ((RoomMediaDatabase, AttachmentItem, CGRect) async throws -> Void)?
 
     private let model: RoomAttachmentsViewModel?
+    #if DEBUG
+    var simulatorAcceptanceModel: RoomAttachmentsViewModel? { model }
+    var simulatorAcceptanceControls: [(String, UIView)] {
+        [("back", backButton)] + tabs.subviews.compactMap { view in
+            guard let button = view as? UIButton else { return nil }
+            return ("tab.\(button.tag)", button)
+        }
+    }
+    #endif
     private let personModel: PersonProfileViewModel?
     private let blockingFactory: (String) -> UserBlockingViewModel?
     private var blocking: UserBlockingViewModel?

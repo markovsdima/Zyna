@@ -692,8 +692,12 @@ public class ZynaNavigationController: UIViewController {
         let routes = stack.compactMap { $0 as? any NavigationResidentScreen }
         let retained = Array(routes.suffix(2))
         for controller in stack {
-            (controller as? any NavigationResidentScreen)?.setContentVisible(
-                !transitioning && controller === topViewController && isViewLoaded && view.window != nil)
+            guard let route = controller as? any NavigationResidentScreen else { continue }
+            let active = !transitioning && isViewLoaded && view.window != nil
+            // Only the nearest chat below a profile/child screen is kept
+            // current. Older chats and a hidden navigation tree stay paused.
+            route.setContentVisible(active && controller === topViewController,
+                prepareWhileHidden: active && controller !== topViewController && route === routes.last)
         }
         for route in routes.dropLast(min(2, routes.count)) { route.releaseContent() }
         for route in retained { route.materializeContent() }

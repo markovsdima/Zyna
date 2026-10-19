@@ -177,12 +177,21 @@ enum DirectRawTextSender {
                 key: key,
                 transactionId: transactionId
             )
+            #if DEBUG
+            traceAcceptanceReaction(target: targetEventId, outcome: "accepted")
+            #endif
             logDirectRawText(
                 "DirectRawReactionTx dispatch done target=\(targetEventId) reaction=\(reactionEventId) tx=\(transactionId)"
             )
             return .accepted(transactionId: transactionId, eventId: reactionEventId)
         } catch {
             let receipt = rejectedReceipt(for: error)
+            #if DEBUG
+            let description = String(describing: error)
+            let code = ["M_DUPLICATE_ANNOTATION", "M_FORBIDDEN", "M_UNKNOWN_TOKEN", "M_LIMIT_EXCEEDED"]
+                .first(where: description.contains) ?? (receipt.retryableTransportFailure ? "retryable" : "otherTerminal")
+            traceAcceptanceReaction(target: targetEventId, outcome: code)
+            #endif
             logDirectRawText(
                 "DirectRawReactionTx send failed target=\(targetEventId) tx=\(transactionId) "
                     + "retryable=\(receipt.retryableTransportFailure) error=\(error)"
@@ -190,6 +199,15 @@ enum DirectRawTextSender {
             return receipt
         }
     }
+
+    #if DEBUG
+    private static func traceAcceptanceReaction(target: String, outcome: String) {
+        guard ProcessInfo.processInfo.environment["ZYNA_CLOSURE_MARKER"] != nil else { return }
+        Task { @MainActor in
+            SimulatorAcceptanceProbe.recordClosureReactionTransport(target: target, outcome: outcome)
+        }
+    }
+    #endif
 
     private static func sendRawTextMessage(
         room: Room,

@@ -8,6 +8,36 @@ import UIKit
 @Suite("Chat profile navigation", .serialized)
 @MainActor
 struct ChatsCoordinatorNavigationTests {
+    private final class Resident: UIViewController, NavigationResidentScreen {
+        var visible = false
+        var preparesHidden = false
+        func materializeContent() {}
+        func releaseContent() {}
+        func setContentVisible(_ visible: Bool) { setContentVisible(visible, prepareWhileHidden: false) }
+        func setContentVisible(_ visible: Bool, prepareWhileHidden: Bool) {
+            self.visible = visible
+            preparesHidden = prepareWhileHidden
+        }
+    }
+
+    @Test("Only the nearest chat under a child screen prepares while hidden")
+    func coveredResident() async throws {
+        let older = Resident(), nearest = Resident(), profile = UIViewController()
+        let navigation = ZynaNavigationController(rootViewController: UIViewController())
+        navigation.setStack([navigation.stack[0], older, nearest, profile], animated: false)
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = navigation; window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
+        try await wait { nearest.preparesHidden }
+        #expect(!older.visible && !older.preparesHidden && !nearest.visible)
+        navigation.pop(animated: false)
+        try await wait { nearest.visible }
+        #expect(!nearest.preparesHidden && !older.preparesHidden)
+        navigation.viewDidDisappear(false)
+        #expect(!nearest.visible && !nearest.preparesHidden)
+    }
+
     private func wait(sourceLocation: SourceLocation = #_sourceLocation, _ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }

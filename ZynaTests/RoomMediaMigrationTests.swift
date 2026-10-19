@@ -29,7 +29,7 @@ struct RoomMediaMigrationTests {
             try queue.write { db in
                 #expect(try Row.fetchAll(db, sql: "SELECT * FROM roomAttachment") == rows)
                 #expect(try migrator.appliedIdentifiers(db) == Set(migrator.migrations))
-                #expect(migrator.migrations.last == "v36_roomAttachmentListCatalogs")
+                #expect(migrator.migrations.last == "v37_reactionIntent")
                 #expect(try !migrator.hasBeenSuperseded(db))
                 #expect(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'ignoredUser_attachmentLists_%'") == 0)
                 #expect(try Int.fetchOne(db, sql: "SELECT count FROM roomAttachmentListRevision WHERE section = 'files'") == 0)
@@ -75,7 +75,7 @@ struct RoomMediaMigrationTests {
             try queue.write { db in
                 #expect(try Row.fetchAll(db, sql: "SELECT * FROM roomAttachment ORDER BY eventId") == before)
                 #expect(try migrator.appliedIdentifiers(db) == Set(migrator.migrations))
-                #expect(migrator.migrations.last == "v36_roomAttachmentListCatalogs")
+                #expect(migrator.migrations.last == "v37_reactionIntent")
                 #expect(try !migrator.hasBeenSuperseded(db))
                 let columns = try Row.fetchAll(db, sql: "PRAGMA index_info(idx_roomAttachment_visual_order)")
                 #expect(columns.map { $0["name"] as String } == ["roomId", "timestampMs", "eventId", "kind", "senderId"])

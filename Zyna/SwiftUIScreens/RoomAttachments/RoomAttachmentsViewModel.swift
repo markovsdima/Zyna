@@ -340,6 +340,9 @@ final class RoomAttachmentsViewModel: ObservableObject {
     let usesPagedLists: Bool
 
     private let source: AttachmentSource
+    #if DEBUG
+    var simulatorAcceptanceSource: AnyObject { source }
+    #endif
     private let attachmentIndex: RoomAttachmentIndex?
     private let catalogProjection: RoomAttachmentCatalogProjection?
     private let room: Room?

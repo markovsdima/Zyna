@@ -22,8 +22,12 @@ final class ImageMessageCellNode: MessageCellNode {
 
     private let imageNode = RoundedImageNode()
     private let timeBadgeNode = ASDisplayNode()
-    private let captionNode: ASTextNode?
-    private let captionPlacement: CaptionPlacement?
+    private var captionNode: ASTextNode?
+    private var captionPlacement: CaptionPlacement?
+
+    #if DEBUG
+    var simulatorAcceptanceCaption: String { captionNode?.attributedText?.string ?? "" }
+    #endif
 
     /// Current thumbnail for the viewer transition.
     var currentImage: UIImage? { imageNode.image }
@@ -38,7 +42,7 @@ final class ImageMessageCellNode: MessageCellNode {
     private let previewImageData: Data?
     private let matrixEventId: String?
     private let hasSDKDimensions: Bool
-    private let usesDirectImageContent: Bool
+    private var usesDirectImageContent: Bool
     private var placeholderTask: Task<Void, Never>?
     private var imageLoadTask: Task<Void, Never>?
 
@@ -147,7 +151,10 @@ final class ImageMessageCellNode: MessageCellNode {
         }
         imageNode.roundedCorners = corners
         setShowsBubbleChrome(!usesDirectImageContent)
-        setUsesBareBubbleContent(usesDirectImageContent)
+        // Keep the image under the same content node when a caption is
+        // added/removed. Switching the bare-content hierarchy can clear its
+        // display contents while Texture reparents it.
+        setUsesBareBubbleContent(true)
         statusIconNode?.tintColour = .white
 
         let buildImageWithTime: () -> ASLayoutSpec = { [weak self] in
@@ -202,7 +209,7 @@ final class ImageMessageCellNode: MessageCellNode {
         }
 
         // Bubble layout
-        bubbleNode.layoutSpecBlock = { [weak self] _, _ in
+        directBubbleContentNode.layoutSpecBlock = { [weak self] _, _ in
             guard let self else { return ASLayoutSpec() }
             let imageWithTime = buildImageWithTime()
 
@@ -253,22 +260,12 @@ final class ImageMessageCellNode: MessageCellNode {
             return imageWithTime
         }
 
-        directBubbleContentNode.layoutSpecBlock = { _, _ in
-            buildImageWithTime()
-        }
-
         // Time badge
         timeBadgeNode.backgroundColor = UIColor.black.withAlphaComponent(0.4)
         timeBadgeNode.cornerRadius = 8
 
         // Override timestamp color — always white on dark badge
-        timeNode.attributedText = NSAttributedString(
-            string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 11),
-                .foregroundColor: UIColor.white
-            ]
-        )
+        updateTimestamp(message)
 
         // Tap to open viewer (preserving reply header tap from super)
         contextSourceNode.onQuickTap = { [weak self] point in
@@ -310,6 +307,62 @@ final class ImageMessageCellNode: MessageCellNode {
     deinit {
         placeholderTask?.cancel()
         imageLoadTask?.cancel()
+    }
+
+    /// Caption edits leave the loaded bitmap and its in-flight requests alone.
+    /// Other media/layout changes continue through the normal replacement path.
+    static func canUpdateCaption(old: ChatMessage, new: ChatMessage) -> Bool {
+        guard old.mediaGroupPresentation == nil, new.mediaGroupPresentation == nil,
+              old.zynaAttributes == new.zynaAttributes,
+              old.mediaMetadata == new.mediaMetadata, old.textMetadata == new.textMetadata,
+              case let .image(source, thumb, width, height, caption, preview) = old.content,
+              case let .image(nextSource, nextThumb, nextWidth, nextHeight, nextCaption, nextPreview) = new.content,
+              caption != nextCaption || old.isEdited != new.isEdited else { return false }
+        return source?.toJson() == nextSource?.toJson() && thumb?.toJson() == nextThumb?.toJson()
+            && width == nextWidth && height == nextHeight && preview == nextPreview
+    }
+
+    func updateCaption(_ message: ChatMessage) {
+        // isEdited can change without changing the visible caption.
+        updateTimestamp(message)
+        let text = message.content.visibleImageCaption
+        guard captionNode?.attributedText?.string != text else { return }
+        if let text {
+            let caption = captionNode ?? ASTextNode()
+            caption.attributedText = NSAttributedString(string: text, attributes: [
+                .font: UIFont.systemFont(ofSize: 14), .foregroundColor: bubbleForegroundColor
+            ])
+            caption.maximumNumberOfLines = 0
+            caption.style.maxWidth = ASDimension(unit: .points,
+                value: max(1, ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio - 24))
+            caption.style.flexShrink = 1
+            captionNode = caption
+            if isNodeLoaded { assignProbeName("imageMessage.caption", to: caption) }
+        } else {
+            captionNode = nil
+        }
+        captionPlacement = text == nil ? nil : (message.zynaAttributes.mediaGroup?.captionPlacement ?? .bottom)
+        let hasHeader = replyHeaderNode != nil || forwardedHeaderNode != nil
+        var corners: UIRectCorner = .allCorners
+        if hasHeader || captionPlacement == .top { corners.subtract([.topLeft, .topRight]) }
+        if captionPlacement == .bottom { corners.subtract([.bottomLeft, .bottomRight]) }
+        imageNode.roundedCorners = corners
+        usesDirectImageContent = !hasHeader && text == nil
+        setShowsBubbleChrome(!usesDirectImageContent)
+        directBubbleContentNode.setNeedsLayout()
+        setNeedsLayout()
+    }
+
+    private func updateTimestamp(_ message: ChatMessage) {
+        let text = NSAttributedString(
+            string: MessageCellHelpers.timelineTimestampText(for: message),
+            attributes: [.font: UIFont.systemFont(ofSize: 11), .foregroundColor: UIColor.white]
+        )
+        guard timeNode.attributedText != text else { return }
+        timeNode.attributedText = text
+        timeBadgeNode.setNeedsLayout()
+        directBubbleContentNode.setNeedsLayout()
+        setNeedsLayout()
     }
 
     // MARK: - Async Loading

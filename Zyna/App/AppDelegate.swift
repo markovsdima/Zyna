@@ -18,6 +18,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         MatrixRustSDKTracing.setupOnce()
         #endif
         #if DEBUG
+        SimulatorAcceptanceProbe.startIfRequested()
+        #endif
+        #if DEBUG
         if !CryptoDiagnosticsGate.isEnabled { _ = LocalDataBootstrap.shared }
         #else
         _ = LocalDataBootstrap.shared

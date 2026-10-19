@@ -1155,6 +1155,7 @@ final class DatabaseService: @unchecked Sendable {
 
         migrator.registerMigration("v35_ignoredContent", migrate: IgnoredContentStore.migrate)
         migrator.registerMigration("v36_roomAttachmentListCatalogs", migrate: RoomAttachmentListStore.migrate)
+        migrator.registerMigration("v37_reactionIntent", migrate: PendingReactionService.migrateIntent)
 
         return migrator
     }

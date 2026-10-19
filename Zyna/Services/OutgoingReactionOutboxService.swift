@@ -126,7 +126,7 @@ final class OutgoingReactionOutboxService {
         reason: String
     ) async {
         guard let transactionId = record.transactionId else {
-            pendingReactions.markAddFailed(id: record.id)
+            pendingReactions.markAddFailed(id: record.id, transactionId: record.transactionId)
             clearRetryMetadata(for: record.id)
             return
         }
@@ -135,6 +135,7 @@ final class OutgoingReactionOutboxService {
             "outbox add start reason=\(reason) id=\(record.id) target=\(record.targetEventId) tx=\(transactionId) key=\(record.reactionKey)"
         )
 
+        let sessionId = matrixService.currentLocalSessionId
         let receipt = await DirectRawTextSender.sendReaction(
             room: room,
             targetEventId: record.targetEventId,
@@ -142,8 +143,8 @@ final class OutgoingReactionOutboxService {
             transactionId: transactionId
         )
 
-        guard !Task.isCancelled,
-              scanCoordinator.isSyncing else { return }
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
 
         logOutgoingReactionOutbox(
             "outbox add receipt id=\(record.id) tx=\(transactionId) "
@@ -161,11 +162,17 @@ final class OutgoingReactionOutboxService {
         }
 
         clearRetryMetadata(for: record.id)
-        _ = pendingReactions.applyAcceptedAdd(
+        let changed = pendingReactions.applyAcceptedAdd(
             id: record.id,
             transactionId: transactionId,
             reactionEventId: reactionEventId
         )
+        if changed {
+            publishRoomDidUpdate(record.roomId)
+            scanCoordinator.kick(reason: "reaction-add-accepted")
+        } else {
+            retryUncommitted(record)
+        }
     }
 
     @MainActor
@@ -176,7 +183,7 @@ final class OutgoingReactionOutboxService {
     ) async {
         guard let reactionEventId = record.reactionEventId,
               let transactionId = record.redactionTransactionId else {
-            pendingReactions.markRemovalFailed(id: record.id)
+            pendingReactions.markRemovalFailed(id: record.id, transactionId: record.redactionTransactionId)
             clearRetryMetadata(for: record.id)
             return
         }
@@ -185,14 +192,15 @@ final class OutgoingReactionOutboxService {
             "outbox remove start reason=\(reason) id=\(record.id) reaction=\(reactionEventId) tx=\(transactionId) key=\(record.reactionKey)"
         )
 
+        let sessionId = matrixService.currentLocalSessionId
         let receipt = await DirectRawTextSender.sendRedaction(
             room: room,
             eventId: reactionEventId,
             transactionId: transactionId
         )
 
-        guard !Task.isCancelled,
-              scanCoordinator.isSyncing else { return }
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
 
         logOutgoingReactionOutbox(
             "outbox remove receipt id=\(record.id) tx=\(transactionId) "
@@ -205,12 +213,17 @@ final class OutgoingReactionOutboxService {
         }
 
         clearRetryMetadata(for: record.id)
-        _ = pendingReactions.applyAcceptedRemoval(
+        let changed = pendingReactions.applyAcceptedRemoval(
             id: record.id,
             redactionTransactionId: transactionId,
             redactionEventId: receipt.eventId
         )
-        publishRoomDidUpdate(record.roomId)
+        if changed {
+            publishRoomDidUpdate(record.roomId)
+            scanCoordinator.kick(reason: "reaction-remove-accepted")
+        } else {
+            retryUncommitted(record)
+        }
     }
 
     @MainActor
@@ -224,7 +237,9 @@ final class OutgoingReactionOutboxService {
         }
 
         clearRetryMetadata(for: record.id)
-        pendingReactions.markAddFailed(id: record.id)
+        pendingReactions.markAddFailed(id: record.id, transactionId: record.transactionId)
+        retryUncommitted(record)
+        publishRoomDidUpdate(record.roomId)
     }
 
     @MainActor
@@ -238,8 +253,20 @@ final class OutgoingReactionOutboxService {
         }
 
         clearRetryMetadata(for: record.id)
-        pendingReactions.markRemovalFailed(id: record.id)
+        pendingReactions.markRemovalFailed(id: record.id, transactionId: record.redactionTransactionId)
+        retryUncommitted(record)
         publishRoomDidUpdate(record.roomId)
+    }
+
+    /// A failed SQLite acknowledgement must not strand a completed request.
+    /// Retrying its unchanged transaction is safe; never delay a newer operation.
+    @MainActor
+    private func retryUncommitted(_ operation: PendingReactionRecord) {
+        guard let current = pendingReactions.record(id: operation.id),
+              current.state == operation.state,
+              current.transactionId == operation.transactionId,
+              current.redactionTransactionId == operation.redactionTransactionId else { return }
+        scheduleRetry(for: operation.id)
     }
 
     @MainActor
