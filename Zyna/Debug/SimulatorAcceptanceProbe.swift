@@ -34,7 +34,7 @@ enum SimulatorAcceptanceProbe {
 
     static func recordClosureReactionAttempt(_ message: ChatMessage, key: String, prepared: Bool) {
         guard output != nil, let marker = ProcessInfo.processInfo.environment["ZYNA_CLOSURE_MARKER"],
-              marker.hasPrefix("Zyna SDK closure 20261019 "),
+              marker.hasPrefix("Zyna acceptance "),
               let slot = ["even", "odd"].first(where: { message.content.textPreview == marker + " " + $0 }) else { return }
         closureReactionAttempts.append(["epoch": Date().timeIntervalSince1970, "slot": slot,
             "capturedOwn": message.reactions.contains { $0.key == key && $0.isOwn },
@@ -175,7 +175,7 @@ enum SimulatorAcceptanceProbe {
                 value["chatRows"] = chat.simulatorAcceptanceModel.rows.count
                 value["chatMessages"] = chat.simulatorAcceptanceModel.messages.count
                 if let marker = ProcessInfo.processInfo.environment["ZYNA_CLOSURE_MARKER"],
-                   marker.hasPrefix("Zyna SDK closure 20261019 ") {
+                   marker.hasPrefix("Zyna acceptance ") {
                     // Only these test-owned slots enter diagnostics; no body or ID is written.
                     var fixtures: [String: Any] = [:]
                     for slot in ["even", "odd", "done", "offline", "received"] {

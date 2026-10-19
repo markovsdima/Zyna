@@ -37,6 +37,10 @@ Secrets/
 # Logs
 *.log
 
+# Python tools
+__pycache__/
+*.py[cod]
+
 # Fastlane
 fastlane/report.xml
 fastlane/Preview.html
