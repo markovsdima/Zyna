@@ -196,6 +196,7 @@ final class PhotoGroupPreviewController: UIViewController {
         thumbnailsView.addGestureRecognizer(reorderGesture)
 
         discardButton.translatesAutoresizingMaskIntoConstraints = false
+        discardButton.accessibilityIdentifier = "attachmentPreview.discard"
         discardButton.setTitle(String(localized: "Discard"), for: .normal)
         discardButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
         discardButton.setTitleColor(.white, for: .normal)
@@ -206,6 +207,7 @@ final class PhotoGroupPreviewController: UIViewController {
         cardView.addSubview(discardButton)
 
         sendButton.translatesAutoresizingMaskIntoConstraints = false
+        sendButton.accessibilityIdentifier = "attachmentPreview.send"
         sendButton.setTitle(String(localized: "Send"), for: .normal)
         sendButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
         sendButton.setTitleColor(AppColor.onAccent, for: .normal)

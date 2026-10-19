@@ -59,7 +59,10 @@ final class OutgoingTextOutboxService {
         guard scanCoordinator.isSyncing,
               DirectRawTextSender.isEnabled else { return }
 
-        let candidates = outgoingEnvelopes.directTextOutboxCandidates(envelopeIds: envelopeIds)
+        let sessionId = matrixService.currentLocalSessionId
+        let candidates = await outgoingEnvelopes.directTextOutboxCandidates(envelopeIds: envelopeIds)
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
         guard !candidates.isEmpty else {
             logOutgoingTextOutbox("outbox scan reason=\(reason) count=0")
             return
@@ -70,8 +73,8 @@ final class OutgoingTextOutboxService {
         )
 
         for candidate in candidates {
-            guard !Task.isCancelled,
-                  scanCoordinator.isSyncing else { return }
+            guard !Task.isCancelled, scanCoordinator.isSyncing,
+                  matrixService.currentLocalSessionId == sessionId else { return }
             await sendIfEligible(candidate, reason: reason)
         }
     }
@@ -135,6 +138,7 @@ final class OutgoingTextOutboxService {
         let receipt = await DirectRawTextSender.send(
             room: room,
             body: textPayload.body,
+            formattedBody: textPayload.formattedBody,
             replyInfo: envelope.replyInfo,
             zynaAttributes: envelope.zynaAttributes,
             transactionId: transactionId

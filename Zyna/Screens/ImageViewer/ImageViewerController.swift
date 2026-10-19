@@ -6,6 +6,8 @@
 import UIKit
 import MatrixRustSDK
 
+private let logViewer = ScopedLog(.attachments, prefix: "[Attachments][viewer]")
+
 /// Fullscreen image viewer with zoom, pan, and interactive
 /// swipe-down dismiss. Shows the cached thumbnail immediately
 /// and swaps in the full-resolution image when it loads.
@@ -20,6 +22,15 @@ final class ImageViewerController: UIViewController {
         let previewImage: UIImage?
         let mediaSource: MediaSource?
         let sourceFrame: CGRect
+    }
+
+    struct Page {
+        let item: Item
+        let eventId: String
+        let timestampMs: UInt64
+        let index: Int
+        let count: Int
+        let catalogRevision: Int64
     }
 
     // MARK: - Public
@@ -41,10 +52,19 @@ final class ImageViewerController: UIViewController {
     private let pageLabel = UILabel()
     private let shareButton = UIButton(type: .system)
     private let saveButton = UIButton(type: .system)
-    private let items: [Item]
+    private var items: [Item]
+    private var catalogPage: Page?
+    private var adjacentPage: ((Page, Int) async throws -> Page?)?
+    private var adjacentTask: Task<Void, Never>?
     private var currentIndex: Int
     private var resolvedImages: [UIImage?]
+    /// Share/Save export only the original; until it arrives `imageView`
+    /// shows a downsampled (and, from the grid, square-cropped) preview.
+    private var fullResolutionReady: [Bool]
     private var fullResLoadToken: UUID?
+    /// Cancelled on page change and dismissal so an abandoned full-res
+    /// load withdraws its demand from the shared fetch instead of holding it.
+    private var fullResLoadTask: Task<Void, Never>?
     private var dismissPanStart: CGPoint = .zero
     private var chromeVisible = true
 
@@ -54,6 +74,7 @@ final class ImageViewerController: UIViewController {
         self.items = items
         self.currentIndex = max(0, min(initialIndex, items.count - 1))
         self.resolvedImages = items.map(\.previewImage)
+        self.fullResolutionReady = items.map { _ in false }
         super.init(nibName: nil, bundle: nil)
         let initialImage = resolvedImages[currentIndex]
         imageView.image = initialImage
@@ -64,6 +85,17 @@ final class ImageViewerController: UIViewController {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    convenience init(page: Page, adjacentPage: @escaping (Page, Int) async throws -> Page?) {
+        self.init(items: [page.item], initialIndex: 0)
+        self.catalogPage = page
+        self.adjacentPage = adjacentPage
+    }
+
+    deinit {
+        fullResLoadTask?.cancel()
+        adjacentTask?.cancel()
+    }
 
     // MARK: - Lifecycle
 
@@ -249,8 +281,16 @@ final class ImageViewerController: UIViewController {
         animateDismiss()
     }
 
+    private func updateExportButtons() {
+        let ready = items.indices.contains(currentIndex) && fullResolutionReady[currentIndex]
+        for button in [shareButton, saveButton] {
+            button.isEnabled = ready
+            button.alpha = ready ? 1 : 0.4
+        }
+    }
+
     @objc private func shareTapped() {
-        guard let image = imageView.image else { return }
+        guard fullResolutionReady[currentIndex], let image = imageView.image else { return }
         let sheet = UIActivityViewController(
             activityItems: [image],
             applicationActivities: nil
@@ -259,7 +299,7 @@ final class ImageViewerController: UIViewController {
     }
 
     @objc private func saveTapped() {
-        guard let image = imageView.image else { return }
+        guard fullResolutionReady[currentIndex], let image = imageView.image else { return }
         UIImageWriteToSavedPhotosAlbum(image, self, #selector(imageSaved(_:error:context:)), nil)
     }
 
@@ -321,25 +361,49 @@ final class ImageViewerController: UIViewController {
 
     // MARK: - Full resolution
 
-    private func loadFullResolution() {
-        loadFullResolution(for: currentIndex)
-    }
-
-    private func loadFullResolution(for index: Int) {
+    /// `delay` debounces page changes: a fast swipe past several photos
+    /// must not start a download for each (an SDK call cannot be cancelled
+    /// once started and would hold a viewer lane for the current one).
+    private func loadFullResolution(for index: Int, delay: Duration = .zero) {
+        // Cancel and refresh the export buttons before any early return: an
+        // item without a source (possible from the chat) must still stop the
+        // previous page's load and not inherit its button state.
+        fullResLoadTask?.cancel()
+        updateExportButtons()
         guard items.indices.contains(index),
               let source = items[index].mediaSource else { return }
+        // Already have the original: never fetch it again (files above the
+        // SDK's cache limit would hit the network every time).
+        guard !fullResolutionReady[index] else { return }
         let token = UUID()
         fullResLoadToken = token
-        Task {
-            guard let client = MatrixClientService.shared.client else { return }
+        fullResLoadTask = Task {
+            guard MatrixClientService.shared.client != nil else { return }
+            if delay > .zero {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+            }
             do {
-                let data = try await client.getMediaContent(mediaSource: source)
-                guard let fullImage = UIImage(data: data) else { return }
+                let fetchStart = CACurrentMediaTime()
+                // Shares one SDK call with a grid tile that may still be
+                // downloading the same original.
+                let data = try await MediaCache.shared.loadFullContent(source: source)
+                guard !Task.isCancelled else { return }
+                logViewer(
+                    "full-res mxc=\(source.url()) bytes=\(data.count) "
+                    + "ms=\(String(format: "%.0f", (CACurrentMediaTime() - fetchStart) * 1000))"
+                )
+                guard let fullImage = await Task.detached(priority: .userInitiated, operation: {
+                    guard let image = UIImage(data: data) else { return UIImage?.none }
+                    return image.preparingForDisplay() ?? image
+                }).value else { return }
                 await MainActor.run { [weak self] in
                     guard let self,
                           self.fullResLoadToken == token,
                           self.items.indices.contains(index) else { return }
                     self.resolvedImages[index] = fullImage
+                    self.fullResolutionReady[index] = true
+                    self.updateExportButtons()
                     guard self.currentIndex == index else { return }
                     self.imageView.image = fullImage
                     self.transitionView.image = fullImage
@@ -371,7 +435,7 @@ final class ImageViewerController: UIViewController {
     }
 
     @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
-        guard items.count > 1, scrollView.zoomScale <= 1 else { return }
+        guard (catalogPage?.count ?? items.count) > 1, scrollView.zoomScale <= 1 else { return }
         switch gesture.direction {
         case .left:
             showItem(at: currentIndex + 1, direction: 1)
@@ -418,12 +482,42 @@ final class ImageViewerController: UIViewController {
     // MARK: - Dismiss
 
     private func updatePageLabel() {
-        pageLabel.isHidden = items.count <= 1
-        guard items.count > 1 else { return }
-        pageLabel.text = "\(currentIndex + 1) / \(items.count)"
+        let count = catalogPage?.count ?? items.count
+        pageLabel.isHidden = count <= 1
+        guard count > 1 else { return }
+        pageLabel.text = "\((catalogPage?.index ?? currentIndex) + 1) / \(count)"
     }
 
     private func showItem(at index: Int, direction: Int) {
+        if let page = catalogPage, let adjacentPage {
+            adjacentTask?.cancel()
+            adjacentTask = Task { [weak self] in
+                do {
+                    guard let next = try await adjacentPage(page, direction), !Task.isCancelled,
+                          let self, self.view.window != nil else { return }
+                    let previous = self.imageView.image
+                    self.fullResLoadTask?.cancel()
+                    self.fullResLoadToken = nil
+                    self.catalogPage = next
+                    self.items = [next.item]
+                    self.currentIndex = 0
+                    self.resolvedImages = [next.item.previewImage]
+                    self.fullResolutionReady = [false]
+                    self.sourceFrame = next.item.sourceFrame
+                    self.scrollView.setZoomScale(1, animated: false)
+                    self.updatePageLabel()
+                    self.transitionView.image = next.item.previewImage
+                    if let previous, let image = next.item.previewImage {
+                        self.animatePageTransition(from: previous, to: image, direction: direction)
+                    } else {
+                        self.imageView.image = next.item.previewImage
+                        self.layoutImageView()
+                    }
+                    self.loadFullResolution(for: 0, delay: .milliseconds(250))
+                } catch { /* Keep the current image on catalog failure. */ }
+            }
+            return
+        }
         guard items.indices.contains(index), index != currentIndex else { return }
 
         let previousImage = imageView.image
@@ -442,7 +536,9 @@ final class ImageViewerController: UIViewController {
             layoutImageView()
         }
 
-        loadFullResolution(for: index)
+        // Debounced: a swipe-through must not start a download per page, and
+        // the delay also keeps a fast cache hit from landing mid-transition.
+        loadFullResolution(for: index, delay: .milliseconds(250))
     }
 
     private func animatePageTransition(from oldImage: UIImage, to newImage: UIImage, direction: Int) {
@@ -477,6 +573,9 @@ final class ImageViewerController: UIViewController {
     }
 
     private func animateDismiss() {
+        adjacentTask?.cancel()
+        fullResLoadTask?.cancel()
+        fullResLoadToken = nil
         toolbar.alpha = 0
         closeButton.alpha = 0
         pageLabel.alpha = 0

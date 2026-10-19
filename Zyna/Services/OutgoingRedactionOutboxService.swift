@@ -59,8 +59,10 @@ final class OutgoingRedactionOutboxService {
         guard scanCoordinator.isSyncing,
               DirectRawTextSender.isEnabled else { return }
 
-        let candidates = pendingRedactions.pendingRecords()
-            .filter { ($0.redactionEventId ?? "").isEmpty }
+        let sessionId = matrixService.currentLocalSessionId
+        let candidates = await pendingRedactions.outboxCandidates()
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
         guard !candidates.isEmpty else {
             logOutgoingRedactionOutbox("outbox scan reason=\(reason) count=0")
             return
@@ -71,8 +73,8 @@ final class OutgoingRedactionOutboxService {
         )
 
         for candidate in candidates {
-            guard !Task.isCancelled,
-                  scanCoordinator.isSyncing else { return }
+            guard !Task.isCancelled, scanCoordinator.isSyncing,
+                  matrixService.currentLocalSessionId == sessionId else { return }
             await sendIfEligible(candidate, reason: reason)
         }
     }

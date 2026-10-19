@@ -111,6 +111,10 @@ final class ChatComposerController: ObservableObject {
         self.maxAttachmentCount = maxAttachmentCount
     }
 
+    func restoreNavigationState(_ state: ChatComposerState) {
+        self.state = state
+    }
+
     static func byteCountString(for bytes: UInt64) -> String {
         byteCountFormatter.string(fromByteCount: Int64(bytes))
     }

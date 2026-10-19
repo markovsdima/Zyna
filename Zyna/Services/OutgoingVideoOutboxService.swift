@@ -61,12 +61,15 @@ final class OutgoingVideoOutboxService {
         guard scanCoordinator.isSyncing,
               DirectRawMediaSender.isVideoEnabled else { return }
 
-        handleMissingAssetCandidates(
-            pendingVideos.missingAssetCandidates(envelopeIds: envelopeIds),
-            reason: reason
-        )
+        let sessionId = matrixService.currentLocalSessionId
+        let missing = await pendingVideos.missingAssetCandidates(envelopeIds: envelopeIds)
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
+        handleMissingAssetCandidates(missing, reason: reason)
 
-        let candidates = pendingVideos.outboxCandidates(envelopeIds: envelopeIds)
+        let candidates = await pendingVideos.outboxCandidates(envelopeIds: envelopeIds)
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
         guard !candidates.isEmpty else {
             logOutgoingVideoOutbox("outbox scan reason=\(reason) count=0")
             return
@@ -78,8 +81,8 @@ final class OutgoingVideoOutboxService {
         )
 
         for candidate in candidates {
-            guard !Task.isCancelled,
-                  scanCoordinator.isSyncing else { return }
+            guard !Task.isCancelled, scanCoordinator.isSyncing,
+                  matrixService.currentLocalSessionId == sessionId else { return }
             await sendIfEligible(candidate, reason: reason)
         }
     }
@@ -104,10 +107,7 @@ final class OutgoingVideoOutboxService {
                 "outbox missing asset reason=\(reason) envelope=\(candidate.envelope.id) "
                     + "tx=\(candidate.item.transactionId ?? "-") ageSec=\(String(format: "%.1f", age))"
             )
-            if outgoingEnvelopes.markDispatchFailed(
-                envelopeId: candidate.envelope.id,
-                itemIndex: candidate.item.itemIndex
-            ) {
+            if outgoingEnvelopes.markMissingAssetFailed(item: candidate.item, asset: .video) {
                 publishRoomDidUpdate(candidate.envelope.roomId)
             }
         }
@@ -139,9 +139,11 @@ final class OutgoingVideoOutboxService {
             return
         }
 
-        guard let latest = pendingVideos
-            .outboxCandidates(envelopeIds: Set([envelopeId]))
-            .first,
+        let sessionId = matrixService.currentLocalSessionId
+        let refreshed = await pendingVideos.outboxCandidates(envelopeIds: Set([envelopeId]))
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
+        guard let latest = refreshed.first,
             let transactionId = latest.item.transactionId,
             !transactionId.isEmpty,
             case .send = attemptDecision(for: latest) else {

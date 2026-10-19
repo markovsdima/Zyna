@@ -24,6 +24,9 @@ struct PendingReactionRecord: Codable, FetchableRecord, PersistableRecord {
     var targetEventId: String
     var reactionKey: String
     var state: String
+    /// User intent is independent of the request that must finish (or retry)
+    /// with its original transaction ID before the next operation can start.
+    var desiredPresence: Bool
     var transactionId: String?
     var reactionEventId: String?
     var redactionTransactionId: String?
@@ -39,6 +42,7 @@ struct PendingReactionRecord: Codable, FetchableRecord, PersistableRecord {
         targetEventId: String,
         reactionKey: String,
         state: PendingReactionState,
+        desiredPresence: Bool? = nil,
         transactionId: String? = nil,
         reactionEventId: String? = nil,
         redactionTransactionId: String? = nil,
@@ -53,6 +57,7 @@ struct PendingReactionRecord: Codable, FetchableRecord, PersistableRecord {
         self.targetEventId = targetEventId
         self.reactionKey = reactionKey
         self.state = state.rawValue
+        self.desiredPresence = desiredPresence ?? (state != .removeQueued && state != .removed)
         self.transactionId = transactionId
         self.reactionEventId = reactionEventId
         self.redactionTransactionId = redactionTransactionId
@@ -73,117 +78,108 @@ final class PendingReactionService {
 
     static let shared = PendingReactionService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private let database: AccountDatabase?
+    private var dbQueue: AccountDatabase { database ?? DatabaseService.shared.dbQueue }
 
-    private init() {}
+    init(database: AccountDatabase? = nil) { self.database = database }
 
-    func prepareDirectRawAdd(
-        roomId: String,
-        targetEventId: String,
-        key: String
-    ) -> Bool {
-        guard DirectRawTextSender.isEnabled else { return false }
+    static func migrateIntent(_ db: Database) throws {
+        try db.alter(table: PendingReactionRecord.databaseTableName) {
+            $0.add(column: "desiredPresence", .boolean).notNull().defaults(to: true)
+        }
+        try db.execute(sql: """
+            UPDATE pendingReaction SET desiredPresence = 0
+            WHERE state IN ('removeQueued', 'removed')
+            """)
+    }
 
-        do {
-            return try dbQueue.write { db in
-                let now = Date().timeIntervalSince1970
-                var record = try Self.latestRecord(
-                    roomId: roomId,
-                    targetEventId: targetEventId,
-                    key: key,
-                    in: db
-                )
+    #if DEBUG
+    func stateForAcceptance(roomId: String, eventId: String) -> [String: Any] {
+        (try? dbQueue.read { db -> [String: Any] in
+            guard let record = try PendingReactionRecord
+                .filter(Column("roomId") == roomId && Column("targetEventId") == eventId && Column("reactionKey") == "👍")
+                .order(Column("updatedAt").desc).fetchOne(db) else { return ["state": "absent"] }
+            return ["state": record.state, "attempts": record.attemptCount, "desiredPresence": record.desiredPresence,
+                "hasReactionID": record.reactionEventId != nil,
+                "hasRedactionID": record.redactionEventId != nil]
+        }) ?? ["state": "readError"]
+    }
+    #endif
 
-                let existingTransactionId: String?
-                if record?.decodedState == .addQueued {
-                    existingTransactionId = record?.transactionId
-                } else {
-                    existingTransactionId = nil
-                }
-
-                guard let transactionId = DirectRawTextSender
-                    .prepareReactionTransactionId(existingTransactionId: existingTransactionId)
-                else {
-                    return false
-                }
-
-                if record == nil {
-                    record = PendingReactionRecord(
-                        roomId: roomId,
-                        targetEventId: targetEventId,
-                        reactionKey: key,
-                        state: .addQueued,
-                        transactionId: transactionId,
-                        createdAt: now,
-                        updatedAt: now
-                    )
-                } else {
-                    record?.decodedState = .addQueued
-                    record?.transactionId = transactionId
-                    record?.reactionEventId = nil
-                    record?.redactionTransactionId = nil
-                    record?.redactionEventId = nil
-                    record?.updatedAt = now
-                }
-
-                try record?.save(db)
-                logPendingReaction(
-                    "direct add queued target=\(targetEventId) key=\(key) tx=\(transactionId)"
-                )
-                return true
-            }
-        } catch {
-            logPendingReaction("direct add prepare failed target=\(targetEventId) error=\(error)")
-            return false
+    /// The row, not a possibly stale menu snapshot, serializes successive taps.
+    func prepareToggle(roomId: String, targetEventId: String, key: String,
+                       observedOwnReaction: Bool) -> Bool {
+        prepareIntent(roomId: roomId, targetEventId: targetEventId, key: key) { record in
+            !(record.map { $0.decodedState == .failed ? observedOwnReaction : $0.desiredPresence }
+                ?? observedOwnReaction)
         }
     }
 
-    func prepareDirectRawRemoval(
-        roomId: String,
-        targetEventId: String,
-        key: String
-    ) -> Bool {
-        guard DirectRawTextSender.isEnabled else { return false }
+    func prepareDirectRawAdd(roomId: String, targetEventId: String, key: String) -> Bool {
+        prepareIntent(roomId: roomId, targetEventId: targetEventId, key: key) { _ in true }
+    }
 
+    func prepareDirectRawRemoval(roomId: String, targetEventId: String, key: String) -> Bool {
+        prepareIntent(roomId: roomId, targetEventId: targetEventId, key: key) { _ in false }
+    }
+
+    private func prepareIntent(roomId: String, targetEventId: String, key: String,
+                               desired: (PendingReactionRecord?) -> Bool) -> Bool {
+        guard DirectRawTextSender.isEnabled else { return false }
         do {
             return try dbQueue.write { db in
-                guard var record = try Self.latestRecord(
-                    roomId: roomId,
-                    targetEventId: targetEventId,
-                    key: key,
-                    in: db
-                ),
-                let reactionEventId = record.reactionEventId,
-                !reactionEventId.isEmpty else {
-                    return false
+                var existing = try Self.latestRecord(roomId: roomId, targetEventId: targetEventId,
+                                                     key: key, in: db)
+                let presence = desired(existing)
+                if existing == nil {
+                    guard presence else { return false } // No local ID for a remote-only reaction.
+                    existing = PendingReactionRecord(roomId: roomId, targetEventId: targetEventId,
+                        reactionKey: key, state: .removed, desiredPresence: false)
                 }
-
-                guard let transactionId = DirectRawTextSender
-                    .prepareRedactionTransactionId(
-                        existingTransactionId: record.redactionTransactionId
-                    )
-                else {
-                    return false
+                guard var record = existing else { return false }
+                if record.decodedState == .failed {
+                    // Only an explicit new user action retries a terminal add failure.
+                    // A lost legacy reaction ID cannot be reconstructed from a count.
+                    guard presence || record.reactionEventId != nil else { return false }
+                    record.decodedState = record.reactionEventId == nil ? .removed : .addAccepted
                 }
-
-                record.decodedState = .removeQueued
-                record.redactionTransactionId = transactionId
-                record.redactionEventId = nil
+                record.desiredPresence = presence
+                Self.advance(&record)
                 record.updatedAt = Date().timeIntervalSince1970
                 try record.save(db)
-                logPendingReaction(
-                    "direct remove queued target=\(targetEventId) reaction=\(reactionEventId) key=\(key) tx=\(transactionId)"
-                )
                 return true
             }
         } catch {
-            logPendingReaction("direct remove prepare failed target=\(targetEventId) error=\(error)")
+            logPendingReaction("intent prepare failed target=\(targetEventId) error=\(error)")
             return false
         }
     }
 
-    func outboxCandidates() -> [PendingReactionRecord] {
-        (try? dbQueue.read { db in
+    /// Never replace an in-flight operation. A contrary intent is reconciled
+    /// atomically with its acknowledgement, including after an app restart.
+    private static func advance(_ record: inout PendingReactionRecord) {
+        switch record.decodedState {
+        case .removed where record.desiredPresence:
+            record.decodedState = .addQueued
+            record.transactionId = UUID().uuidString
+            record.reactionEventId = nil
+            record.redactionTransactionId = nil
+            record.redactionEventId = nil
+            record.attemptCount = 0
+            record.lastAttemptAt = nil
+        case .addAccepted where !record.desiredPresence:
+            record.decodedState = .removeQueued
+            record.redactionTransactionId = UUID().uuidString
+            record.redactionEventId = nil
+            record.attemptCount = 0
+            record.lastAttemptAt = nil
+        default:
+            break
+        }
+    }
+
+    func outboxCandidates() async -> [PendingReactionRecord] {
+        (try? await dbQueue.read { db in
             try PendingReactionRecord.fetchAll(
                 db,
                 sql: """
@@ -212,29 +208,28 @@ final class PendingReactionService {
     }
 
     func pendingRemovalKeysByEventId(roomId: String) -> [String: Set<String>] {
-        (try? dbQueue.read { db in
-            let records = try PendingReactionRecord
-                .filter(Column("roomId") == roomId)
-                .order(Column("updatedAt").asc)
-                .fetchAll(db)
-            var latestByTargetAndKey: [String: PendingReactionRecord] = [:]
-            for record in records {
-                latestByTargetAndKey[
-                    "\(record.targetEventId)\u{1F}\(record.reactionKey)"
-                ] = record
-            }
+        (try? dbQueue.read { try Self.pendingRemovalKeysByEventId(roomId: roomId, in: $0) }) ?? [:]
+    }
 
-            var result: [String: Set<String>] = [:]
-            for record in latestByTargetAndKey.values {
-                switch record.decodedState {
-                case .removeQueued, .removed:
-                    result[record.targetEventId, default: []].insert(record.reactionKey)
-                case .addQueued, .addAccepted, .failed:
-                    break
-                }
+    static func pendingRemovalKeysByEventId(roomId: String, in db: Database) throws -> [String: Set<String>] {
+        let records = try PendingReactionRecord
+            .filter(Column("roomId") == roomId)
+            .order(Column("updatedAt").asc)
+            .fetchAll(db)
+        var latestByTargetAndKey: [String: PendingReactionRecord] = [:]
+        for record in records {
+            latestByTargetAndKey[
+                "\(record.targetEventId)\u{1F}\(record.reactionKey)"
+            ] = record
+        }
+
+        var result: [String: Set<String>] = [:]
+        for record in latestByTargetAndKey.values {
+            if !record.desiredPresence, record.decodedState != .failed {
+                result[record.targetEventId, default: []].insert(record.reactionKey)
             }
-            return result
-        }) ?? [:]
+        }
+        return result
     }
 
     func markAttemptStarted(id: String) {
@@ -265,6 +260,7 @@ final class PendingReactionService {
             }
             record.decodedState = .addAccepted
             record.reactionEventId = reactionEventId
+            Self.advance(&record)
             record.updatedAt = Date().timeIntervalSince1970
             try record.save(db)
             return true
@@ -291,6 +287,7 @@ final class PendingReactionService {
             }
             record.decodedState = .removed
             record.redactionEventId = redactionEventId
+            Self.advance(&record)
             record.updatedAt = Date().timeIntervalSince1970
             try record.save(db)
             return true
@@ -304,31 +301,31 @@ final class PendingReactionService {
         return didChange
     }
 
-    func markAddFailed(id: String) {
+    func markAddFailed(id: String, transactionId: String?) {
         updateRecord(id: id) { record in
+            guard record.decodedState == .addQueued,
+                  record.transactionId == transactionId else { return }
             record.decodedState = .failed
             record.updatedAt = Date().timeIntervalSince1970
         }
     }
 
-    func markRemovalFailed(id: String) {
+    func markRemovalFailed(id: String, transactionId: String?) {
         updateRecord(id: id) { record in
+            guard record.decodedState == .removeQueued,
+                  record.redactionTransactionId == transactionId else { return }
             record.decodedState = .addAccepted
+            record.desiredPresence = true
             record.redactionTransactionId = nil
             record.redactionEventId = nil
             record.updatedAt = Date().timeIntervalSince1970
         }
     }
 
-    private func updateRecord(
-        id: String,
-        _ update: (inout PendingReactionRecord) -> Void
-    ) {
+    private func updateRecord(id: String, _ update: (inout PendingReactionRecord) -> Void) {
         do {
             try dbQueue.write { db in
-                guard var record = try PendingReactionRecord.fetchOne(db, key: id) else {
-                    return
-                }
+                guard var record = try PendingReactionRecord.fetchOne(db, key: id) else { return }
                 update(&record)
                 try record.save(db)
             }
@@ -348,7 +345,6 @@ final class PendingReactionService {
                 Column("roomId") == roomId
                     && Column("targetEventId") == targetEventId
                     && Column("reactionKey") == key
-                    && Column("state") != PendingReactionState.removed.rawValue
             )
             .order(Column("updatedAt").desc)
             .fetchOne(db)

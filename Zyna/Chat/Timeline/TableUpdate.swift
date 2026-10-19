@@ -14,4 +14,5 @@ enum TableUpdate {
         updates: [IndexPath],
         animated: Bool
     )
+
 }

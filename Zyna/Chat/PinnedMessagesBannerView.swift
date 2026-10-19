@@ -19,6 +19,8 @@ final class PinnedMessagesBannerView: UIControl {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let previewLabel = UILabel()
+    private let allButton = UIButton(type: .system)
+    var onShowAll: (() -> Void)?
 
     private var displayMode: DisplayMode = .collapsed
     private var pinnedCount = 0
@@ -68,7 +70,18 @@ final class PinnedMessagesBannerView: UIControl {
         addSubview(iconView)
         addSubview(titleLabel)
         addSubview(previewLabel)
+        allButton.setImage(AppIcon.listBullet.template(size: 17), for: .normal)
+        allButton.tintColor = Self.accentTint
+        allButton.accessibilityLabel = String(localized: "All pinned messages")
+        allButton.isAccessibilityElement = false
+        allButton.addTarget(self, action: #selector(showAll), for: .touchUpInside)
+        addSubview(allButton)
+        accessibilityCustomActions = [UIAccessibilityCustomAction(name: String(localized: "All pinned messages")) { [weak self] _ in
+            self?.onShowAll?(); return self?.onShowAll != nil
+        }]
     }
+
+    @objc private func showAll() { onShowAll?() }
 
     func configure(index: Int, count: Int, preview: String?, mode: DisplayMode) {
         displayMode = mode
@@ -106,6 +119,7 @@ final class PinnedMessagesBannerView: UIControl {
         titleLabel.alpha = isCollapsed ? 0 : 1
         previewLabel.alpha = isCollapsed ? 0 : 1
         indicatorLabel.alpha = pinnedCount > 1 ? 1 : 0
+        allButton.isHidden = isCollapsed
     }
 
     override func layoutSubviews() {
@@ -170,7 +184,8 @@ final class PinnedMessagesBannerView: UIControl {
         iconView.frame = CGRect(x: x, y: midY - 7.5, width: 15, height: 15)
         x = iconView.frame.maxX + 7
 
-        let textWidth = max(0, bounds.maxX - x)
+        allButton.frame = CGRect(x: self.bounds.width - 44, y: 0, width: 44, height: self.bounds.height)
+        let textWidth = max(0, allButton.frame.minX - 6 - x)
         titleLabel.frame = CGRect(x: x, y: bounds.minY, width: textWidth, height: 14)
         previewLabel.frame = CGRect(x: x, y: titleLabel.frame.maxY, width: textWidth, height: 14)
     }

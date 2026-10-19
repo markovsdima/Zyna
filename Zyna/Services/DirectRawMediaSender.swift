@@ -194,6 +194,7 @@ enum DirectRawMediaSender {
         transactionId: String
     ) async -> OutgoingDispatchReceipt {
         do {
+            try await DirectChatBlockingPolicy.requireUnblocked(room: room)
             let captionPayload = mediaCaptionPayload(
                 caption: caption,
                 zynaAttributes: zynaAttributes
@@ -268,6 +269,7 @@ enum DirectRawMediaSender {
         transactionId: String
     ) async -> OutgoingDispatchReceipt {
         do {
+            try await DirectChatBlockingPolicy.requireUnblocked(room: room)
             let captionPayload = mediaCaptionPayload(
                 caption: caption,
                 zynaAttributes: zynaAttributes
@@ -362,6 +364,7 @@ enum DirectRawMediaSender {
         transactionId: String
     ) async -> OutgoingDispatchReceipt {
         do {
+            try await DirectChatBlockingPolicy.requireUnblocked(room: room)
             let captionPayload = mediaCaptionPayload(
                 caption: caption,
                 zynaAttributes: zynaAttributes
@@ -401,6 +404,7 @@ enum DirectRawMediaSender {
         transactionId: String
     ) async -> OutgoingDispatchReceipt {
         do {
+            try await DirectChatBlockingPolicy.requireUnblocked(room: room)
             logDirectRawMedia(
                 "DirectForwardMediaTx send start tx=\(transactionId) reply=\(replyEventId ?? "-")"
             )
@@ -494,6 +498,7 @@ enum DirectRawMediaSender {
         transactionId: String
     ) async -> OutgoingDispatchReceipt {
         do {
+            try await DirectChatBlockingPolicy.requireUnblocked(room: room)
             logDirectRawMedia(
                 "DirectRawVoiceTx send start tx=\(transactionId) reply=\(replyEventId ?? "-")"
             )
@@ -569,6 +574,9 @@ enum DirectRawMediaSender {
     }
 
     private static func isRetryableTransportError(_ error: Error) -> Bool {
+        if error is DirectChatBlockingError {
+            return DirectRawTextSender.isRetryableTransportError(error)
+        }
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain {
             switch nsError.code {

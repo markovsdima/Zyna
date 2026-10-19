@@ -122,6 +122,9 @@ underscore-prefixed API strings in plaintext.
 
 - `Chat/` — UI (ChatView, cells, input nodes)
 - `Core/` — infrastructure (Concurrency, Network, Theme)
+- `Extensions/` — shared, general-purpose extensions of standard types.
+  Keep feature-specific extensions with their feature; do not create a
+  second shared extensions directory under `Core/`.
 - `Messaging/` — Zyna domain (attributes, codec, sender)
 - `Services/` — SDK-facing (MatrixClient, Timeline, Rooms)
 - `Services/Database/` — GRDB layer

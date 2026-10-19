@@ -61,12 +61,15 @@ final class OutgoingForwardedMediaOutboxService {
         guard scanCoordinator.isSyncing,
               DirectRawMediaSender.isForwardedMediaEnabled else { return }
 
-        handleMissingRecordCandidates(
-            pendingForwardedMedia.missingRecordCandidates(envelopeIds: envelopeIds),
-            reason: reason
-        )
+        let sessionId = matrixService.currentLocalSessionId
+        let missing = await pendingForwardedMedia.missingRecordCandidates(envelopeIds: envelopeIds)
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
+        handleMissingRecordCandidates(missing, reason: reason)
 
-        let candidates = pendingForwardedMedia.outboxCandidates(envelopeIds: envelopeIds)
+        let candidates = await pendingForwardedMedia.outboxCandidates(envelopeIds: envelopeIds)
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
         guard !candidates.isEmpty else {
             logOutgoingForwardedMediaOutbox("outbox scan reason=\(reason) count=0")
             return
@@ -78,8 +81,8 @@ final class OutgoingForwardedMediaOutboxService {
         )
 
         for candidate in candidates {
-            guard !Task.isCancelled,
-                  scanCoordinator.isSyncing else { return }
+            guard !Task.isCancelled, scanCoordinator.isSyncing,
+                  matrixService.currentLocalSessionId == sessionId else { return }
             await sendIfEligible(candidate, reason: reason)
         }
     }
@@ -104,10 +107,7 @@ final class OutgoingForwardedMediaOutboxService {
                 "outbox missing record reason=\(reason) envelope=\(candidate.envelope.id) "
                     + "ageSec=\(String(format: "%.1f", age))"
             )
-            if outgoingEnvelopes.markDispatchFailed(
-                envelopeId: candidate.envelope.id,
-                itemIndex: candidate.item.itemIndex
-            ) {
+            if outgoingEnvelopes.markMissingAssetFailed(item: candidate.item, asset: .forwardedMedia) {
                 publishRoomDidUpdate(candidate.envelope.roomId)
             }
         }
@@ -139,9 +139,11 @@ final class OutgoingForwardedMediaOutboxService {
             return
         }
 
-        guard let latest = pendingForwardedMedia
-            .outboxCandidates(envelopeIds: Set([envelopeId]))
-            .first,
+        let sessionId = matrixService.currentLocalSessionId
+        let refreshed = await pendingForwardedMedia.outboxCandidates(envelopeIds: Set([envelopeId]))
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
+        guard let latest = refreshed.first,
             case .send = attemptDecision(for: latest) else {
             clearRetryMetadata(for: envelopeId)
             return

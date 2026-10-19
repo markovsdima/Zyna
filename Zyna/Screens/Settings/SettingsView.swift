@@ -42,10 +42,12 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
     var onThemeTapped: (() -> Void)?
     var onNameColorTapped: (() -> Void)?
     var onDevicesTapped: (() -> Void)?
+    var onBlockedUsersTapped: (() -> Void)?
 
     private enum Section: Int, CaseIterable {
         case appearance
         case security
+        case privacy
         case diagnostics
 
         var title: String {
@@ -54,6 +56,8 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
                 return String(localized: "Appearance")
             case .security:
                 return String(localized: "Security")
+            case .privacy:
+                return String(localized: "Privacy")
             case .diagnostics:
                 return String(localized: "Diagnostics")
             }
@@ -65,22 +69,47 @@ final class SettingsViewController: ASDKViewController<SettingsScreenNode> {
                 return [.chatTheme, .nameColor]
             case .security:
                 return [.devices]
+            case .privacy:
+                return [.blockedUsers]
             case .diagnostics:
+                #if DEBUG
+                return [.databaseHandoffTest, .chatListPlayground, .pauseChatHistorySync,
+                        .glassCaptureInterpolation, .callBackend,
+                        .repairLocalMessageCache, .simulateSoftLogout]
+                #elseif CHAT_LIST_PLAYGROUND
+                return [.chatListPlayground, .pauseChatHistorySync,
+                        .glassCaptureInterpolation, .callBackend,
+                        .repairLocalMessageCache, .simulateSoftLogout]
+                #else
                 return [.callBackend, .repairLocalMessageCache, .simulateSoftLogout]
+                #endif
             }
         }
     }
 
-    private enum Row {
+    private enum Row: Equatable {
+        #if DEBUG
+        case databaseHandoffTest
+        #endif
+        #if DEBUG || CHAT_LIST_PLAYGROUND
+        case chatListPlayground
+        case pauseChatHistorySync
+        case glassCaptureInterpolation
+        #endif
         case chatTheme
         case nameColor
         case devices
+        case blockedUsers
         case callBackend
         case repairLocalMessageCache
         case simulateSoftLogout
 
         var usesSubtitleCell: Bool {
             switch self {
+            #if DEBUG
+            case .databaseHandoffTest:
+                return true
+            #endif
             case .callBackend:
                 return true
             case .repairLocalMessageCache:
@@ -232,6 +261,26 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
             )
         cell.accessoryView = nil
         switch row {
+        #if DEBUG
+        case .databaseHandoffTest:
+            cell.textLabel?.text = "Database handoff test"
+            cell.detailTextLabel?.text = DatabaseHandoffProbe.shared.snapshot.title
+            cell.accessoryType = .disclosureIndicator
+        #endif
+        #if DEBUG || CHAT_LIST_PLAYGROUND
+        case .chatListPlayground:
+            cell.textLabel?.text = "Chat list playground"
+            cell.detailTextLabel?.text = ChatListPlaygroundSettings.isEnabled ? "On" : "Off"
+            cell.accessoryType = .none
+        case .pauseChatHistorySync:
+            cell.textLabel?.text = "Pause chat history sync"
+            cell.detailTextLabel?.text = AttachmentsResearchSettings.isChatHistorySyncPaused ? "On" : "Off"
+            cell.accessoryType = .none
+        case .glassCaptureInterpolation:
+            cell.textLabel?.text = "Glass capture interpolation"
+            cell.detailTextLabel?.text = GlassService.shared.usesLowCaptureInterpolation ? "Low" : "Default"
+            cell.accessoryType = .none
+        #endif
         case .chatTheme:
             cell.textLabel?.text = String(localized: "Chat Theme")
             cell.detailTextLabel?.text = ChatBubbleThemeStore.shared.selectedTheme.title
@@ -243,6 +292,10 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         case .devices:
             cell.textLabel?.text = String(localized: "Devices")
             cell.detailTextLabel?.text = String(localized: "Manage sessions")
+            cell.accessoryType = .disclosureIndicator
+        case .blockedUsers:
+            cell.textLabel?.text = String(localized: "Blocked Users")
+            cell.detailTextLabel?.text = nil
             cell.accessoryType = .disclosureIndicator
         case .callBackend:
             let backend = CallBackendPreferenceStore.shared.selectedBackend
@@ -268,12 +321,29 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
         let section = Section(rawValue: indexPath.section) ?? .appearance
         let row = section.rows[indexPath.row]
         switch row {
+        #if DEBUG
+        case .databaseHandoffTest:
+            presentDatabaseHandoffTest()
+        #endif
+        #if DEBUG || CHAT_LIST_PLAYGROUND
+        case .chatListPlayground:
+            ChatListPlaygroundSettings.isEnabled.toggle()
+            tableView.reloadRows(at: [indexPath], with: .none)
+        case .pauseChatHistorySync:
+            AttachmentsResearchSettings.isChatHistorySyncPaused.toggle()
+            tableView.reloadRows(at: [indexPath], with: .none)
+        case .glassCaptureInterpolation:
+            GlassService.shared.usesLowCaptureInterpolation.toggle()
+            tableView.reloadRows(at: [indexPath], with: .none)
+        #endif
         case .chatTheme:
             onThemeTapped?()
         case .nameColor:
             onNameColorTapped?()
         case .devices:
             onDevicesTapped?()
+        case .blockedUsers:
+            onBlockedUsersTapped?()
         case .callBackend:
             let cell = tableView.cellForRow(at: indexPath)
             presentCallBackendPicker(sourceView: cell ?? tableView)
@@ -293,6 +363,46 @@ extension SettingsViewController: UITableViewDataSource, UITableViewDelegate {
 
 private extension SettingsViewController {
 
+    #if DEBUG
+    private func presentDatabaseHandoffTest() {
+        let probe = DatabaseHandoffProbe.shared
+        let snapshot = probe.snapshot
+        let alert = UIAlertController(
+            title: "Database handoff test",
+            message: """
+                \(snapshot.title)
+
+                Arm, then open a chat → Attachments → Polls. One page read will stay held until you sign out and sign in again. You can take your time; keep this app process running.
+
+                Use the same account for a new session, or another account for the account-switch case. Check [PollCache] for handoff-held and handoff-result, or return here to copy the report.
+
+                This probe intercepts the stale read before SQL. It does not prove that all production readers are protected.
+                """,
+            preferredStyle: .alert
+        )
+        if snapshot.isActive {
+            alert.addAction(UIAlertAction(title: "Cancel Test", style: .default) { [weak self] _ in
+                probe.cancel()
+                self?.tableView.reloadData()
+            })
+        } else {
+            alert.addAction(UIAlertAction(title: "Arm", style: .default) { [weak self] _ in
+                guard let userID = try? MatrixClientService.shared.client?.userId() else { return }
+                LogConfig.enabled.insert(.polls)
+                probe.arm(database: DatabaseService.shared.dbQueue, accountID: userID)
+                self?.tableView.reloadData()
+            })
+        }
+        if !snapshot.report.isEmpty {
+            alert.addAction(UIAlertAction(title: "Copy Report", style: .default) { _ in
+                UIPasteboard.general.string = probe.snapshot.report
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Close", style: .cancel))
+        present(alert, animated: true)
+    }
+    #endif
+
     func presentCallBackendPicker(sourceView: UIView) {
         let selectedBackend = CallBackendPreferenceStore.shared.selectedBackend
         let alert = UIAlertController(
@@ -307,8 +417,9 @@ private extension SettingsViewController {
                 : backend.title
             alert.addAction(UIAlertAction(title: title, style: .default) { [weak self] _ in
                 CallBackendPreferenceStore.shared.selectedBackend = backend
-                self?.tableView.reloadRows(
-                    at: [IndexPath(row: 0, section: Section.diagnostics.rawValue)],
+                guard let self, let row = Section.diagnostics.rows.firstIndex(of: .callBackend) else { return }
+                self.tableView.reloadRows(
+                    at: [IndexPath(row: row, section: Section.diagnostics.rawValue)],
                     with: .none
                 )
             })

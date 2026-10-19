@@ -68,7 +68,6 @@ final class RoomSpaceLinkHeroView: UIView {
     ]
 
     private var metalLayer: CAMetalLayer {
-        // swiftlint:disable:next force_cast
         layer as! CAMetalLayer
     }
 

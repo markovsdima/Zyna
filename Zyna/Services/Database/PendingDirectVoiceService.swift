@@ -36,9 +36,10 @@ final class PendingDirectVoiceService {
 
     static let shared = PendingDirectVoiceService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private let database: AccountDatabase?
+    private var dbQueue: AccountDatabase { database ?? DatabaseService.shared.dbQueue }
 
-    private init() {}
+    init(database: AccountDatabase? = nil) { self.database = database }
 
     func prepareVoice(
         envelopeId: String,
@@ -103,12 +104,12 @@ final class PendingDirectVoiceService {
         return didChange
     }
 
-    func outboxCandidates(envelopeIds: Set<String>? = nil) -> [PendingDirectVoiceCandidate] {
+    func outboxCandidates(envelopeIds: Set<String>? = nil) async -> [PendingDirectVoiceCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Column("kind") == OutgoingEnvelopeKind.voice.rawValue)
                 .order(Column("createdAt").asc)
@@ -162,12 +163,12 @@ final class PendingDirectVoiceService {
 
     func missingRecordCandidates(
         envelopeIds: Set<String>? = nil
-    ) -> [PendingDirectVoiceMissingRecordCandidate] {
+    ) async -> [PendingDirectVoiceMissingRecordCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Column("kind") == OutgoingEnvelopeKind.voice.rawValue)
                 .order(Column("createdAt").asc)

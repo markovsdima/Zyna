@@ -1,0 +1,606 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Actions are continuing": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Действия продолжаются"
+          }
+        }
+      }
+    },
+    "Actions completed": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Действия выполнены"
+          }
+        }
+      }
+    },
+    "Also report this room": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Также пожаловаться на комнату"
+          }
+        }
+      }
+    },
+    "Block user": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Заблокировать пользователя"
+          }
+        }
+      }
+    },
+    "Blocking pending": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Блокировка ожидает выполнения"
+          }
+        }
+      }
+    },
+    "Blocking user…": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Блокируем пользователя…"
+          }
+        }
+      }
+    },
+    "Close the current screen, then tap again.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Закройте текущий экран и нажмите ещё раз."
+          }
+        }
+      }
+    },
+    "Couldn't block user": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось заблокировать пользователя"
+          }
+        }
+      }
+    },
+    "Couldn't complete this action. Check your connection and try again.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось выполнить действие. Проверьте подключение и попробуйте снова."
+          }
+        }
+      }
+    },
+    "Couldn't decline invitation": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось отклонить приглашение"
+          }
+        }
+      }
+    },
+    "Couldn't leave room": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось покинуть комнату"
+          }
+        }
+      }
+    },
+    "Couldn't send report": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось отправить жалобу"
+          }
+        }
+      }
+    },
+    "Decline": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отклонить"
+          }
+        }
+      }
+    },
+    "Decline invitation": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отклонить приглашение"
+          }
+        }
+      }
+    },
+    "Decline pending": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отклонение ожидает выполнения"
+          }
+        }
+      }
+    },
+    "Declining invitation…": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отклоняем приглашение…"
+          }
+        }
+      }
+    },
+    "Describe the problem": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Опишите проблему"
+          }
+        }
+      }
+    },
+    "Finishing…": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершаем…"
+          }
+        }
+      }
+    },
+    "Invitation": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Приглашение"
+          }
+        }
+      }
+    },
+    "Invitation declined": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Приглашение отклонено"
+          }
+        }
+      }
+    },
+    "Leave room": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Покинуть комнату"
+          }
+        }
+      }
+    },
+    "Leaving pending": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выход ожидает выполнения"
+          }
+        }
+      }
+    },
+    "Leaving room…": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выходим из комнаты…"
+          }
+        }
+      }
+    },
+    "Not sent": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не отправлено"
+          }
+        }
+      }
+    },
+    "Open the receipt to see the result and retry.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Откройте квитанцию, чтобы посмотреть результат и повторить попытку."
+          }
+        }
+      }
+    },
+    "Pending": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ожидает отправки"
+          }
+        }
+      }
+    },
+    "Preparing report…": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подготавливаем жалобу…"
+          }
+        }
+      }
+    },
+    "Recipient": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Получатель"
+          }
+        }
+      }
+    },
+    "Report": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Жалоба"
+          }
+        }
+      }
+    },
+    "Report conversation": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пожаловаться на переписку"
+          }
+        }
+      }
+    },
+    "Report message": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пожаловаться на сообщение"
+          }
+        }
+      }
+    },
+    "Report room": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пожаловаться на комнату"
+          }
+        }
+      }
+    },
+    "Report sent": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Жалоба отправлена"
+          }
+        }
+      }
+    },
+    "Reports go to the administrator of your server: %@.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Жалобы получает администратор вашего сервера: %@."
+          }
+        }
+      }
+    },
+    "Retry blocking": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторить блокировку"
+          }
+        }
+      }
+    },
+    "Retry declining invitation": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторить отклонение приглашения"
+          }
+        }
+      }
+    },
+    "Retry leaving room": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторить выход из комнаты"
+          }
+        }
+      }
+    },
+    "Retry sending report": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторить отправку жалобы"
+          }
+        }
+      }
+    },
+    "Retry unfinished actions": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторить незавершённые действия"
+          }
+        }
+      }
+    },
+    "Send report": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отправить жалобу"
+          }
+        }
+      }
+    },
+    "Sending report…": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отправляем жалобу…"
+          }
+        }
+      }
+    },
+    "Sending…": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отправка…"
+          }
+        }
+      }
+    },
+    "Sent": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отправлено"
+          }
+        }
+      }
+    },
+    "Some actions couldn't be completed": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не все действия выполнены"
+          }
+        }
+      }
+    },
+    "The administrator cannot read encrypted messages. Describe the problem in your own words. Message contents and encryption keys are not attached.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Администратор не может прочитать зашифрованные сообщения. Опишите проблему своими словами. Содержимое сообщений и ключи шифрования не прикладываются."
+          }
+        }
+      }
+    },
+    "The content is unavailable or can no longer be reported.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Содержимое недоступно или на него больше нельзя пожаловаться."
+          }
+        }
+      }
+    },
+    "The server %@ accepted your report.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сервер %@ принял вашу жалобу."
+          }
+        }
+      }
+    },
+    "This action is no longer available.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Это действие больше недоступно."
+          }
+        }
+      }
+    },
+    "This user is already blocked.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Этот пользователь уже заблокирован."
+          }
+        }
+      }
+    },
+    "Too many requests. Wait a moment before trying again.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Слишком много запросов. Подождите немного и попробуйте снова."
+          }
+        }
+      }
+    },
+    "User blocked": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пользователь заблокирован"
+          }
+        }
+      }
+    },
+    "View receipt": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Открыть квитанцию"
+          }
+        }
+      }
+    },
+    "You can close this screen. The actions will continue.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Можно закрыть экран — действия продолжат выполняться."
+          }
+        }
+      }
+    },
+    "You can return to the receipt to check the result.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Можно вернуться к квитанции и проверить результат."
+          }
+        }
+      }
+    },
+    "You left the room": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Вы покинули комнату"
+          }
+        }
+      }
+    },
+    "You'll stay in the room until the report is sent.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Вы останетесь в комнате, пока жалоба не будет отправлена."
+          }
+        }
+      }
+    },
+    "Your report": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ваша жалоба"
+          }
+        }
+      }
+    },
+    "Your report was sent. Open the receipt to review the remaining actions.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Жалоба отправлена. Откройте квитанцию, чтобы проверить остальные действия."
+          }
+        }
+      }
+    },
+    "Your server did not allow this action.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ваш сервер не разрешил это действие."
+          }
+        }
+      }
+    },
+    "Your server does not support this report.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ваш сервер не поддерживает такую жалобу."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

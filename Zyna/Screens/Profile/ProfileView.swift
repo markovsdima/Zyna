@@ -10,32 +10,17 @@ import PhotosUI
 final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
 
     var onLogout: (() -> Void)?
-    var onBack: (() -> Void)?
-    var onSearchTapped: (() -> Void)?
     var onSettingsTapped: (() -> Void)?
-    var onMessageTapped: (() -> Void)? {
-        didSet { node.content.onMessageTapped = onMessageTapped }
-    }
-
-    var messageButtonTitle: String? {
-        didSet { node.content.messageButtonTitle = messageButtonTitle }
-    }
-
     private let viewModel: ProfileViewModel
     private let glassTopBar = GlassTopBar()
     private var voicePlayerHost: EmbeddedVoiceTopPlayerHost?
     private var cancellables = Set<AnyCancellable>()
 
-    init(mode: ProfileMode, audioPlayer: AudioPlayerService? = nil) {
-        self.viewModel = ProfileViewModel(mode: mode)
-        super.init(node: ProfileScreenNode(mode: mode))
+    init(audioPlayer: AudioPlayerService? = nil) {
+        self.viewModel = ProfileViewModel()
+        super.init(node: ProfileScreenNode())
         self.voicePlayerHost = audioPlayer.map {
             EmbeddedVoiceTopPlayerHost(viewController: self, audioPlayer: $0)
-        }
-        // .other = pushed sub-screen (from Contacts or Chat title) →
-        // hide tab bar. .own = the Profile tab root → keep tab bar.
-        if case .other = mode {
-            hidesBottomBarWhenPushed = true
         }
         viewModel.onLogout = { [weak self] in self?.onLogout?() }
         setupCallbacks()
@@ -80,13 +65,6 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
         glassTopBar.updateLayout(in: view)
     }
 
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        if isMovingFromParent {
-            viewModel.cleanup()
-        }
-    }
-
     // MARK: - Glass Top Bar
 
     /// Bar height (44) + margin between bar and first content element.
@@ -113,33 +91,12 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
     private func rebuildGlassItems(editing: Bool) {
         var items: [GlassTopBar.Item] = []
 
-        switch viewModel.mode {
-        case .other:
-            let backIcon = AppIcon.chevronBackward.template(size: 17, weight: .semibold)
-            items.append(.circleButton(
-                icon: backIcon,
-                accessibilityLabel: String(localized: "Back"),
-                action: { [weak self] in self?.onBack?() }
-            ))
-            items.append(.flexibleSpace)
-
-        case .own:
-            items.append(.flexibleSpace)
-            let icon: UIImage
-            let label: String
-            if editing {
-                icon = AppIcon.checkmark.template(size: 17, weight: .semibold)
-                label = String(localized: "Done")
-            } else {
-                icon = AppIcon.pencil.template(size: 17, weight: .medium)
-                label = String(localized: "Edit")
-            }
-            items.append(.circleButton(
-                icon: icon,
-                accessibilityLabel: label,
-                action: { [weak self] in self?.editTapped() }
-            ))
-        }
+        items.append(.flexibleSpace)
+        let icon = editing ? AppIcon.checkmark.template(size: 17, weight: .semibold)
+            : AppIcon.pencil.template(size: 17, weight: .medium)
+        items.append(.circleButton(icon: icon,
+            accessibilityLabel: editing ? String(localized: "Done") : String(localized: "Edit"),
+            action: { [weak self] in self?.editTapped() }))
 
         glassTopBar.items = items
     }
@@ -170,13 +127,6 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
                 self?.rebuildGlassItems(editing: editing)
             }
             .store(in: &cancellables)
-
-        viewModel.$presence
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] presence in
-                self?.node.content.updatePresence(presence)
-            }
-            .store(in: &cancellables)
     }
 
     // MARK: - Callbacks
@@ -190,9 +140,6 @@ final class ProfileViewController: ASDKViewController<ProfileScreenNode> {
         }
         node.content.onAvatarTapped = { [weak self] in
             self?.presentAvatarPicker()
-        }
-        node.content.onSearchTapped = { [weak self] in
-            self?.onSearchTapped?()
         }
     }
 

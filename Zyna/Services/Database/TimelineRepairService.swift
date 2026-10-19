@@ -31,7 +31,7 @@ final class TimelineRepairService {
 
     static let shared = TimelineRepairService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private var dbQueue: AccountDatabase { DatabaseService.shared.dbQueue }
     private let log = ScopedLog(.database, prefix: "[TimelineRepair]")
 
     private init() {}

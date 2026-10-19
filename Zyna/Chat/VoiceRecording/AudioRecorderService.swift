@@ -33,11 +33,11 @@ final class AudioRecorderService {
     func startRecording() {
         let session = AVAudioSession.sharedInstance()
 
-        switch session.recordPermission {
+        switch AVAudioApplication.shared.recordPermission {
         case .granted:
             beginRecording(session: session)
         case .undetermined:
-            session.requestRecordPermission { [weak self] granted in
+            AVAudioApplication.requestRecordPermission { [weak self] granted in
                 DispatchQueue.main.async {
                     if granted {
                         self?.beginRecording(session: session)

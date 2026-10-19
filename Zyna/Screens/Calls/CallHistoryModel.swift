@@ -11,17 +11,17 @@ struct CallHistoryModel: Equatable {
     let roomName: String
     let avatar: AvatarViewModel
     let isOutgoing: Bool
-    let type: CallEventType
-    let reason: String?
+    let isVoiceCall: Bool
+    let outcome: MatrixRTCCallHistoryOutcome
     let timestamp: Date
 
-    var isMissed: Bool {
-        type == .ended && (reason == "timeout" || reason == "declined")
+    var isNegativeOutcome: Bool {
+        outcome.isNegative
     }
 
     var statusText: String {
-        let direction = isOutgoing ? "Outgoing" : "Incoming"
-        return "\(direction) · \(type.displayText(reason: reason))"
+        let direction = isOutgoing ? String(localized: "Outgoing") : String(localized: "Incoming")
+        return "\(direction) · \(outcome.displayText)"
     }
 
     var formattedTime: String {

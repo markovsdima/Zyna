@@ -13,6 +13,7 @@ struct StoredRoom: Codable, FetchableRecord, PersistableRecord {
     var displayName: String
     var avatarURL: String?
     var lastMessage: String?
+    var lastMessageSenderID: String?
     var lastMessageSenderName: String?
     var lastMessageTimestamp: TimeInterval?
     var lastOwnMessageStatus: String?
@@ -34,9 +35,11 @@ struct StoredRoom: Codable, FetchableRecord, PersistableRecord {
 extension StoredRoom {
 
     init(from summary: RoomSummary, sortOrder: Int) {
+        let summary = summary.hidingIgnoredPreview([])
         self.id = summary.id
         self.displayName = summary.displayName
         self.avatarURL = summary.avatarURL
+        self.lastMessageSenderID = summary.lastMessageSenderID
         self.lastMessage = summary.lastMessage
         self.lastMessageSenderName = summary.lastMessageSenderName
         self.lastMessageTimestamp = summary.lastMessageTimestamp?.timeIntervalSince1970
@@ -65,6 +68,7 @@ extension StoredRoom {
             displayName: displayName,
             avatarURL: avatarURL,
             lastMessage: lastMessage,
+            lastMessageSenderID: lastMessageSenderID,
             lastMessageSenderName: lastMessageSenderName,
             lastMessageTimestamp: lastMessageTimestamp.map { Date(timeIntervalSince1970: $0) },
             lastOwnMessageStatus: lastOwnMessageStatus.flatMap(LastOwnMessageStatus.init(rawValue:)),

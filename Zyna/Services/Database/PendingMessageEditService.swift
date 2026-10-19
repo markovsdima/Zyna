@@ -13,6 +13,7 @@ struct PendingMessageEditSnapshot {
     let eventId: String
     let transactionId: String
     let body: String
+    let formattedBody: String?
     let zynaAttributes: ZynaMessageAttributes
 }
 
@@ -20,14 +21,16 @@ final class PendingMessageEditService {
 
     static let shared = PendingMessageEditService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private let database: AccountDatabase?
+    private var dbQueue: AccountDatabase { database ?? DatabaseService.shared.dbQueue }
 
-    private init() {}
+    init(database: AccountDatabase? = nil) { self.database = database }
 
     func prepareDirectRawEdit(
         roomId: String,
         eventId: String,
         body: String,
+        formattedBody: String? = nil,
         zynaAttributes: ZynaMessageAttributes,
         transactionId: String
     ) -> Bool {
@@ -39,6 +42,7 @@ final class PendingMessageEditService {
                         isEditFailed = 0,
                         editTransactionId = ?,
                         pendingEditBody = ?,
+                        pendingEditFormattedBody = ?,
                         pendingEditZynaAttributesJSON = ?
                     WHERE roomId = ?
                       AND eventId = ?
@@ -48,6 +52,7 @@ final class PendingMessageEditService {
                 arguments: [
                     transactionId,
                     body,
+                    formattedBody,
                     StoredMessage.encodeZynaAttributes(zynaAttributes),
                     roomId,
                     eventId
@@ -64,11 +69,11 @@ final class PendingMessageEditService {
     func pendingDirectRawEdits(
         roomId: String? = nil,
         eventId: String? = nil
-    ) -> [PendingMessageEditSnapshot] {
-        (try? dbQueue.read { db in
+    ) async -> [PendingMessageEditSnapshot] {
+        (try? await dbQueue.read { db in
             var sql = """
                 SELECT roomId, eventId, editTransactionId,
-                       pendingEditBody, pendingEditZynaAttributesJSON
+                       pendingEditBody, pendingEditFormattedBody, pendingEditZynaAttributesJSON
                 FROM storedMessage
                 WHERE isEditPending = 1
                   AND editTransactionId IS NOT NULL
@@ -100,6 +105,7 @@ final class PendingMessageEditService {
         transactionId: String,
         editEventId: String,
         body: String,
+        formattedBody: String? = nil,
         zynaAttributes: ZynaMessageAttributes
     ) -> Bool {
         let didChange = (try? dbQueue.write { db in
@@ -107,6 +113,8 @@ final class PendingMessageEditService {
                 sql: """
                     UPDATE storedMessage
                     SET contentBody = ?,
+                        contentFormat = ?,
+                        contentFormattedBody = ?,
                         zynaAttributesJSON = ?,
                         isEdited = 1,
                         isEditPending = 0,
@@ -114,6 +122,7 @@ final class PendingMessageEditService {
                         latestEditEventId = ?,
                         editTransactionId = NULL,
                         pendingEditBody = NULL,
+                        pendingEditFormattedBody = NULL,
                         pendingEditZynaAttributesJSON = NULL
                     WHERE roomId = ?
                       AND eventId = ?
@@ -122,6 +131,8 @@ final class PendingMessageEditService {
                     """,
                 arguments: [
                     body,
+                    formattedBody == nil ? nil : ChatTextMetadata.matrixHTMLFormat,
+                    formattedBody,
                     StoredMessage.encodeZynaAttributes(zynaAttributes),
                     editEventId,
                     roomId,
@@ -152,6 +163,7 @@ final class PendingMessageEditService {
                         isEditFailed = 1,
                         editTransactionId = NULL,
                         pendingEditBody = NULL,
+                        pendingEditFormattedBody = NULL,
                         pendingEditZynaAttributesJSON = NULL
                     WHERE roomId = ?
                       AND eventId = ?
@@ -173,6 +185,7 @@ private struct PendingMessageEditRow: Decodable, FetchableRecord {
     let eventId: String?
     let editTransactionId: String?
     let pendingEditBody: String?
+    let pendingEditFormattedBody: String?
     let pendingEditZynaAttributesJSON: String?
 
     var snapshot: PendingMessageEditSnapshot? {
@@ -188,6 +201,7 @@ private struct PendingMessageEditRow: Decodable, FetchableRecord {
             eventId: eventId,
             transactionId: editTransactionId,
             body: pendingEditBody,
+            formattedBody: pendingEditFormattedBody,
             zynaAttributes: StoredMessage.decodeZynaAttributes(pendingEditZynaAttributesJSON)
         )
     }

@@ -16,6 +16,13 @@ final class ElementCallPresentationManager {
 
     private init() { }
 
+    /// Restoring a running call does not initiate an outgoing call.
+    func restoreIfActive(roomID: String) -> Bool {
+        guard let activeCallViewController, activeCallViewController.roomID == roomID else { return false }
+        restore(activeCallViewController)
+        return true
+    }
+
     func present(
         room: Room,
         roomDisplayName: String,

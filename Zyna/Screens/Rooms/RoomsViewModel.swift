@@ -25,12 +25,16 @@ final class RoomsViewModel {
 
     let roomListService: ZynaRoomListService
     private var cancellables = Set<AnyCancellable>()
+    private static let projectionQueue = DispatchQueue(label: "com.zyna.rooms.models", qos: .userInitiated)
     private var prefetchedVisibleAppearanceUserIds = Set<String>()
 
     init(roomListService: ZynaRoomListService = ZynaRoomListService()) {
         self.roomListService = roomListService
 
         roomListService.roomsSubject
+            // Formatting and appearance-cache reads must not inherit the
+            // main-thread delivery used by the service's other consumers.
+            .receive(on: Self.projectionQueue)
             .map { summaries in
                 ScopedLog(.ui)("Received \(summaries.count) rooms in UI")
                 return summaries.map { RoomModel(from: $0) }
@@ -49,6 +53,9 @@ final class RoomsViewModel {
             .store(in: &cancellables)
 
         ProfileAppearanceService.shared.appearanceDidChange
+            // Keep appearance changes behind older model projections so an
+            // in-flight room snapshot cannot restore an obsolete avatar color.
+            .receive(on: Self.projectionQueue)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] userId in
                 self?.applyProfileAppearanceChange(for: userId)

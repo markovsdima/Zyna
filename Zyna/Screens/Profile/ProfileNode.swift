@@ -13,8 +13,8 @@ final class ProfileScreenNode: ScreenNode {
     weak var glassTopBar: GlassTopBar?
     weak var voicePlayerView: UIView?
 
-    init(mode: ProfileMode) {
-        self.content = ProfileNode(mode: mode)
+    override init() {
+        self.content = ProfileNode()
         super.init()
         automaticallyManagesSubnodes = false
         addSubnode(content)
@@ -48,19 +48,6 @@ final class ProfileNode: ScreenNode {
     var onAvatarTapped: (() -> Void)?
     var onLogoutTapped: (() -> Void)?
     var onSettingsTapped: (() -> Void)?
-    var onSearchTapped: (() -> Void)?
-    var onMessageTapped: (() -> Void)?
-    var messageButtonTitle: String? {
-        didSet {
-            guard let title = messageButtonTitle else { return }
-            messageButtonNode.setAttributedTitle(NSAttributedString(
-                string: title,
-                attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .semibold), .foregroundColor: UIColor.white]
-            ), for: .normal)
-            setNeedsLayout()
-        }
-    }
-
     // MARK: - Nodes
 
     private let avatarBackgroundNode = ASDisplayNode()
@@ -74,16 +61,11 @@ final class ProfileNode: ScreenNode {
     private let userIdNode = ASTextNode()
     private let copyButtonNode = ASButtonNode()
 
-    private let presenceNode = ASTextNode()
-
-    private let messageButtonNode = ASButtonNode()
-    private let searchButtonNode = ASButtonNode()
     private let settingsButtonNode = ASButtonNode()
     private let logoutButtonNode = ASButtonNode()
 
     // MARK: - State
 
-    private let mode: ProfileMode
     private var isEditing = false
 
     var topInset: CGFloat = 40
@@ -95,8 +77,7 @@ final class ProfileNode: ScreenNode {
 
     // MARK: - Init
 
-    init(mode: ProfileMode) {
-        self.mode = mode
+    override init() {
         super.init()
         automaticallyManagesSubnodes = true
         setupNodes()
@@ -112,8 +93,6 @@ final class ProfileNode: ScreenNode {
         avatarBackgroundNode.clipsToBounds = true
         editAvatarOverlayNode.cornerRadius = 50
         editAvatarOverlayNode.clipsToBounds = true
-        messageButtonNode.cornerRadius = 12
-        messageButtonNode.clipsToBounds = true
         settingsButtonNode.cornerRadius = 12
         settingsButtonNode.clipsToBounds = true
         logoutButtonNode.cornerRadius = 12
@@ -209,32 +188,6 @@ final class ProfileNode: ScreenNode {
         avatarInitialsNode.isHidden = !visible
     }
 
-    func updatePresence(_ presence: UserPresence?) {
-        guard case .other = mode else { return }
-        if let presence {
-            let text: String
-            let color: UIColor
-            if presence.online {
-                text = String(localized: "online")
-                color = .systemGreen
-            } else if let lastSeen = presence.lastSeen {
-                text = lastSeen.presenceLastSeenString(style: .expanded)
-                color = .secondaryLabel
-            } else {
-                presenceNode.attributedText = nil
-                setNeedsLayout()
-                return
-            }
-            presenceNode.attributedText = NSAttributedString(
-                string: text,
-                attributes: [.font: UIFont.systemFont(ofSize: 14), .foregroundColor: color]
-            )
-        } else {
-            presenceNode.attributedText = nil
-        }
-        setNeedsLayout()
-    }
-
     func setEditing(_ editing: Bool) {
         isEditing = editing
         editAvatarOverlayNode.isHidden = !editing
@@ -262,28 +215,6 @@ final class ProfileNode: ScreenNode {
         copyButtonNode.setImage(copyImage, for: .normal)
         copyButtonNode.imageNode.tintColor = .secondaryLabel
         copyButtonNode.addTarget(self, action: #selector(copyUserId), forControlEvents: .touchUpInside)
-
-        // Message button (visible only when onMessageTapped is set)
-        messageButtonNode.setAttributedTitle(NSAttributedString(
-            string: String(localized: "Message"),
-            attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .semibold), .foregroundColor: UIColor.white]
-        ), for: .normal)
-        messageButtonNode.backgroundColor = .systemBlue
-        messageButtonNode.contentEdgeInsets = UIEdgeInsets(top: 14, left: 32, bottom: 14, right: 32)
-        messageButtonNode.addTarget(self, action: #selector(messageTapped), forControlEvents: .touchUpInside)
-
-        // Search messages
-        let searchIcon = UIImage(
-            systemName: "magnifyingglass",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
-        )
-        searchButtonNode.setImage(searchIcon, for: .normal)
-        searchButtonNode.setAttributedTitle(NSAttributedString(
-            string: "  " + String(localized: "Search Messages"),
-            attributes: [.font: UIFont.systemFont(ofSize: 17), .foregroundColor: UIColor.label]
-        ), for: .normal)
-        searchButtonNode.contentHorizontalAlignment = .middle
-        searchButtonNode.addTarget(self, action: #selector(searchTapped), forControlEvents: .touchUpInside)
 
         // Settings (own only)
         let settingsIcon = AppIcon.settings.rendered(size: 17, weight: .medium, color: AppColor.accent)
@@ -347,10 +278,7 @@ final class ProfileNode: ScreenNode {
         }
 
         // Profile info stack
-        var infoChildren: [ASLayoutElement] = [avatarSpec, nameSpec, userIdRow]
-        if case .other = mode, presenceNode.attributedText != nil {
-            infoChildren.append(presenceNode)
-        }
+        let infoChildren: [ASLayoutElement] = [avatarSpec, nameSpec, userIdRow]
 
         let profileStack = ASStackLayoutSpec(
             direction: .vertical, spacing: 8,
@@ -361,20 +289,9 @@ final class ProfileNode: ScreenNode {
         let spacer = ASLayoutSpec()
         spacer.style.flexGrow = 1
 
-        var bottomChildren: [ASLayoutElement] = []
-        if case .other = mode {
-            if onMessageTapped != nil {
-                messageButtonNode.style.alignSelf = .stretch
-                bottomChildren.append(messageButtonNode)
-            }
-            searchButtonNode.style.alignSelf = .stretch
-            bottomChildren.append(searchButtonNode)
-        }
-        if case .own = mode {
-            settingsButtonNode.style.alignSelf = .stretch
-            logoutButtonNode.style.alignSelf = .stretch
-            bottomChildren.append(contentsOf: [settingsButtonNode, logoutButtonNode])
-        }
+        settingsButtonNode.style.alignSelf = .stretch
+        logoutButtonNode.style.alignSelf = .stretch
+        let bottomChildren: [ASLayoutElement] = [settingsButtonNode, logoutButtonNode]
 
         let bottomStack = ASStackLayoutSpec(
             direction: .vertical, spacing: 12,
@@ -407,14 +324,6 @@ final class ProfileNode: ScreenNode {
 
     @objc private func settingsTapped() {
         onSettingsTapped?()
-    }
-
-    @objc private func searchTapped() {
-        onSearchTapped?()
-    }
-
-    @objc private func messageTapped() {
-        onMessageTapped?()
     }
 
     @objc private func logoutTapped() {

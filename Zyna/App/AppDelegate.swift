@@ -17,7 +17,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // client is built, so crypto breakages are captured for diagnostics.
         MatrixRustSDKTracing.setupOnce()
         #endif
-        _ = DatabaseService.shared
+        #if DEBUG
+        SimulatorAcceptanceProbe.startIfRequested()
+        #endif
+        #if DEBUG
+        if !CryptoDiagnosticsGate.isEnabled { _ = LocalDataBootstrap.shared }
+        #else
+        _ = LocalDataBootstrap.shared
+        #endif
         ElementCallKitService.shared.start()
         return true
     }

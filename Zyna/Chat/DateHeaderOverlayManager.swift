@@ -32,7 +32,7 @@ private final class DateHeaderOverlayView: UIView {
     }
 
     private let label = UILabel()
-    private var modelId: String?
+    private var measuredSize: (maxWidth: CGFloat, font: UIFont, size: CGSize)?
     private var backgroundPulseGeneration = 0
 
     override init(frame: CGRect) {
@@ -55,9 +55,9 @@ private final class DateHeaderOverlayView: UIView {
     }
 
     func update(model: DateDividerModel) {
-        guard model.id != modelId else { return }
-        modelId = model.id
+        guard label.text != model.title else { return }
         label.text = model.title
+        measuredSize = nil
     }
 
     func pulseBackground() {
@@ -118,14 +118,24 @@ private final class DateHeaderOverlayView: UIView {
     }
 
     func fittingSize(maxWidth: CGFloat) -> CGSize {
+        if let measuredSize, measuredSize.maxWidth == maxWidth, measuredSize.font == label.font {
+            return measuredSize.size
+        }
         let labelMaxWidth = max(0, maxWidth - Metrics.horizontalPadding * 2)
         let labelSize = label.sizeThatFits(
             CGSize(width: labelMaxWidth, height: .greatestFiniteMagnitude)
         )
-        return CGSize(
+        let size = CGSize(
             width: min(maxWidth, ceil(labelSize.width) + Metrics.horizontalPadding * 2),
             height: ceil(labelSize.height) + Metrics.verticalPadding * 2
         )
+        measuredSize = (maxWidth, label.font, size)
+        return size
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        measuredSize = nil
     }
 
     override func layoutSubviews() {
@@ -134,6 +144,42 @@ private final class DateHeaderOverlayView: UIView {
             dx: Metrics.horizontalPadding,
             dy: Metrics.verticalPadding
         )
+    }
+}
+
+/// Keeps formatting off the scroll path while the active day is unchanged.
+/// Half-open day intervals also handle midnight and daylight saving changes.
+struct DateHeaderModelCache {
+    private struct Entry {
+        let day: DateInterval
+        let today: DateInterval
+        let calendar: Calendar
+        let locale: Locale
+        let model: DateDividerModel
+    }
+
+    private var entry: Entry?
+
+    mutating func model(
+        for date: Date,
+        calendar: Calendar = .current,
+        locale: Locale = .current,
+        now: Date = Date()
+    ) -> DateDividerModel {
+        if let entry, entry.calendar == calendar, entry.locale == locale,
+           date >= entry.day.start, date < entry.day.end,
+           now >= entry.today.start, now < entry.today.end {
+            return entry.model
+        }
+
+        let model = DateDividerModel.make(for: date, calendar: calendar, now: now)
+        if let day = calendar.dateInterval(of: .day, for: date),
+           let today = calendar.dateInterval(of: .day, for: now) {
+            entry = Entry(day: day, today: today, calendar: calendar, locale: locale, model: model)
+        } else {
+            entry = nil
+        }
+        return model
     }
 }
 
@@ -161,6 +207,8 @@ final class DateHeaderOverlayManager {
     private var targetAlphaById: [String: CGFloat] = [:]
     private var roleById: [String: HeaderRole] = [:]
     private var delayedFadeOutById: [String: DispatchWorkItem] = [:]
+    private var activeModelCache = DateHeaderModelCache()
+    private var appliedOrder: [String] = []
 
     init() {
         containerView.clipsToBounds = true
@@ -205,7 +253,8 @@ final class DateHeaderOverlayManager {
         viewport: CGRect,
         rows: [ChatTimelineRow],
         visibleIndexPaths: [IndexPath],
-        tableView: UITableView,
+        rowRect: (IndexPath) -> CGRect,
+        sourceView: UIView,
         hostView: UIView,
         isScrolling: Bool,
         animated: Bool
@@ -217,7 +266,7 @@ final class DateHeaderOverlayManager {
         for indexPath in visibleIndexPaths {
             guard rows.indices.contains(indexPath.row) else { continue }
 
-            let rowRect = tableView.convert(tableView.rectForRow(at: indexPath), to: hostView)
+            let rowRect = sourceView.convert(rowRect(indexPath), to: hostView)
             switch rows[indexPath.row] {
             case .message(let message):
                 let visibleRect = rowRect.intersection(viewport)
@@ -243,8 +292,8 @@ final class DateHeaderOverlayManager {
         }
 
         containerView.layer.removeAnimation(forKey: "opacity")
-        containerView.frame = viewport
-        containerView.alpha = 1
+        if containerView.frame != viewport { containerView.frame = viewport }
+        if containerView.alpha != 1 { containerView.alpha = 1 }
 
         let maxWidth = min(
             DateHeaderOverlay.maxWidth,
@@ -276,7 +325,7 @@ final class DateHeaderOverlayManager {
             anchorFramesById[anchor.model.id] = frame
         }
 
-        let activeModel = activeTimestamp.map { DateDividerModel.make(for: $0) }
+        let activeModel = activeTimestamp.map { activeModelCache.model(for: $0) }
         func handoffFrame(for id: String, frame: CGRect) -> CGRect {
             guard id != activeModel?.id,
                   frame.maxY > 0,
@@ -371,6 +420,7 @@ final class DateHeaderOverlayManager {
         }
 
         guard !desired.isEmpty else {
+            appliedOrder.removeAll(keepingCapacity: true)
             hide(animated: animated)
             return
         }
@@ -378,7 +428,7 @@ final class DateHeaderOverlayManager {
         for (id, header) in desired {
             let view = viewForHeader(id: id)
             view.update(model: header.model)
-            view.frame = header.frame
+            if view.frame != header.frame { view.frame = header.frame }
             applyAlpha(
                 header.alpha,
                 to: view,
@@ -388,10 +438,13 @@ final class DateHeaderOverlayManager {
             )
         }
 
-        for id in order {
-            if let view = visibleViews[id] {
-                containerView.bringSubviewToFront(view)
+        if order != appliedOrder {
+            for id in order {
+                if let view = visibleViews[id] {
+                    containerView.bringSubviewToFront(view)
+                }
             }
+            appliedOrder = order
         }
     }
 

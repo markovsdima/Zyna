@@ -14,7 +14,8 @@ final class OutgoingEnvelopeService {
 
     static let shared = OutgoingEnvelopeService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private let database: AccountDatabase?
+    private var dbQueue: AccountDatabase { database ?? DatabaseService.shared.dbQueue }
     private let pendingBindingsQueue = DispatchQueue(
         label: "com.zyna.outgoingEnvelope.pendingBindings"
     )
@@ -26,7 +27,7 @@ final class OutgoingEnvelopeService {
         var mediaSourceJSON: String?
     }
 
-    private init() {}
+    init(database: AccountDatabase? = nil) { self.database = database }
 
     struct StoredOutgoingVoiceFile {
         let fileName: String
@@ -38,6 +39,7 @@ final class OutgoingEnvelopeService {
         roomId: String,
         envelopeId: String,
         body: String,
+        formattedBody: String? = nil,
         replyInfo: ReplyInfo?,
         zynaAttributes: ZynaMessageAttributes = ZynaMessageAttributes(),
         transactionId: String? = nil
@@ -51,7 +53,7 @@ final class OutgoingEnvelopeService {
             roomId: roomId,
             envelopeId: envelopeId,
             kind: .text,
-            payload: .text(OutgoingTextPayload(body: body)),
+            payload: .text(OutgoingTextPayload(body: body, formattedBody: formattedBody)),
             caption: nil,
             captionPlacement: .bottom,
             expectedItemCount: 1,
@@ -338,11 +340,41 @@ final class OutgoingEnvelopeService {
 
     @discardableResult
     func markDispatchFailed(envelopeId: String, itemIndex: Int) -> Bool {
+        markDispatchFailed(envelopeId: envelopeId, itemIndex: itemIndex, when: { _, _ in true })
+    }
+
+    enum MissingAsset: String {
+        case image = "pendingDirectImage"
+        case video = "pendingDirectVideo"
+        case voice = "pendingDirectVoice"
+        case file = "pendingDirectFile"
+        case forwardedMedia = "pendingForwardedMedia"
+    }
+
+    /// An async scan may be stale by the time main handles its result. Check
+    /// the asset and attempt identity again in the same write as the failure.
+    @discardableResult
+    func markMissingAssetFailed(item: OutgoingEnvelopeItemSnapshot, asset: MissingAsset) -> Bool {
+        markDispatchFailed(envelopeId: item.groupId, itemIndex: item.itemIndex) { db, current in
+            guard current.eventId == nil, current.decodedTransportState == .queued,
+                  current.transactionId == item.transactionId,
+                  current.bindingToken == item.bindingToken else { return false }
+            let exists = try Bool.fetchOne(db,
+                sql: "SELECT EXISTS (SELECT 1 FROM \(asset.rawValue) WHERE itemId = ?)",
+                arguments: [current.id]) ?? false
+            return !exists
+        }
+    }
+
+    private func markDispatchFailed(
+        envelopeId: String, itemIndex: Int,
+        when shouldFail: (Database, OutgoingEnvelopeItemRecord) throws -> Bool
+    ) -> Bool {
         (try? dbQueue.write { db in
             guard var item = try OutgoingEnvelopeItemRecord
                 .filter(Column("groupId") == envelopeId && Column("itemIndex") == itemIndex)
                 .fetchOne(db) else { return false }
-            guard item.decodedTransportState != .failed else { return false }
+            guard item.decodedTransportState != .failed, try shouldFail(db, item) else { return false }
             item.bindingToken = nil
             item.transportState = OutgoingTransportState.failed.rawValue
             try item.save(db)
@@ -430,12 +462,12 @@ final class OutgoingEnvelopeService {
         envelopes(roomId: roomId, kind: .mediaBatch)
     }
 
-    func directTextOutboxCandidates(envelopeIds: Set<String>? = nil) -> [OutgoingEnvelopeSnapshot] {
+    func directTextOutboxCandidates(envelopeIds: Set<String>? = nil) async -> [OutgoingEnvelopeSnapshot] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Column("kind") == OutgoingEnvelopeKind.text.rawValue)
                 .order(Column("createdAt").asc)

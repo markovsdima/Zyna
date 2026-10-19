@@ -1,0 +1,46 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Person blocked": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пользователь заблокирован"
+          }
+        }
+      }
+    },
+    "Their messages are hidden in all chats.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сообщения этого человека скрыты во всех чатах."
+          }
+        }
+      }
+    },
+    "Unblock this person to send messages or call.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Разблокируйте этого человека, чтобы отправлять сообщения или звонить."
+          }
+        }
+      }
+    },
+    "You blocked %@": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Вы заблокировали %@"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

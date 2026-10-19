@@ -33,6 +33,7 @@ struct RoomModel: Equatable {
     let spaceChildSpaceCount: Int
     let spaceRecentRooms: [SpaceChildModel]
     let spaceMetadata: SpaceRoomMetadata?
+    var isMuted: Bool = false
 }
 
 extension RoomModel {
@@ -101,7 +102,8 @@ extension RoomModel {
                     )
                 )
             },
-            spaceMetadata: room.spaceMetadata
+            spaceMetadata: room.spaceMetadata,
+            isMuted: room.isMuted
         )
     }
 
@@ -134,7 +136,8 @@ extension RoomModel {
             spaceChildRoomCount: spaceChildRoomCount,
             spaceChildSpaceCount: spaceChildSpaceCount,
             spaceRecentRooms: spaceRecentRooms,
-            spaceMetadata: spaceMetadata
+            spaceMetadata: spaceMetadata,
+            isMuted: isMuted
         )
     }
 
@@ -162,7 +165,8 @@ extension RoomModel {
             spaceChildRoomCount: spaceChildRoomCount,
             spaceChildSpaceCount: spaceChildSpaceCount,
             spaceRecentRooms: spaceRecentRooms,
-            spaceMetadata: spaceMetadata
+            spaceMetadata: spaceMetadata,
+            isMuted: isMuted
         )
     }
 
@@ -186,7 +190,8 @@ extension RoomModel {
             spaceChildRoomCount: spaceChildRoomCount,
             spaceChildSpaceCount: spaceChildSpaceCount,
             spaceRecentRooms: spaceRecentRooms,
-            spaceMetadata: metadata
+            spaceMetadata: metadata,
+            isMuted: isMuted
         )
     }
 

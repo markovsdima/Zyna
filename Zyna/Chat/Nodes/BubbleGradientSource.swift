@@ -54,10 +54,24 @@ class PortalSourceView: UIView {
     }
 }
 
-private final class BubbleGradientCanvasView: UIView {
+final class BubbleGradientCanvasView: UIView {
+
+    // Keep the original path available for device A/B measurements.
+#if DEBUG
+    static let captureImageCacheEnabled = ProcessInfo.processInfo.environment["GLASS_GRADIENT_CACHE"] != "0"
+#else
+    static let captureImageCacheEnabled = true
+#endif
+
+    private struct CaptureImage {
+        let bounds: CGRect
+        let scale: CGFloat
+        let image: CGImage
+    }
 
     private let gradientLayer = CAGradientLayer()
     private let colorProvider: (UITraitCollection) -> [UIColor]
+    private var captureImage: CaptureImage?
 
     init(
         colorProvider: @escaping (UITraitCollection) -> [UIColor],
@@ -72,6 +86,10 @@ private final class BubbleGradientCanvasView: UIView {
         gradientLayer.endPoint = end
         layer.addSublayer(gradientLayer)
         updateGradientColors()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(clearCaptureImage),
+            name: UIApplication.didReceiveMemoryWarningNotification, object: nil
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -80,7 +98,86 @@ private final class BubbleGradientCanvasView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        gradientLayer.frame = bounds
+        if gradientLayer.frame != bounds {
+            gradientLayer.frame = bounds
+            clearCaptureImage()
+        }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { clearCaptureImage() }
+    }
+
+    @objc private func clearCaptureImage() {
+        captureImage = nil
+    }
+
+    /// Rasterize only settled local content. Ancestor motion is applied by
+    /// the capture renderer, so scrolling/shrink do not invalidate the image.
+    /// Return nil while presentation colors or geometry differ from model.
+    func imageForCapture(
+        of sourceLayer: CALayer, scale requestedScale: CGFloat,
+        colorSpace: CGColorSpace = CGColorSpaceCreateDeviceRGB()
+    ) -> CGImage? {
+        guard Self.captureImageCacheEnabled,
+              sourceLayer.model() === layer, sourceLayer.bounds == bounds,
+              !bounds.isEmpty, requestedScale.isFinite, requestedScale > 0,
+              colorSpace.model == .rgb,
+              layer.animationKeys()?.isEmpty != false,
+              gradientLayer.animationKeys()?.isEmpty != false else { return nil }
+
+        if sourceLayer !== layer {
+            guard let presentedGradient = sourceLayer.sublayers?.first as? CAGradientLayer,
+                  presentedGradient.frame == gradientLayer.frame,
+                  (presentedGradient.colors as NSArray?) == (gradientLayer.colors as NSArray?),
+                  presentedGradient.locations == gradientLayer.locations else { return nil }
+        }
+
+        // Integral scales avoid rebuilds from floating-point noise in the
+        // affine projection. Reuse a sharper image for lower-resolution work.
+        let scale = max(1, ceil(requestedScale - 0.001))
+        // CA interpolates stops in the destination color space. Reusing a
+        // P3 raster in the glass's RGB context would change the gradient.
+        if let captureImage, captureImage.bounds == bounds, captureImage.scale >= scale,
+           let cachedSpace = captureImage.image.colorSpace, CFEqual(cachedSpace, colorSpace) {
+            return captureImage.image
+        }
+        // Bound raster area (~32 MiB of RGBA pixels per source).
+        let pixels = ceil(bounds.width * scale) * ceil(bounds.height * scale)
+        guard pixels.isFinite, pixels <= 8_388_608 else { return nil }
+
+#if DEBUG && GLASS_PROFILING
+        let cacheStart = GlassCaptureProfiler.shared.captureTimer()
+        defer { GlassCaptureProfiler.shared.endCacheBuild(since: cacheStart) }
+#endif
+        guard let context = CGContext(
+            data: nil, width: Int(ceil(bounds.width * scale)), height: Int(ceil(bounds.height * scale)),
+            bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { return nil }
+        context.translateBy(x: 0, y: CGFloat(context.height))
+        context.scaleBy(x: scale, y: -scale)
+        context.translateBy(x: -bounds.minX, y: -bounds.minY)
+        layer.render(in: context)
+        guard let cgImage = context.makeImage() else { return nil }
+        captureImage = CaptureImage(bounds: bounds, scale: scale, image: cgImage)
+        return cgImage
+    }
+
+    func drawCaptureImage(of sourceLayer: CALayer, in context: CGContext) -> Bool {
+        let transform = context.ctm
+        let scale = max(hypot(transform.a, transform.b), hypot(transform.c, transform.d))
+        guard let colorSpace = context.colorSpace,
+              let image = imageForCapture(of: sourceLayer, scale: scale, colorSpace: colorSpace) else { return false }
+        context.saveGState()
+        // CGImage drawing is Y-up; the cached image uses UIKit's Y-down
+        // coordinates. Preserve the source bounds origin as well as its size.
+        context.translateBy(x: sourceLayer.bounds.minX, y: sourceLayer.bounds.maxY)
+        context.scaleBy(x: 1, y: -1)
+        context.draw(image, in: CGRect(origin: .zero, size: sourceLayer.bounds.size))
+        context.restoreGState()
+        return true
     }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -97,6 +194,7 @@ private final class BubbleGradientCanvasView: UIView {
             $0.resolvedColor(with: traitCollection).cgColor
         }
         gradientLayer.locations = BubbleGradientStops.layerLocations(for: colors.count)
+        clearCaptureImage()
     }
 }
 

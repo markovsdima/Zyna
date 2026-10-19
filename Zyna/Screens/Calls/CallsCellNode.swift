@@ -44,7 +44,7 @@ final class CallsCellNode: ZynaCellNode {
         }
 
         // Name
-        let nameColor: UIColor = model.isMissed ? .systemRed : .label
+        let nameColor: UIColor = model.isNegativeOutcome ? .systemRed : .label
         nameNode.attributedText = NSAttributedString(
             string: model.roomName,
             attributes: [
@@ -56,7 +56,12 @@ final class CallsCellNode: ZynaCellNode {
         nameNode.truncationMode = .byTruncatingTail
 
         // Status line: "Outgoing · Call ended"
-        let icon = model.isMissed ? "phone.arrow.down.left" : "phone"
+        let icon: String
+        if model.isVoiceCall {
+            icon = model.isNegativeOutcome ? "phone.arrow.down.left" : "phone"
+        } else {
+            icon = model.isNegativeOutcome ? "video.slash" : "video"
+        }
         let iconConfig = UIImage.SymbolConfiguration(pointSize: 11, weight: .medium)
         let iconImage = UIImage(systemName: icon, withConfiguration: iconConfig)?
             .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)

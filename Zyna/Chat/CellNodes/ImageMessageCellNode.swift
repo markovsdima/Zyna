@@ -22,8 +22,12 @@ final class ImageMessageCellNode: MessageCellNode {
 
     private let imageNode = RoundedImageNode()
     private let timeBadgeNode = ASDisplayNode()
-    private let captionNode: ASTextNode?
-    private let captionPlacement: CaptionPlacement?
+    private var captionNode: ASTextNode?
+    private var captionPlacement: CaptionPlacement?
+
+    #if DEBUG
+    var simulatorAcceptanceCaption: String { captionNode?.attributedText?.string ?? "" }
+    #endif
 
     /// Current thumbnail for the viewer transition.
     var currentImage: UIImage? { imageNode.image }
@@ -36,8 +40,11 @@ final class ImageMessageCellNode: MessageCellNode {
     private var aspectRatio: CGFloat
     private let displaySource: MediaSource?
     private let previewImageData: Data?
+    private let matrixEventId: String?
     private let hasSDKDimensions: Bool
-    private let usesDirectImageContent: Bool
+    private var usesDirectImageContent: Bool
+    private var placeholderTask: Task<Void, Never>?
+    private var imageLoadTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -100,6 +107,7 @@ final class ImageMessageCellNode: MessageCellNode {
 
         self.displaySource = thumbnailSource ?? source
         self.previewImageData = previewImageData
+        self.matrixEventId = message.eventId
         if let width = imageWidth, let height = imageHeight, height > 0 {
             self.aspectRatio = CGFloat(width) / CGFloat(height)
             self.hasSDKDimensions = true
@@ -143,7 +151,10 @@ final class ImageMessageCellNode: MessageCellNode {
         }
         imageNode.roundedCorners = corners
         setShowsBubbleChrome(!usesDirectImageContent)
-        setUsesBareBubbleContent(usesDirectImageContent)
+        // Keep the image under the same content node when a caption is
+        // added/removed. Switching the bare-content hierarchy can clear its
+        // display contents while Texture reparents it.
+        setUsesBareBubbleContent(true)
         statusIconNode?.tintColour = .white
 
         let buildImageWithTime: () -> ASLayoutSpec = { [weak self] in
@@ -198,7 +209,7 @@ final class ImageMessageCellNode: MessageCellNode {
         }
 
         // Bubble layout
-        bubbleNode.layoutSpecBlock = { [weak self] _, _ in
+        directBubbleContentNode.layoutSpecBlock = { [weak self] _, _ in
             guard let self else { return ASLayoutSpec() }
             let imageWithTime = buildImageWithTime()
 
@@ -249,22 +260,12 @@ final class ImageMessageCellNode: MessageCellNode {
             return imageWithTime
         }
 
-        directBubbleContentNode.layoutSpecBlock = { _, _ in
-            buildImageWithTime()
-        }
-
         // Time badge
         timeBadgeNode.backgroundColor = UIColor.black.withAlphaComponent(0.4)
         timeBadgeNode.cornerRadius = 8
 
         // Override timestamp color — always white on dark badge
-        timeNode.attributedText = NSAttributedString(
-            string: MessageCellHelpers.timeFormatter.string(from: message.timestamp),
-            attributes: [
-                .font: UIFont.systemFont(ofSize: 11),
-                .foregroundColor: UIColor.white
-            ]
-        )
+        updateTimestamp(message)
 
         // Tap to open viewer (preserving reply header tap from super)
         contextSourceNode.onQuickTap = { [weak self] point in
@@ -283,6 +284,8 @@ final class ImageMessageCellNode: MessageCellNode {
         if let previewImageData,
            let previewImage = UIImage(data: previewImageData) {
             imageNode.image = previewImage
+        } else if let blurhash = message.mediaMetadata?.blurhash {
+            loadBlurhashAsync(blurhash)
         }
 
         // Load image
@@ -301,6 +304,67 @@ final class ImageMessageCellNode: MessageCellNode {
         }
     }
 
+    deinit {
+        placeholderTask?.cancel()
+        imageLoadTask?.cancel()
+    }
+
+    /// Caption edits leave the loaded bitmap and its in-flight requests alone.
+    /// Other media/layout changes continue through the normal replacement path.
+    static func canUpdateCaption(old: ChatMessage, new: ChatMessage) -> Bool {
+        guard old.mediaGroupPresentation == nil, new.mediaGroupPresentation == nil,
+              old.zynaAttributes == new.zynaAttributes,
+              old.mediaMetadata == new.mediaMetadata, old.textMetadata == new.textMetadata,
+              case let .image(source, thumb, width, height, caption, preview) = old.content,
+              case let .image(nextSource, nextThumb, nextWidth, nextHeight, nextCaption, nextPreview) = new.content,
+              caption != nextCaption || old.isEdited != new.isEdited else { return false }
+        return source?.toJson() == nextSource?.toJson() && thumb?.toJson() == nextThumb?.toJson()
+            && width == nextWidth && height == nextHeight && preview == nextPreview
+    }
+
+    func updateCaption(_ message: ChatMessage) {
+        // isEdited can change without changing the visible caption.
+        updateTimestamp(message)
+        let text = message.content.visibleImageCaption
+        guard captionNode?.attributedText?.string != text else { return }
+        if let text {
+            let caption = captionNode ?? ASTextNode()
+            caption.attributedText = NSAttributedString(string: text, attributes: [
+                .font: UIFont.systemFont(ofSize: 14), .foregroundColor: bubbleForegroundColor
+            ])
+            caption.maximumNumberOfLines = 0
+            caption.style.maxWidth = ASDimension(unit: .points,
+                value: max(1, ScreenConstants.width * MessageCellHelpers.maxBubbleWidthRatio - 24))
+            caption.style.flexShrink = 1
+            captionNode = caption
+            if isNodeLoaded { assignProbeName("imageMessage.caption", to: caption) }
+        } else {
+            captionNode = nil
+        }
+        captionPlacement = text == nil ? nil : (message.zynaAttributes.mediaGroup?.captionPlacement ?? .bottom)
+        let hasHeader = replyHeaderNode != nil || forwardedHeaderNode != nil
+        var corners: UIRectCorner = .allCorners
+        if hasHeader || captionPlacement == .top { corners.subtract([.topLeft, .topRight]) }
+        if captionPlacement == .bottom { corners.subtract([.bottomLeft, .bottomRight]) }
+        imageNode.roundedCorners = corners
+        usesDirectImageContent = !hasHeader && text == nil
+        setShowsBubbleChrome(!usesDirectImageContent)
+        directBubbleContentNode.setNeedsLayout()
+        setNeedsLayout()
+    }
+
+    private func updateTimestamp(_ message: ChatMessage) {
+        let text = NSAttributedString(
+            string: MessageCellHelpers.timelineTimestampText(for: message),
+            attributes: [.font: UIFont.systemFont(ofSize: 11), .foregroundColor: UIColor.white]
+        )
+        guard timeNode.attributedText != text else { return }
+        timeNode.attributedText = text
+        timeBadgeNode.setNeedsLayout()
+        directBubbleContentNode.setNeedsLayout()
+        setNeedsLayout()
+    }
+
     // MARK: - Async Loading
 
     override func didLoad() {
@@ -310,6 +374,12 @@ final class ImageMessageCellNode: MessageCellNode {
         if let captionNode {
             assignProbeName("imageMessage.caption", to: captionNode)
         }
+    }
+
+    override func contextMenuContentPath() -> CGPath {
+        guard usesDirectImageContent else { return super.contextMenuContentPath() }
+        return contextMenuContentPath(for: imageNode, radius: imageNode.radius,
+                                      roundedCorners: imageNode.roundedCorners)
     }
 
     override func highlightBubble() {
@@ -399,18 +469,34 @@ final class ImageMessageCellNode: MessageCellNode {
     private func loadBubbleImageAsync(source: MediaSource) {
         let recipe = bubbleCacheRecipe()
         let knownAspectRatio = hasSDKDimensions ? aspectRatio : nil
-        Task { [weak self] in
-            guard let self,
-                  let bubbleImage = await MediaCache.shared.loadBubbleImage(
+        imageLoadTask?.cancel()
+        imageLoadTask = Task { [weak self] in
+            let bubbleImage = await MediaCache.shared.loadBubbleImage(
                     source: source,
                     maxPixelWidth: recipe.maxPixelWidth,
                     maxPixelHeight: recipe.maxPixelHeight,
                     knownAspectRatio: knownAspectRatio
-                  ) else { return }
+                  )
+            guard !Task.isCancelled, let bubbleImage else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.imageNode.image = bubbleImage.image
                 self.applyLoadedSourcePixelSize(bubbleImage.sourcePixelSize, relayout: true)
+            }
+        }
+    }
+
+    private func loadBlurhashAsync(_ blurhash: String) {
+        let knownAspectRatio = hasSDKDimensions ? aspectRatio : nil
+        placeholderTask?.cancel()
+        placeholderTask = Task { [weak self] in
+            let placeholder = await Task.detached(priority: .utility) {
+                BlurhashDecoder.placeholder(for: blurhash, aspectRatio: knownAspectRatio)
+            }.value
+            guard !Task.isCancelled, let placeholder else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.imageNode.image == nil else { return }
+                self.imageNode.image = placeholder
             }
         }
     }
@@ -444,14 +530,32 @@ final class ImageMessageCellNode: MessageCellNode {
     /// without waiting for the image to load.
     private func persistDimensions(_ size: CGSize) {
         let id = messageId
+        let eventId = matrixEventId
         let w = Int64(size.width)
         let h = Int64(size.height)
         DispatchQueue.global(qos: .utility).async {
             try? DatabaseService.shared.dbQueue.write { db in
                 try db.execute(
-                    sql: "UPDATE storedMessage SET contentImageWidth = ?, contentImageHeight = ? WHERE id = ?",
+                    sql: """
+                        UPDATE storedMessage
+                        SET contentImageWidth = ?, contentImageHeight = ?
+                        WHERE id = ?
+                          AND (contentImageWidth IS NULL OR contentImageHeight IS NULL)
+                        """,
                     arguments: [w, h, id]
                 )
+                if let eventId {
+                    try db.execute(
+                        sql: """
+                            UPDATE roomAttachment
+                            SET pixelWidth = ?, pixelHeight = ?
+                            WHERE roomId = (SELECT roomId FROM storedMessage WHERE id = ?)
+                              AND eventId = ?
+                              AND (pixelWidth IS NULL OR pixelHeight IS NULL)
+                            """,
+                        arguments: [w, h, id, eventId]
+                    )
+                }
             }
         }
     }

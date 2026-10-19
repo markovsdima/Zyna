@@ -61,12 +61,15 @@ final class OutgoingVoiceOutboxService {
         guard scanCoordinator.isSyncing,
               DirectRawMediaSender.isVoiceEnabled else { return }
 
-        handleMissingRecordCandidates(
-            pendingVoices.missingRecordCandidates(envelopeIds: envelopeIds),
-            reason: reason
-        )
+        let sessionId = matrixService.currentLocalSessionId
+        let missing = await pendingVoices.missingRecordCandidates(envelopeIds: envelopeIds)
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
+        handleMissingRecordCandidates(missing, reason: reason)
 
-        let candidates = pendingVoices.outboxCandidates(envelopeIds: envelopeIds)
+        let candidates = await pendingVoices.outboxCandidates(envelopeIds: envelopeIds)
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
         guard !candidates.isEmpty else {
             logOutgoingVoiceOutbox("outbox scan reason=\(reason) count=0")
             return
@@ -77,8 +80,8 @@ final class OutgoingVoiceOutboxService {
         )
 
         for candidate in candidates {
-            guard !Task.isCancelled,
-                  scanCoordinator.isSyncing else { return }
+            guard !Task.isCancelled, scanCoordinator.isSyncing,
+                  matrixService.currentLocalSessionId == sessionId else { return }
             await sendIfEligible(candidate, reason: reason)
         }
     }
@@ -103,10 +106,7 @@ final class OutgoingVoiceOutboxService {
                 "outbox missing record reason=\(reason) envelope=\(candidate.envelope.id) "
                     + "tx=\(candidate.item.transactionId ?? "-") ageSec=\(String(format: "%.1f", age))"
             )
-            if outgoingEnvelopes.markDispatchFailed(
-                envelopeId: candidate.envelope.id,
-                itemIndex: candidate.item.itemIndex
-            ) {
+            if outgoingEnvelopes.markMissingAssetFailed(item: candidate.item, asset: .voice) {
                 publishRoomDidUpdate(candidate.envelope.roomId)
             }
         }
@@ -138,9 +138,11 @@ final class OutgoingVoiceOutboxService {
             return
         }
 
-        guard let latest = pendingVoices
-            .outboxCandidates(envelopeIds: Set([envelopeId]))
-            .first,
+        let sessionId = matrixService.currentLocalSessionId
+        let refreshed = await pendingVoices.outboxCandidates(envelopeIds: Set([envelopeId]))
+        guard !Task.isCancelled, scanCoordinator.isSyncing,
+              matrixService.currentLocalSessionId == sessionId else { return }
+        guard let latest = refreshed.first,
             let transactionId = latest.item.transactionId,
             !transactionId.isEmpty,
             case .send = attemptDecision(for: latest) else {

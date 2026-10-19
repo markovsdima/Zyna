@@ -45,7 +45,7 @@ final class PendingDirectImageService {
 
     static let shared = PendingDirectImageService()
 
-    private var dbQueue: DatabaseQueue { DatabaseService.shared.dbQueue }
+    private var dbQueue: AccountDatabase { DatabaseService.shared.dbQueue }
 
     private init() {}
 
@@ -138,12 +138,12 @@ final class PendingDirectImageService {
         return didChange
     }
 
-    func outboxCandidates(envelopeIds: Set<String>? = nil) -> [PendingDirectImageCandidate] {
+    func outboxCandidates(envelopeIds: Set<String>? = nil) async -> [PendingDirectImageCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Self.directImageEnvelopeKinds.contains(Column("kind")))
                 .order(Column("createdAt").asc)
@@ -195,12 +195,12 @@ final class PendingDirectImageService {
 
     func missingAssetCandidates(
         envelopeIds: Set<String>? = nil
-    ) -> [PendingDirectImageMissingAssetCandidate] {
+    ) async -> [PendingDirectImageMissingAssetCandidate] {
         if let envelopeIds, envelopeIds.isEmpty {
             return []
         }
 
-        return (try? dbQueue.read { db in
+        return (try? await dbQueue.read { db in
             var request = OutgoingEnvelopeRecord
                 .filter(Self.directImageEnvelopeKinds.contains(Column("kind")))
                 .order(Column("createdAt").asc)
